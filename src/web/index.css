@@ -1,0 +1,390 @@
+@import "tailwindcss";
+
+/* ============================================================
+   MicoConfigurator Design System
+   Tokens extracted from the reference site's real CSS.
+   ============================================================ */
+
+:root {
+  /* Surfaces */
+  --bg-primary: #0A0A0F;
+  --bg-secondary: #13131A;
+  --bg-tertiary: #1C1C26;
+  --bg-hover: #24243A;
+
+  /* Borders (semi-transparent — the key MicoConfigurator signature) */
+  --border: rgba(255, 255, 255, .06);
+  --border-hover: rgba(255, 255, 255, .12);
+  --border-strong: rgba(255, 255, 255, .18);
+
+  /* Text */
+  --text-primary: #F0F0F5;
+  --text-secondary: #8888A0;
+  --text-disabled: #555566;
+
+  /* Accent */
+  --accent: #3B82F6;
+  --accent-hover: #5B9BF7;
+  --accent-active: #2D6FE0;
+  --accent-dim: rgba(59, 130, 246, .15);
+  --accent-glow: rgba(59, 130, 246, .35);
+
+  /* Status */
+  --success: #22C55E;
+  --success-dim: rgba(34, 197, 94, .15);
+  --warning: #F59E0B;
+  --warning-dim: rgba(245, 158, 11, .15);
+  --danger: #EF4444;
+  --danger-dim: rgba(239, 68, 68, .15);
+  --info: #6366F1;
+  --info-dim: rgba(99, 102, 241, .15);
+
+  /* Fonts */
+  --font-sans: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', monospace;
+
+  /* Layout sizing */
+  --topbar-height: 56px;
+  --telemetrybar-height: 44px;
+  --statusbar-height: 32px;
+  --sidebar-width: 72px;
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --card-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+  --card-shadow-hover: 0 4px 16px rgba(0, 0, 0, .35);
+  --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, .06);
+  --glow-accent: 0 0 0 3px var(--accent-dim);
+
+  /* Chart palette */
+  --chart-1: #3B82F6;
+  --chart-2: #22C55E;
+  --chart-3: #F59E0B;
+  --chart-4: #EF4444;
+  --chart-5: #6366F1;
+  --chart-6: #EC4899;
+  --chart-7: #14B8A6;
+  --chart-8: #A855F7;
+
+  /* Attitude 3D canvas */
+  --att3d-canvas-bg: radial-gradient(ellipse at center, #1A1A2E 0%, #0A0A0F 70%);
+}
+
+/* ============================================================
+   Light theme overrides
+   Activated via <html data-theme="light">
+   ============================================================ */
+:root[data-theme="light"] {
+  --bg-primary: #F4F5F8;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #EEF0F4;
+  --bg-hover: #E2E5EC;
+
+  --border: rgba(0, 0, 0, .08);
+  --border-hover: rgba(0, 0, 0, .14);
+  --border-strong: rgba(0, 0, 0, .22);
+
+  --text-primary: #1A1D24;
+  --text-secondary: #6B7280;
+  --text-disabled: #9CA3AF;
+
+  --accent: #2563EB;
+  --accent-hover: #3B82F6;
+  --accent-active: #1D4ED8;
+  --accent-dim: rgba(37, 99, 235, .12);
+  --accent-glow: rgba(37, 99, 235, .25);
+
+  --success: #16A34A;
+  --success-dim: rgba(22, 163, 74, .12);
+  --warning: #D97706;
+  --warning-dim: rgba(217, 119, 6, .12);
+  --danger: #DC2626;
+  --danger-dim: rgba(220, 38, 38, .10);
+  --info: #4F46E5;
+  --info-dim: rgba(79, 70, 229, .12);
+
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, .06), 0 1px 2px rgba(0, 0, 0, .04);
+  --card-shadow-hover: 0 4px 12px rgba(0, 0, 0, .1);
+  --inset-highlight: inset 0 1px 0 rgba(255, 255, 255, .8);
+
+  --att3d-canvas-bg: radial-gradient(ellipse at center, #E8EBF2 0%, #F4F5F8 70%);
+
+  color-scheme: light;
+}
+:root[data-theme="light"] body {
+  background: var(--bg-primary);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, .15);
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, .25);
+}
+:root[data-theme="light"] * {
+  scrollbar-color: rgba(0, 0, 0, .2) transparent;
+}
+:root[data-theme="light"] ::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Tailwind v4 theme mapping — enables bg-bg-primary, text-accent,
+   border-border, font-mono etc. as native Tailwind utilities.
+   ============================================================ */
+@theme inline {
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-hover: var(--bg-hover);
+
+  --color-border-soft: var(--border);
+  --color-border: var(--border-hover);
+  --color-border-strong: var(--border-strong);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-disabled: var(--text-disabled);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-dim: var(--accent-dim);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+}
+
+/* ============================================================
+   Base reset
+   ============================================================ */
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  letter-spacing: -0.005em;
+}
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Scrollbar — thin, subtle, MicoConfigurator style
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, .2);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .12) transparent;
+}
+
+/* ============================================================
+   Card primitive — the heart of MicoConfigurator's surfaces
+   ============================================================ */
+.mc-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow), var(--inset-highlight);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.mc-card--hover:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--card-shadow-hover), var(--inset-highlight);
+}
+
+.mc-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Button primitives
+   ============================================================ */
+.mc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .08s ease, opacity .15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.mc-btn:active { transform: translateY(1px); }
+.mc-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.mc-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+.mc-btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.mc-btn-ghost {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+.mc-btn-ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-hover); }
+
+.mc-btn-danger {
+  background: var(--danger-dim);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, .3);
+}
+.mc-btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, .25); }
+
+.mc-btn-success {
+  background: var(--success);
+  color: #fff;
+}
+.mc-btn-success:hover:not(:disabled) { filter: brightness(1.1); }
+
+/* ============================================================
+   Inputs
+   ============================================================ */
+.mc-input,
+.mc-select {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  transition: border-color .15s ease;
+  outline: none;
+}
+.mc-input::placeholder { color: var(--text-disabled); }
+.mc-input:focus,
+.mc-select:focus { border-color: var(--accent); }
+.mc-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238888A0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+}
+
+/* ============================================================
+   Range slider — MicoConfigurator style
+   ============================================================ */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+  cursor: pointer;
+  transition: transform .1s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+input[type="range"]:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ============================================================
+   Animations
+   ============================================================ */
+@keyframes mc-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .5; }
+}
+@keyframes mc-pulse-ring {
+  0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes mc-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes mc-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes mc-scale-in {
+  from { opacity: 0; transform: scale(.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.mc-animate-fade { animation: mc-fade-in .2s ease; }
+.mc-animate-slide { animation: mc-slide-up .25s cubic-bezier(.16, 1, .3, 1); }
+.mc-animate-scale { animation: mc-scale-in .2s cubic-bezier(.16, 1, .3, 1); }
+
+/* ============================================================
+   Utility helpers
+   ============================================================ */
+.mc-mono { font-family: var(--font-mono); font-feature-settings: 'tnum'; }
+.mc-divider { width: 1px; align-self: stretch; background: var(--border); }
+.mc-divider-h { height: 1px; width: 100%; background: var(--border); }
