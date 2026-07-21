@@ -76,13 +76,15 @@ export interface EkfStatusData {
   innovation_hgt: number
   innovation_mag: number
   gps_check_fail_flags: number
-  control_mode_flags: number
 }
 
 export interface VehicleStatus {
   armed: boolean
   mode: string
   modeId: number
+  // TODO: PX4 reports failsafe via STATUSTEXT / SYS_STATUS rather than a
+  // dedicated HEARTBEAT bit. Currently always false - do not rely on it for
+  // safety decisions until STATUSTEXT parsing is implemented.
   failsafe: boolean
   systemStatus: number
 }
@@ -116,6 +118,13 @@ export interface RcChannelsData {
   ch18?: number
 }
 
+export interface MotorOutputData {
+  time_usec: number
+  port: number
+  /** Raw PWM output in microseconds; null means the channel was not present. */
+  outputs: Array<number | null>
+}
+
 // WebSocket message types (server -> client)
 export type ServerMessage =
   | { type: 'telemetry'; msgType: string; data: any }
@@ -128,6 +137,7 @@ export type ServerMessage =
   | { type: 'statustext'; data: { severity: number; text: string } }
   | { type: 'rc_channels'; data: RcChannelsData }
   | { type: 'ekf_status'; data: EkfStatusData }
+  | { type: 'motor_outputs'; data: MotorOutputData }
 
 // WebSocket message types (client -> server)
 export type ClientMessage =
@@ -140,6 +150,9 @@ export type ClientMessage =
 export interface PortInfo {
   path: string
   manufacturer?: string
+  friendlyName?: string
+  bluetoothAddress?: string
+  recommended?: boolean
   productId?: string
   vendorId?: string
   pnpId?: string

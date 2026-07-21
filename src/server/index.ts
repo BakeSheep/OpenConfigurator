@@ -24,13 +24,21 @@ app.use(express.static(distPath))
 const connManager = new ConnectionManager()
 const mavlinkBridge = new MavlinkBridge(connManager)
 
-// Broadcast to all WebSocket clients
+// Broadcast to all WebSocket clients. A slow/stalled client could otherwise
+// grow backend RSS without bound: MAVLink telemetry at 10+ Hz keeps calling
+// client.send() and buffering unsent frames per client. Drop clients whose
+// buffered amount exceeds 1 MB so a single stuck browser cannot starve others.
+const MAX_BUFFERED_AMOUNT = 1 * 1024 * 1024
 function broadcast(data: any) {
   const msg = JSON.stringify(data)
   wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg)
+    if (client.readyState !== WebSocket.OPEN) return
+    if (client.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+      console.warn('[WS] Dropping slow client: bufferedAmount=' + client.bufferedAmount)
+      client.close(1011, 'backend backpressure: client too slow')
+      return
     }
+    client.send(msg)
   })
 }
 
@@ -49,6 +57,12 @@ connManager.on('statusChange', (status) => {
       type: connManager.config?.type,
     },
   })
+})
+
+// EventEmitter treats an unhandled event named "error" as fatal. Connection
+// errors are reported to clients without terminating the backend process.
+connManager.on('connectionError', (error: Error) => {
+  console.error('[Connection] runtime error:', error.message)
 })
 
 // WebSocket connection handling

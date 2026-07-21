@@ -58,6 +58,14 @@ export function useWebSocket() {
           connStore.setConnected(msg.data.port || '', msg.data.type || '')
         } else {
           connStore.setDisconnected()
+          // On link drop: mark telemetry data as stale (values are retained so
+          // the UI can render them greyed-out, showing the last known state),
+          // revert sensor health dots to offline, and clear the parameter list
+          // (stale params have no "frozen display" value and could mislead the
+          // user into configuring against a disconnected FC).
+          telemetryStore.markAllStale()
+          sensorStore.markAllOffline()
+          paramStore.clear()
         }
         break
       case 'telemetry':
@@ -80,6 +88,9 @@ export function useWebSocket() {
         break
       case 'rc_channels':
         telemetryStore.setRcChannels(msg.data)
+        break
+      case 'motor_outputs':
+        telemetryStore.setMotorOutputs(msg.data)
         break
       case 'statustext':
         console.log(`[FC] ${msg.data.text}`)

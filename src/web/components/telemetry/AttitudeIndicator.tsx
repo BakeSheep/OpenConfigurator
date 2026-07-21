@@ -1,14 +1,18 @@
-import { useRef } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useTelemetryStore } from '../../stores/telemetryStore'
+import { useConnectionStore } from '../../stores/connectionStore'
 
-function DroneModel() {
+function DroneModel({ frozen }: { frozen: boolean }) {
   const meshRef = useRef<THREE.Group>(null)
   const attitude = useTelemetryStore((s) => s.attitude)
 
   useFrame(() => {
-    if (meshRef.current && attitude) {
+    // When the link is stale/disconnected, stop updating rotation so the model
+    // freezes at the last known attitude instead of misleadingly tracking a
+    // frozen value as if it were live.
+    if (meshRef.current && attitude && !frozen) {
       meshRef.current.rotation.x = attitude.pitch
       meshRef.current.rotation.y = -attitude.yaw
       meshRef.current.rotation.z = attitude.roll
@@ -58,18 +62,44 @@ function Grid() {
 }
 
 export default function AttitudeIndicator() {
+  const connected = useConnectionStore((s) => s.status === 'connected')
+  const isStale = useTelemetryStore((s) => s.isStale)
+  // Re-render every 1.5s so the stale overlay appears promptly once the
+  // threshold is crossed, even if no new telemetry arrives to trigger it.
+  const [, force] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => force((n) => n + 1), 1500)
+    return () => clearInterval(id)
+  }, [])
+  const frozen = !connected || isStale('attitude')
+
   return (
     <div
-      className="mc-card w-full overflow-hidden"
+      className="mc-card w-full overflow-hidden relative"
       style={{ height: 224, background: 'var(--att3d-canvas-bg)' }}
     >
       <Canvas camera={{ position: [0, 2.5, 2.5], fov: 45 }}>
         <ambientLight intensity={0.4} />
         <directionalLight position={[5, 5, 5]} intensity={0.8} />
         <pointLight position={[-3, 2, -3]} intensity={0.3} color="#3B82F6" />
-        <DroneModel />
+        <DroneModel frozen={frozen} />
         <Grid />
       </Canvas>
+      {frozen && (
+        <div
+          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          style={{ background: 'rgba(0,0,0,.45)', backdropFilter: 'blur(1px)' }}
+        >
+          <div className="text-center">
+            <div className="text-[12px] font-semibold tracking-wider" style={{ color: '#F59E0B' }}>
+              ⏸ 信号丢失
+            </div>
+            <div className="text-[10px] mt-1" style={{ color: 'var(--text-disabled)' }}>
+              {connected ? '数据已冻结' : '飞控未连接'}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

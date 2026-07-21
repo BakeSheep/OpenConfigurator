@@ -1,203 +1,213 @@
 import { useState } from 'react'
+import Icon from '../components/ui/Icon'
+import { PageHeader, PageTabs } from '../components/ui/PageFrame'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useSensorStore } from '../stores/sensorStore'
 
-const sensorTabs = [
-  { id: 'accel', label: '加速度计' },
-  { id: 'gyro', label: '陀螺仪' },
-  { id: 'mag', label: '磁力计' },
-  { id: 'baro', label: '气压计' },
+const tabs = [
+  { id: 'imu', label: 'IMU' },
+  { id: 'mag', label: '罗盘' },
+  { id: 'gps', label: 'GPS' },
   { id: 'optflow', label: '光流' },
-  { id: 'rangefinder', label: '测距' },
-  { id: 'esc', label: 'ESC' },
-  { id: 'radio', label: '遥控器' },
+  { id: 'rangefinder', label: '测距仪' },
+  { id: 'hardware', label: 'HW ID' },
 ]
 
 const accelSteps = ['水平放置', '左侧朝下', '右侧朝下', '机头朝下', '机头朝上', '翻转朝下']
 
+type CalibrationType = 'accel' | 'gyro' | 'mag' | 'baro'
+
+function InfoMetric({ label, value, tone = 'var(--text-primary)' }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="rounded-xl border px-4 py-3" style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)' }}>
+      <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{label}</p>
+      <p className="mt-1 mc-mono text-[14px] font-bold" style={{ color: tone }}>{value}</p>
+    </div>
+  )
+}
+
 export default function SensorPage() {
-  const [activeTab, setActiveTab] = useState('accel')
-  const [calibrating, setCalibrating] = useState(false)
+  const [activeTab, setActiveTab] = useState('imu')
+  const [calibrating, setCalibrating] = useState<CalibrationType | null>(null)
   const [calStep, setCalStep] = useState(0)
   const [calResult, setCalResult] = useState<string | null>(null)
   const { send } = useWebSocket()
-  const { opticalFlow, distanceSensor } = useSensorStore()
+  const imu = useSensorStore((state) => state.imu)
+  const opticalFlow = useSensorStore((state) => state.opticalFlow)
+  const distanceSensor = useSensorStore((state) => state.distanceSensor)
+  const sensorHealth = useSensorStore((state) => state.sensorHealth)
 
-  const startCalibration = (type: string) => {
-    setCalibrating(true); setCalStep(0); setCalResult(null)
+  const startCalibration = (type: CalibrationType) => {
     const params = [0, 0, 0, 0, 0, 0, 0]
     if (type === 'accel') params[0] = 1
     if (type === 'mag') params[1] = 1
     if (type === 'baro') params[2] = 1
     if (type === 'gyro') params[4] = 1
+    setCalibrating(type)
+    setCalStep(0)
+    setCalResult(null)
     send({ type: 'command', cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
   }
 
-  const nextStep = () => {
-    if (calStep < 5) { setCalStep(calStep + 1) }
-    else { setCalibrating(false); setCalResult('校准成功！请重启飞控。') }
+  const finishCalibration = (message: string) => {
+    setCalibrating(null)
+    setCalResult(message)
+  }
+
+  const nextAccelStep = () => {
+    if (calStep < accelSteps.length - 1) {
+      setCalStep((step) => step + 1)
+      return
+    }
+    finishCalibration('加速度计校准完成，请重启飞控后确认结果。')
   }
 
   return (
-    <div className="p-5 flex gap-5 h-full">
-      {/* Left tabs */}
-      <div className="w-44 shrink-0 space-y-1">
-        <h2 className="text-sm font-bold mb-3 px-2" style={{ color: 'var(--text-primary)' }}>传感器校准</h2>
-        {sensorTabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => { setActiveTab(tab.id); setCalibrating(false); setCalResult(null) }}
-            className="relative w-full text-left px-3 py-2.5 rounded-lg text-[13px] transition-all"
-            style={
-              activeTab === tab.id
-                ? { background: 'var(--accent-dim)', color: 'var(--accent)', fontWeight: 600 }
-                : { color: 'var(--text-secondary)' }
-            }
-            onMouseEnter={(e) => { if (activeTab !== tab.id) e.currentTarget.style.color = 'var(--text-primary)' }}
-            onMouseLeave={(e) => { if (activeTab !== tab.id) e.currentTarget.style.color = 'var(--text-secondary)' }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+    <div className="mc-workspace mc-fade-in">
+      <PageHeader title="传感器" description="查看、校准并验证飞控传感器" />
+      <PageTabs tabs={tabs} active={activeTab} onChange={(tab) => { setActiveTab(tab); setCalibrating(null); setCalResult(null) }} />
 
-      {/* Right content */}
-      <div className="flex-1 mc-card p-6 overflow-y-auto">
-        {activeTab === 'accel' && (
-          <div className="space-y-6">
-            <div>
-              <h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>加速度计校准</h3>
-              <p className="text-[13px] mt-1" style={{ color: 'var(--text-secondary)' }}>按照提示将无人机依次放置在 6 个方向</p>
+      <section className="mc-card mt-5 overflow-hidden">
+        {activeTab === 'imu' && (
+          <>
+            <div className="border-b px-5 py-5" style={{ borderColor: 'var(--border)' }}>
+              <div className="flex items-center gap-3">
+                <span className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}><Icon name="sensor" size={20} /></span>
+                <div>
+                  <h2 className="text-[16px] font-bold" style={{ color: 'var(--text-primary)' }}>IMU 校准</h2>
+                  <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>加速度计、陀螺仪和气压计校准工具</p>
+                </div>
+              </div>
             </div>
-            {!calibrating && !calResult && (
-              <button onClick={() => startCalibration('accel')} className="mc-btn mc-btn-primary px-6 py-3">
-                开始校准
-              </button>
-            )}
-            {calibrating && (
-              <div className="space-y-5">
-                <div className="flex items-center gap-5">
-                  <div
-                    className="w-20 h-20 rounded-2xl flex items-center justify-center"
-                    style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}
-                  >
-                    <span className="mc-mono text-2xl font-bold" style={{ color: 'var(--accent)' }}>{calStep + 1}/6</span>
+            <div className="grid grid-cols-1 gap-4 p-5 xl:grid-cols-[1.2fr_0.8fr]">
+              <div>
+                {calibrating === 'accel' ? (
+                  <div className="rounded-xl border p-5" style={{ borderColor: 'var(--accent)', background: 'var(--accent-dim)' }}>
+                    <p className="mc-eyebrow">加速度计校准</p>
+                    <div className="mt-5 flex items-center gap-5">
+                      <span className="grid h-20 w-20 place-items-center rounded-2xl bg-[var(--bg-secondary)] mc-mono text-[22px] font-bold" style={{ color: 'var(--accent)' }}>{calStep + 1}/6</span>
+                      <div>
+                        <h3 className="text-[18px] font-bold" style={{ color: 'var(--text-primary)' }}>{accelSteps[calStep]}</h3>
+                        <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>请稳定放置飞行器后再继续下一步。</p>
+                      </div>
+                    </div>
+                    <div className="mt-5 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-secondary)' }}>
+                      <i className="block h-full rounded-full" style={{ width: ((calStep + 1) / 6) * 100 + '%', background: 'var(--accent)' }} />
+                    </div>
+                    <div className="mt-5 flex gap-3">
+                      <button type="button" className="mc-btn mc-btn-primary" onClick={nextAccelStep}>已完成放置</button>
+                      <button type="button" className="mc-btn mc-btn-ghost" onClick={() => setCalibrating(null)}>取消</button>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-base font-medium" style={{ color: 'var(--text-primary)' }}>{accelSteps[calStep]}</p>
-                    <p className="text-[13px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>放置好后点击下方按钮</p>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    {[
+                      ['加速度计', '6 面放置校准', 'accel'],
+                      ['陀螺仪', '静止姿态校准', 'gyro'],
+                      ['气压计', '气压高度基准', 'baro'],
+                    ].map(([title, description, type]) => (
+                      <button
+                        key={type}
+                        type="button"
+                        className="rounded-xl border p-4 text-left transition-colors hover:bg-[var(--bg-tertiary)]"
+                        style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
+                        onClick={() => startCalibration(type as CalibrationType)}
+                      >
+                        <span className="grid h-8 w-8 place-items-center rounded-lg" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}><Icon name="sensor" size={16} /></span>
+                        <h3 className="mt-4 text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{title}</h3>
+                        <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{description}</p>
+                      </button>
+                    ))}
                   </div>
-                </div>
-                <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-tertiary)' }}>
-                  <div className="h-full rounded-full transition-all duration-300" style={{ width: `${((calStep + 1) / 6) * 100}%`, background: 'var(--accent)' }} />
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={nextStep} className="mc-btn mc-btn-success px-6 py-3">已完成放置</button>
-                  <button onClick={() => setCalibrating(false)} className="mc-btn mc-btn-ghost px-5 py-3">取消</button>
-                </div>
+                )}
+                {calibrating === 'gyro' && (
+                  <div className="mt-4 rounded-xl p-4" style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }}>
+                    <p className="text-[13px] font-semibold">请保持飞行器静止并平放。</p>
+                    <button type="button" className="mc-btn mt-3" style={{ background: 'var(--bg-secondary)', color: 'var(--warning)' }} onClick={() => finishCalibration('陀螺仪校准完成。')}>完成校准</button>
+                  </div>
+                )}
+                {calibrating === 'baro' && (
+                  <div className="mt-4 rounded-xl p-4" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>
+                    <p className="text-[13px] font-semibold">已发送气压计校准指令，请等待飞控回应。</p>
+                    <button type="button" className="mc-btn mt-3" style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }} onClick={() => finishCalibration('气压计基准已更新。')}>确认完成</button>
+                  </div>
+                )}
               </div>
-            )}
-            {calResult && (
-              <div className="p-4 rounded-xl" style={{ background: 'var(--success-dim)', border: '1px solid rgba(34,197,94,.25)' }}>
-                <p className="text-[13px] font-medium" style={{ color: 'var(--success)' }}>{calResult}</p>
+              <div className="grid grid-cols-2 gap-3 self-start">
+                <InfoMetric label="加速度 X" value={imu ? imu.xacc.toFixed(0) : '—'} />
+                <InfoMetric label="加速度 Y" value={imu ? imu.yacc.toFixed(0) : '—'} />
+                <InfoMetric label="加速度 Z" value={imu ? imu.zacc.toFixed(0) : '—'} />
+                <InfoMetric label="IMU 状态" value={sensorHealth.imu === 'ok' ? '在线' : '离线'} tone={sensorHealth.imu === 'ok' ? 'var(--success)' : 'var(--text-disabled)'} />
               </div>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'gyro' && (
-          <div className="space-y-6">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>陀螺仪校准</h3><p className="text-[13px] mt-1" style={{ color: 'var(--text-secondary)' }}>请将无人机静止放置在水平面上</p></div>
-            {!calResult && <button onClick={() => { startCalibration('gyro'); setTimeout(() => { setCalibrating(false); setCalResult('陀螺仪校准完成') }, 3000) }} className="mc-btn mc-btn-primary px-6 py-3">开始校准</button>}
-            {calibrating && <p className="text-[13px]" style={{ color: 'var(--text-secondary)', animation: 'mc-pulse 1.5s ease-in-out infinite' }}>正在校准，请保持静止…</p>}
-            {calResult && <div className="p-4 rounded-xl" style={{ background: 'var(--success-dim)', border: '1px solid rgba(34,197,94,.25)' }}><p className="text-[13px] font-medium" style={{ color: 'var(--success)' }}>{calResult}</p></div>}
-          </div>
+            </div>
+          </>
         )}
 
         {activeTab === 'mag' && (
-          <div className="space-y-6">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>磁力计校准</h3><p className="text-[13px] mt-1" style={{ color: 'var(--text-secondary)' }}>远离金属和磁铁，沿各轴旋转无人机</p></div>
-            {!calibrating && !calResult && <button onClick={() => startCalibration('mag')} className="mc-btn mc-btn-primary px-6 py-3">开始校准</button>}
-            {calibrating && (
-              <div className="space-y-4">
-                <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>请沿 X/Y/Z 轴旋转无人机…</p>
-                {['Mag 1', 'Mag 2', 'Mag 3'].map((m) => (
-                  <div key={m} className="flex items-center gap-3">
-                    <span className="text-[12px] w-12" style={{ color: 'var(--text-secondary)' }}>{m}</span>
-                    <div className="flex-1 h-1.5 rounded-full" style={{ background: 'var(--bg-tertiary)' }}><div className="h-full rounded-full w-2/3" style={{ background: 'var(--success)', animation: 'mc-pulse 1.5s ease-in-out infinite' }} /></div>
-                  </div>
-                ))}
-                <button onClick={() => { setCalibrating(false); setCalResult('磁力计校准成功！请重启飞控。') }} className="mc-btn mc-btn-ghost px-5 py-2.5">完成</button>
-              </div>
-            )}
-            {calResult && <div className="p-4 rounded-xl" style={{ background: 'var(--success-dim)', border: '1px solid rgba(34,197,94,.25)' }}><p className="text-[13px] font-medium" style={{ color: 'var(--success)' }}>{calResult}</p></div>}
+          <div className="p-5">
+            <div className="max-w-xl">
+              <span className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}><Icon name="sensor" size={20} /></span>
+              <h2 className="mt-4 text-[17px] font-bold" style={{ color: 'var(--text-primary)' }}>罗盘校准</h2>
+              <p className="mt-2 text-[13px] leading-6" style={{ color: 'var(--text-secondary)' }}>远离金属、磁铁和高电流线束，沿所有轴缓慢旋转飞行器。</p>
+              {calibrating === 'mag' ? (
+                <div className="mt-5 rounded-xl border p-5" style={{ borderColor: 'var(--accent)', background: 'var(--accent-dim)' }}>
+                  <p className="text-[13px] font-semibold" style={{ color: 'var(--accent)' }}>正在收集罗盘样本，请持续旋转飞行器。</p>
+                  <div className="mt-4 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-secondary)' }}><i className="block h-full w-2/3 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} /></div>
+                  <button type="button" className="mc-btn mc-btn-primary mt-5" onClick={() => finishCalibration('罗盘校准完成，请重启飞控。')}>完成校准</button>
+                </div>
+              ) : <button type="button" className="mc-btn mc-btn-primary mt-5" onClick={() => startCalibration('mag')}>开始校准</button>}
+            </div>
           </div>
         )}
 
-        {activeTab === 'baro' && (
-          <div className="space-y-6">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>气压计校准</h3><p className="text-[13px] mt-1" style={{ color: 'var(--text-secondary)' }}>确保无人机处于已知高度</p></div>
-            <button onClick={() => startCalibration('baro')} className="mc-btn mc-btn-primary px-6 py-3">校准气压基准</button>
+        {activeTab === 'gps' && (
+          <div className="p-5">
+            <h2 className="text-[17px] font-bold" style={{ color: 'var(--text-primary)' }}>GPS 状态</h2>
+            <p className="mt-2 text-[13px]" style={{ color: 'var(--text-secondary)' }}>当前页面会在飞控连接后显示定位状态、卫星数与定位质量。</p>
+            <div className="mt-5 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+              <InfoMetric label="设备状态" value={sensorHealth.gps === 'ok' ? '在线' : '等待数据'} tone={sensorHealth.gps === 'ok' ? 'var(--success)' : 'var(--text-disabled)'} />
+              <InfoMetric label="定位模式" value="自动检测" />
+              <InfoMetric label="融合状态" value="EKF 管理" />
+            </div>
           </div>
         )}
 
         {activeTab === 'optflow' && (
-          <div className="space-y-5">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>光流传感器</h3></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-3 rounded-xl" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}><p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>状态</p><p className="text-[13px] mt-0.5" style={{ color: 'var(--text-primary)' }}>{opticalFlow ? '在线' : '离线'}</p></div>
-              <div className="p-3 rounded-xl" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}><p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>质量</p><p className="text-[13px] mt-0.5 mc-mono" style={{ color: 'var(--text-primary)' }}>{opticalFlow?.quality ?? '--'} / 255</p></div>
+          <div className="p-5">
+            <h2 className="text-[17px] font-bold" style={{ color: 'var(--text-primary)' }}>光流传感器</h2>
+            <div className="mt-5 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+              <InfoMetric label="状态" value={opticalFlow ? '在线' : '未检测'} tone={opticalFlow ? 'var(--success)' : 'var(--text-disabled)'} />
+              <InfoMetric label="质量" value={opticalFlow ? String(opticalFlow.quality) + ' / 255' : '—'} />
+              <InfoMetric label="融合" value="EKF2_OF_CTRL" />
             </div>
-            <label className="flex items-center gap-3 text-[13px] cursor-pointer" style={{ color: 'var(--text-primary)' }}>
-              <input type="checkbox" defaultChecked className="w-4 h-4 rounded" style={{ accentColor: 'var(--accent)' }} />
-              启用光流融合 (EKF2_OF_CTRL)
-            </label>
           </div>
         )}
 
         {activeTab === 'rangefinder' && (
-          <div className="space-y-5">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>测距传感器</h3></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-3 rounded-xl" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}><p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>状态</p><p className="text-[13px] mt-0.5" style={{ color: 'var(--text-primary)' }}>{distanceSensor ? '在线' : '离线'}</p></div>
-              <div className="p-3 rounded-xl" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border)' }}><p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>距离</p><p className="text-[13px] mt-0.5 mc-mono" style={{ color: 'var(--text-primary)' }}>{distanceSensor?.current_distance ?? '--'} cm</p></div>
+          <div className="p-5">
+            <h2 className="text-[17px] font-bold" style={{ color: 'var(--text-primary)' }}>测距仪</h2>
+            <div className="mt-5 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+              <InfoMetric label="状态" value={distanceSensor ? '在线' : '未检测'} tone={distanceSensor ? 'var(--success)' : 'var(--text-disabled)'} />
+              <InfoMetric label="当前距离" value={distanceSensor ? String(distanceSensor.current_distance) + ' cm' : '—'} />
+              <InfoMetric label="量程" value={distanceSensor ? String(distanceSensor.max_distance) + ' cm' : '—'} />
             </div>
-            <label className="flex items-center gap-3 text-[13px] cursor-pointer" style={{ color: 'var(--text-primary)' }}>
-              <input type="checkbox" defaultChecked className="w-4 h-4 rounded" style={{ accentColor: 'var(--accent)' }} />
-              启用测距融合 (EKF2_RNG_CTRL)
-            </label>
           </div>
         )}
 
-        {activeTab === 'esc' && (
-          <div className="space-y-5">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>ESC 校准</h3></div>
-            <div className="p-4 rounded-xl" style={{ background: 'var(--danger-dim)', border: '1px solid rgba(239,68,68,.25)' }}><p className="text-[13px] font-medium" style={{ color: 'var(--danger)' }}>请移除所有螺旋桨！</p></div>
-            <ol className="space-y-2 text-[13px] list-decimal list-inside" style={{ color: 'var(--text-secondary)' }}>
-              <li>断开电池</li><li>油门推到最高</li><li>连接电池，等待确认声</li><li>油门拉到最低</li><li>等待校准完成</li>
-            </ol>
+        {activeTab === 'hardware' && (
+          <div className="p-5">
+            <h2 className="text-[17px] font-bold" style={{ color: 'var(--text-primary)' }}>硬件识别</h2>
+            <p className="mt-2 text-[13px]" style={{ color: 'var(--text-secondary)' }}>连接飞控后将在此显示飞控板、传感器与外设的硬件标识信息。</p>
           </div>
         )}
+      </section>
 
-        {activeTab === 'radio' && (
-          <div className="space-y-5">
-            <div><h3 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>遥控器校准</h3><p className="text-[13px] mt-1" style={{ color: 'var(--text-secondary)' }}>将所有摇杆和开关拨到极限位置数次</p></div>
-            <div className="space-y-2">
-              {['Roll', 'Pitch', 'Throttle', 'Yaw'].map((ch) => (
-                <div key={ch} className="flex items-center gap-3">
-                  <span className="text-[12px] w-14" style={{ color: 'var(--text-secondary)' }}>{ch}</span>
-                  <div className="flex-1 h-2 rounded-full relative overflow-hidden" style={{ background: 'var(--bg-tertiary)' }}>
-                    <div className="absolute left-1/2 top-0 w-px h-2" style={{ background: 'var(--text-disabled)' }} />
-                    <div className="h-2 rounded-full" style={{ width: '50%', background: 'var(--accent)' }} />
-                  </div>
-                  <span className="text-[12px] mc-mono w-10 text-right" style={{ color: 'var(--text-primary)' }}>1500</span>
-                </div>
-              ))}
-            </div>
-            <button className="mc-btn mc-btn-primary px-6 py-3">开始校准</button>
-          </div>
-        )}
-      </div>
+      {calResult && (
+        <div className="mt-4 flex items-center gap-3 rounded-xl border px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--success) 34%, transparent)', background: 'var(--success-dim)', color: 'var(--success)' }}>
+          <Icon name="check" size={18} />
+          <span className="text-[13px] font-semibold">{calResult}</span>
+        </div>
+      )}
     </div>
   )
 }
