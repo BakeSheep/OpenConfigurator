@@ -1,6 +1,8 @@
-import { useState, useMemo } from 'react'
-import { useParameterStore } from '../stores/parameterStore'
+import { useMemo, useState } from 'react'
+import Icon from '../components/ui/Icon'
+import { EmptyState, PageHeader } from '../components/ui/PageFrame'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { useParameterStore } from '../stores/parameterStore'
 
 export default function ParameterPage() {
   const { params, loading, totalCount, receivedCount } = useParameterStore()
@@ -17,158 +19,113 @@ export default function ParameterPage() {
   }
 
   const filteredParams = useMemo(() => {
-    const arr = Array.from(params.values())
-    if (!search) return arr
-    const q = search.toUpperCase()
-    return arr.filter((p) => p.id.toUpperCase().includes(q))
+    const values = Array.from(params.values())
+    if (!search) return values
+    const query = search.toUpperCase()
+    return values.filter((param) => param.id.toUpperCase().includes(query))
   }, [params, search])
 
-  const grouped = useMemo(() => {
-    const groups: Record<string, typeof filteredParams> = {}
-    for (const p of filteredParams) {
-      const prefix = p.id.split('_')[0]
-      if (!groups[prefix]) groups[prefix] = []
-      groups[prefix].push(p)
+  const groups = useMemo(() => {
+    const result: Record<string, typeof filteredParams> = {}
+    for (const param of filteredParams) {
+      const prefix = param.id.split('_')[0]
+      if (!result[prefix]) result[prefix] = []
+      result[prefix].push(param)
     }
-    return groups
+    return result
   }, [filteredParams])
 
   const saveParam = (id: string) => {
-    const val = parseFloat(editValue)
-    if (isNaN(val)) return
+    const value = Number.parseFloat(editValue)
+    if (!Number.isFinite(value)) return
     const param = params.get(id)
-    send({ type: 'param_set', data: { id, value: val, paramType: param?.type || 9 } })
-    useParameterStore.getState().updateParam(id, val)
+    send({ type: 'param_set', data: { id, value, paramType: param?.type ?? 9 } })
+    useParameterStore.getState().updateParam(id, value)
     setEditId(null)
   }
 
   const exportParams = () => {
-    const lines = Array.from(params.values()).map((p) => `${p.id},${p.value},${p.type}`)
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const content = Array.from(params.values()).map((param) => [param.id, param.value, param.type].join(',')).join('\n')
+    const blob = new Blob([content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url; a.download = 'px4_params.params'; a.click()
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'px4_params.params'
+    anchor.click()
     URL.revokeObjectURL(url)
   }
 
-  const toggleGroup = (prefix: string) => setCollapsed((c) => ({ ...c, [prefix]: !c[prefix] }))
-
   return (
-    <div className="p-5 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>参数管理</h2>
-          <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-            共 {params.size} 个参数{loading ? ` · 正在加载 ${receivedCount}/${totalCount}` : ''}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={requestParams} disabled={loading} className="mc-btn mc-btn-primary px-4 py-2 text-[12px]">
-            {loading ? `${receivedCount}/${totalCount}` : '刷新参数'}
-          </button>
-          <button onClick={exportParams} disabled={params.size === 0} className="mc-btn mc-btn-ghost px-4 py-2 text-[12px]">
-            导出
-          </button>
-        </div>
-      </div>
-
-      {/* Search */}
-      <input
-        type="text"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="搜索参数… (EKF2_, MC_, BAT_, COM_)"
-        className="mc-input"
+    <div className="mc-workspace mc-fade-in">
+      <PageHeader
+        title="参数"
+        description={'管理飞控参数' + (loading ? ' · 正在接收 ' + receivedCount + '/' + totalCount : ' · 已缓存 ' + params.size + ' 项')}
+        actions={
+          <>
+            <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}>
+              <Icon name="log" size={15} />导出
+            </button>
+            <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={loading}>
+              <Icon name="refresh" size={15} />{loading ? receivedCount + '/' + totalCount : '刷新参数'}
+            </button>
+          </>
+        }
       />
 
-      {/* Progress */}
+      <div className="relative mb-4">
+        <Icon name="search" size={17} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-disabled)' }} />
+        <input className="mc-input pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数（例如 EKF2_、MC_、BAT_、COM_）" />
+      </div>
+
       {loading && (
-        <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-tertiary)' }}>
-          <div className="h-full rounded-full transition-all" style={{ width: `${totalCount ? (receivedCount / totalCount) * 100 : 0}%`, background: 'var(--accent)' }} />
+        <div className="mb-4 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
+          <i className="block h-full rounded-full" style={{ width: totalCount ? receivedCount / totalCount * 100 + '%' : '8%', background: 'var(--accent)' }} />
         </div>
       )}
 
-      {/* Parameter groups */}
-      <div className="space-y-3 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 240px)' }}>
-        {Object.entries(grouped).map(([prefix, items]) => {
-          const isCollapsed = collapsed[prefix]
-          return (
-            <div key={prefix} className="mc-card overflow-hidden">
-              {/* Group header (collapsible) */}
-              <button
-                onClick={() => toggleGroup(prefix)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 transition-colors hover:bg-white/[0.02]"
-              >
-                <svg
-                  width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-                  strokeLinecap="round" strokeLinejoin="round"
-                  className="transition-transform shrink-0"
-                  style={{ color: 'var(--text-secondary)', transform: isCollapsed ? 'rotate(-90deg)' : 'none' }}
+      {params.size === 0 && !loading ? (
+        <EmptyState icon="parameters" description="连接飞控后，点击“刷新参数”读取可配置参数。" />
+      ) : (
+        <div className="space-y-3">
+          {Object.entries(groups).map(([prefix, items]) => {
+            const isCollapsed = collapsed[prefix]
+            return (
+              <section key={prefix} className="mc-card overflow-hidden">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 px-5 py-3 text-left"
+                  onClick={() => setCollapsed((current) => ({ ...current, [prefix]: !current[prefix] }))}
                 >
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-                <span className="mc-mono text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{prefix}</span>
-                <span
-                  className="text-[10px] px-1.5 rounded-full mc-mono"
-                  style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-                >
-                  {items.length}
-                </span>
-              </button>
-
-              {/* Group rows */}
-              {!isCollapsed && (
-                <div style={{ borderTop: '1px solid var(--border)' }}>
-                  {items.slice(0, 50).map((p) => (
-                    <div
-                      key={p.id}
-                      className="flex items-center px-4 py-2.5 transition-colors hover:bg-white/[0.02]"
-                      style={{ borderBottom: '1px solid var(--border)' }}
-                    >
-                      <span className="flex-1 text-[13px] mc-mono truncate" style={{ color: 'var(--text-secondary)' }}>{p.id}</span>
-                      {editId === p.id ? (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            className="w-28 rounded-lg px-2 py-1 text-[13px] mc-mono focus:outline-none"
-                            style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
-                            autoFocus
-                            onKeyDown={(e) => e.key === 'Enter' && saveParam(p.id)}
-                          />
-                          <button onClick={() => saveParam(p.id)} className="mc-btn mc-btn-success px-2.5 py-1 text-[11px]">保存</button>
-                          <button onClick={() => setEditId(null)} className="mc-btn mc-btn-ghost px-2.5 py-1 text-[11px]">取消</button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => { setEditId(p.id); setEditValue(String(p.value)) }}
-                          className="text-[13px] mc-mono transition-colors hover:underline"
-                          style={{ color: 'var(--accent)' }}
-                        >
-                          {p.value}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  {items.length > 50 && (
-                    <div className="px-4 py-2 text-center text-[11px]" style={{ color: 'var(--text-disabled)', borderTop: '1px solid var(--border)' }}>
-                      还有 {items.length - 50} 个参数，使用搜索缩小范围
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )
-        })}
-        {params.size === 0 && !loading && (
-          <div className="text-center py-16">
-            <p className="text-[14px]" style={{ color: 'var(--text-secondary)' }}>暂无参数数据</p>
-            <p className="text-[12px] mt-1" style={{ color: 'var(--text-disabled)' }}>连接飞控后点击「刷新参数」</p>
-          </div>
-        )}
-      </div>
+                  <Icon name="chevronDown" size={15} style={{ color: 'var(--text-secondary)', transform: isCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform 160ms ease' }} />
+                  <span className="mc-mono text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{prefix}</span>
+                  <span className="rounded-full px-2 py-0.5 text-[10px]" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>{items.length}</span>
+                </button>
+                {!isCollapsed && (
+                  <div className="border-t" style={{ borderColor: 'var(--border)' }}>
+                    {items.slice(0, 50).map((param) => (
+                      <div key={param.id} className="flex items-center gap-3 border-b px-5 py-2.5 last:border-b-0" style={{ borderColor: 'var(--border)' }}>
+                        <span className="min-w-0 flex-1 truncate mc-mono text-[12px]" style={{ color: 'var(--text-primary)' }}>{param.id}</span>
+                        {editId === param.id ? (
+                          <div className="flex items-center gap-2">
+                            <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
+                            <button type="button" className="mc-btn mc-btn-primary h-8" onClick={() => saveParam(param.id)}>保存</button>
+                          </div>
+                        ) : (
+                          <button type="button" className="mc-mono rounded-md px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--accent)' }} onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
+                            {param.value}
+                          </button>
+                        )}
+                        <span className="hidden rounded px-1.5 py-0.5 text-[10px] sm:inline" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-disabled)' }}>T{param.type}</span>
+                      </div>
+                    ))}
+                    {items.length > 50 && <p className="px-5 py-3 text-[11px]" style={{ color: 'var(--text-secondary)' }}>还有 {items.length - 50} 个参数，请使用搜索缩小范围。</p>}
+                  </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

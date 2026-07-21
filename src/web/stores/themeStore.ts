@@ -14,14 +14,15 @@ const applyTheme = (theme: Theme) => {
   }
 }
 
-// Initialize from system preference or stored value
 const getInitialTheme = (): Theme => {
-  if (typeof window === 'undefined') return 'dark'
+  if (typeof window === 'undefined') return 'light'
   try {
     const stored = localStorage.getItem('mc-theme') as Theme | null
     if (stored === 'light' || stored === 'dark') return stored
-  } catch { /* ignore */ }
-  return 'dark'
+  } catch {
+    // Storage can be unavailable in private browser contexts.
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
 const initialTheme = getInitialTheme()
@@ -33,13 +34,21 @@ export const useThemeStore = create<ThemeState>((set) => ({
     set((state) => {
       const next = state.theme === 'dark' ? 'light' : 'dark'
       applyTheme(next)
-      try { localStorage.setItem('mc-theme', next) } catch { /* ignore */ }
+      try {
+        localStorage.setItem('mc-theme', next)
+      } catch {
+        // Storage failures should never block theme switching.
+      }
       return { theme: next }
     })
   },
   setTheme: (theme) => {
     applyTheme(theme)
-    try { localStorage.setItem('mc-theme', theme) } catch { /* ignore */ }
+    try {
+      localStorage.setItem('mc-theme', theme)
+    } catch {
+      // Storage failures should never block theme switching.
+    }
     set({ theme })
   },
 }))

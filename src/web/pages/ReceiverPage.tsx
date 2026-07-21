@@ -1,85 +1,115 @@
-import { useTelemetryStore } from '../stores/telemetryStore'
+import { useState } from 'react'
+import Icon from '../components/ui/Icon'
+import { PageHeader, PageTabs } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
 
-const names = ['Roll', 'Pitch', 'Throttle', 'Yaw', 'AUX1', 'AUX2', 'AUX3', 'AUX4', 'AUX5', 'AUX6', 'AUX7', 'AUX8', 'AUX9', 'AUX10', 'AUX11', 'AUX12']
+const channelNames = ['Roll', 'Pitch', 'Throttle', 'Yaw', 'AUX1', 'AUX2', 'AUX3', 'AUX4', 'AUX5', 'AUX6', 'AUX7', 'AUX8', 'AUX9', 'AUX10', 'AUX11', 'AUX12']
+
+const tabs = [
+  { id: 'monitor', label: '通道监控' },
+  { id: 'calibrate', label: '校准' },
+  { id: 'reverse', label: '通道反向' },
+]
 
 export default function ReceiverPage() {
-  const rcChannels = useTelemetryStore((s) => s.rcChannels)
-  const connected = useConnectionStore((s) => s.status === 'connected')
+  const [activeTab, setActiveTab] = useState('monitor')
+  const [reversed, setReversed] = useState<Record<number, boolean>>({})
+  const rcChannels = useTelemetryStore((state) => state.rcChannels)
+  const connected = useConnectionStore((state) => state.status === 'connected')
 
-  // Read channels in display order; RC PWM range is 1000-2000 with 1500 = neutral.
-  const getChannel = (i: number): number => {
-    const key = `ch${i + 1}` as keyof typeof rcChannels
-    const v = rcChannels ? rcChannels[key] : undefined
-    return v ?? 0
+  const getChannel = (index: number) => {
+    const key = ('ch' + (index + 1)) as keyof NonNullable<typeof rcChannels>
+    return rcChannels?.[key] ?? 0
   }
 
   return (
-    <div className="p-5 space-y-5">
-      <div>
-        <h2 className="text-lg font-bold" style={{ color: 'var(--text-primary)' }}>遥控器</h2>
-        <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>RC 通道监控与校准</p>
-      </div>
-
-      {/* Channel monitor */}
-      <div className="mc-card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="mc-section-title">通道监控</h3>
-          <span
-            className="text-[11px] px-2 py-0.5 rounded-md"
-            style={{
-              background: rcChannels ? 'var(--success-dim)' : 'var(--bg-tertiary)',
-              color: rcChannels ? 'var(--success)' : 'var(--text-disabled)',
-            }}
-          >
-            {rcChannels ? '信号正常' : connected ? '等待 RC 数据…' : '未连接飞控'}
+    <div className="mc-workspace mc-fade-in">
+      <PageHeader
+        title="遥控器"
+        description="监控 RC 通道并完成接收机校准"
+        actions={
+          <span className="flex items-center gap-2 rounded-full px-3 py-2 text-[11px] font-semibold" style={{ background: rcChannels ? 'var(--success-dim)' : 'var(--bg-tertiary)', color: rcChannels ? 'var(--success)' : 'var(--text-disabled)' }}>
+            <span className="mc-status-dot" style={{ background: rcChannels ? 'var(--success)' : 'var(--text-disabled)' }} />
+            {rcChannels ? '信号正常' : connected ? '等待 RC 数据' : '未连接飞控'}
           </span>
-        </div>
-        <div className="space-y-3">
-          {names.map((name, i) => {
-            const v = getChannel(i)
-            // Clamp to 1000-2000 for the bar fill; 1500 is the center.
-            const clamped = Math.max(1000, Math.min(2000, v))
-            const fillPct = ((clamped - 1000) / 1000) * 100
-            return (
-              <div key={i} className="flex items-center gap-3">
-                <span className="text-[12px] w-14" style={{ color: 'var(--text-secondary)' }}>{name}</span>
-                <div className="flex-1 h-2.5 rounded-full relative overflow-hidden" style={{ background: 'var(--bg-tertiary)' }}>
-                  <div className="absolute left-1/2 top-0 w-px h-full" style={{ background: 'var(--border-strong)' }} />
-                  <div
-                    className="h-full rounded-full transition-all duration-100"
-                    style={{ width: `${fillPct}%`, background: v > 0 ? 'var(--accent)' : 'var(--text-disabled)' }}
-                  />
+        }
+      />
+      <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+
+      {activeTab === 'monitor' && (
+        <section className="mc-card mt-5 overflow-hidden">
+          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>实时通道输入</h2>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>标准 RC PWM 范围为 1000–2000，1500 为中位。</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 p-5 sm:grid-cols-4 xl:grid-cols-8">
+            {channelNames.map((name, index) => {
+              const value = getChannel(index)
+              const fill = value > 0 ? Math.max(0, Math.min(100, (value - 1000) / 10)) : 0
+              return (
+                <div key={name} className="rounded-xl border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>{name}</span>
+                    <span className="mc-mono text-[10px]" style={{ color: value ? 'var(--accent)' : 'var(--text-disabled)' }}>{value || '—'}</span>
+                  </div>
+                  <div className="relative mt-4 h-2 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
+                    <i className="absolute left-1/2 top-0 h-full w-px" style={{ background: 'var(--border-strong)' }} />
+                    <i className="block h-full rounded-full transition-all duration-100" style={{ width: fill + '%', background: value ? 'var(--accent)' : 'var(--text-disabled)' }} />
+                  </div>
+                  <p className="mt-2 text-[10px]" style={{ color: 'var(--text-disabled)' }}>CH{index + 1}</p>
                 </div>
-                <span className="text-[12px] mc-mono w-10 text-right" style={{ color: 'var(--text-primary)' }}>{v > 0 ? Math.round(v) : '--'}</span>
-              </div>
-            )
-          })}
-        </div>
-      </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
-      {/* Calibration */}
-      <div className="mc-card p-5 space-y-4">
-        <h3 className="mc-section-title">遥控器校准</h3>
-        <p className="text-[13px]" style={{ color: 'var(--text-secondary)' }}>将所有摇杆和开关拨到极限位置数次，然后完成校准。</p>
-        <div className="flex gap-3">
-          <button className="mc-btn mc-btn-primary px-6 py-3">开始校准</button>
-          <button className="mc-btn mc-btn-ghost px-6 py-3">完成</button>
-        </div>
-      </div>
+      {activeTab === 'calibrate' && (
+        <section className="mc-card mt-5 overflow-hidden">
+          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>遥控器校准</h2>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>开始前请确保接收机已正确绑定，且飞行器螺旋桨已拆除。</p>
+          </div>
+          <div className="grid grid-cols-1 gap-5 p-5 xl:grid-cols-[1fr_0.75fr]">
+            <ol className="space-y-4">
+              {[
+                '将油门置于最低位置，并让其余摇杆回中。',
+                '点击“开始校准”，按提示将每个摇杆和开关移动到全部极限。',
+                '确认通道范围与方向正确后，完成并保存校准。',
+              ].map((step, index) => (
+                <li key={step} className="flex gap-3">
+                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-bold" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{index + 1}</span>
+                  <span className="pt-0.5 text-[13px] leading-6" style={{ color: 'var(--text-secondary)' }}>{step}</span>
+                </li>
+              ))}
+            </ol>
+            <div className="rounded-xl border p-5" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}>
+              <span className="grid h-10 w-10 place-items-center rounded-xl" style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}><Icon name="receiver" size={20} /></span>
+              <h3 className="mt-4 text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>校准向导</h3>
+              <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>连接飞控后可通过设置向导完成完整校准流程。</p>
+              <button type="button" className="mc-btn mc-btn-primary mt-5" disabled={!connected}>开始校准</button>
+            </div>
+          </div>
+        </section>
+      )}
 
-      {/* Channel reverse */}
-      <div className="mc-card p-5">
-        <h3 className="mc-section-title mb-4">通道反向</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {names.slice(0, 8).map((name) => (
-            <label key={name} className="flex items-center gap-2 text-[13px] cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-              <input type="checkbox" className="w-4 h-4 rounded" style={{ accentColor: 'var(--accent)' }} />
-              <span>{name}</span>
-            </label>
-          ))}
-        </div>
-      </div>
+      {activeTab === 'reverse' && (
+        <section className="mc-card mt-5 overflow-hidden">
+          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>通道反向</h2>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>仅调整显示中的反向选择；保存飞控参数请通过参数页完成。</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 p-5 sm:grid-cols-4 xl:grid-cols-8">
+            {channelNames.slice(0, 8).map((name, index) => (
+              <label key={name} className="flex cursor-pointer items-center justify-between rounded-xl border p-3" style={{ borderColor: reversed[index] ? 'var(--accent)' : 'var(--border)', background: reversed[index] ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
+                <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{name}</span>
+                <input type="checkbox" checked={Boolean(reversed[index])} onChange={(event) => setReversed((current) => ({ ...current, [index]: event.target.checked }))} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
+              </label>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

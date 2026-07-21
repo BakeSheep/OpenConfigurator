@@ -47,7 +47,9 @@ export const useGamepadStore = create<GamepadState>((set) => ({
   deadzone: 0.1,
   expo: 0.3,
   enabled: false,
-  setConnected: (connected, id) => set({ connected, id: id || null }),
+  setConnected: (connected, id) => set(connected
+    ? { connected: true, id: id || null }
+    : { connected: false, id: null, axes: [], buttons: [], enabled: false }),
   setAxes: (axes) => set({ axes }),
   setButtons: (buttons) => set({ buttons }),
   setMapping: (mapping) => set((state) => ({ mapping: { ...state.mapping, ...mapping } })),

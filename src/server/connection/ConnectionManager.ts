@@ -3,13 +3,25 @@ import { SerialConnection } from './SerialConnection'
 import { BluetoothConnection } from './BluetoothConnection'
 import type { ConnectionConfig, ConnectionStatus, PortInfo } from '../../shared/types'
 
+// 5s without an autopilot HEARTBEAT (msg #0) means the link is dead. PX4 emits
+// heartbeats at 1 Hz, so this tolerates 4 consecutive losses - same threshold
+// QGroundControl uses. Triggers an automatic disconnect so downstream clients
+// are notified via the existing statusChange('disconnected') path.
+const HEARTBEAT_TIMEOUT_MS = 5000
+const HEARTBEAT_CHECK_INTERVAL_MS = 1000
+
 export class ConnectionManager extends EventEmitter {
   private serialConn: SerialConnection | null = null
-  private btConn: BluetoothConnection | null = null
   private _status: ConnectionStatus = 'disconnected'
   private _config: ConnectionConfig | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private lastHeartbeat = 0
+  // Guard against the timeout firing more than once per drop. Cleared on every
+  // fresh connect so the next drop can fire again.
+  private heartbeatTimeoutFired = false
+  // Serialize connect/disconnect so concurrent browser requests cannot race
+  // on serialConn assignment or COM-port ownership.
+  private pendingOp: Promise<void> = Promise.resolve()
 
   get status() {
     return this._status
@@ -31,66 +43,96 @@ export class ConnectionManager extends EventEmitter {
   }
 
   async connect(config: ConnectionConfig): Promise<void> {
-    if (this._status === 'connected') {
-      await this.disconnect()
-    }
-
-    this.setStatus('connecting')
-    this._config = config
-
-    try {
-      // For Bluetooth, resolve the device chosen via the browser-side Web
-      // Serial chooser back to a Windows SPP COM port before opening.
-      let portPath = config.port
-      if (config.type === 'bluetooth') {
-        const resolved = await BluetoothConnection.findPortByIds({
-          vendorId: config.vendorId,
-          productId: config.productId,
-          bluetoothServiceClassId: config.bluetoothServiceClassId,
-          label: config.port,
-        })
-        if (!resolved) {
-          throw new Error(`未找到蓝牙设备 "${config.port}" 对应的 SPP 串口。请确认设备已配对并启用 SPP 服务。`)
-        }
-        portPath = resolved
-        // Store the resolved COM port so the UI shows it after connecting
-        this._config = { ...config, port: portPath }
+    // Serialize: wait for any in-flight connect/disconnect to settle first.
+    const run = async () => {
+      // A failed/opening connection may still own the COM port. Always dispose
+      // the previous instance before another attempt.
+      if (this.serialConn) {
+        await this.disconnect()
       }
 
-      this.serialConn = new SerialConnection()
+      this.setStatus('connecting')
+      this._config = config
+      let portPath = config.port
 
-      this.serialConn.on('data', (data: Buffer) => {
-        this.lastHeartbeat = Date.now()
-        this.emit('data', data)
-      })
+      try {
+        // For Bluetooth, resolve the device chosen via the browser-side Web
+        // Serial chooser back to a Windows SPP COM port before opening.
+        if (config.type === 'bluetooth') {
+          const resolved = await BluetoothConnection.findPortByIds({
+            vendorId: config.vendorId,
+            productId: config.productId,
+            bluetoothServiceClassId: config.bluetoothServiceClassId,
+            label: config.port,
+          })
+          if (!resolved) {
+            throw new Error(`未找到蓝牙设备 "${config.port}" 对应的 SPP 串口。请确认设备已配对并启用 SPP 服务。`)
+          }
+          portPath = resolved
+          // Store the resolved COM port so the UI shows it after connecting
+          this._config = { ...config, port: portPath }
+        }
 
-      this.serialConn.on('disconnected', () => {
-        this.setStatus('disconnected')
-        this.stopHeartbeatMonitor()
-      })
+        this.serialConn = new SerialConnection()
 
-      this.serialConn.on('error', (err: Error) => {
+        this.serialConn.on('data', (data: Buffer) => {
+          // NOTE: lastHeartbeat is now driven by autopilot HEARTBEAT msg #0
+          // (see notifyAutopilotHeartbeat), NOT by raw serial bytes. A FC that
+          // stops emitting heartbeats but still streams ATTITUDE will now be
+          // correctly detected as a stale link.
+          this.emit('data', data)
+        })
+
+        this.serialConn.on('disconnected', () => {
+          void this.cleanup()
+          this.setStatus('disconnected')
+        })
+
+        this.serialConn.on('error', (err: Error) => {
+          void this.cleanup()
+          this.setStatus('error')
+          this.emit('connectionError', err)
+        })
+
+        await this.serialConn.connect(portPath, config.baudRate, config.type === 'bluetooth' ? 20000 : 5000)
+        this.heartbeatTimeoutFired = false
+        this.setStatus('connected')
+        this.startHeartbeatMonitor()
+      } catch (err) {
+        await this.cleanup()
         this.setStatus('error')
-        this.emit('error', err)
-      })
-
-      await this.serialConn.connect(portPath, config.baudRate)
-      this.setStatus('connected')
-      this.startHeartbeatMonitor()
-    } catch (err) {
-      this.setStatus('error')
-      throw err
+        if (config.type === 'bluetooth' && err instanceof Error && /(?:code 121|semaphore timeout)/i.test(err.message)) {
+          throw new Error(`蓝牙设备未响应（${portPath}）。请确认选择的是飞控对应端口、飞控已上电且未被其他软件连接。`)
+        }
+        throw err
+      }
     }
+
+    this.pendingOp = this.pendingOp.then(run, run)
+    return this.pendingOp
   }
 
   async disconnect(): Promise<void> {
+    const run = async () => {
+      await this.cleanup()
+      this._config = null
+      if (this._status !== 'disconnected') {
+        this.setStatus('disconnected')
+      }
+    }
+    this.pendingOp = this.pendingOp.then(run, run)
+    return this.pendingOp
+  }
+
+  // Shared teardown for both explicit disconnect and error/drop paths. Stops
+  // the heartbeat monitor (so the timer stops firing into the void), nulls
+  // serialConn so write() becomes a no-op, and closes the underlying port.
+  private async cleanup(): Promise<void> {
     this.stopHeartbeatMonitor()
     if (this.serialConn) {
-      await this.serialConn.disconnect()
+      await this.serialConn.disconnect().catch(() => undefined)
       this.serialConn = null
     }
-    this._config = null
-    this.setStatus('disconnected')
   }
 
   write(data: Buffer): void {
@@ -99,13 +141,30 @@ export class ConnectionManager extends EventEmitter {
     }
   }
 
+  // Called by MavlinkBridge.handleHeartbeat whenever an autopilot HEARTBEAT
+  // (msg #0) is received. This is the true application-layer liveness signal;
+  // raw serial bytes are NOT sufficient because a FC can stall mid-stream.
+  notifyAutopilotHeartbeat(): void {
+    this.lastHeartbeat = Date.now()
+    this.heartbeatTimeoutFired = false
+  }
+
   private startHeartbeatMonitor() {
     this.lastHeartbeat = Date.now()
+    this.heartbeatTimeoutFired = false
     this.heartbeatTimer = setInterval(() => {
-      if (Date.now() - this.lastHeartbeat > 5000) {
+      if (this._status !== 'connected') return
+      if (Date.now() - this.lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
+        if (this.heartbeatTimeoutFired) return
+        this.heartbeatTimeoutFired = true
         this.emit('heartbeatTimeout')
+        // Auto-disconnect so the frontend is notified via the standard
+        // statusChange('disconnected') -> WebSocket broadcast path.
+        void this.disconnect().catch((err) => {
+          console.error('[Connection] auto-disconnect after heartbeat timeout failed:', err)
+        })
       }
-    }, 2000)
+    }, HEARTBEAT_CHECK_INTERVAL_MS)
   }
 
   private stopHeartbeatMonitor() {

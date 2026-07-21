@@ -21,7 +21,7 @@ export class SerialConnection extends EventEmitter {
     }))
   }
 
-  async connect(path: string, baudRate: number): Promise<void> {
+  async connect(path: string, baudRate: number, timeoutMs = 5000): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false
       const timeout = setTimeout(() => {
@@ -29,8 +29,8 @@ export class SerialConnection extends EventEmitter {
         settled = true
         try { this.port?.close(() => {}) } catch { /* ignore */ }
         this.port = null
-        reject(new Error(`打开串口 ${path} 超时（5s）。端口可能被占用或设备无响应。`))
-      }, 5000)
+        reject(new Error(`打开串口 ${path} 超时（${Math.round(timeoutMs / 1000)}s）。端口可能被占用或设备无响应。`))
+      }, timeoutMs)
 
       try {
         this.port = new SerialPort({
@@ -58,7 +58,11 @@ export class SerialConnection extends EventEmitter {
         })
 
         this.port.on('error', (err: Error) => {
-          if (settled) return
+          if (settled) {
+            this._connected = false
+            this.emit('error', err)
+            return
+          }
           settled = true
           clearTimeout(timeout)
           this._connected = false
