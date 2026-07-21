@@ -8,6 +8,7 @@
     "dev:web": "vite",
     "dev:server": "tsx watch src/server/index.ts",
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts",
     "start": "tsx src/server/index.ts",
     "preview": "vite preview"
