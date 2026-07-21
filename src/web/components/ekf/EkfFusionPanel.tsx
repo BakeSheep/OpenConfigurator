@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
@@ -38,6 +38,13 @@ export default function EkfFusionPanel() {
   const { send } = useWebSocket()
   const { params } = useParameterStore()
   const [hgtRef, setHgtRef] = useState(0)
+
+  // Sync local state when the actual parameter value is received from the FC,
+  // so the selector reflects the real EKF2_HGT_REF instead of a hardcoded 0.
+  useEffect(() => {
+    const p = params.get(EKF2_PARAMS.EKF2_HGT_REF)
+    if (p !== undefined) setHgtRef(p.value)
+  }, [params])
 
   const getParamValue = (id: string) => params.get(id)?.value ?? 0
   const toggleParam = (id: string, val: number) => send({ type: 'param_set', data: { id, value: val, paramType: 9 } })

@@ -1,4 +1,4 @@
-# AGENTS.md — MicoConfigurator (px4-web-gcs)
+# AGENTS.md — SkyLab (px4-web-gcs)
 
 Web-based PX4 ground control station. Browser SPA talks to a local Node.js backend over WebSocket + REST; the backend talks to the flight controller over MAVLink v2 on a serial/Bluetooth COM port. Read `HANDOVER.md` for the full feature inventory before touching sensitive areas (MAVLink, connection, flight control).
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
 import Icon from '../components/ui/Icon'
 import { PageHeader, PageTabs } from '../components/ui/PageFrame'
@@ -59,6 +59,25 @@ export default function JoystickPage() {
   stateRef.current = { connected, enabled, deadzone, expo, mapping }
   const actionsRef = useRef({ setConnected, setAxes, setButtons, send })
   actionsRef.current = { setConnected, setAxes, setButtons, send }
+
+  // Release RC override (all channels 0 = return to normal RC input) when
+  // control is disabled or the gamepad disconnects, so PX4 does not keep
+  // applying the last override values (a safety hazard if the last frame
+  // carried throttle input).
+  const releaseOverride = useCallback(() => {
+    actionsRef.current.send({
+      type: 'rc_channels_override',
+      data: { ch1: 0, ch2: 0, ch3: 0, ch4: 0, ch5: 0, ch6: 0, ch7: 0, ch8: 0 },
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!enabled) releaseOverride()
+  }, [enabled, releaseOverride])
+
+  useEffect(() => {
+    if (!connected) releaseOverride()
+  }, [connected, releaseOverride])
 
   useEffect(() => {
     const unsubscribe = useConnectionStore.subscribe((state) => {

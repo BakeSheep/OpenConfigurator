@@ -78,14 +78,16 @@ export interface EkfStatusData {
   gps_check_fail_flags: number
 }
 
+// Failsafe/safety state. 'unknown' is used when the state cannot be reliably
+// determined from available MAVLink messages - a safety-critical field must
+// never silently default to "safe".
+export type SafetyState = 'unknown' | 'safe' | 'warning' | 'error'
+
 export interface VehicleStatus {
   armed: boolean
   mode: string
   modeId: number
-  // TODO: PX4 reports failsafe via STATUSTEXT / SYS_STATUS rather than a
-  // dedicated HEARTBEAT bit. Currently always false - do not rely on it for
-  // safety decisions until STATUSTEXT parsing is implemented.
-  failsafe: boolean
+  failsafe: SafetyState
   systemStatus: number
 }
 

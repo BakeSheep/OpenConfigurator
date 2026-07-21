@@ -12,7 +12,9 @@ const BASE_PAYLOAD_LENGTH: Record<number, number> = {
   147: 36, 230: 42, 245: 2, 253: 51,
 }
 
-// CRC extras for common message types
+// CRC extras for common message types.
+// Values verified against the MAVLink common dialect's generated
+// MAVLINK_MESSAGE_CRCS table (PX4 common.h) - do not edit by hand.
 const CRC_EXTRA: Record<number, number> = {
   0: 50,    // HEARTBEAT
   1: 124,   // SYS_STATUS
@@ -28,32 +30,32 @@ const CRC_EXTRA: Record<number, number> = {
   29: 115,  // SCALED_PRESSURE
   30: 39,   // ATTITUDE
   33: 104,  // GLOBAL_POSITION_INT
-  36: 104,  // SERVO_OUTPUT_RAW
-  42: 150,  // MISSION_CURRENT
-  62: 185,  // NAV_CONTROLLER_OUTPUT
-  65: 130,  // RC_CHANNELS
-  66: 124,  // REQUEST_DATA_STREAM (deprecated)
+  36: 222,  // SERVO_OUTPUT_RAW
+  42: 28,   // MISSION_CURRENT
+  62: 183,  // NAV_CONTROLLER_OUTPUT
+  65: 118,  // RC_CHANNELS
+  66: 148,  // REQUEST_DATA_STREAM (deprecated)
   70: 124,  // RC_CHANNELS_OVERRIDE
   73: 38,   // MISSION_ITEM_INT
   74: 20,   // VFR_HUD
   76: 152,  // COMMAND_LONG
   77: 143,  // COMMAND_ACK
-  105: 130, // HIGHRES_IMU
+  105: 93,  // HIGHRES_IMU
   106: 138, // OPTICAL_FLOW_RAD
-  109: 90,  // RADIO_STATUS
+  109: 185, // RADIO_STATUS
   111: 34,  // TIMESYNC
-  116: 163, // SCALED_IMU3
-  125: 130, // POWER_STATUS
+  116: 76,  // SCALED_IMU3
+  125: 203, // POWER_STATUS
   132: 85,  // DISTANCE_SENSOR
   147: 154, // BATTERY_STATUS
-  148: 130, // AUTOPILOT_VERSION
+  148: 178, // AUTOPILOT_VERSION
   230: 163, // ESTIMATOR_STATUS
-  234: 163, // HIGH_LATENCY2
-  241: 134, // AUTOPILOT_VERSION
-  242: 163, // ADSB_VEHICLE
+  234: 150, // HIGH_LATENCY2
+  241: 90,  // MISSION_CHANGED
+  242: 104, // ADSB_VEHICLE
   245: 130, // EXTENDED_SYS_STATE
   253: 83,  // STATUSTEXT
-  259: 13,  // CAMERA_INFORMATION
+  259: 92,  // CAMERA_INFORMATION
 }
 
 export interface MavlinkMessage {

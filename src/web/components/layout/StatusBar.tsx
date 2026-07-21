@@ -31,7 +31,7 @@ export default function StatusBar() {
           <span className="mc-status-dot" style={{ background: latest ? severityTone[latest.severity] : statusColor }} />
           <span>状态 {statusText}</span>
         </span>
-        <span className="mc-statusbar__version">MicoConfigurator · PX4 Web GCS</span>
+        <span className="mc-statusbar__version">SkyLab · PX4 Web GCS</span>
         <span className="flex items-center gap-1.5">
           <span className="mc-statusbar__message">{latest?.text ?? '消息速率 —'}</span>
           <Icon name="chevronDown" size={13} style={{ transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 160ms ease' }} />

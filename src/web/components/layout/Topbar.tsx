@@ -13,8 +13,8 @@ export default function Topbar() {
   return (
     <header className="mc-topbar">
       <div className="mc-topbar__brand">
-        <span className="mc-topbar__mark" aria-hidden="true">M</span>
-        <span className="mc-topbar__name">MicoConfigurator</span>
+        <span className="mc-topbar__mark" aria-hidden="true">S</span>
+        <span className="mc-topbar__name">SkyLab</span>
       </div>
 
       <p className="mc-topbar__tagline">一个现代化、用户友好的 ArduPilot/PX4 飞控配置工具</p>

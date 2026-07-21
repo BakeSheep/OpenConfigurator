@@ -18,6 +18,8 @@ export class MavlinkBridge extends EventEmitter {
   private connManager: ConnectionManager
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private requestedOutputStream = false
+  private paramExpectedCount = 0
+  private paramIds = new Set<string>()
 
   constructor(connManager: ConnectionManager) {
     super()
@@ -61,13 +63,17 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private sendHeartbeat() {
-    // HEARTBEAT: type=6(GCS), autopilot=8(invalid), base_mode=0, custom_mode=0, system_status=0
+    // HEARTBEAT: type=6(GCS), autopilot=8(invalid).
+    // base_mode = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED(1) so the FC recognises a
+    // valid GCS; system_status = MAV_STATE_ACTIVE(4) so the FC sees a healthy
+    // GCS and enables capability negotiation (a zero status can make PX4 treat
+    // the GCS as faulty and withhold some MAVLink capabilities).
     const payload = Buffer.alloc(9)
     payload.writeUInt32LE(0, 0)  // custom_mode
-    payload[4] = 6               // type: GCS
-    payload[5] = 8               // autopilot: invalid
-    payload[6] = 0               // base_mode
-    payload[7] = 0               // system_status
+    payload[4] = 6               // type: MAV_TYPE_GCS
+    payload[5] = 8               // autopilot: MAV_AUTOPILOT_INVALID
+    payload[6] = 1               // base_mode: MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
+    payload[7] = 4               // system_status: MAV_STATE_ACTIVE
     payload[8] = 3               // mavlink_version
     const msg = this.parser.encode(0, payload)
     this.connManager.write(msg)
@@ -150,11 +156,11 @@ export class MavlinkBridge extends EventEmitter {
         armed,
         mode: this.getModeName(customMode),
         modeId: customMode,
-        // TODO: PX4 reports failsafe via STATUSTEXT and SYS_STATUS sensor
-        // flags rather than a dedicated HEARTBEAT bit. Decoding it reliably
-        // requires correlating STATUSTEXT keywords - not implemented yet, so
-        // we expose false to avoid lying about a safety-critical field.
-        failsafe: false,
+        // PX4 reports failsafe via STATUSTEXT / SYS_STATUS sensor flags rather
+        // than a dedicated HEARTBEAT bit, so it cannot be reliably derived
+        // here. Report 'unknown' instead of a misleading hardcoded false - a
+        // safety-critical field must never silently claim "no failsafe".
+        failsafe: 'unknown',
         systemStatus: msg.payload[7],
       },
     } as ServerMessage)
@@ -401,6 +407,17 @@ export class MavlinkBridge extends EventEmitter {
       type: 'param',
       data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
     } as ServerMessage)
+
+    // Track parameter download progress and signal completion so the frontend
+    // can exit its loading state (otherwise it stays stuck forever).
+    this.paramExpectedCount = paramCount
+    this.paramIds.add(id)
+    if (this.paramExpectedCount > 0 && this.paramIds.size >= this.paramExpectedCount) {
+      this.emit('message', {
+        type: 'param_complete',
+        data: { count: this.paramExpectedCount },
+      } as ServerMessage)
+    }
   }
 
   private handleStatustext(msg: MavlinkMessage) {
@@ -462,6 +479,9 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private sendParamRequestList() {
+    // Reset parameter tracking for the new download
+    this.paramExpectedCount = 0
+    this.paramIds.clear()
     // PARAM_REQUEST_LIST (msg #21)
     const payload = Buffer.alloc(2)
     payload.writeUInt8(1, 0)  // target_system
