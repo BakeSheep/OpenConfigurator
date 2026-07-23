@@ -6,9 +6,9 @@ import { useConnectionStore } from '../../stores/connectionStore'
 
 function DroneModel({ frozen }: { frozen: boolean }) {
   const meshRef = useRef<THREE.Group>(null)
-  const attitude = useTelemetryStore((s) => s.attitude)
 
   useFrame(() => {
+    const attitude = useTelemetryStore.getState().attitude
     // When the link is stale/disconnected, stop updating rotation so the model
     // freezes at the last known attitude instead of misleadingly tracking a
     // frozen value as if it were live.

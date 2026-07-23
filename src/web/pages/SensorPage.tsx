@@ -21,11 +21,12 @@ const calibrationLabels: Record<CalibrationType, string> = {
 const displayImuValue = (kind: 'accel' | 'gyro', value: number) =>
   kind === 'accel' ? value * STANDARD_GRAVITY : value * RADIANS_TO_DEGREES
 
-function SensorChart({ kind }: { kind: 'accel' | 'gyro' }) {
+function SensorChart({ kind, instance }: { kind: 'accel' | 'gyro'; instance: number }) {
   const [data, setData] = useState<Array<{ t: number; x: number; y: number; z: number }>>([])
   useEffect(() => {
+    setData([])
     const id = setInterval(() => {
-      const imu = useSensorStore.getState().imu
+      const imu = useSensorStore.getState().imus[instance]
       if (!imu) return
       setData((current) => [...current.slice(-89), {
         t: Date.now(),
@@ -35,7 +36,7 @@ function SensorChart({ kind }: { kind: 'accel' | 'gyro' }) {
       }])
     }, 200)
     return () => clearInterval(id)
-  }, [kind])
+  }, [instance, kind])
   return (
     <ResponsiveContainer width="100%" height={165}>
       <LineChart data={data} margin={{ top: 10, right: 6, bottom: 0, left: -20 }}>
@@ -63,12 +64,18 @@ export default function SensorPage() {
   const [imuIndex, setImuIndex] = useState('imu1')
   const [calibrating, setCalibrating] = useState<CalibrationType | null>(null)
   const { send } = useWebSocket()
-  const imu = useSensorStore((state) => state.imu)
+  const [imus, setImus] = useState(() => useSensorStore.getState().imus)
+  useEffect(() => {
+    const timer = setInterval(() => setImus(useSensorStore.getState().imus), 200)
+    return () => clearInterval(timer)
+  }, [])
   const baro = useSensorStore((state) => state.baro)
   const mag = useSensorStore((state) => state.magData)
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const distance = useSensorStore((state) => state.distanceSensor)
   const gps = useTelemetryStore((state) => state.gps)
+  const selectedImuInstance = imuIndex === 'imu2' ? 1 : 0
+  const imu = imus[selectedImuInstance] ?? null
 
   const startCalibration = (type: CalibrationType) => {
     const params = [0, 0, 0, 0, 0, 0, 0]
@@ -96,8 +103,8 @@ export default function SensorPage() {
       {activeTab === 'imu' && (
         <>
           <div className="mc-sensor-subbar">
-            <button type="button" data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1</button>
-            <button type="button" data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2</button>
+            <button type="button" data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1 {imus[0] ? '●' : '○'}</button>
+            <button type="button" data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2 {imus[1] ? '●' : '○'}</button>
             <span>IMU安装方向</span>
             <select className="mc-select" aria-label="SENS_BOARD_ROT" defaultValue="none" disabled><option value="none">No rotation</option></select>
           </div>
@@ -106,12 +113,12 @@ export default function SensorPage() {
             <section className="mc-card mc-sensor-chart-card">
               <header><strong>加速度计</strong><span>m/s²</span></header>
               <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('accel', imu.xacc) : null} color="#ef5d7a" /><AxisValue axis="Y" value={imu ? displayImuValue('accel', imu.yacc) : null} color="#35bf78" /><AxisValue axis="Z" value={imu ? displayImuValue('accel', imu.zacc) : null} color="#4c92ef" /></div>
-              <SensorChart kind="accel" />
+              <SensorChart kind="accel" instance={selectedImuInstance} />
             </section>
             <section className="mc-card mc-sensor-chart-card">
               <header><strong>陀螺仪</strong><span>°/s</span></header>
               <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('gyro', imu.xgyro) : null} color="#f28b35" /><AxisValue axis="Y" value={imu ? displayImuValue('gyro', imu.ygyro) : null} color="#a96fe7" /><AxisValue axis="Z" value={imu ? displayImuValue('gyro', imu.zgyro) : null} color="#22b8c7" /></div>
-              <SensorChart kind="gyro" />
+              <SensorChart kind="gyro" instance={selectedImuInstance} />
             </section>
           </div>
 

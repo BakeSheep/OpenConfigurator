@@ -29,7 +29,22 @@ export interface BatteryData {
   consumed_mah: number
 }
 
+export interface SysStatusData {
+  voltageBattery: number
+  currentBattery: number
+  batteryRemaining: number
+  sensorsPresent: number
+  sensorsEnabled: number
+  sensorsHealth: number
+  /** Health of all sensors the autopilot currently reports as enabled. */
+  sensorsHealthy: boolean | null
+  /** null means the autopilot does not expose MAV_SYS_STATUS_PREARM_CHECK. */
+  preflightCheck: boolean | null
+}
+
 export interface ImuData {
+  /** Zero-based physical IMU instance (0 = IMU 1). */
+  instance?: number
   xacc: number
   yacc: number
   zacc: number
@@ -40,6 +55,15 @@ export interface ImuData {
   ymag: number
   zmag: number
   temperature: number
+}
+
+export interface AutopilotVersionData {
+  boardId: number
+  boardName: string
+  firmwareVersion: string
+  firmwareLabel: string
+  vendorId: number
+  productId: number
 }
 
 export interface BaroData {
@@ -142,6 +166,7 @@ export type ServerMessage =
   | { type: 'rc_channels'; data: RcChannelsData }
   | { type: 'ekf_status'; data: EkfStatusData }
   | { type: 'motor_outputs'; data: MotorOutputData }
+  | { type: 'autopilot_version'; data: AutopilotVersionData }
 
 // WebSocket message types (client -> server)
 export type ClientMessage =

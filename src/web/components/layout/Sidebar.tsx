@@ -17,7 +17,6 @@ const navigationItems: NavigationItem[] = [
   { to: '/logs', label: '日志', icon: 'log' },
   { to: '/waveforms', label: '波形', icon: 'waveform' },
   { to: '/firmware', label: '固件', icon: 'firmware' },
-  { to: '/hardware', label: '硬件', icon: 'hardware' },
 ]
 
 export default function Sidebar() {

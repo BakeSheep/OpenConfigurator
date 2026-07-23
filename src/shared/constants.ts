@@ -15,15 +15,15 @@ export const MAVLINK_COMMANDS = {
 } as const
 
 export const PX4_MODES = {
-  MANUAL: { id: 1, name: 'Manual' },
-  ALTCTL: { id: 2, name: 'Altitude' },
-  POSCTL: { id: 3, name: 'Position' },
-  AUTO_MISSION: { id: 4, name: 'Mission' },
-  AUTO_LOITER: { id: 5, name: 'Loiter' },
-  AUTO_RTL: { id: 6, name: 'RTL' },
-  ACRO: { id: 8, name: 'Acro' },
-  STABILIZED: { id: 10, name: 'Stabilized' },
-  AUTO_LAND: { id: 12, name: 'Land' },
+  MANUAL: { id: 1, mainMode: 1, subMode: 0, name: 'Manual' },
+  ALTCTL: { id: 2, mainMode: 2, subMode: 0, name: 'Altitude' },
+  POSCTL: { id: 3, mainMode: 3, subMode: 0, name: 'Position' },
+  AUTO_MISSION: { id: 4, mainMode: 4, subMode: 4, name: 'Mission' },
+  AUTO_LOITER: { id: 5, mainMode: 4, subMode: 3, name: 'Hold' },
+  AUTO_RTL: { id: 6, mainMode: 4, subMode: 5, name: 'RTL' },
+  ACRO: { id: 8, mainMode: 5, subMode: 0, name: 'Acro' },
+  STABILIZED: { id: 10, mainMode: 7, subMode: 0, name: 'Stabilized' },
+  AUTO_LAND: { id: 12, mainMode: 4, subMode: 6, name: 'Land' },
 } as const
 
 export const MAV_RESULT = {

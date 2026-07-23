@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData } from '../../shared/types'
+import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData } from '../../shared/types'
 
 export type StatusSeverity = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
@@ -38,6 +38,9 @@ interface TelemetryState {
   ekfStatus: EkfStatusData | null
   rcChannels: RcChannelsData | null
   motorOutputs: MotorOutputData | null
+  autopilotVersion: AutopilotVersionData | null
+  preflightCheck: boolean | null
+  sensorsHealthy: boolean | null
   altitude: number
   relativeAlt: number
   groundSpeed: number
@@ -58,9 +61,10 @@ interface TelemetryState {
   setEkfStatus: (data: EkfStatusData) => void
   setRcChannels: (data: RcChannelsData) => void
   setMotorOutputs: (data: MotorOutputData) => void
+  setAutopilotVersion: (data: AutopilotVersionData) => void
   setVfrHud: (data: any) => void
   setGlobalPosition: (data: any) => void
-  setSysStatus: (data: any) => void
+  setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
   clearStatusLogs: () => void
   // Called on link drop: keep the last values (so the UI can show "frozen"
@@ -86,6 +90,9 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   ekfStatus: null,
   rcChannels: null,
   motorOutputs: null,
+  autopilotVersion: null,
+  preflightCheck: null,
+  sensorsHealthy: null,
   altitude: 0,
   relativeAlt: 0,
   groundSpeed: 0,
@@ -98,11 +105,31 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
   setGps: (data) => set((state) => ({ gps: data, lastUpdate: { ...state.lastUpdate, gps: Date.now() } })),
-  setBattery: (data) => set((state) => ({ battery: data, lastUpdate: { ...state.lastUpdate, battery: Date.now() } })),
+  setBattery: (data) => set((state) => {
+    const voltage = Number.isFinite(data.voltage) && data.voltage > 1
+      ? data.voltage
+      : state.battery?.voltage ?? 0
+    return {
+      battery: {
+        voltage,
+        current: Number.isFinite(data.current) && data.current >= 0
+          ? data.current
+          : state.battery?.current ?? 0,
+        remaining: data.remaining >= 0 && data.remaining <= 100
+          ? data.remaining
+          : state.battery?.remaining ?? 0,
+        consumed_mah: data.consumed_mah >= 0
+          ? data.consumed_mah
+          : state.battery?.consumed_mah ?? 0,
+      },
+      lastUpdate: { ...state.lastUpdate, battery: Date.now() },
+    }
+  }),
   setStatus: (data) => set((state) => ({ status: data, lastUpdate: { ...state.lastUpdate, status: Date.now() } })),
   setEkfStatus: (data) => set((state) => ({ ekfStatus: data, lastUpdate: { ...state.lastUpdate, ekfStatus: Date.now() } })),
   setRcChannels: (data) => set((state) => ({ rcChannels: data, lastUpdate: { ...state.lastUpdate, rcChannels: Date.now() } })),
   setMotorOutputs: (data) => set((state) => ({ motorOutputs: data, lastUpdate: { ...state.lastUpdate, motorOutputs: Date.now() } })),
+  setAutopilotVersion: (data) => set({ autopilotVersion: data }),
   setVfrHud: (data) => set((state) => ({
     airSpeed: data.airspeed,
     groundSpeed: data.groundspeed,
@@ -117,15 +144,30 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     relativeAlt: data.relative_alt,
     lastUpdate: { ...state.lastUpdate, globalPosition: Date.now() },
   })),
-  setSysStatus: (data) => set((state) => ({
-    battery: {
-      voltage: data.voltageBattery || state.battery?.voltage || 0,
-      current: data.currentBattery || state.battery?.current || 0,
-      remaining: data.batteryRemaining >= 0 ? data.batteryRemaining : state.battery?.remaining || 0,
-      consumed_mah: state.battery?.consumed_mah || 0,
-    },
-    lastUpdate: { ...state.lastUpdate, sysStatus: Date.now() },
-  })),
+  setSysStatus: (data) => set((state) => {
+    const now = Date.now()
+    // MAVLink recommends BATTERY_STATUS over the ambiguous SYS_STATUS fields.
+    // Only use SYS_STATUS as a fallback when no recent BATTERY_STATUS exists.
+    const batteryStatusFresh = now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
+    const fallbackBattery = batteryStatusFresh ? state.battery : {
+      voltage: Number.isFinite(data.voltageBattery) && data.voltageBattery > 1
+        ? data.voltageBattery
+        : state.battery?.voltage ?? 0,
+      current: Number.isFinite(data.currentBattery) && data.currentBattery >= 0
+        ? data.currentBattery
+        : state.battery?.current ?? 0,
+      remaining: data.batteryRemaining >= 0 && data.batteryRemaining <= 100
+        ? data.batteryRemaining
+        : state.battery?.remaining ?? 0,
+      consumed_mah: state.battery?.consumed_mah ?? 0,
+    }
+    return {
+      battery: fallbackBattery,
+      preflightCheck: data.preflightCheck,
+      sensorsHealthy: data.sensorsHealthy,
+      lastUpdate: { ...state.lastUpdate, sysStatus: now },
+    }
+  }),
   addStatusLog: (severity, text) => set((state) => {
     const sevIdx = Math.min(Math.max(severity, 0), 7)
     const entry: StatusLogEntry = {

@@ -2,10 +2,11 @@ import { useState } from 'react'
 import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
 import Icon from '../components/ui/Icon'
 import { PageHeader, PageTabs } from '../components/ui/PageFrame'
-import ConnectionPage from './ConnectionPage'
 import FlightControlPage from './FlightControlPage'
+import JoystickPage from './JoystickPage'
 import MotorPage from './MotorPage'
 import ParameterPage from './ParameterPage'
+import PortSettingsPage from './PortSettingsPage'
 import ReceiverPage from './ReceiverPage'
 import { useParameterStore } from '../stores/parameterStore'
 import { getPx4AirframeInfo } from '../utils/px4Airframes'
@@ -14,6 +15,7 @@ const tabs = [
   { id: 'airframe', label: '机架类型' },
   { id: 'motor', label: '电机设置' },
   { id: 'receiver', label: '遥控器' },
+  { id: 'joystick', label: '游戏手柄' },
   { id: 'ports', label: '端口设置' },
   { id: 'pid', label: 'PID 调参' },
   { id: 'ekf', label: 'EKF' },
@@ -37,7 +39,7 @@ export default function SettingsPage() {
 
   return (
     <div className="mc-workspace mc-fade-in mc-data-workspace">
-      <PageHeader title="飞控设置" description="配置飞控参数与硬件设置" />
+      <PageHeader title="飞控设置" description="配置飞控参数、输入设备与硬件设置" />
       <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
       {activeTab === 'airframe' ? (
@@ -78,7 +80,8 @@ function SettingsInlinePanel({ activeTab }: { activeTab: string }) {
     <section className="mc-settings-inline mc-fade-in" key={activeTab}>
       {activeTab === 'motor' && <MotorPage />}
       {activeTab === 'receiver' && <ReceiverPage embedded />}
-      {activeTab === 'ports' && <ConnectionPage />}
+      {activeTab === 'joystick' && <JoystickPage embedded />}
+      {activeTab === 'ports' && <PortSettingsPage />}
       {activeTab === 'pid' && <ParameterPage />}
       {activeTab === 'ekf' && (
         <div className="mc-settings-ekf">

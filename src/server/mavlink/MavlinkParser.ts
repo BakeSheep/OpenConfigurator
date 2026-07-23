@@ -8,7 +8,8 @@ const MAVLINK_STX_V1 = 0xfe
 // the message's base payload length before reading fixed offsets.
 const BASE_PAYLOAD_LENGTH: Record<number, number> = {
   0: 9, 1: 31, 22: 25, 24: 30, 26: 24, 27: 29, 29: 14, 30: 28,
-  33: 28, 36: 21, 65: 42, 74: 20, 77: 3, 106: 44, 132: 14,
+  33: 28, 36: 21, 65: 42, 74: 20, 77: 3, 105: 62, 106: 44,
+  116: 24, 129: 24, 132: 14,
   147: 36, 148: 60, 230: 44, 245: 2, 253: 51,
 }
 
@@ -44,7 +45,8 @@ const CRC_EXTRA: Record<number, number> = {
   106: 138, // OPTICAL_FLOW_RAD
   109: 185, // RADIO_STATUS
   111: 34,  // TIMESYNC
-  116: 76,  // SCALED_IMU3
+  116: 76,  // SCALED_IMU2
+  129: 46,  // SCALED_IMU3
   125: 203, // POWER_STATUS
   132: 85,  // DISTANCE_SENSOR
   147: 154, // BATTERY_STATUS

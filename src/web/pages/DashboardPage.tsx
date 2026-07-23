@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import AttitudeIndicator from '../components/telemetry/AttitudeIndicator'
 import RealtimeChart from '../components/telemetry/RealtimeChart'
+import ChannelBars from '../components/telemetry/ChannelBars'
 import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
@@ -9,6 +10,25 @@ import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
 const radToDegrees = (radians: number) => radians * 180 / Math.PI
+
+function readDashboardSnapshot() {
+  const telemetry = useTelemetryStore.getState()
+  const sensors = useSensorStore.getState()
+  return {
+    attitude: telemetry.attitude,
+    gps: telemetry.gps,
+    battery: telemetry.battery,
+    rcChannels: telemetry.rcChannels,
+    motorOutputs: telemetry.motorOutputs,
+    relativeAlt: telemetry.relativeAlt,
+    groundSpeed: telemetry.groundSpeed,
+    heading: telemetry.heading,
+    isStale: telemetry.isStale,
+    sensorHealth: sensors.sensorHealth,
+    opticalFlow: sensors.opticalFlow,
+    distanceSensor: sensors.distanceSensor,
+  }
+}
 
 function PanelTitle({ title, detail, action }: { title: string; detail?: string; action?: ReactNode }) {
   return (
@@ -83,22 +103,7 @@ function SignalStrip({ title, labels, values, motor = false, connected }: {
           {connected ? '实时数据' : '未连接飞控'}
         </span>
       </div>
-      <div className="grid grid-cols-4 gap-2 p-4 sm:grid-cols-6 xl:grid-cols-12">
-        {labels.map((label, index) => {
-          const raw = values[index] ?? 0
-          const normalized = Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
-          return (
-            <div key={label} className="flex min-w-0 flex-col items-center gap-2">
-              <span className="text-[10px]" style={{ color: 'var(--text-disabled)' }}>{raw > 0 ? Math.round(raw) : '—'}</span>
-              <div className="relative flex h-14 w-6 items-end overflow-hidden rounded-md" style={{ background: 'var(--bg-tertiary)' }}>
-                <i className="absolute inset-x-0 top-1/2 h-px" style={{ background: 'var(--border-strong)' }} />
-                <i className="w-full rounded-t-sm transition-all duration-100" style={{ height: normalized + '%', background: connected ? 'var(--accent)' : 'var(--text-disabled)' }} />
-              </div>
-              <span className="mc-mono text-[10px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</span>
-            </div>
-          )
-        })}
-      </div>
+      <ChannelBars labels={labels} values={values} connected={connected} accent={motor ? 'success' : 'accent'} />
     </section>
   )
 }
@@ -120,18 +125,16 @@ function MetricCard({ label, value, unit, icon, accent = false }: { label: strin
 }
 
 export default function DashboardPage() {
-  const attitude = useTelemetryStore((state) => state.attitude)
-  const gps = useTelemetryStore((state) => state.gps)
-  const battery = useTelemetryStore((state) => state.battery)
-  const rcChannels = useTelemetryStore((state) => state.rcChannels)
-  const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
-  const relativeAlt = useTelemetryStore((state) => state.relativeAlt)
-  const groundSpeed = useTelemetryStore((state) => state.groundSpeed)
-  const heading = useTelemetryStore((state) => state.heading)
-  const isStale = useTelemetryStore((state) => state.isStale)
-  const sensorHealth = useSensorStore((state) => state.sensorHealth)
-  const opticalFlow = useSensorStore((state) => state.opticalFlow)
-  const distanceSensor = useSensorStore((state) => state.distanceSensor)
+  const [snapshot, setSnapshot] = useState(readDashboardSnapshot)
+  useEffect(() => {
+    const timer = setInterval(() => setSnapshot(readDashboardSnapshot()), 200)
+    return () => clearInterval(timer)
+  }, [])
+  const {
+    attitude, gps, battery, rcChannels, motorOutputs,
+    relativeAlt, groundSpeed, heading, isStale,
+    sensorHealth, opticalFlow, distanceSensor,
+  } = snapshot
   const connected = useConnectionStore((state) => state.status === 'connected')
 
   const roll = radToDegrees(attitude?.roll ?? 0)
@@ -179,7 +182,7 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      <section className="mt-4 grid grid-cols-1 gap-4 2xl:grid-cols-2">
+      <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <SignalStrip title="遥控器输入" labels={Array.from({ length: 12 }, (_, index) => 'CH' + (index + 1))} values={rcValues} connected={connected} />
         <SignalStrip title="电机输出" labels={Array.from({ length: 12 }, (_, index) => 'M' + (index + 1))} values={motorValues} motor connected={connected} />
       </section>
