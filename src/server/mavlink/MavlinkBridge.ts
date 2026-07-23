@@ -4,15 +4,6 @@ import { ConnectionManager } from '../connection/ConnectionManager'
 import { MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
 import type { ServerMessage, ClientMessage, RcChannelsData } from '../../shared/types'
 
-// Reverse lookup: PX4 custom_mode id -> display name
-const PX4_MODE_BY_ID: Record<number, string> = Object.values(PX4_MODES).reduce(
-  (acc, m) => {
-    acc[m.id] = m.name
-    return acc
-  },
-  {} as Record<number, string>
-)
-
 const PARAM_STALL_TIMEOUT_MS = 1500
 const PARAM_RETRY_BATCH_SIZE = 32
 const PARAM_MAX_STALL_RETRIES = 5
@@ -20,11 +11,20 @@ const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE = 16n
 const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST = 131072n
 type ParamEncoding = 'bytewise' | 'c-cast'
 
+const BOARD_NAMES: Record<number, string> = {
+  1139: 'MicoAir405',
+  1150: 'MicoAir405v2',
+  1161: 'MicoAir405Mini',
+  1166: 'MicoAir743',
+  1176: 'MicoAir743-AIO',
+  1179: 'MicoAir743v2',
+}
+
 export class MavlinkBridge extends EventEmitter {
   private parser = new MavlinkParser()
   private connManager: ConnectionManager
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
-  private requestedOutputStream = false
+  private requestedTelemetryStreams = false
   private paramExpectedCount = 0
   private paramIndices = new Set<number>()
   private paramDownloadActive = false
@@ -50,7 +50,7 @@ export class MavlinkBridge extends EventEmitter {
   private onStatusChange = (status: string) => {
     this.cancelParamDownload()
     if (status === 'connected') {
-      this.requestedOutputStream = false
+      this.requestedTelemetryStreams = false
       this.targetSysId = 1
       this.targetCompId = 1
       this.paramEncoding = 'c-cast'
@@ -58,7 +58,7 @@ export class MavlinkBridge extends EventEmitter {
       this.requestedAutopilotVersion = false
       this.startHeartbeat()
     } else {
-      this.requestedOutputStream = false
+      this.requestedTelemetryStreams = false
       this.stopHeartbeat()
     }
   }
@@ -116,6 +116,13 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 27: // RAW_IMU
         this.handleRawImu(msg)
+        break
+      case 105: // HIGHRES_IMU
+        this.handleHighresImu(msg)
+        break
+      case 116: // SCALED_IMU2
+      case 129: // SCALED_IMU3
+        this.handleScaledImu(msg)
         break
       case 29: // SCALED_PRESSURE
         this.handleScaledPressure(msg)
@@ -185,12 +192,13 @@ export class MavlinkBridge extends EventEmitter {
     const customMode = msg.payload.readUInt32LE(0)
     const baseMode = msg.payload[6]
     const armed = (baseMode & 0x80) !== 0
+    const mode = this.getMode(customMode)
     this.emit('message', {
       type: 'status',
       data: {
         armed,
-        mode: this.getModeName(customMode),
-        modeId: customMode,
+        mode: mode.name,
+        modeId: mode.id,
         // PX4 reports failsafe via STATUSTEXT / SYS_STATUS sensor flags rather
         // than a dedicated HEARTBEAT bit, so it cannot be reliably derived
         // here. Report 'unknown' instead of a misleading hardcoded false - a
@@ -200,11 +208,17 @@ export class MavlinkBridge extends EventEmitter {
       },
     } as ServerMessage)
 
-    // Ask PX4 for actuator output telemetry at 10 Hz once the first autopilot
-    // heartbeat proves the MAVLink link is ready.
-    if (!this.requestedOutputStream) {
-      this.requestedOutputStream = true
+    // Ask PX4 for the streams used by the live UI once the first autopilot
+    // heartbeat proves the MAVLink link is ready. Some PX4 profiles publish
+    // HIGHRES_IMU instead of SCALED_IMU by default, so support and request
+    // both. The bridge normalizes either format into the shared ImuData shape.
+    if (!this.requestedTelemetryStreams) {
+      this.requestedTelemetryStreams = true
       this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [36, 100_000, 0, 0, 0, 0, 0])
+      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [26, 50_000, 0, 0, 0, 0, 0])
+      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [105, 50_000, 0, 0, 0, 0, 0])
+      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [116, 50_000, 0, 0, 0, 0, 0])
+      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [129, 50_000, 0, 0, 0, 0, 0])
     }
   }
 
@@ -228,13 +242,31 @@ export class MavlinkBridge extends EventEmitter {
 
   private handleSysStatus(msg: MavlinkMessage) {
     if (msg.payload.length < 31) return
+    const sensorsPresent = msg.payload.readUInt32LE(0)
+    const sensorsEnabled = msg.payload.readUInt32LE(4)
+    const sensorsHealth = msg.payload.readUInt32LE(8)
     const voltageBattery = msg.payload.readUInt16LE(14) / 1000
     const currentBattery = msg.payload.readInt16LE(16) / 100
-    const batteryRemaining = msg.payload.readInt8(30)
+    const batteryRemaining = msg.payload.readInt8(18)
+    const prearmCheckMask = 0x10000000
+    const supportsPreflightCheck = (sensorsPresent & prearmCheckMask) !== 0
     this.emit('message', {
       type: 'telemetry',
       msgType: 'SYS_STATUS',
-      data: { voltageBattery, currentBattery, batteryRemaining },
+      data: {
+        voltageBattery,
+        currentBattery,
+        batteryRemaining,
+        sensorsPresent,
+        sensorsEnabled,
+        sensorsHealth,
+        sensorsHealthy: sensorsEnabled !== 0
+          ? (sensorsEnabled & ~sensorsHealth) === 0
+          : null,
+        preflightCheck: supportsPreflightCheck
+          ? (sensorsHealth & prearmCheckMask) !== 0
+          : null,
+      },
     } as ServerMessage)
   }
 
@@ -257,6 +289,7 @@ export class MavlinkBridge extends EventEmitter {
   private handleScaledImu(msg: MavlinkMessage) {
     if (msg.payload.length < 22) return
     const data = {
+      instance: msg.msgId === 116 ? 1 : msg.msgId === 129 ? 2 : 0,
       xacc: msg.payload.readInt16LE(4) / 1000,
       yacc: msg.payload.readInt16LE(6) / 1000,
       zacc: msg.payload.readInt16LE(8) / 1000,
@@ -268,12 +301,34 @@ export class MavlinkBridge extends EventEmitter {
       zmag: msg.payload.readInt16LE(20),
       temperature: msg.payload.length >= 24 ? msg.payload.readInt16LE(22) / 100 : 0,
     }
-    this.emit('message', { type: 'sensor', msgType: 'SCALED_IMU', data } as ServerMessage)
+    this.emit('message', { type: 'sensor', msgType: msg.msgId === 116 ? 'SCALED_IMU2' : msg.msgId === 129 ? 'SCALED_IMU3' : 'SCALED_IMU', data } as ServerMessage)
+  }
+
+  private handleHighresImu(msg: MavlinkMessage) {
+    if (msg.payload.length < 62) return
+    const standardGravity = 9.80665
+    const data = {
+      instance: msg.payload.length >= 63 ? msg.payload[62] : 0,
+      // Keep the frontend's existing units: acceleration in g, angular speed
+      // in rad/s, and magnetic field in milligauss.
+      xacc: msg.payload.readFloatLE(8) / standardGravity,
+      yacc: msg.payload.readFloatLE(12) / standardGravity,
+      zacc: msg.payload.readFloatLE(16) / standardGravity,
+      xgyro: msg.payload.readFloatLE(20),
+      ygyro: msg.payload.readFloatLE(24),
+      zgyro: msg.payload.readFloatLE(28),
+      xmag: msg.payload.readFloatLE(32) * 1000,
+      ymag: msg.payload.readFloatLE(36) * 1000,
+      zmag: msg.payload.readFloatLE(40) * 1000,
+      temperature: msg.payload.readFloatLE(56),
+    }
+    this.emit('message', { type: 'sensor', msgType: 'HIGHRES_IMU', data } as ServerMessage)
   }
 
   private handleRawImu(msg: MavlinkMessage) {
     if (msg.payload.length < 26) return
     const data = {
+      instance: msg.payload.length >= 27 ? msg.payload[26] : 0,
       xacc: msg.payload.readInt16LE(8),
       yacc: msg.payload.readInt16LE(10),
       zacc: msg.payload.readInt16LE(12),
@@ -398,23 +453,15 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleBattery(msg: MavlinkMessage) {
-    // BATTERY_STATUS wire layout (common.xml, fields sorted by type size desc):
-    //   id              u8    @0
-    //   current_consumed  i32  @4    (mAh)
-    //   energy_consumed   i32  @8    (hJ)
-    //   temperature       i16  @12   (centi-degC)
-    //   voltages[10]      u16  @14   (mV each)
-    //   current_battery   i16  @34   (centi-A)
-    //   battery_remaining i8   @36   (percent, -1=unknown)
-    // Previous code read consumed_mah from offset 0 (the `id` byte) - garbage.
-    if (msg.payload.length < 37) return
-    const cellVoltages = Array.from({ length: 10 }, (_, index) => msg.payload.readUInt16LE(14 + index * 2))
+    // Generated MAVLink common dialect wire offsets (MIN_LEN=36).
+    if (msg.payload.length < 36) return
+    const cellVoltages = Array.from({ length: 10 }, (_, index) => msg.payload.readUInt16LE(10 + index * 2))
       .filter((voltage) => voltage > 0 && voltage < 0xffff)
     const data = {
       voltage: cellVoltages.reduce((sum, voltage) => sum + voltage, 0) / 1000,
-      current: msg.payload.readInt16LE(34) / 100,
-      consumed_mah: msg.payload.readInt32LE(4),
-      remaining: msg.payload.readInt8(36),
+      current: msg.payload.readInt16LE(30) / 100,
+      consumed_mah: msg.payload.readInt32LE(0),
+      remaining: msg.payload.readInt8(35),
     }
     this.emit('message', { type: 'telemetry', msgType: 'BATTERY_STATUS', data } as ServerMessage)
   }
@@ -562,6 +609,28 @@ export class MavlinkBridge extends EventEmitter {
       this.paramEncoding = 'c-cast'
       this.paramEncodingNegotiated = true
     }
+
+    if (msg.payload.length < 60) return
+    const flightSwVersion = msg.payload.readUInt32LE(16)
+    const major = (flightSwVersion >>> 24) & 0xff
+    const minor = (flightSwVersion >>> 16) & 0xff
+    const patch = (flightSwVersion >>> 8) & 0xff
+    const boardVersion = msg.payload.readUInt32LE(28)
+    const upperBoardId = boardVersion >>> 16
+    const lowerBoardId = boardVersion & 0xffff
+    const boardId = BOARD_NAMES[upperBoardId] ? upperBoardId : BOARD_NAMES[lowerBoardId] ? lowerBoardId : upperBoardId || lowerBoardId
+    const firmwareVersion = `${major}.${minor}.${patch}`
+    this.emit('message', {
+      type: 'autopilot_version',
+      data: {
+        boardId,
+        boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'PX4 Flight Controller'),
+        firmwareVersion,
+        firmwareLabel: `PX4 v${firmwareVersion}`,
+        vendorId: msg.payload.readUInt16LE(56),
+        productId: msg.payload.readUInt16LE(58),
+      },
+    } as ServerMessage)
   }
 
   private writeParamRequestList() {
@@ -736,14 +805,19 @@ export class MavlinkBridge extends EventEmitter {
     this.sendCommand('MAV_CMD_ACTUATOR_TEST', [value, timeout, 0, 0, outputFunction, 0, 0])
   }
 
-  // Resolve a PX4 main-mode custom_mode value to a human-readable name.
-  // PX4 encodes mode in custom_mode as (main_mode << 16) | sub_mode; the
-  // simple main_mode IDs used by this GCS match the PX4_MODES table.
-  private getModeName(customMode: number): string {
-    // PX4 stores main_mode in the high 16 bits, but many tools also report
-    // the plain main_mode id directly. Support both.
-    const mainMode = customMode > 0xffff ? customMode >>> 16 : customMode
-    return PX4_MODE_BY_ID[mainMode] || `Mode ${customMode}`
+  // PX4 custom_mode layout: reserved[0..15], main_mode[16..23],
+  // sub_mode[24..31]. Auto modes share main_mode=4 and differ by sub-mode.
+  private getMode(customMode: number): { id: number; name: string } {
+    const mainMode = customMode > 0xffff ? (customMode >>> 16) & 0xff : customMode
+    const subMode = customMode > 0xffff ? (customMode >>> 24) & 0xff : 0
+    const exact = Object.values(PX4_MODES).find((mode) =>
+      mode.mainMode === mainMode && mode.subMode === subMode
+    )
+    const mainOnly = Object.values(PX4_MODES).find((mode) =>
+      mode.mainMode === mainMode && mode.subMode === 0
+    )
+    const mode = exact ?? mainOnly
+    return mode ?? { id: customMode, name: `Mode ${mainMode}${subMode ? `.${subMode}` : ''}` }
   }
 
   destroy() {

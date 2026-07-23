@@ -3,7 +3,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
-import type { ServerMessage, ClientMessage } from '../../shared/types'
+import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
 // Reference counting ensures the socket is only closed when the last consumer
@@ -13,6 +13,35 @@ let wsInstance: WebSocket | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let autoParamRequestPending = false
+let paramBatch: ParamData[] = []
+let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushParamBatch() {
+  if (paramFlushTimer) {
+    clearTimeout(paramFlushTimer)
+    paramFlushTimer = null
+  }
+  if (paramBatch.length === 0) return
+  const batch = paramBatch
+  paramBatch = []
+  useParameterStore.getState().addParams(batch)
+}
+
+function discardParamBatch() {
+  if (paramFlushTimer) clearTimeout(paramFlushTimer)
+  paramFlushTimer = null
+  paramBatch = []
+}
+
+function queueParam(param: ParamData) {
+  paramBatch.push(param)
+  // PX4 can stream more than a thousand parameters in a burst. Updating one
+  // Zustand Map and rerendering the parameter page for every packet starves
+  // navigation and WebSocket processing, so commit at most ten batches/second.
+  if (!paramFlushTimer) {
+    paramFlushTimer = setTimeout(flushParamBatch, 100)
+  }
+}
 
 function sendToServer(msg: ClientMessage) {
   if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) return false
@@ -33,11 +62,13 @@ function handleMessage(msg: ServerMessage) {
         // Wait for the first autopilot heartbeat before requesting parameters:
         // the backend learns the actual target system/component IDs from that
         // heartbeat, so the request cannot be sent to a stale/default target.
+        discardParamBatch()
         paramStore.clear()
         paramStore.setLoading(true)
         autoParamRequestPending = true
       } else {
         autoParamRequestPending = false
+        discardParamBatch()
         connStore.setDisconnected()
         // On link drop: mark telemetry data as stale (values are retained so
         // the UI can render them greyed-out, showing the last known state),
@@ -63,9 +94,10 @@ function handleMessage(msg: ServerMessage) {
       }
       break
     case 'param':
-      paramStore.addParam(msg.data)
+      queueParam(msg.data)
       break
     case 'param_complete':
+      flushParamBatch()
       paramStore.setParamComplete(msg.data.count)
       break
     case 'param_retry':
@@ -82,6 +114,9 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'motor_outputs':
       telemetryStore.setMotorOutputs(msg.data)
+      break
+    case 'autopilot_version':
+      telemetryStore.setAutopilotVersion(msg.data)
       break
     case 'command_ack':
       // Surface command results so the user gets feedback on arm/takeoff/etc.
@@ -132,8 +167,11 @@ function handleSensor(msgType: string, data: any) {
 
   switch (msgType) {
     case 'SCALED_IMU':
+    case 'SCALED_IMU2':
+    case 'SCALED_IMU3':
     case 'RAW_IMU':
-      sensorStore.setImu(data)
+    case 'HIGHRES_IMU':
+      sensorStore.setImu(data, data.instance ?? (msgType === 'SCALED_IMU2' ? 1 : msgType === 'SCALED_IMU3' ? 2 : 0))
       break
     case 'SCALED_PRESSURE':
       sensorStore.setBaro(data)

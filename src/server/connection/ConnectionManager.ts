@@ -48,7 +48,9 @@ export class ConnectionManager extends EventEmitter {
       // A failed/opening connection may still own the COM port. Always dispose
       // the previous instance before another attempt.
       if (this.serialConn) {
-        await this.disconnect()
+        // We are already executing inside pendingOp. Calling disconnect() here
+        // would enqueue behind this connect() and then wait for itself forever.
+        await this.cleanup()
       }
 
       this.setStatus('connecting')
@@ -129,10 +131,13 @@ export class ConnectionManager extends EventEmitter {
   // serialConn so write() becomes a no-op, and closes the underlying port.
   private async cleanup(): Promise<void> {
     this.stopHeartbeatMonitor()
-    if (this.serialConn) {
-      await this.serialConn.disconnect().catch(() => undefined)
-      this.serialConn = null
-    }
+    const connection = this.serialConn
+    if (!connection) return
+    // Detach first so the port's close event cannot recursively enter cleanup
+    // or overwrite the status of a newer connection attempt.
+    this.serialConn = null
+    connection.removeAllListeners()
+    await connection.disconnect().catch(() => undefined)
   }
 
   write(data: Buffer): void {

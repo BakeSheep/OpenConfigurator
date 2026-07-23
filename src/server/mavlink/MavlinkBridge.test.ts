@@ -47,14 +47,34 @@ assert.equal(postComponentHeartbeatPayload[30], 1)
 assert.equal(postComponentHeartbeatPayload[31], 1)
 
 const autopilotHeartbeat = Buffer.alloc(9)
+autopilotHeartbeat.writeUInt32LE(0x03040000, 0) // PX4 main=4, sub=3 (Hold)
 autopilotHeartbeat[4] = 2 // MAV_TYPE_QUADROTOR
 autopilotHeartbeat[5] = 12 // MAV_AUTOPILOT_PX4
+let heartbeatStatus: { mode: string; modeId: number } | undefined
+bridge.on('message', (message) => {
+  if (message.type === 'status') heartbeatStatus = message.data
+})
 ;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
   msgId: 0, payload: autopilotHeartbeat, seq: 0, sysId: 42, compId: 1,
 })
-const versionRequestPayload = lastFrame(2).subarray(10, 43)
+assert.equal(heartbeatStatus?.mode, 'Hold')
+assert.equal(heartbeatStatus?.modeId, 5)
+const commandFramesAfterHeartbeat = connection.frames
+  .filter((frame) => frame[7] === 76)
+  .map((frame) => frame.subarray(10, 43))
+const versionRequestPayload = commandFramesAfterHeartbeat.find((payload) =>
+  payload.readUInt16LE(28) === 512 && payload.readFloatLE(0) === 148
+)
+assert.ok(versionRequestPayload)
 assert.equal(versionRequestPayload.readUInt16LE(28), 512)
 assert.equal(versionRequestPayload.readFloatLE(0), 148)
+const requestedMessageIds = commandFramesAfterHeartbeat
+  .filter((payload) => payload.readUInt16LE(28) === 511)
+  .map((payload) => payload.readFloatLE(0))
+assert.ok(requestedMessageIds.includes(26))
+assert.ok(requestedMessageIds.includes(105))
+assert.ok(requestedMessageIds.includes(116))
+assert.ok(requestedMessageIds.includes(129))
 bridge.handleClientMessage({
   type: 'command',
   cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
@@ -82,6 +102,54 @@ bytewiseVersionPayload.writeBigUInt64LE(16n, 0)
   msgId: 148, payload: bytewiseVersionPayload, seq: 0, sysId: 42, compId: 1,
 })
 assert.equal((bridge as unknown as { paramEncoding: string }).paramEncoding, 'bytewise')
+
+let autopilotVersionData: { boardId: number; boardName: string; firmwareLabel: string } | undefined
+bridge.on('message', (message) => {
+  if (message.type === 'autopilot_version') autopilotVersionData = message.data
+})
+const identifiedVersionPayload = Buffer.alloc(60)
+identifiedVersionPayload.writeBigUInt64LE(16n, 0)
+identifiedVersionPayload.writeUInt32LE((1 << 24) | (17 << 16), 16)
+identifiedVersionPayload.writeUInt32LE(1179 << 16, 28)
+;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
+  msgId: 148, payload: identifiedVersionPayload, seq: 0, sysId: 42, compId: 1,
+})
+assert.equal(autopilotVersionData?.boardId, 1179)
+assert.equal(autopilotVersionData?.boardName, 'MicoAir743v2')
+assert.equal(autopilotVersionData?.firmwareLabel, 'PX4 v1.17.0')
+
+let secondaryImuData: { instance: number; xacc: number } | undefined
+bridge.on('message', (message) => {
+  if (message.type === 'sensor' && message.msgType === 'SCALED_IMU2') {
+    secondaryImuData = message.data
+  }
+})
+const scaledImu2Payload = Buffer.alloc(24)
+scaledImu2Payload.writeInt16LE(1250, 4)
+;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
+  msgId: 116, payload: scaledImu2Payload, seq: 0, sysId: 42, compId: 1,
+})
+assert.equal(secondaryImuData?.instance, 1)
+assert.equal(secondaryImuData?.xacc, 1.25)
+
+let sysStatusData: { preflightCheck: boolean | null; sensorsHealthy: boolean | null; sensorsHealth: number; batteryRemaining: number } | undefined
+bridge.on('message', (message) => {
+  if (message.type === 'telemetry' && message.msgType === 'SYS_STATUS') {
+    sysStatusData = message.data
+  }
+})
+const sysStatusPayload = Buffer.alloc(31)
+sysStatusPayload.writeUInt32LE(0x10000000, 0)
+sysStatusPayload.writeUInt32LE(0x10000000, 4)
+sysStatusPayload.writeUInt32LE(0x10000000, 8)
+sysStatusPayload.writeInt8(67, 18)
+;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
+  msgId: 1, payload: sysStatusPayload, seq: 0, sysId: 42, compId: 1,
+})
+assert.equal(sysStatusData?.preflightCheck, true)
+assert.equal(sysStatusData?.sensorsHealthy, true)
+assert.equal(sysStatusData?.sensorsHealth, 0x10000000)
+assert.equal(sysStatusData?.batteryRemaining, 67)
 
 bridge.handleClientMessage({
   type: 'param_set',
@@ -194,20 +262,38 @@ assert.equal(gpsData?.fix_type, 3)
 assert.equal(gpsData?.lat, 3.1234567)
 assert.equal(gpsData?.satellites_visible, 12)
 
-// BATTERY_STATUS wire layout (common.xml): id(u8)@0 + current_consumed(i32)@4
-// + energy_consumed(i32)@8 + temperature(i16)@12 + voltages[10](u16)@14 +
-// current_battery(i16)@34 + battery_remaining(i8)@36.
-// The previous code read consumed_mah from offset 0 (the `id` byte) - garbage.
-const batteryPayload = Buffer.alloc(37)
-batteryPayload[0] = 0                          // id
-batteryPayload.writeInt32LE(1234, 4)           // current_consumed (mAh)
-batteryPayload.writeInt16LE(2500, 12)          // temperature
+// PX4 commonly streams HIGHRES_IMU instead of SCALED_IMU. Normalize its SI
+// units to the frontend's existing g/rad-s/milligauss representation.
+const highresImuPayload = Buffer.alloc(62)
+highresImuPayload.writeFloatLE(9.80665, 8)
+highresImuPayload.writeFloatLE(-4.903325, 12)
+highresImuPayload.writeFloatLE(0.25, 20)
+highresImuPayload.writeFloatLE(0.42, 32)
+highresImuPayload.writeFloatLE(24.5, 56)
+let highresImuData: { xacc: number; yacc: number; xgyro: number; xmag: number; temperature: number } | undefined
+bridge.on('message', (message) => {
+  if (message.type === 'sensor' && message.msgType === 'HIGHRES_IMU') highresImuData = message.data
+})
+;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
+  msgId: 105, payload: highresImuPayload, seq: 0, sysId: 1, compId: 1,
+})
+assert.ok(highresImuData)
+assert.ok(Math.abs(highresImuData.xacc - 1) < 1e-6)
+assert.ok(Math.abs(highresImuData.yacc + 0.5) < 1e-6)
+assert.equal(highresImuData.xgyro, 0.25)
+assert.ok(Math.abs(highresImuData.xmag - 420) < 1e-4)
+assert.equal(highresImuData.temperature, 24.5)
+
+// BATTERY_STATUS generated common-dialect wire offsets (MIN_LEN=36).
+const batteryPayload = Buffer.alloc(36)
+batteryPayload.writeInt32LE(1234, 0)           // current_consumed (mAh)
+batteryPayload.writeInt16LE(2500, 8)           // temperature
 // Two cells at 3.7V (3700 mV) each -> total 7.4V
 ;[3700, 3700, 0, 0, 0, 0, 0, 0, 0, 0].forEach((v, i) => {
-  batteryPayload.writeUInt16LE(v, 14 + i * 2)
+  batteryPayload.writeUInt16LE(v, 10 + i * 2)
 })
-batteryPayload.writeInt16LE(1500, 34)          // current_battery (centi-A -> 15.0A)
-batteryPayload.writeInt8(82, 36)               // battery_remaining (%)
+batteryPayload.writeInt16LE(1500, 30)          // current_battery (centi-A -> 15.0A)
+batteryPayload.writeInt8(82, 35)               // battery_remaining (%)
 let batteryData: { voltage: number; current: number; consumed_mah: number; remaining: number } | undefined
 bridge.on('message', (message) => {
   if (message.type === 'telemetry' && message.msgType === 'BATTERY_STATUS') batteryData = message.data

@@ -13,6 +13,8 @@ export default function FlightControlPage() {
   const battery = useTelemetryStore((state) => state.battery)
   const gps = useTelemetryStore((state) => state.gps)
   const ekfStatus = useTelemetryStore((state) => state.ekfStatus)
+  const preflightCheck = useTelemetryStore((state) => state.preflightCheck)
+  const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const sensorHealth = useSensorStore((state) => state.sensorHealth)
   const connected = useConnectionStore((state) => state.status === 'connected')
   const [takeoffAltitude, setTakeoffAltitude] = useState(2.5)
@@ -36,16 +38,23 @@ export default function FlightControlPage() {
 
   const disarm = () => send({ type: 'command', cmd: 'MAV_CMD_COMPONENT_ARM_DISARM', params: [0, 0, 0, 0, 0, 0, 0] })
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
-  const setMode = (modeId: number) => command('MAV_CMD_DO_SET_MODE', [1, modeId, 0, 0, 0, 0, 0])
+  const setMode = (mainMode: number, subMode: number) =>
+    command('MAV_CMD_DO_SET_MODE', [1, mainMode, subMode, 0, 0, 0, 0])
 
+  const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
+  const hasFlowPosition = sensorHealth.opticalFlow === 'ok' && sensorHealth.rangefinder === 'ok'
   const checks = [
-    { label: 'GPS 锁定', ok: (gps?.fix_type ?? 0) >= 3 },
+    { label: '位置源（GPS 或光流+测距）', ok: hasGpsPosition || hasFlowPosition },
     { label: '电池电量 > 20%', ok: (battery?.remaining ?? 0) > 20 },
     { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' },
     { label: '气压计正常', ok: sensorHealth.baro === 'ok' },
     { label: 'EKF 正常', ok: Boolean(ekfStatus) },
+    { label: '飞控预检', ok: preflightCheck !== false },
   ]
   const allChecksPassed = checks.every((check) => check.ok)
+  const latestArmMessage = statusLogs.find((entry) =>
+    /arm|arming|解锁|preflight|pre-arm/i.test(entry.text)
+  )
 
   return (
     <div className="mc-workspace mc-fade-in">
@@ -105,7 +114,7 @@ export default function FlightControlPage() {
                 disabled={!connected}
                 className="mc-btn min-h-10"
                 style={vehicle?.modeId === mode.id ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-                onClick={() => setMode(mode.id)}
+                onClick={() => setMode(mode.mainMode, mode.subMode)}
               >
                 {mode.name}
               </button>
@@ -131,6 +140,11 @@ export default function FlightControlPage() {
             <div className="col-span-full mt-2 rounded-xl px-4 py-3 text-[12px] font-semibold" style={{ background: allChecksPassed ? 'var(--success-dim)' : 'var(--warning-dim)', color: allChecksPassed ? 'var(--success)' : 'var(--warning)' }}>
               {allChecksPassed ? '所有检查通过，可以按安全流程解锁。' : '仍有检查项未通过，请确认飞控状态后再起飞。'}
             </div>
+            {latestArmMessage && (
+              <div className="col-span-full rounded-xl px-4 py-3 text-[11px]" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
+                飞控最近反馈：{latestArmMessage.text}
+              </div>
+            )}
           </div>
         </div>
 

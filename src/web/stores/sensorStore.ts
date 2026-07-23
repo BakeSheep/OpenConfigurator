@@ -5,6 +5,7 @@ type SensorField = 'imu' | 'baro' | 'opticalFlow' | 'distanceSensor'
 
 interface SensorState {
   imu: ImuData | null
+  imus: Partial<Record<number, ImuData>>
   baro: BaroData | null
   opticalFlow: OpticalFlowData | null
   distanceSensor: DistanceSensorData | null
@@ -13,7 +14,7 @@ interface SensorState {
   // Timestamp (Date.now()) of the last update per sensor field. 0 = never
   // received OR marked stale by markAllOffline() on disconnect.
   lastUpdate: Record<SensorField, number>
-  setImu: (data: ImuData) => void
+  setImu: (data: ImuData, instance?: number) => void
   setBaro: (data: BaroData) => void
   setOpticalFlow: (data: OpticalFlowData) => void
   setDistanceSensor: (data: DistanceSensorData) => void
@@ -43,6 +44,7 @@ const SENSOR_STALE_THRESHOLDS: Record<SensorField, number> = {
 
 export const useSensorStore = create<SensorState>((set, get) => ({
   imu: null,
+  imus: {},
   baro: null,
   opticalFlow: null,
   distanceSensor: null,
@@ -57,12 +59,19 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     battery: 'offline',
   },
   lastUpdate: zeroLastUpdate(),
-  setImu: (data) => set((state) => ({
-    imu: data,
-    magData: { x: data.xmag, y: data.ymag, z: data.zmag },
-    sensorHealth: { ...state.sensorHealth, imu: 'ok', mag: 'ok' },
+  setImu: (data, requestedInstance) => set((state) => {
+    const instance = requestedInstance ?? data.instance ?? 0
+    const normalized = { ...data, instance }
+    const sensorHealth = state.sensorHealth.imu === 'ok' && state.sensorHealth.mag === 'ok'
+      ? state.sensorHealth
+      : { ...state.sensorHealth, imu: 'ok' as const, mag: 'ok' as const }
+    return {
+    imu: instance === 0 || state.imu === null ? normalized : state.imu,
+    imus: { ...state.imus, [instance]: normalized },
+    magData: instance === 0 || state.magData === null ? { x: data.xmag, y: data.ymag, z: data.zmag } : state.magData,
+    sensorHealth,
     lastUpdate: { ...state.lastUpdate, imu: Date.now() },
-  })),
+  }}),
   setBaro: (data) => set((state) => ({
     baro: data,
     sensorHealth: { ...state.sensorHealth, baro: 'ok' },

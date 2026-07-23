@@ -9,9 +9,7 @@ import { useWebSocket } from './hooks/useWebSocket'
 import ConnectionPage from './pages/ConnectionPage'
 import DashboardPage from './pages/DashboardPage'
 import FlightControlPage from './pages/FlightControlPage'
-import HardwarePage from './pages/HardwarePage'
 import FirmwarePage from './pages/FirmwarePage'
-import JoystickPage from './pages/JoystickPage'
 import LogsPage from './pages/LogsPage'
 import MessagesPage from './pages/MessagesPage'
 import MotorPage from './pages/MotorPage'
@@ -46,11 +44,11 @@ export default function App() {
               <Route path="/logs" element={<LogsPage />} />
               <Route path="/waveforms" element={<WaveformPage />} />
               <Route path="/firmware" element={<FirmwarePage />} />
-              <Route path="/hardware" element={<HardwarePage />} />
+              <Route path="/hardware" element={<Navigate to="/settings" replace />} />
               <Route path="/rtk" element={<WorkspacePlaceholderPage title="RTK" description="管理高精度定位状态与基站连接" icon="rtk" />} />
               <Route path="/motors" element={<MotorPage />} />
               <Route path="/receiver" element={<ReceiverPage />} />
-              <Route path="/joystick" element={<JoystickPage />} />
+              <Route path="/joystick" element={<Navigate to="/settings" replace />} />
               <Route path="/flight" element={<FlightControlPage />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>

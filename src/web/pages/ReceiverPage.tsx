@@ -3,6 +3,7 @@ import Icon from '../components/ui/Icon'
 import { PageHeader, PageTabs } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import ChannelBars from '../components/telemetry/ChannelBars'
 
 const channelNames = ['Roll', 'Pitch', 'Throttle', 'Yaw', 'AUX1', 'AUX2', 'AUX3', 'AUX4', 'AUX5', 'AUX6', 'AUX7', 'AUX8', 'AUX9', 'AUX10', 'AUX11', 'AUX12']
 
@@ -43,25 +44,12 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
             <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>实时通道输入</h2>
             <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>标准 RC PWM 范围为 1000–2000，1500 为中位。</p>
           </div>
-          <div className="grid grid-cols-2 gap-3 p-5 sm:grid-cols-4 xl:grid-cols-8">
-            {channelNames.map((name, index) => {
-              const value = getChannel(index)
-              const fill = value > 0 ? Math.max(0, Math.min(100, (value - 1000) / 10)) : 0
-              return (
-                <div key={name} className="rounded-xl border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>{name}</span>
-                    <span className="mc-mono text-[10px]" style={{ color: value ? 'var(--accent)' : 'var(--text-disabled)' }}>{value || '—'}</span>
-                  </div>
-                  <div className="relative mt-4 h-2 overflow-hidden rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
-                    <i className="absolute left-1/2 top-0 h-full w-px" style={{ background: 'var(--border-strong)' }} />
-                    <i className="block h-full rounded-full transition-all duration-100" style={{ width: fill + '%', background: value ? 'var(--accent)' : 'var(--text-disabled)' }} />
-                  </div>
-                  <p className="mt-2 text-[10px]" style={{ color: 'var(--text-disabled)' }}>CH{index + 1}</p>
-                </div>
-              )
-            })}
-          </div>
+          <ChannelBars
+            labels={channelNames}
+            secondaryLabels={channelNames.map((_, index) => `CH${index + 1}`)}
+            values={channelNames.map((_, index) => getChannel(index))}
+            connected={connected && Boolean(rcChannels)}
+          />
         </section>
       )}
 

@@ -10,6 +10,7 @@ interface ParameterState {
   missingCount: number
   error: string | null
   addParam: (param: ParamData) => void
+  addParams: (params: ParamData[]) => void
   setParamComplete: (count: number) => void
   setParamRetry: (attempt: number, missing: number, total: number) => void
   setParamFailed: (received: number, total: number) => void
@@ -29,6 +30,16 @@ export const useParameterStore = create<ParameterState>((set) => ({
     const newMap = new Map(state.params)
     newMap.set(param.id, param)
     return { params: newMap, receivedCount: newMap.size, totalCount: param.param_count }
+  }),
+  addParams: (params) => set((state) => {
+    if (params.length === 0) return state
+    const newMap = new Map(state.params)
+    let totalCount = state.totalCount
+    for (const param of params) {
+      newMap.set(param.id, param)
+      totalCount = Math.max(totalCount, param.param_count)
+    }
+    return { params: newMap, receivedCount: newMap.size, totalCount }
   }),
   setParamComplete: (count) => set({
     loading: false,
