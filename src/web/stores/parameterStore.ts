@@ -6,10 +6,14 @@ interface ParameterState {
   loading: boolean
   totalCount: number
   receivedCount: number
+  retryCount: number
+  missingCount: number
+  error: string | null
   addParam: (param: ParamData) => void
   setParamComplete: (count: number) => void
+  setParamRetry: (attempt: number, missing: number, total: number) => void
+  setParamFailed: (received: number, total: number) => void
   setLoading: (loading: boolean) => void
-  updateParam: (id: string, value: number) => void
   clear: () => void
 }
 
@@ -18,20 +22,48 @@ export const useParameterStore = create<ParameterState>((set) => ({
   loading: false,
   totalCount: 0,
   receivedCount: 0,
+  retryCount: 0,
+  missingCount: 0,
+  error: null,
   addParam: (param) => set((state) => {
     const newMap = new Map(state.params)
     newMap.set(param.id, param)
     return { params: newMap, receivedCount: newMap.size, totalCount: param.param_count }
   }),
-  setParamComplete: (count) => set({ loading: false, totalCount: count }),
-  setLoading: (loading) => set({ loading }),
-  updateParam: (id, value) => set((state) => {
-    const newMap = new Map(state.params)
-    const existing = newMap.get(id)
-    if (existing) {
-      newMap.set(id, { ...existing, value })
-    }
-    return { params: newMap }
+  setParamComplete: (count) => set({
+    loading: false,
+    totalCount: count,
+    retryCount: 0,
+    missingCount: 0,
+    error: null,
   }),
-  clear: () => set({ params: new Map(), receivedCount: 0, totalCount: 0 }),
+  setParamRetry: (attempt, missing, total) => set((state) => ({
+    loading: true,
+    retryCount: attempt,
+    missingCount: missing,
+    totalCount: total || state.totalCount,
+    error: null,
+  })),
+  setParamFailed: (received, total) => set({
+    loading: false,
+    receivedCount: received,
+    totalCount: total,
+    missingCount: Math.max(0, total - received),
+    error: total > 0
+      ? `参数读取未完成，还缺 ${Math.max(0, total - received)} 项`
+      : '飞控未响应参数请求',
+  }),
+  setLoading: (loading) => set({
+    loading,
+    ...(loading ? { retryCount: 0, missingCount: 0, error: null } : {}),
+  }),
+  clear: () => set({
+    params: new Map(),
+    loading: false,
+    receivedCount: 0,
+    totalCount: 0,
+    retryCount: 0,
+    missingCount: 0,
+    error: null,
+  }),
 }))

@@ -12,7 +12,7 @@ const tabs = [
   { id: 'reverse', label: '通道反向' },
 ]
 
-export default function ReceiverPage() {
+export default function ReceiverPage({ embedded = false }: { embedded?: boolean }) {
   const [activeTab, setActiveTab] = useState('monitor')
   const [reversed, setReversed] = useState<Record<number, boolean>>({})
   const rcChannels = useTelemetryStore((state) => state.rcChannels)
@@ -35,10 +35,10 @@ export default function ReceiverPage() {
           </span>
         }
       />
-      <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      {!embedded && <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />}
 
-      {activeTab === 'monitor' && (
-        <section className="mc-card mt-5 overflow-hidden">
+      {(embedded || activeTab === 'monitor') && (
+        <section className={'mc-card overflow-hidden ' + (embedded ? '' : 'mt-5')}>
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
             <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>实时通道输入</h2>
             <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>标准 RC PWM 范围为 1000–2000，1500 为中位。</p>
@@ -65,7 +65,7 @@ export default function ReceiverPage() {
         </section>
       )}
 
-      {activeTab === 'calibrate' && (
+      {(embedded || activeTab === 'calibrate') && (
         <section className="mc-card mt-5 overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
             <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>遥控器校准</h2>
@@ -94,7 +94,7 @@ export default function ReceiverPage() {
         </section>
       )}
 
-      {activeTab === 'reverse' && (
+      {(embedded || activeTab === 'reverse') && (
         <section className="mc-card mt-5 overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
             <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>通道反向</h2>

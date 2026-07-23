@@ -1,14 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useRef } from 'react'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
+import type { ParamData } from '../../../shared/types'
 
-function Toggle({ label, paramId, enabled, onToggle }: { label: string; paramId: string; enabled: boolean; onToggle: (id: string, val: number) => void }) {
+function Toggle({
+  label,
+  param,
+  enabled,
+  onToggle,
+}: {
+  label: string
+  param?: ParamData
+  enabled: boolean
+  onToggle: () => void
+}) {
   return (
     <div className="flex items-center justify-between py-2.5">
       <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>{label}</span>
       <button
-        onClick={() => onToggle(paramId, enabled ? 0 : 1)}
+        type="button"
+        onClick={onToggle}
+        disabled={!param}
+        title={param ? undefined : '当前固件未提供此参数'}
         className="relative transition-colors"
         style={{
           width: 40,
@@ -16,6 +30,8 @@ function Toggle({ label, paramId, enabled, onToggle }: { label: string; paramId:
           borderRadius: 11,
           background: enabled ? 'var(--accent)' : 'var(--bg-hover)',
           border: '1px solid ' + (enabled ? 'var(--accent)' : 'var(--border)'),
+          opacity: param ? 1 : 0.45,
+          cursor: param ? 'pointer' : 'not-allowed',
         }}
       >
         <span
@@ -37,43 +53,82 @@ function Toggle({ label, paramId, enabled, onToggle }: { label: string; paramId:
 export default function EkfFusionPanel() {
   const { send } = useWebSocket()
   const { params } = useParameterStore()
-  const [hgtRef, setHgtRef] = useState(0)
+  const previousEnabledValues = useRef(new Map<string, number>())
+  const hgtRefParam = params.get(EKF2_PARAMS.EKF2_HGT_REF)
 
-  // Sync local state when the actual parameter value is received from the FC,
-  // so the selector reflects the real EKF2_HGT_REF instead of a hardcoded 0.
-  useEffect(() => {
-    const p = params.get(EKF2_PARAMS.EKF2_HGT_REF)
-    if (p !== undefined) setHgtRef(p.value)
-  }, [params])
+  const toggleParam = (
+    id: string,
+    isEnabled: (value: number) => boolean,
+    offValue: number,
+    defaultOnValue: number,
+  ) => {
+    const param = params.get(id)
+    if (!param) return
+    const enabled = isEnabled(param.value)
+    if (enabled) previousEnabledValues.current.set(id, param.value)
+    const value = enabled
+      ? offValue
+      : (previousEnabledValues.current.get(id) ?? defaultOnValue)
+    send({ type: 'param_set', data: { id, value, paramType: param.type } })
+  }
 
-  const getParamValue = (id: string) => params.get(id)?.value ?? 0
-  const toggleParam = (id: string, val: number) => send({ type: 'param_set', data: { id, value: val, paramType: 9 } })
-  const setHgtRefParam = (val: number) => { setHgtRef(val); send({ type: 'param_set', data: { id: EKF2_PARAMS.EKF2_HGT_REF, value: val, paramType: 9 } }) }
+  const renderToggle = (
+    label: string,
+    id: string,
+    isEnabled = (value: number) => value > 0,
+    offValue = 0,
+    defaultOnValue = 1,
+  ) => {
+    const param = params.get(id)
+    return (
+      <Toggle
+        label={label}
+        param={param}
+        enabled={param ? isEnabled(param.value) : false}
+        onToggle={() => toggleParam(id, isEnabled, offValue, defaultOnValue)}
+      />
+    )
+  }
+
+  const setHgtRefParam = (value: number) => {
+    if (!hgtRefParam) return
+    send({
+      type: 'param_set',
+      data: { id: hgtRefParam.id, value, paramType: hgtRefParam.type },
+    })
+  }
 
   return (
     <div className="mc-card p-5">
       <h3 className="mc-section-title mb-4">EKF2 融合配置</h3>
       <div style={{ borderTop: 'none' }}>
-        <Toggle label="GPS" paramId={EKF2_PARAMS.EKF2_GPS_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_GPS_CTRL) > 0} onToggle={toggleParam} />
+        {renderToggle('GPS', EKF2_PARAMS.EKF2_GPS_CTRL, undefined, 0, 7)}
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          <Toggle label="气压计" paramId={EKF2_PARAMS.EKF2_BARO_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_BARO_CTRL) > 0} onToggle={toggleParam} />
+          {renderToggle('气压计', EKF2_PARAMS.EKF2_BARO_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          <Toggle label="磁力计" paramId={EKF2_PARAMS.EKF2_MAG_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_MAG_CTRL) > 0} onToggle={toggleParam} />
+          {renderToggle('磁力计', EKF2_PARAMS.EKF2_MAG_TYPE, (value) => value !== 5, 5, 0)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          <Toggle label="光流" paramId={EKF2_PARAMS.EKF2_OF_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_OF_CTRL) > 0} onToggle={toggleParam} />
+          {renderToggle('光流', EKF2_PARAMS.EKF2_OF_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          <Toggle label="测距仪" paramId={EKF2_PARAMS.EKF2_RNG_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_RNG_CTRL) > 0} onToggle={toggleParam} />
+          {renderToggle('测距仪', EKF2_PARAMS.EKF2_RNG_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          <Toggle label="视觉" paramId={EKF2_PARAMS.EKF2_EV_CTRL} enabled={getParamValue(EKF2_PARAMS.EKF2_EV_CTRL) > 0} onToggle={toggleParam} />
+          {renderToggle('视觉', EKF2_PARAMS.EKF2_EV_CTRL)}
         </div>
       </div>
       <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
         <label className="mc-section-title block mb-1.5">高度参考源</label>
-        <select value={hgtRef} onChange={(e) => setHgtRefParam(Number(e.target.value))} className="mc-select">
+        <select
+          value={hgtRefParam?.value ?? ''}
+          onChange={(e) => setHgtRefParam(Number(e.target.value))}
+          className="mc-select"
+          disabled={!hgtRefParam}
+          title={hgtRefParam ? undefined : '当前固件未提供 EKF2_HGT_REF'}
+        >
+          {!hgtRefParam && <option value="">参数不可用</option>}
           {HGT_REF_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>

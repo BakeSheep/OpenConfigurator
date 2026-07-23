@@ -86,9 +86,7 @@ function SignalStrip({ title, labels, values, motor = false, connected }: {
       <div className="grid grid-cols-4 gap-2 p-4 sm:grid-cols-6 xl:grid-cols-12">
         {labels.map((label, index) => {
           const raw = values[index] ?? 0
-          const normalized = motor
-            ? Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
-            : Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
+          const normalized = Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
           return (
             <div key={label} className="flex min-w-0 flex-col items-center gap-2">
               <span className="text-[10px]" style={{ color: 'var(--text-disabled)' }}>{raw > 0 ? Math.round(raw) : '—'}</span>
@@ -147,11 +145,10 @@ export default function DashboardPage() {
     <div className="mc-workspace mc-fade-in">
       <PageHeader title="仪表盘" description="飞控状态实时概览" />
 
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.06fr_1.06fr_1fr]">
-        <div className="mc-card overflow-hidden">
-          <PanelTitle title="飞行器姿态" detail="实时三维机架视图" />
-          <div className="p-4 pb-0"><AttitudeIndicator /></div>
-          <div className="grid grid-cols-3 gap-px bg-[var(--border)] p-4">
+      <section className="mc-dashboard-primary-grid">
+        <div className="mc-card mc-dashboard-visual overflow-hidden">
+          <AttitudeIndicator />
+          <div className="mc-dashboard-attitude-values">
             {[
               ['ROLL', roll.toFixed(1)],
               ['PITCH', pitch.toFixed(1)],
@@ -165,14 +162,13 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="mc-card overflow-hidden">
-          <PanelTitle title="人工地平仪" detail={connected ? '姿态数据实时更新' : '等待飞控连接'} />
+        <div className="mc-card mc-dashboard-visual overflow-hidden">
           <Horizon roll={roll} pitch={pitch} yaw={yaw} frozen={!connected || isStale('attitude')} />
         </div>
 
-        <div className="mc-card overflow-hidden">
-          <PanelTitle title="传感器" detail="数据链路健康状态" />
-          <div className="grid grid-cols-2 gap-3 p-4">
+        <div className="mc-card mc-dashboard-sensors overflow-hidden">
+          <PanelTitle title="传感器" />
+          <div className="grid flex-1 grid-cols-2 gap-3 p-3">
             <SensorTile icon="sensor" label="IMU" status={sensorHealth.imu} value={sensorHealth.imu === 'ok' ? '在线' : '等待数据'} />
             <SensorTile icon="sensor" label="罗盘" status={sensorHealth.mag} value={sensorHealth.mag === 'ok' ? '在线' : '等待数据'} />
             <SensorTile icon="altitude" label="气压计" status={sensorHealth.baro} value={sensorHealth.baro === 'ok' ? '在线' : '等待数据'} />

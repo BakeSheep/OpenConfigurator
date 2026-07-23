@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { NavLink } from 'react-router-dom'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import Icon from '../ui/Icon'
@@ -41,6 +42,17 @@ export default function TelemetryBar() {
       <TelemetryItem label="航向" value={connected && !isStale('vfrHud') ? heading.toFixed(0) + '°' : '—°'} muted={!connected || isStale('vfrHud')} />
       <TelemetryItem icon={<Icon name="satellite" size={15} />} label="GPS" value={gpsStale ? 'N/A' : String(gps?.satellites_visible ?? 0) + ' SAT'} muted={gpsStale} />
       <TelemetryItem icon={<Icon name="battery" size={15} />} label="电池" value={batteryStale ? '—' : (battery?.voltage.toFixed(1) ?? '—') + 'V · ' + (battery?.remaining ?? 0) + '%'} muted={batteryStale} />
+      <div className="mc-telemetry__spacer" />
+      <div className="mc-telemetry__tools" aria-label="飞控快捷操作">
+        <NavLink to="/settings" className="mc-telemetry__pill">
+          <Icon name="settings" size={13} />
+          <span>设置引导</span>
+        </NavLink>
+        <span className="mc-telemetry__pill is-muted" title={connected ? '等待飞控预检结果' : '连接飞控后显示预检状态'}>
+          <Icon name="check" size={13} />
+          <span>{connected ? '预检中' : '预检 —'}</span>
+        </span>
+      </div>
     </div>
   )
 }
