@@ -1,63 +1,73 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
-import Icon, { type IconName } from '../components/ui/Icon'
+import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
+import Icon from '../components/ui/Icon'
 import { PageHeader, PageTabs } from '../components/ui/PageFrame'
+import ConnectionPage from './ConnectionPage'
+import FlightControlPage from './FlightControlPage'
+import MotorPage from './MotorPage'
+import ParameterPage from './ParameterPage'
+import ReceiverPage from './ReceiverPage'
 
 const tabs = [
   { id: 'airframe', label: '机架类型' },
-  { id: 'flight', label: '飞行控制' },
   { id: 'motor', label: '电机设置' },
   { id: 'receiver', label: '遥控器' },
+  { id: 'ports', label: '端口设置' },
+  { id: 'pid', label: 'PID 调参' },
   { id: 'ekf', label: 'EKF' },
+  { id: 'other', label: '其他' },
 ]
 
-interface SetupTileProps {
-  to: string
-  icon: IconName
-  title: string
-  description: string
-  status: string
-}
-
-function SetupTile({ to, icon, title, description, status }: SetupTileProps) {
-  return (
-    <Link to={to} className="mc-card mc-card--hover flex min-h-[160px] flex-col p-5 no-underline">
-      <div className="flex items-start justify-between gap-4">
-        <span
-          className="grid h-10 w-10 place-items-center rounded-xl"
-          style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}
-        >
-          <Icon name={icon} size={20} />
-        </span>
-        <span
-          className="rounded-full px-2 py-1 text-[10px] font-semibold"
-          style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-        >
-          {status}
-        </span>
-      </div>
-      <h2 className="mt-5 text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>{title}</h2>
-      <p className="mt-1 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{description}</p>
-    </Link>
-  )
-}
+const airframes = [
+  ['airship', 'Airship', 'Cloudship', 'flight'], ['autogyro', 'Autogyro', 'ThunderFly Auto-G2', 'flight'],
+  ['balloon', 'Balloon', 'ThunderFly balloon TF-B1', 'altitude'], ['dodeca', 'Dodecarotor coaxial', 'Generic Dodecarotor', 'motor'],
+  ['helicopter', 'Helicopter', 'Generic Helicopter', 'flight'], ['hexa-plus', 'Hexarotor +', 'Generic Hexarotor +', 'motor'],
+  ['hexa-coax', 'Hexarotor Coaxial', 'Generic Hexarotor coaxial', 'motor'], ['hexa-x', 'Hexarotor X', 'Generic Hexarotor X', 'motor'],
+  ['octo-plus', 'Octorotor +', 'Generic Octocopter +', 'motor'], ['octo-x', 'Octorotor X', 'Generic Octocopter X', 'motor'],
+  ['quad-plus', 'Quadrotor +', 'Generic Quad +', 'motor'], ['quad-x', 'Quadrotor X', 'Generic Quadcopter', 'motor'],
+] as const
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('airframe')
+  const [selectedAirframe, setSelectedAirframe] = useState('quad-x')
 
   return (
-    <div className="mc-workspace mc-fade-in">
+    <div className="mc-workspace mc-fade-in mc-data-workspace">
       <PageHeader title="飞控设置" description="配置飞控参数与硬件设置" />
       <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
-      <section className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <SetupTile to="/flight" icon="flight" title="飞行控制" description="解锁、起飞、模式切换与飞行前安全检查。" status="飞行" />
-        <SetupTile to="/motors" icon="motor" title="电机设置" description="按安全流程验证电机顺序、旋向和油门输出。" status="硬件" />
-        <SetupTile to="/receiver" icon="receiver" title="遥控器" description="查看 RC 通道并完成遥控器校准与反向设置。" status="输入" />
-        <SetupTile to="/joystick" icon="gamepad" title="游戏手柄" description="将 USB 或蓝牙游戏手柄映射为 RC 覆盖控制。" status="新增" />
-        <SetupTile to="/sensors" icon="sensor" title="传感器与 EKF" description="校准 IMU、罗盘和气压计，并配置融合状态。" status="校准" />
-        <SetupTile to="/parameters" icon="parameters" title="参数管理" description="下载、搜索、编辑并导出 PX4 飞控参数。" status="高级" />
-      </section>
+      {activeTab === 'airframe' ? (
+        <section className="mc-airframe-section">
+          <header><h2>机架类型</h2><p>选择与您的无人机匹配的机架类型</p></header>
+          <div className="mc-airframe-grid">
+            {airframes.map(([id, title, option, icon]) => (
+              <button type="button" key={id} data-active={selectedAirframe === id} onClick={() => setSelectedAirframe(id)}>
+                <span className="mc-airframe-illustration"><Icon name={icon} size={58} /><i /><i /><i /><i /></span>
+                <strong>{title}</strong>
+                <select className="mc-select" value={option} onChange={() => undefined} onClick={(event) => event.stopPropagation()} aria-label={title + ' 型号'}><option>{option}</option></select>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : <SettingsInlinePanel activeTab={activeTab} />}
     </div>
+  )
+}
+
+function SettingsInlinePanel({ activeTab }: { activeTab: string }) {
+  return (
+    <section className="mc-settings-inline mc-fade-in" key={activeTab}>
+      {activeTab === 'motor' && <MotorPage />}
+      {activeTab === 'receiver' && <ReceiverPage embedded />}
+      {activeTab === 'ports' && <ConnectionPage />}
+      {activeTab === 'pid' && <ParameterPage />}
+      {activeTab === 'ekf' && (
+        <div className="mc-settings-ekf">
+          <header><h2>EKF 融合设置</h2><p>选择参与状态估计的传感器与高度参考源。</p></header>
+          <EkfFusionPanel />
+        </div>
+      )}
+      {activeTab === 'other' && <FlightControlPage />}
+    </section>
   )
 }

@@ -58,23 +58,26 @@ export default function ParameterPage() {
   return (
     <div className="mc-workspace mc-fade-in">
       <PageHeader
-        title="参数"
-        description={'管理飞控参数' + (loading ? ' · 正在接收 ' + receivedCount + '/' + totalCount : ' · 已缓存 ' + params.size + ' 项')}
+        title="参数配置"
+        description={loading ? '正在接收 ' + receivedCount + '/' + totalCount : (params.size || totalCount) + ' 个参数'}
         actions={
           <>
-            <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}>
-              <Icon name="log" size={15} />导出
+            <button type="button" className="mc-btn mc-btn-ghost" onClick={requestParams} disabled={loading}>
+              <Icon name="refresh" size={15} />刷新参数
             </button>
             <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={loading}>
-              <Icon name="refresh" size={15} />{loading ? receivedCount + '/' + totalCount : '刷新参数'}
+              <Icon name="download" size={15} />{loading ? receivedCount + '/' + totalCount : '加载参数'}
             </button>
+            <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
+            <button type="button" className="mc-btn mc-btn-danger" disabled title="恢复默认需要独立安全确认流程">恢复默认参数</button>
+            <button type="button" className="mc-btn mc-btn-ghost" disabled style={{ color: 'var(--warning)' }}>重启飞控</button>
           </>
         }
       />
 
       <div className="relative mb-4">
         <Icon name="search" size={17} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-disabled)' }} />
-        <input className="mc-input pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数（例如 EKF2_、MC_、BAT_、COM_）" />
+        <input className="mc-input pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名…" />
       </div>
 
       {loading && (
@@ -88,13 +91,13 @@ export default function ParameterPage() {
       ) : (
         <div className="space-y-3">
           {Object.entries(groups).map(([prefix, items]) => {
-            const isCollapsed = collapsed[prefix]
+            const isCollapsed = search ? false : (collapsed[prefix] ?? true)
             return (
               <section key={prefix} className="mc-card overflow-hidden">
                 <button
                   type="button"
                   className="flex w-full items-center gap-3 px-5 py-3 text-left"
-                  onClick={() => setCollapsed((current) => ({ ...current, [prefix]: !current[prefix] }))}
+                  onClick={() => setCollapsed((current) => ({ ...current, [prefix]: current[prefix] === undefined ? false : !current[prefix] }))}
                 >
                   <Icon name="chevronDown" size={15} style={{ color: 'var(--text-secondary)', transform: isCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform 160ms ease' }} />
                   <span className="mc-mono text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{prefix}</span>

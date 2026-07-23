@@ -75,8 +75,8 @@ export default function AttitudeIndicator() {
 
   return (
     <div
-      className="mc-card w-full overflow-hidden relative"
-      style={{ height: 224, background: 'var(--att3d-canvas-bg)' }}
+      className="mc-attitude-view w-full overflow-hidden relative"
+      style={{ background: 'var(--att3d-canvas-bg)' }}
     >
       <Canvas camera={{ position: [0, 2.5, 2.5], fov: 45 }}>
         <ambientLight intensity={0.4} />
@@ -90,12 +90,9 @@ export default function AttitudeIndicator() {
           className="absolute inset-0 flex items-center justify-center pointer-events-none"
           style={{ background: 'rgba(0,0,0,.45)', backdropFilter: 'blur(1px)' }}
         >
-          <div className="text-center">
-            <div className="text-[12px] font-semibold tracking-wider" style={{ color: '#F59E0B' }}>
-              ⏸ 信号丢失
-            </div>
-            <div className="text-[10px] mt-1" style={{ color: 'var(--text-disabled)' }}>
-              {connected ? '数据已冻结' : '飞控未连接'}
+          <div className="mc-offline-badge">
+            <div className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+              {connected ? '数据已冻结' : '未连接飞控'}
             </div>
           </div>
         </div>
