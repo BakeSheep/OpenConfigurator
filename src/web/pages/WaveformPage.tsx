@@ -8,11 +8,17 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 type ChannelKey = 'roll' | 'pitch' | 'yaw' | 'altitude' | 'climb' | 'speed' | 'voltage' | 'current' | 'battery' | 'accX' | 'accY' | 'accZ' | 'flowX' | 'flowY' | 'quality'
 type WavePoint = Record<ChannelKey, number> & { time: number }
 
+const SAMPLE_RATE_HZ = 20
+const SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ
+const MAX_WINDOW_SECONDS = 60
+const MAX_POINTS = SAMPLE_RATE_HZ * MAX_WINDOW_SECONDS
+const STANDARD_GRAVITY = 9.80665
+
 const channelGroups: Array<{ title: string; channels: Array<{ key: ChannelKey; label: string }> }> = [
   { title: '姿态', channels: [{ key: 'roll', label: 'Roll(°)' }, { key: 'pitch', label: 'Pitch(°)' }, { key: 'yaw', label: 'Yaw(°)' }] },
   { title: '飞行数据', channels: [{ key: 'altitude', label: 'Alt(m)' }, { key: 'climb', label: 'Climb(m/s)' }, { key: 'speed', label: 'GndSpd(m/s)' }] },
   { title: '电池', channels: [{ key: 'voltage', label: 'Volt(V)' }, { key: 'current', label: 'Curr(A)' }, { key: 'battery', label: 'Batt(%)' }] },
-  { title: '加速度计', channels: [{ key: 'accX', label: 'IMU0 AccX' }, { key: 'accY', label: 'IMU0 AccY' }, { key: 'accZ', label: 'IMU0 AccZ' }] },
+  { title: '加速度计', channels: [{ key: 'accX', label: 'IMU0 AccX(m/s²)' }, { key: 'accY', label: 'IMU0 AccY(m/s²)' }, { key: 'accZ', label: 'IMU0 AccZ(m/s²)' }] },
   { title: '光流', channels: [{ key: 'flowX', label: 'Flow X' }, { key: 'flowY', label: 'Flow Y' }, { key: 'quality', label: 'Quality' }] },
 ]
 
@@ -47,11 +53,13 @@ export default function WaveformPage() {
         yaw: (attitude?.yaw ?? 0) * 180 / Math.PI,
         altitude: tele.relativeAlt, climb: tele.climbRate, speed: tele.groundSpeed,
         voltage: battery?.voltage ?? 0, current: battery?.current ?? 0, battery: battery?.remaining ?? 0,
-        accX: imu?.xacc ?? 0, accY: imu?.yacc ?? 0, accZ: imu?.zacc ?? 0,
+        accX: (imu?.xacc ?? 0) * STANDARD_GRAVITY,
+        accY: (imu?.yacc ?? 0) * STANDARD_GRAVITY,
+        accZ: (imu?.zacc ?? 0) * STANDARD_GRAVITY,
         flowX: flow?.flow_x ?? 0, flowY: flow?.flow_y ?? 0, quality: flow?.quality ?? 0,
       }
-      setData((current) => [...current.slice(-599), point])
-    }, 200)
+      setData((current) => [...current.slice(-(MAX_POINTS - 1)), point])
+    }, SAMPLE_INTERVAL_MS)
     return () => clearInterval(id)
   }, [])
 
@@ -91,7 +99,7 @@ export default function WaveformPage() {
             <div>{[5, 10, 30, 60].map((seconds) => <button type="button" key={seconds} data-active={windowSeconds === seconds} onClick={() => setWindowSeconds(seconds)}>{seconds}s</button>)}</div>
             <button type="button" className="mc-icon-btn" onClick={() => setPaused((value) => !value)} aria-label={paused ? '继续' : '暂停'}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
             <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label="清除数据"><Icon name="trash" size={15} /></button>
-            <div><button type="button" data-active>20Hz</button><button type="button" disabled>50Hz</button><button type="button" disabled>100Hz</button></div>
+            <div><button type="button" data-active>{SAMPLE_RATE_HZ}Hz</button><button type="button" disabled>50Hz</button><button type="button" disabled>100Hz</button></div>
             <small>仅为图表采样率，非数据源刷新率</small>
             <span>{selected.length} 通道 · {visibleData.length} 采样</span>
           </div>

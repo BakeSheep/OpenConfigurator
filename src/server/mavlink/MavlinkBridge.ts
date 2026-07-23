@@ -13,13 +13,26 @@ const PX4_MODE_BY_ID: Record<number, string> = Object.values(PX4_MODES).reduce(
   {} as Record<number, string>
 )
 
+const PARAM_STALL_TIMEOUT_MS = 1500
+const PARAM_RETRY_BATCH_SIZE = 32
+const PARAM_MAX_STALL_RETRIES = 5
+const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE = 16n
+const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST = 131072n
+type ParamEncoding = 'bytewise' | 'c-cast'
+
 export class MavlinkBridge extends EventEmitter {
   private parser = new MavlinkParser()
   private connManager: ConnectionManager
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private requestedOutputStream = false
   private paramExpectedCount = 0
-  private paramIds = new Set<string>()
+  private paramIndices = new Set<number>()
+  private paramDownloadActive = false
+  private paramRetryAttempt = 0
+  private paramRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private paramEncoding: ParamEncoding = 'c-cast'
+  private paramEncodingNegotiated = false
+  private requestedAutopilotVersion = false
   private targetSysId = 1
   private targetCompId = 1
 
@@ -35,8 +48,14 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private onStatusChange = (status: string) => {
+    this.cancelParamDownload()
     if (status === 'connected') {
       this.requestedOutputStream = false
+      this.targetSysId = 1
+      this.targetCompId = 1
+      this.paramEncoding = 'c-cast'
+      this.paramEncodingNegotiated = false
+      this.requestedAutopilotVersion = false
       this.startHeartbeat()
     } else {
       this.requestedOutputStream = false
@@ -128,6 +147,9 @@ export class MavlinkBridge extends EventEmitter {
       case 147: // BATTERY_STATUS
         this.handleBattery(msg)
         break
+      case 148: // AUTOPILOT_VERSION
+        this.handleAutopilotVersion(msg)
+        break
       case 230: // ESTIMATOR_STATUS
         this.handleEstimatorStatus(msg)
         break
@@ -144,11 +166,20 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleHeartbeat(msg: MavlinkMessage) {
-    if (msg.payload.length < 8) return
+    if (msg.payload.length < 8 || msg.payload[5] === 8) return
     this.connManager.notifyAutopilotHeartbeat()
     if (msg.sysId > 0 && msg.sysId < 255) {
       this.targetSysId = msg.sysId
       this.targetCompId = msg.compId
+    }
+    // Use the autopilot class only as an early compatibility fallback. The
+    // authoritative encoding is negotiated from AUTOPILOT_VERSION capabilities.
+    if (!this.paramEncodingNegotiated) {
+      this.paramEncoding = msg.payload[5] === 12 ? 'bytewise' : 'c-cast'
+    }
+    if (!this.requestedAutopilotVersion) {
+      this.requestedAutopilotVersion = true
+      this.sendCommand('MAV_CMD_REQUEST_MESSAGE', [148, 0, 0, 0, 0, 0, 0])
     }
 
     const customMode = msg.payload.readUInt32LE(0)
@@ -413,27 +444,37 @@ export class MavlinkBridge extends EventEmitter {
 
   private handleParamValue(msg: MavlinkMessage) {
     if (msg.payload.length < 25) return
-    const value = msg.payload.readFloatLE(0)
+    // Parameter storage in this GCS belongs to the selected autopilot
+    // component. Ignore unrelated camera/gimbal parameter broadcasts.
+    if (msg.sysId !== this.targetSysId || msg.compId !== this.targetCompId) return
+    const paramType = msg.payload[24]
+    const value = this.decodeParamValue(msg.payload, paramType)
     const paramCount = msg.payload.readUInt16LE(4)
     const paramIndex = msg.payload.readUInt16LE(6)
     const idBytes = msg.payload.subarray(8, 24)
     const id = idBytes.toString('ascii').replace(/\0/g, '')
-    const paramType = msg.payload[24]
 
     this.emit('message', {
       type: 'param',
       data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
     } as ServerMessage)
 
-    // Track parameter download progress and signal completion so the frontend
-    // can exit its loading state (otherwise it stays stuck forever).
-    this.paramExpectedCount = paramCount
-    this.paramIds.add(id)
-    if (this.paramExpectedCount > 0 && this.paramIds.size >= this.paramExpectedCount) {
-      this.emit('message', {
-        type: 'param_complete',
-        data: { count: this.paramExpectedCount },
-      } as ServerMessage)
+    if (!this.paramDownloadActive) return
+
+    this.paramExpectedCount = Math.max(this.paramExpectedCount, paramCount)
+    if (paramIndex < paramCount) {
+      const previousSize = this.paramIndices.size
+      this.paramIndices.add(paramIndex)
+      if (this.paramIndices.size > previousSize) {
+        // Any new index proves the link is making progress. Give the list
+        // stream another quiet window before requesting individual gaps.
+        this.paramRetryAttempt = 0
+        this.scheduleParamRetry()
+      }
+    }
+
+    if (this.paramExpectedCount > 0 && this.paramIndices.size >= this.paramExpectedCount) {
+      this.completeParamDownload()
     }
   }
 
@@ -485,7 +526,7 @@ export class MavlinkBridge extends EventEmitter {
   private sendParamSet(id: string, value: number, paramType: number) {
     // PARAM_SET (msg #23)
     const payload = Buffer.alloc(23)
-    payload.writeFloatLE(value, 0)
+    this.writeParamValue(payload, value, paramType)
     payload.writeUInt8(this.targetSysId, 4)  // target_system
     payload.writeUInt8(this.targetCompId, 5)  // target_component
     const idBuf = Buffer.alloc(16)
@@ -497,15 +538,171 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private sendParamRequestList() {
-    // Reset parameter tracking for the new download
+    this.cancelParamDownload()
     this.paramExpectedCount = 0
-    this.paramIds.clear()
+    this.paramIndices.clear()
+    this.paramDownloadActive = true
+    this.paramRetryAttempt = 0
+    this.writeParamRequestList()
+    this.scheduleParamRetry()
+  }
+
+  private handleAutopilotVersion(msg: MavlinkMessage) {
+    if (
+      msg.payload.length < 8
+      || msg.sysId !== this.targetSysId
+      || msg.compId !== this.targetCompId
+    ) return
+
+    const capabilities = msg.payload.readBigUInt64LE(0)
+    if ((capabilities & MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE) !== 0n) {
+      this.paramEncoding = 'bytewise'
+      this.paramEncodingNegotiated = true
+    } else if ((capabilities & MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST) !== 0n) {
+      this.paramEncoding = 'c-cast'
+      this.paramEncodingNegotiated = true
+    }
+  }
+
+  private writeParamRequestList() {
     // PARAM_REQUEST_LIST (msg #21)
     const payload = Buffer.alloc(2)
     payload.writeUInt8(this.targetSysId, 0)  // target_system
     payload.writeUInt8(this.targetCompId, 1)  // target_component
     const encoded = this.parser.encode(21, payload)
     this.connManager.write(encoded)
+  }
+
+  private decodeParamValue(payload: Buffer, paramType: number) {
+    if (this.paramEncoding === 'c-cast') return payload.readFloatLE(0)
+
+    switch (paramType) {
+      case 1: return payload.readUInt8(0)       // MAV_PARAM_TYPE_UINT8
+      case 2: return payload.readInt8(0)        // MAV_PARAM_TYPE_INT8
+      case 3: return payload.readUInt16LE(0)    // MAV_PARAM_TYPE_UINT16
+      case 4: return payload.readInt16LE(0)     // MAV_PARAM_TYPE_INT16
+      case 5: return payload.readUInt32LE(0)    // MAV_PARAM_TYPE_UINT32
+      case 6: return payload.readInt32LE(0)     // MAV_PARAM_TYPE_INT32
+      case 9: return payload.readFloatLE(0)     // MAV_PARAM_TYPE_REAL32
+      default: return payload.readFloatLE(0)
+    }
+  }
+
+  private writeParamValue(payload: Buffer, value: number, paramType: number) {
+    if (this.paramEncoding === 'c-cast' || paramType === 9) {
+      payload.writeFloatLE(value, 0)
+      return
+    }
+
+    const integer = Math.trunc(value)
+    switch (paramType) {
+      case 1:
+        payload.writeUInt8(Math.min(0xff, Math.max(0, integer)), 0)
+        break
+      case 2:
+        payload.writeInt8(Math.min(0x7f, Math.max(-0x80, integer)), 0)
+        break
+      case 3:
+        payload.writeUInt16LE(Math.min(0xffff, Math.max(0, integer)), 0)
+        break
+      case 4:
+        payload.writeInt16LE(Math.min(0x7fff, Math.max(-0x8000, integer)), 0)
+        break
+      case 5:
+        payload.writeUInt32LE(Math.min(0xffffffff, Math.max(0, integer)), 0)
+        break
+      case 6:
+        payload.writeInt32LE(Math.min(0x7fffffff, Math.max(-0x80000000, integer)), 0)
+        break
+      default:
+        payload.writeFloatLE(value, 0)
+        break
+    }
+  }
+
+  private sendParamRequestRead(index: number) {
+    // PARAM_REQUEST_READ (msg #20): an empty param_id with a non-negative
+    // param_index asks PX4 to retransmit that exact missing list entry.
+    const payload = Buffer.alloc(20)
+    payload.writeInt16LE(index, 0)
+    payload.writeUInt8(this.targetSysId, 2)
+    payload.writeUInt8(this.targetCompId, 3)
+    const encoded = this.parser.encode(20, payload)
+    this.connManager.write(encoded)
+  }
+
+  private scheduleParamRetry() {
+    if (!this.paramDownloadActive) return
+    if (this.paramRetryTimer) clearTimeout(this.paramRetryTimer)
+    this.paramRetryTimer = setTimeout(() => this.retryMissingParams(), PARAM_STALL_TIMEOUT_MS)
+  }
+
+  private retryMissingParams() {
+    this.paramRetryTimer = null
+    if (!this.paramDownloadActive) return
+
+    if (this.paramRetryAttempt >= PARAM_MAX_STALL_RETRIES) {
+      this.paramDownloadActive = false
+      this.emit('message', {
+        type: 'param_failed',
+        data: { received: this.paramIndices.size, total: this.paramExpectedCount },
+      } as ServerMessage)
+      return
+    }
+
+    this.paramRetryAttempt += 1
+    if (this.paramExpectedCount === 0) {
+      // No PARAM_VALUE arrived at all: repeat the list request rather than
+      // guessing indices before PX4 has reported the parameter count.
+      this.writeParamRequestList()
+      this.emit('message', {
+        type: 'param_retry',
+        data: { attempt: this.paramRetryAttempt, missing: 0, total: 0 },
+      } as ServerMessage)
+    } else {
+      const missing: number[] = []
+      for (let index = 0; index < this.paramExpectedCount; index += 1) {
+        if (!this.paramIndices.has(index)) missing.push(index)
+      }
+
+      if (missing.length === 0) {
+        this.completeParamDownload()
+        return
+      }
+
+      for (const index of missing.slice(0, PARAM_RETRY_BATCH_SIZE)) {
+        this.sendParamRequestRead(index)
+      }
+      this.emit('message', {
+        type: 'param_retry',
+        data: {
+          attempt: this.paramRetryAttempt,
+          missing: missing.length,
+          total: this.paramExpectedCount,
+        },
+      } as ServerMessage)
+    }
+    this.scheduleParamRetry()
+  }
+
+  private completeParamDownload() {
+    this.paramDownloadActive = false
+    if (this.paramRetryTimer) {
+      clearTimeout(this.paramRetryTimer)
+      this.paramRetryTimer = null
+    }
+    this.emit('message', {
+      type: 'param_complete',
+      data: { count: this.paramExpectedCount },
+    } as ServerMessage)
+  }
+
+  private cancelParamDownload() {
+    this.paramDownloadActive = false
+    if (this.paramRetryTimer) {
+      clearTimeout(this.paramRetryTimer)
+      this.paramRetryTimer = null
+    }
   }
 
   private sendRcChannelsOverride(data: RcChannelsData) {
@@ -527,9 +724,16 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private sendMotorTest(instance: number, throttle: number, duration: number) {
-    // Use COMMAND_LONG with MAV_CMD_DO_MOTOR_TEST
-    const params = [instance, 0, throttle, duration, 0, 0, 0]
-    this.sendCommand('MAV_CMD_DO_MOTOR_TEST', params)
+    // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
+    // Values >= 1000 in param5 are PX4-internal actuator functions with the
+    // 1000 transport offset. Motors 1..12 are functions 101..112, so an
+    // external GCS must send 1101..1112. This works across PX4 versions and
+    // avoids confusing the internal function ID with MAVLink's enum values.
+    const outputFunction = 1100 + instance
+    const shouldRelease = duration <= 0 || throttle <= 0
+    const value = shouldRelease ? Number.NaN : Math.max(0, Math.min(1, throttle / 100))
+    const timeout = shouldRelease ? 0 : Math.max(0, duration)
+    this.sendCommand('MAV_CMD_ACTUATOR_TEST', [value, timeout, 0, 0, outputFunction, 0, 0])
   }
 
   // Resolve a PX4 main-mode custom_mode value to a human-readable name.
@@ -543,6 +747,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   destroy() {
+    this.cancelParamDownload()
     this.stopHeartbeat()
     this.connManager.off('data', this.onData)
     this.connManager.off('statusChange', this.onStatusChange)

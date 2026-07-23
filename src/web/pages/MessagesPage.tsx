@@ -43,7 +43,28 @@ export default function MessagesPage() {
     return { ...row, live: connected && time > 0 && Date.now() - time < 4000 }
   }), [connected, lastUpdate, sensorUpdate, statusLogs])
 
-  const liveCount = rows.filter((row) => row.live).length
+  const [pausedRows, setPausedRows] = useState<typeof rows | null>(null)
+  const [pausedLogs, setPausedLogs] = useState<typeof statusLogs | null>(null)
+  const displayRows = paused ? pausedRows ?? rows : rows
+  const displayLogs = paused ? pausedLogs ?? statusLogs : statusLogs
+  const liveCount = displayRows.filter((row) => row.live).length
+
+  const togglePaused = () => {
+    if (paused) {
+      setPaused(false)
+      setPausedRows(null)
+      setPausedLogs(null)
+      return
+    }
+    setPausedRows(rows)
+    setPausedLogs(statusLogs)
+    setPaused(true)
+  }
+
+  const clearLogs = () => {
+    clearStatusLogs()
+    if (paused) setPausedLogs([])
+  }
 
   return (
     <div className="mc-workspace mc-fade-in mc-data-workspace">
@@ -52,9 +73,9 @@ export default function MessagesPage() {
         description="实时 MAVLink 消息监控"
         actions={
           <>
-            <span className="mc-toolbar-summary">{liveCount} 种活跃消息 · {statusLogs.length} 条状态记录</span>
-            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? '继续' : '暂停'} onClick={() => setPaused((value) => !value)}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空" onClick={clearStatusLogs}><Icon name="trash" size={15} /></button>
+            <span className="mc-toolbar-summary">{liveCount} 种活跃消息 · {displayLogs.length} 条状态记录</span>
+            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? '继续' : '暂停'} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
+            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空" onClick={clearLogs}><Icon name="trash" size={15} /></button>
           </>
         }
       />
@@ -64,7 +85,7 @@ export default function MessagesPage() {
         <div className="mc-message-layout">
           <section className="mc-card mc-message-table">
             <div className="mc-message-row mc-message-row--header"><span>ID</span><span>消息名称</span><span>状态</span><span>频率</span></div>
-            {rows.map((row) => (
+            {displayRows.map((row) => (
               <div className="mc-message-row" key={row.id}>
                 <span className="mc-mono">+&nbsp; #{row.id}</span>
                 <strong className="mc-mono">{row.name}</strong>
@@ -85,7 +106,7 @@ export default function MessagesPage() {
           <section className="mc-card mc-link-stats">
             <h3>链路统计</h3>
             {[
-              ['连接状态', connected ? '已连接' : '未连接'], ['活跃数据流', String(liveCount)], ['状态消息', String(statusLogs.length)], ['CRC 错误', '—'], ['丢包率', '—'], ['传输速率', connected ? '实时' : '0 msg/s'],
+              ['连接状态', connected ? '已连接' : '未连接'], ['活跃数据流', String(liveCount)], ['状态消息', String(displayLogs.length)], ['CRC 错误', '—'], ['丢包率', '—'], ['传输速率', connected ? '实时' : '0 msg/s'],
             ].map(([label, value]) => <div key={label}><span>{label}</span><strong className="mc-mono">{value}</strong></div>)}
           </section>
         </div>
@@ -93,7 +114,7 @@ export default function MessagesPage() {
 
       {activeTab === 'status' && (
         <section className="mc-card mc-console-panel">
-          {statusLogs.length === 0 ? <p className="mc-console-empty">暂无飞控状态消息</p> : statusLogs.map((log) => (
+          {displayLogs.length === 0 ? <p className="mc-console-empty">暂无飞控状态消息</p> : displayLogs.map((log) => (
             <div key={log.id}><time className="mc-mono">{new Date(log.time).toLocaleTimeString()}</time><span data-severity={log.severity}>{log.severity.toUpperCase()}</span><p>{log.text}</p></div>
           ))}
         </section>

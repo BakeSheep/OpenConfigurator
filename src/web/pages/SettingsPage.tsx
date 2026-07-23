@@ -7,6 +7,8 @@ import FlightControlPage from './FlightControlPage'
 import MotorPage from './MotorPage'
 import ParameterPage from './ParameterPage'
 import ReceiverPage from './ReceiverPage'
+import { useParameterStore } from '../stores/parameterStore'
+import { getPx4AirframeInfo } from '../utils/px4Airframes'
 
 const tabs = [
   { id: 'airframe', label: '机架类型' },
@@ -29,7 +31,9 @@ const airframes = [
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('airframe')
-  const [selectedAirframe, setSelectedAirframe] = useState('quad-x')
+  const sysAutostart = useParameterStore((state) => state.params.get('SYS_AUTOSTART')?.value)
+  const airframeInfo = getPx4AirframeInfo(sysAutostart)
+  const autostartId = Number.isFinite(sysAutostart) ? Math.round(sysAutostart!) : null
 
   return (
     <div className="mc-workspace mc-fade-in mc-data-workspace">
@@ -39,12 +43,27 @@ export default function SettingsPage() {
       {activeTab === 'airframe' ? (
         <section className="mc-airframe-section">
           <header><h2>机架类型</h2><p>选择与您的无人机匹配的机架类型</p></header>
+          <div className="mc-capability-note" data-state={airframeInfo ? 'detected' : 'waiting'}>
+            <Icon name={airframeInfo ? 'check' : 'warning'} size={15} />
+            <span>
+              {airframeInfo && autostartId !== null
+                ? `当前飞控机架：${airframeInfo.name}（SYS_AUTOSTART ${autostartId}）`
+                : '连接飞控并完成参数同步后，将根据 SYS_AUTOSTART 自动识别当前机架。'}
+            </span>
+          </div>
           <div className="mc-airframe-grid">
             {airframes.map(([id, title, option, icon]) => (
-              <button type="button" key={id} data-active={selectedAirframe === id} onClick={() => setSelectedAirframe(id)}>
+              <button
+                type="button"
+                key={id}
+                disabled
+                data-active={airframeInfo?.cardId === id}
+                aria-current={airframeInfo?.cardId === id ? 'true' : undefined}
+                title={airframeInfo?.cardId === id ? `当前机架 · SYS_AUTOSTART ${autostartId}` : '机架参数写入尚未接入'}
+              >
                 <span className="mc-airframe-illustration"><Icon name={icon} size={58} /><i /><i /><i /><i /></span>
                 <strong>{title}</strong>
-                <select className="mc-select" value={option} onChange={() => undefined} onClick={(event) => event.stopPropagation()} aria-label={title + ' 型号'}><option>{option}</option></select>
+                <select className="mc-select" value={option} onChange={() => undefined} disabled aria-label={title + ' 型号'}><option>{option}</option></select>
               </button>
             ))}
           </div>

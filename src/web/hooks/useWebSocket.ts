@@ -12,6 +12,13 @@ import type { ServerMessage, ClientMessage } from '../../shared/types'
 let wsInstance: WebSocket | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let autoParamRequestPending = false
+
+function sendToServer(msg: ClientMessage) {
+  if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) return false
+  wsInstance.send(JSON.stringify(msg))
+  return true
+}
 
 function handleMessage(msg: ServerMessage) {
   const connStore = useConnectionStore.getState()
@@ -23,7 +30,14 @@ function handleMessage(msg: ServerMessage) {
     case 'connection':
       if (msg.data.connected) {
         connStore.setConnected(msg.data.port || '', msg.data.type || '')
+        // Wait for the first autopilot heartbeat before requesting parameters:
+        // the backend learns the actual target system/component IDs from that
+        // heartbeat, so the request cannot be sent to a stale/default target.
+        paramStore.clear()
+        paramStore.setLoading(true)
+        autoParamRequestPending = true
       } else {
+        autoParamRequestPending = false
         connStore.setDisconnected()
         // On link drop: mark telemetry data as stale (values are retained so
         // the UI can render them greyed-out, showing the last known state),
@@ -43,12 +57,22 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'status':
       telemetryStore.setStatus(msg.data)
+      if (autoParamRequestPending && sendToServer({ type: 'param_request_list' })) {
+        autoParamRequestPending = false
+        console.log('[FC] Automatic parameter download started')
+      }
       break
     case 'param':
       paramStore.addParam(msg.data)
       break
     case 'param_complete':
       paramStore.setParamComplete(msg.data.count)
+      break
+    case 'param_retry':
+      paramStore.setParamRetry(msg.data.attempt, msg.data.missing, msg.data.total)
+      break
+    case 'param_failed':
+      paramStore.setParamFailed(msg.data.received, msg.data.total)
       break
     case 'ekf_status':
       telemetryStore.setEkfStatus(msg.data)
@@ -193,9 +217,8 @@ export function useWebSocket() {
   }, [])
 
   const send = useCallback((msg: ClientMessage) => {
-    if (wsInstance && wsInstance.readyState === WebSocket.OPEN) {
-      wsInstance.send(JSON.stringify(msg))
-    }
+    if (msg.type === 'param_request_list') autoParamRequestPending = false
+    sendToServer(msg)
   }, [])
 
   return { send }

@@ -6,8 +6,20 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
-const tabs = [{ id: 'imu', label: 'IMU' }, { id: 'mag', label: '罗盘' }, { id: 'gps', label: 'GPS' }, { id: 'optflow', label: '光流' }, { id: 'rangefinder', label: '测距仪' }]
-type CalibrationType = 'accel' | 'gyro' | 'mag'
+const tabs = [{ id: 'imu', label: 'IMU' }, { id: 'mag', label: '罗盘' }, { id: 'baro', label: '气压计' }, { id: 'gps', label: 'GPS' }, { id: 'optflow', label: '光流' }, { id: 'rangefinder', label: '测距仪' }]
+type CalibrationType = 'accel' | 'gyro' | 'mag' | 'baro'
+
+const STANDARD_GRAVITY = 9.80665
+const RADIANS_TO_DEGREES = 180 / Math.PI
+const calibrationLabels: Record<CalibrationType, string> = {
+  accel: '加速度计',
+  gyro: '陀螺仪',
+  mag: '罗盘',
+  baro: '气压计',
+}
+
+const displayImuValue = (kind: 'accel' | 'gyro', value: number) =>
+  kind === 'accel' ? value * STANDARD_GRAVITY : value * RADIANS_TO_DEGREES
 
 function SensorChart({ kind }: { kind: 'accel' | 'gyro' }) {
   const [data, setData] = useState<Array<{ t: number; x: number; y: number; z: number }>>([])
@@ -17,9 +29,9 @@ function SensorChart({ kind }: { kind: 'accel' | 'gyro' }) {
       if (!imu) return
       setData((current) => [...current.slice(-89), {
         t: Date.now(),
-        x: kind === 'accel' ? imu.xacc : imu.xgyro,
-        y: kind === 'accel' ? imu.yacc : imu.ygyro,
-        z: kind === 'accel' ? imu.zacc : imu.zgyro,
+        x: displayImuValue(kind, kind === 'accel' ? imu.xacc : imu.xgyro),
+        y: displayImuValue(kind, kind === 'accel' ? imu.yacc : imu.ygyro),
+        z: displayImuValue(kind, kind === 'accel' ? imu.zacc : imu.zgyro),
       }])
     }, 200)
     return () => clearInterval(id)
@@ -52,6 +64,7 @@ export default function SensorPage() {
   const [calibrating, setCalibrating] = useState<CalibrationType | null>(null)
   const { send } = useWebSocket()
   const imu = useSensorStore((state) => state.imu)
+  const baro = useSensorStore((state) => state.baro)
   const mag = useSensorStore((state) => state.magData)
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const distance = useSensorStore((state) => state.distanceSensor)
@@ -59,12 +72,21 @@ export default function SensorPage() {
 
   const startCalibration = (type: CalibrationType) => {
     const params = [0, 0, 0, 0, 0, 0, 0]
-    if (type === 'accel') params[0] = 1
+    if (type === 'gyro') params[0] = 1
     if (type === 'mag') params[1] = 1
-    if (type === 'gyro') params[4] = 1
+    if (type === 'baro') params[2] = 1
+    if (type === 'accel') params[4] = 1
     setCalibrating(type)
     send({ type: 'command', cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
   }
+
+  const calibrationNotice = calibrating && (
+    <p>
+      <Icon name="refresh" size={14} />
+      已发送{calibrationLabels[calibrating]}校准指令，请按照飞控提示完成操作。
+      <button type="button" className="mc-btn mc-btn-ghost" onClick={() => setCalibrating(null)}>关闭提示</button>
+    </p>
+  )
 
   return (
     <div className="mc-workspace mc-fade-in mc-data-workspace">
@@ -83,25 +105,36 @@ export default function SensorPage() {
           <div className="mc-sensor-chart-grid">
             <section className="mc-card mc-sensor-chart-card">
               <header><strong>加速度计</strong><span>m/s²</span></header>
-              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu?.xacc ?? null} color="#ef5d7a" /><AxisValue axis="Y" value={imu?.yacc ?? null} color="#35bf78" /><AxisValue axis="Z" value={imu?.zacc ?? null} color="#4c92ef" /></div>
+              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('accel', imu.xacc) : null} color="#ef5d7a" /><AxisValue axis="Y" value={imu ? displayImuValue('accel', imu.yacc) : null} color="#35bf78" /><AxisValue axis="Z" value={imu ? displayImuValue('accel', imu.zacc) : null} color="#4c92ef" /></div>
               <SensorChart kind="accel" />
             </section>
             <section className="mc-card mc-sensor-chart-card">
               <header><strong>陀螺仪</strong><span>°/s</span></header>
-              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu?.xgyro ?? null} color="#f28b35" /><AxisValue axis="Y" value={imu?.ygyro ?? null} color="#a96fe7" /><AxisValue axis="Z" value={imu?.zgyro ?? null} color="#22b8c7" /></div>
+              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('gyro', imu.xgyro) : null} color="#f28b35" /><AxisValue axis="Y" value={imu ? displayImuValue('gyro', imu.ygyro) : null} color="#a96fe7" /><AxisValue axis="Z" value={imu ? displayImuValue('gyro', imu.zgyro) : null} color="#22b8c7" /></div>
               <SensorChart kind="gyro" />
             </section>
           </div>
 
           <section className="mc-card mc-calibration-bar">
             <h2>校准</h2>
-            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={calibrating !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={calibrating !== null}>校准水平</button><button type="button" className="mc-btn mc-btn-ghost" style={{ color: 'var(--warning)', borderColor: 'color-mix(in srgb, var(--warning) 40%, var(--border))' }} disabled>重启飞控</button></div>
-            {calibrating && <p><Icon name="refresh" size={14} /> 已发送{calibrating === 'accel' ? '加速度计' : '水平'}校准指令，请按照飞控提示完成操作。</p>}
+            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={calibrating !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={calibrating !== null}>校准陀螺仪</button><button type="button" className="mc-btn mc-btn-ghost" style={{ color: 'var(--warning)', borderColor: 'color-mix(in srgb, var(--warning) 40%, var(--border))' }} disabled>重启飞控</button></div>
+            {calibrationNotice}
           </section>
         </>
       )}
 
-      {activeTab === 'mag' && <SensorStatusCard title="罗盘" values={[["磁场 X", mag?.x.toFixed(2) ?? '—'], ["磁场 Y", mag?.y.toFixed(2) ?? '—'], ["磁场 Z", mag?.z.toFixed(2) ?? '—'], ["校准状态", mag ? '数据正常' : '等待数据']]} />}
+      {activeTab === 'mag' && (
+        <>
+          <SensorStatusCard title="罗盘" values={[["磁场 X", mag?.x.toFixed(2) ?? '—'], ["磁场 Y", mag?.y.toFixed(2) ?? '—'], ["磁场 Z", mag?.z.toFixed(2) ?? '—'], ["校准状态", mag ? '数据正常' : '等待数据']]} />
+          <section className="mc-card mc-calibration-bar"><h2>罗盘校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('mag')} disabled={calibrating !== null}>开始罗盘校准</button></div>{calibrationNotice}</section>
+        </>
+      )}
+      {activeTab === 'baro' && (
+        <>
+          <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro ? `${baro.temperature.toFixed(1)} °C` : '—'], ["气压高度", baro ? `${baro.altitude.toFixed(1)} m` : '—']]} />
+          <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={calibrating !== null}>开始气压计校准</button></div>{calibrationNotice}</section>
+        </>
+      )}
       {activeTab === 'gps' && <SensorStatusCard title="GPS" values={[["定位类型", gps ? String(gps.fix_type) : '—'], ["卫星数量", gps ? String(gps.satellites_visible) : '—'], ["水平精度", gps ? String(gps.eph) : '—'], ["状态", gps && gps.fix_type >= 3 ? '定位正常' : '未定位']]} />}
       {activeTab === 'optflow' && <SensorStatusCard title="光流" values={[["Flow X", opticalFlow?.flow_x.toFixed(3) ?? '—'], ["Flow Y", opticalFlow?.flow_y.toFixed(3) ?? '—'], ["质量", opticalFlow ? `${opticalFlow.quality} / 255` : '—'], ["离地距离", opticalFlow ? `${opticalFlow.ground_distance.toFixed(2)} m` : '—']]} />}
       {activeTab === 'rangefinder' && <SensorStatusCard title="测距仪" values={[["当前距离", distance ? `${distance.current_distance} cm` : '—'], ["最小量程", distance ? `${distance.min_distance} cm` : '—'], ["最大量程", distance ? `${distance.max_distance} cm` : '—'], ["信号质量", distance ? String(distance.signal_quality) : '—']]} />}

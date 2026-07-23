@@ -1,5 +1,6 @@
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import ConnectDialog from './components/ConnectDialog'
+import ParameterProgressBar from './components/layout/ParameterProgressBar'
 import Sidebar from './components/layout/Sidebar'
 import StatusBar from './components/layout/StatusBar'
 import TelemetryBar from './components/layout/TelemetryBar'
@@ -28,6 +29,7 @@ export default function App() {
     <HashRouter>
       <div className="mc-app-shell">
         <Topbar />
+        <ParameterProgressBar />
         <TelemetryBar />
         <div className="mc-app-shell__body">
           <Sidebar />

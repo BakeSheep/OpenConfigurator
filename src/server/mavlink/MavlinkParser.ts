@@ -9,7 +9,7 @@ const MAVLINK_STX_V1 = 0xfe
 const BASE_PAYLOAD_LENGTH: Record<number, number> = {
   0: 9, 1: 31, 22: 25, 24: 30, 26: 24, 27: 29, 29: 14, 30: 28,
   33: 28, 36: 21, 65: 42, 74: 20, 77: 3, 106: 44, 132: 14,
-  147: 36, 230: 44, 245: 2, 253: 51,
+  147: 36, 148: 60, 230: 44, 245: 2, 253: 51,
 }
 
 // CRC extras for common message types.

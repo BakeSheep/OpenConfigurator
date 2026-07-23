@@ -133,6 +133,8 @@ export type ServerMessage =
   | { type: 'sensor'; msgType: string; data: any }
   | { type: 'param'; data: ParamData }
   | { type: 'param_complete'; data: { count: number } }
+  | { type: 'param_retry'; data: { attempt: number; missing: number; total: number } }
+  | { type: 'param_failed'; data: { received: number; total: number } }
   | { type: 'status'; data: VehicleStatus }
   | { type: 'connection'; data: { connected: boolean; port?: string; type?: string } }
   | { type: 'command_ack'; data: { command: number; result: number } }

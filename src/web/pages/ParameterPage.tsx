@@ -13,8 +13,8 @@ export default function ParameterPage() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
   const requestParams = () => {
-    useParameterStore.getState().setLoading(true)
     useParameterStore.getState().clear()
+    useParameterStore.getState().setLoading(true)
     send({ type: 'param_request_list' })
   }
 
@@ -36,11 +36,14 @@ export default function ParameterPage() {
   }, [filteredParams])
 
   const saveParam = (id: string) => {
-    const value = Number.parseFloat(editValue)
-    if (!Number.isFinite(value)) return
     const param = params.get(id)
-    send({ type: 'param_set', data: { id, value, paramType: param?.type ?? 9 } })
-    useParameterStore.getState().updateParam(id, value)
+    if (!param) return
+    const parsedValue = Number.parseFloat(editValue)
+    if (!Number.isFinite(parsedValue)) return
+    const value = param.type >= 1 && param.type <= 8
+      ? Math.trunc(parsedValue)
+      : parsedValue
+    send({ type: 'param_set', data: { id, value, paramType: param.type } })
     setEditId(null)
   }
 
@@ -66,7 +69,7 @@ export default function ParameterPage() {
               <Icon name="refresh" size={15} />刷新参数
             </button>
             <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={loading}>
-              <Icon name="download" size={15} />{loading ? receivedCount + '/' + totalCount : '加载参数'}
+              <Icon name="download" size={15} />{loading ? receivedCount + '/' + totalCount : '重新读取'}
             </button>
             <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
             <button type="button" className="mc-btn mc-btn-danger" disabled title="恢复默认需要独立安全确认流程">恢复默认参数</button>
