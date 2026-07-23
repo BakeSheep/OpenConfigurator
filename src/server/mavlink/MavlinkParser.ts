@@ -7,9 +7,9 @@ const MAVLINK_STX_V1 = 0xfe
 // MAVLink 2 removes trailing zero bytes from payloads. Decoders must restore
 // the message's base payload length before reading fixed offsets.
 const BASE_PAYLOAD_LENGTH: Record<number, number> = {
-  0: 9, 1: 31, 22: 25, 24: 30, 26: 22, 27: 26, 29: 14, 30: 28,
+  0: 9, 1: 31, 22: 25, 24: 30, 26: 24, 27: 29, 29: 14, 30: 28,
   33: 28, 36: 21, 65: 42, 74: 20, 77: 3, 106: 44, 132: 14,
-  147: 36, 230: 42, 245: 2, 253: 51,
+  147: 36, 230: 44, 245: 2, 253: 51,
 }
 
 // CRC extras for common message types.
@@ -116,10 +116,21 @@ export class MavlinkParser {
 
         if (this.buffer.length < totalLen) break
 
+        const msgId = this.buffer[7] | (this.buffer[8] << 8) | (this.buffer[9] << 16)
+        const crcExtra = CRC_EXTRA[msgId]
+        if (crcExtra !== undefined) {
+          const crcData = this.buffer.subarray(1, 10 + payloadLen)
+          const calcCrc = this.crc16(crcData, crcExtra)
+          const recvCrc = this.buffer[10 + payloadLen] | (this.buffer[10 + payloadLen + 1] << 8)
+          if (calcCrc !== recvCrc) {
+            this.buffer = this.buffer.subarray(1)
+            continue
+          }
+        }
+
         const seq = this.buffer[4]
         const sysId = this.buffer[5]
         const compId = this.buffer[6]
-        const msgId = this.buffer[7] | (this.buffer[8] << 8) | (this.buffer[9] << 16)
         const payload = this.restoreV2Payload(msgId, this.buffer.subarray(10, 10 + payloadLen))
 
         messages.push({ msgId, payload: Buffer.from(payload), seq, sysId, compId })
@@ -133,10 +144,21 @@ export class MavlinkParser {
 
         if (this.buffer.length < totalLen) break
 
+        const msgId = this.buffer[5]
+        const crcExtra = CRC_EXTRA[msgId]
+        if (crcExtra !== undefined) {
+          const crcData = this.buffer.subarray(1, 6 + payloadLen)
+          const calcCrc = this.crc16(crcData, crcExtra)
+          const recvCrc = this.buffer[6 + payloadLen] | (this.buffer[6 + payloadLen + 1] << 8)
+          if (calcCrc !== recvCrc) {
+            this.buffer = this.buffer.subarray(1)
+            continue
+          }
+        }
+
         const seq = this.buffer[2]
         const sysId = this.buffer[3]
         const compId = this.buffer[4]
-        const msgId = this.buffer[5]
         const payload = this.buffer.subarray(6, 6 + payloadLen)
 
         messages.push({ msgId, payload: Buffer.from(payload), seq, sysId, compId })

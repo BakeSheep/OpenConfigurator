@@ -86,9 +86,7 @@ function SignalStrip({ title, labels, values, motor = false, connected }: {
       <div className="grid grid-cols-4 gap-2 p-4 sm:grid-cols-6 xl:grid-cols-12">
         {labels.map((label, index) => {
           const raw = values[index] ?? 0
-          const normalized = motor
-            ? Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
-            : Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
+          const normalized = Math.max(0, Math.min(100, raw > 0 ? (raw - 1000) / 10 : 0))
           return (
             <div key={label} className="flex min-w-0 flex-col items-center gap-2">
               <span className="text-[10px]" style={{ color: 'var(--text-disabled)' }}>{raw > 0 ? Math.round(raw) : '—'}</span>

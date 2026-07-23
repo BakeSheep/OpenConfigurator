@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
+import { useConnectionStore } from '../stores/connectionStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 
 const motors = [
@@ -12,6 +13,7 @@ const motors = [
 
 export default function MotorPage() {
   const { send } = useWebSocket()
+  const connected = useConnectionStore((state) => state.status === 'connected')
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
   const [activeMotor, setActiveMotor] = useState<number | null>(null)
   const [throttle, setThrottle] = useState(0)
@@ -32,7 +34,7 @@ export default function MotorPage() {
       <PageHeader title="电机设置" description="验证电机编号、旋转方向与输出响应" />
 
       <label className="mb-5 flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3" style={{ borderColor: 'color-mix(in srgb, var(--danger) 32%, var(--border))', background: 'var(--danger-dim)' }}>
-        <input type="checkbox" checked={safetyConfirmed} onChange={(event) => setSafetyConfirmed(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--danger)' }} />
+        <input type="checkbox" checked={safetyConfirmed} onChange={(event) => { const checked = event.target.checked; setSafetyConfirmed(checked); if (checked && activeMotor === null) setActiveMotor(0); }} className="h-4 w-4 rounded" style={{ accentColor: 'var(--danger)' }} />
         <span className="grid h-8 w-8 place-items-center rounded-lg" style={{ background: 'var(--bg-secondary)', color: 'var(--danger)' }}><Icon name="warning" size={17} /></span>
         <span>
           <span className="block text-[13px] font-bold" style={{ color: 'var(--danger)' }}>我已移除所有螺旋桨，确认测试安全</span>
@@ -90,16 +92,16 @@ export default function MotorPage() {
               <div className="mt-2 flex justify-between text-[10px]" style={{ color: 'var(--text-disabled)' }}><span>0%</span><span>安全低速测试</span><span>100%</span></div>
             </div>
             <div className="grid grid-cols-[1fr_auto] gap-3">
-              <button type="button" className="mc-btn mc-btn-primary min-h-11" disabled={!safetyConfirmed || activeMotor === null} onClick={() => activeMotor !== null && testMotor(activeMotor, throttle)}>
-                <Icon name="motor" size={16} />测试 M{activeMotor === null ? '?' : activeMotor + 1}
+              <button type="button" className="mc-btn mc-btn-primary min-h-11" disabled={!connected || !safetyConfirmed || activeMotor === null} onClick={() => activeMotor !== null && testMotor(activeMotor, throttle)}>
+                <Icon name="motor" size={16} />{!connected ? '未连接飞控' : !safetyConfirmed ? '请先勾选安全确认' : activeMotor === null ? '请选择电机' : '测试 M' + (activeMotor + 1)}
               </button>
-              <button type="button" className="mc-btn mc-btn-danger min-h-11" disabled={!safetyConfirmed} onClick={stopAll}>停止全部</button>
+              <button type="button" className="mc-btn mc-btn-danger min-h-11" disabled={!connected || !safetyConfirmed} onClick={stopAll}>停止全部</button>
             </div>
             <div className="border-t pt-5" style={{ borderColor: 'var(--border)' }}>
               <p className="mc-section-title mb-3">顺序验证</p>
               <div className="grid grid-cols-4 gap-2">
                 {motors.map((_, index) => (
-                  <button key={index} type="button" className="mc-btn mc-btn-ghost" disabled={!safetyConfirmed} onClick={() => testMotor(index, 15)}>M{index + 1}</button>
+                  <button key={index} type="button" className="mc-btn mc-btn-ghost" disabled={!connected || !safetyConfirmed} onClick={() => testMotor(index, 15)}>M{index + 1}</button>
                 ))}
               </div>
             </div>

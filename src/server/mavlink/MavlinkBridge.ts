@@ -20,33 +20,35 @@ export class MavlinkBridge extends EventEmitter {
   private requestedOutputStream = false
   private paramExpectedCount = 0
   private paramIds = new Set<string>()
+  private targetSysId = 1
+  private targetCompId = 1
+
+  private onData = (data: Buffer) => {
+    const messages = this.parser.parse(data)
+    for (const msg of messages) {
+      try {
+        this.handleMessage(msg)
+      } catch (err) {
+        console.error('[MAVLink] handler error for msgId', msg.msgId, err)
+      }
+    }
+  }
+
+  private onStatusChange = (status: string) => {
+    if (status === 'connected') {
+      this.requestedOutputStream = false
+      this.startHeartbeat()
+    } else {
+      this.requestedOutputStream = false
+      this.stopHeartbeat()
+    }
+  }
 
   constructor(connManager: ConnectionManager) {
     super()
     this.connManager = connManager
-
-    this.connManager.on('data', (data: Buffer) => {
-      const messages = this.parser.parse(data)
-      for (const msg of messages) {
-        // A single malformed frame must not kill the entire batch - the next
-        // valid frame would otherwise be lost until the buffer refills.
-        try {
-          this.handleMessage(msg)
-        } catch (err) {
-          console.error('[MAVLink] handler error for msgId', msg.msgId, err)
-        }
-      }
-    })
-
-    this.connManager.on('statusChange', (status: string) => {
-      if (status === 'connected') {
-        this.requestedOutputStream = false
-        this.startHeartbeat()
-      } else {
-        this.requestedOutputStream = false
-        this.stopHeartbeat()
-      }
-    })
+    this.connManager.on('data', this.onData)
+    this.connManager.on('statusChange', this.onStatusChange)
   }
 
   private startHeartbeat() {
@@ -142,10 +144,12 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleHeartbeat(msg: MavlinkMessage) {
-    // This is the autopilot liveness signal - notify the connection manager so
-    // its heartbeat-timeout monitor resets. Raw serial bytes are NOT sufficient
-    // because a FC can stall mid-stream while the COM port stays open.
+    if (msg.payload.length < 8) return
     this.connManager.notifyAutopilotHeartbeat()
+    if (msg.sysId > 0 && msg.sysId < 255) {
+      this.targetSysId = msg.sysId
+      this.targetCompId = msg.compId
+    }
 
     const customMode = msg.payload.readUInt32LE(0)
     const baseMode = msg.payload[6]
@@ -192,6 +196,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleSysStatus(msg: MavlinkMessage) {
+    if (msg.payload.length < 31) return
     const voltageBattery = msg.payload.readUInt16LE(14) / 1000
     const currentBattery = msg.payload.readInt16LE(16) / 100
     const batteryRemaining = msg.payload.readInt8(30)
@@ -203,6 +208,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleGps(msg: MavlinkMessage) {
+    if (msg.payload.length < 30) return
     const data = {
       fix_type: msg.payload[28],
       lat: msg.payload.readInt32LE(8) / 1e7,
@@ -218,6 +224,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleScaledImu(msg: MavlinkMessage) {
+    if (msg.payload.length < 22) return
     const data = {
       xacc: msg.payload.readInt16LE(4) / 1000,
       yacc: msg.payload.readInt16LE(6) / 1000,
@@ -234,6 +241,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleRawImu(msg: MavlinkMessage) {
+    if (msg.payload.length < 26) return
     const data = {
       xacc: msg.payload.readInt16LE(8),
       yacc: msg.payload.readInt16LE(10),
@@ -250,6 +258,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleScaledPressure(msg: MavlinkMessage) {
+    if (msg.payload.length < 14) return
     const data = {
       press_abs: msg.payload.readFloatLE(4),
       press_diff: msg.payload.readFloatLE(8),
@@ -260,6 +269,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleAttitude(msg: MavlinkMessage) {
+    if (msg.payload.length < 28) return
     const data = {
       time_boot_ms: msg.payload.readUInt32LE(0),
       roll: msg.payload.readFloatLE(4),
@@ -273,6 +283,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleGlobalPosition(msg: MavlinkMessage) {
+    if (msg.payload.length < 28) return
     const data = {
       lat: msg.payload.readInt32LE(4) / 1e7,
       lon: msg.payload.readInt32LE(8) / 1e7,
@@ -305,6 +316,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleVfrHud(msg: MavlinkMessage) {
+    if (msg.payload.length < 20) return
     const finite = (value: number) => Number.isFinite(value) ? value : 0
     const data = {
       airspeed: finite(msg.payload.readFloatLE(0)),
@@ -318,6 +330,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleCommandAck(msg: MavlinkMessage) {
+    if (msg.payload.length < 3) return
     const data = {
       command: msg.payload.readUInt16LE(0),
       result: msg.payload[2],
@@ -326,6 +339,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleOpticalFlow(msg: MavlinkMessage) {
+    if (msg.payload.length < 44) return
     const data = {
       sensor_id: msg.payload[42],
       flow_x: msg.payload.readFloatLE(12),
@@ -339,6 +353,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleDistanceSensor(msg: MavlinkMessage) {
+    if (msg.payload.length < 13) return
     const data = {
       min_distance: msg.payload.readUInt16LE(4),
       max_distance: msg.payload.readUInt16LE(6),
@@ -374,6 +389,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleEstimatorStatus(msg: MavlinkMessage) {
+    if (msg.payload.length < 42) return
     // ESTIMATOR_STATUS (msg #230). The previous code read `health_flags` AND
     // `control_mode_flags` from the SAME offset 40 - a duplicate read bug.
     // ESTIMATOR_STATUS has no `control_mode_flags` field; the EkfStatusData
@@ -396,6 +412,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleParamValue(msg: MavlinkMessage) {
+    if (msg.payload.length < 25) return
     const value = msg.payload.readFloatLE(0)
     const paramCount = msg.payload.readUInt16LE(4)
     const paramIndex = msg.payload.readUInt16LE(6)
@@ -421,6 +438,7 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleStatustext(msg: MavlinkMessage) {
+    if (msg.payload.length < 2) return
     const severity = msg.payload[0]
     const text = msg.payload.subarray(1).toString('ascii').replace(/\0/g, '')
     this.emit('message', { type: 'statustext', data: { severity, text } } as ServerMessage)
@@ -457,8 +475,8 @@ export class MavlinkBridge extends EventEmitter {
       payload.writeFloatLE(params[i], i * 4)
     }
     payload.writeUInt16LE(cmdId, 28) // command
-    payload.writeUInt8(1, 30)       // target_system
-    payload.writeUInt8(1, 31)       // target_component
+    payload.writeUInt8(this.targetSysId, 30)       // target_system
+    payload.writeUInt8(this.targetCompId, 31)      // target_component
     payload.writeUInt8(0, 32)       // confirmation
     const encoded = this.parser.encode(76, payload)
     this.connManager.write(encoded)
@@ -468,8 +486,8 @@ export class MavlinkBridge extends EventEmitter {
     // PARAM_SET (msg #23)
     const payload = Buffer.alloc(23)
     payload.writeFloatLE(value, 0)
-    payload.writeUInt8(1, 4)  // target_system
-    payload.writeUInt8(1, 5)  // target_component
+    payload.writeUInt8(this.targetSysId, 4)  // target_system
+    payload.writeUInt8(this.targetCompId, 5)  // target_component
     const idBuf = Buffer.alloc(16)
     Buffer.from(id, 'ascii').copy(idBuf)
     idBuf.copy(payload, 6)
@@ -484,8 +502,8 @@ export class MavlinkBridge extends EventEmitter {
     this.paramIds.clear()
     // PARAM_REQUEST_LIST (msg #21)
     const payload = Buffer.alloc(2)
-    payload.writeUInt8(1, 0)  // target_system
-    payload.writeUInt8(1, 1)  // target_component
+    payload.writeUInt8(this.targetSysId, 0)  // target_system
+    payload.writeUInt8(this.targetCompId, 1)  // target_component
     const encoded = this.parser.encode(21, payload)
     this.connManager.write(encoded)
   }
@@ -501,8 +519,8 @@ export class MavlinkBridge extends EventEmitter {
       data.ch17 || 0, data.ch18 || 0,
     ]
     for (let i = 0; i < 8; i++) payload.writeUInt16LE(channels[i], i * 2)
-    payload.writeUInt8(1, 16)  // target_system
-    payload.writeUInt8(1, 17)  // target_component
+    payload.writeUInt8(this.targetSysId, 16)  // target_system
+    payload.writeUInt8(this.targetCompId, 17)  // target_component
     for (let i = 8; i < 18; i++) payload.writeUInt16LE(channels[i], 18 + (i - 8) * 2)
     const encoded = this.parser.encode(70, payload)
     this.connManager.write(encoded)
@@ -526,8 +544,7 @@ export class MavlinkBridge extends EventEmitter {
 
   destroy() {
     this.stopHeartbeat()
-    // Remove the listeners this bridge attached to connManager so a discarded
-    // bridge cannot leak handlers onto a long-lived singleton.
-    this.connManager.removeAllListeners()
+    this.connManager.off('data', this.onData)
+    this.connManager.off('statusChange', this.onStatusChange)
   }
 }

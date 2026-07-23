@@ -72,6 +72,9 @@ const truncatedVfrFrame = Buffer.concat([
   fullVfrFrame.subarray(fullVfrFrame.length - 2),
 ])
 truncatedVfrFrame[1] = 16
+const crc = (parser as any).crc16(Buffer.concat([truncatedVfrFrame.subarray(1, 10), truncatedVfrFrame.subarray(10, 26)]), 20)
+truncatedVfrFrame[26] = crc & 0xff
+truncatedVfrFrame[27] = (crc >> 8) & 0xff
 const [vfrMessage] = parser.parse(truncatedVfrFrame)
 assert.equal(vfrMessage.payload.length, 20)
 ;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage(vfrMessage)
