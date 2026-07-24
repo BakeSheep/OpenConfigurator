@@ -82,11 +82,22 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     sensorHealth: { ...state.sensorHealth, opticalFlow: data.quality > 0 ? 'ok' : 'warning' },
     lastUpdate: { ...state.lastUpdate, opticalFlow: Date.now() },
   })),
-  setDistanceSensor: (data) => set((state) => ({
-    distanceSensor: data,
-    sensorHealth: { ...state.sensorHealth, rangefinder: 'ok' },
-    lastUpdate: { ...state.lastUpdate, distanceSensor: Date.now() },
-  })),
+  setDistanceSensor: (data) => set((state) => {
+    const withinRange = data.current_distance >= data.min_distance
+      && data.current_distance <= data.max_distance
+    // MAVLink: signal_quality=1 is invalid and 0 means unknown/unset. When
+    // quality is unknown, a value pinned to either range limit is treated as
+    // warning because it commonly represents saturation/no return.
+    const signalUsable = data.signal_quality > 1
+      || (data.signal_quality === 0
+        && data.current_distance > data.min_distance
+        && data.current_distance < data.max_distance)
+    return {
+      distanceSensor: data,
+      sensorHealth: { ...state.sensorHealth, rangefinder: withinRange && signalUsable ? 'ok' : 'warning' },
+      lastUpdate: { ...state.lastUpdate, distanceSensor: Date.now() },
+    }
+  }),
   setMag: (data) => set({ magData: data }),
   setSensorHealth: (sensor, status) => set((state) => ({
     sensorHealth: { ...state.sensorHealth, [sensor]: status },

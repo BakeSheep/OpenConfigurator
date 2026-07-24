@@ -40,6 +40,10 @@ export interface SysStatusData {
   sensorsHealthy: boolean | null
   /** null means the autopilot does not expose MAV_SYS_STATUS_PREARM_CHECK. */
   preflightCheck: boolean | null
+  /** Enabled MAV_SYS_STATUS_SENSOR bits that the autopilot reports unhealthy. */
+  unhealthySensorMask: number
+  /** Human-readable names for unhealthy enabled systems (for example RC input). */
+  unhealthySensors: string[]
 }
 
 export interface ImuData {
@@ -144,6 +148,19 @@ export interface RcChannelsData {
   ch18?: number
 }
 
+export interface ManualControlData {
+  /** Pitch command in the MAVLink MANUAL_CONTROL range [-1000, 1000]. */
+  x: number
+  /** Roll command in the MAVLink MANUAL_CONTROL range [-1000, 1000]. */
+  y: number
+  /** Throttle command in the MAVLink MANUAL_CONTROL range [0, 1000]. */
+  z: number
+  /** Yaw command in the MAVLink MANUAL_CONTROL range [-1000, 1000]. */
+  r: number
+  /** Optional gamepad button bitmask. */
+  buttons?: number
+}
+
 export interface MotorOutputData {
   time_usec: number
   port: number
@@ -156,6 +173,7 @@ export type ServerMessage =
   | { type: 'telemetry'; msgType: string; data: any }
   | { type: 'sensor'; msgType: string; data: any }
   | { type: 'param'; data: ParamData }
+  | { type: 'param_batch'; data: ParamData[] }
   | { type: 'param_complete'; data: { count: number } }
   | { type: 'param_retry'; data: { attempt: number; missing: number; total: number } }
   | { type: 'param_failed'; data: { received: number; total: number } }
@@ -173,7 +191,7 @@ export type ClientMessage =
   | { type: 'command'; cmd: string; params: number[] }
   | { type: 'param_set'; data: { id: string; value: number; paramType: number } }
   | { type: 'param_request_list' }
-  | { type: 'rc_channels_override'; data: RcChannelsData }
+  | { type: 'manual_control'; data: ManualControlData }
   | { type: 'motor_test'; data: { instance: number; throttle: number; duration: number } }
 
 export interface PortInfo {

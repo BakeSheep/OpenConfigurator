@@ -6,7 +6,7 @@ Web-based PX4 ground control station. Browser SPA talks to a local Node.js backe
 
 - Frontend: React 19 + TypeScript + Vite 8 + Tailwind CSS 4 (dark-first, MicoAir-style design system in `src/web/index.css`)
 - 3D: three.js + @react-three/fiber · Charts: recharts · State: zustand · Routing: react-router (HashRouter)
-- Backend: Node.js + Express 5 + ws · Serial: serialport · MAVLink: hand-rolled v1/v2 parser in `src/server/mavlink/`
+- Backend: Node.js + Express 5 + ws · Serial: serialport · MAVLink: node-mavlink (v1/v2 parse + serialize) wrapped by `src/server/mavlink/codec.ts`
 
 ## Layout
 
@@ -16,7 +16,7 @@ src/
   server/         # Node.js backend (NOT bundled by Vite - runs via tsx)
     index.ts                    # Express + WS server on :3000, serves dist/ in prod, SPA fallback
     connection/                 # ConnectionManager, SerialConnection, BluetoothConnection
-    mavlink/                    # MavlinkParser (v1/v2 framing + CRC), MavlinkBridge (msg handlers + WS bridge)
+    mavlink/                    # codec.ts (node-mavlink wrapper: decode/serialize), MavlinkBridge (msg handlers + WS bridge)
   web/            # React SPA (bundled by Vite)
     main.tsx, App.tsx           # Entry + routes (8 pages under pages/)
     hooks/useWebSocket.ts       # Single WS connection + message dispatch to stores
@@ -46,7 +46,7 @@ Dev proxy: Vite proxies `/api` and `/ws` to `http://localhost:3000` (see `vite.c
 - **Server code never imports from `src/web/`** and vice versa; both go through `src/shared/`.
 - **Single WebSocket.** `useWebSocket` is mounted once in `App.tsx`, owns the connection, and dispatches `ServerMessage`s into zustand stores. Pages/components read from stores, never open their own sockets.
 - **Message protocol** is the `ServerMessage` / `ClientMessage` union in `src/shared/types.ts`. Adding a message type means updating that union AND the dispatch in `useWebSocket.handleMessage` AND the emit in `MavlinkBridge`.
-- **MAVLink framing** is hand-rolled (no lib). `MavlinkParser` handles v1/v2 + CRC; `CRC_EXTRA` table must match the message IDs handled in `MavlinkBridge.handleMessage`. When adding a message handler, verify the msg ID, CRC extra, and payload field offsets against the MAVLink common.xml spec — several offsets here are subtle (e.g. RC_CHANNELS channels start at payload offset 5, after time_boot_ms(4)+chancount(1)).
+- **MAVLink** goes through `src/server/mavlink/codec.ts`, a thin node-mavlink wrapper. `decode(msgId, payload)` returns typed message objects (zero-trimmed v2 payloads are padded to full length) and `serialize(msg)` frames outbound messages with the GCS identity (sysid 255 / compid 190) + auto seq. node-mavlink owns framing, CRC and wire offsets — there is no hand-maintained `CRC_EXTRA`/offset table anymore. To handle a new message: pick the class from the merged `REGISTRY` (`minimal + standard + common`; note AUTOPILOT_VERSION #148 lives in `standard`, not `common`), add a `handleXxx` in `MavlinkBridge`, then wire the emit + `useWebSocket` dispatch. Ingest is a stream: bytes → `splitter` → `parser` → `onPacket`.
 
 ## Conventions
 
@@ -63,5 +63,5 @@ Dev proxy: Vite proxies `/api` and `/ws` to `http://localhost:3000` (see `vite.c
 - **Web Serial** requires Chrome/Edge 89+ over HTTPS or localhost. `navigator.serial.requestPort()` is used for both USB and BT SPP device selection.
 - **Safety-critical UI**: arming requires double-click confirmation (3s timeout, see `FlightControlPage`); motor test requires an explicit "props removed" checkbox (`MotorPage`); joystick RC override must be manually enabled. Preserve these guards.
 - **`MAV_CMD_DO_MOTOR_TEST` instance is 1-based** (motor 1..N), not 0-based.
-- **MAVLink msg #245 = EXTENDED_SYS_STATE**, #241 = AUTOPILOT_VERSION. Several comments in the codebase previously confused these.
+- **MAVLink msg #245 = EXTENDED_SYS_STATE, #148 = AUTOPILOT_VERSION** (AUTOPILOT_VERSION now resolves via node-mavlink's `standard` dialect, which is why `codec.ts` merges `minimal + standard + common`). node-mavlink resolves ids/offsets, so the old hand-offset confusion no longer applies.
 - `HANDOVER.md` documents intended architecture and UI design tokens — consult it for design decisions, but trust the code over the doc where they differ.

@@ -43,6 +43,14 @@ function queueParam(param: ParamData) {
   }
 }
 
+function queueParams(params: ParamData[]) {
+  if (params.length === 0) return
+  paramBatch.push(...params)
+  if (!paramFlushTimer) {
+    paramFlushTimer = setTimeout(flushParamBatch, 160)
+  }
+}
+
 function sendToServer(msg: ClientMessage) {
   if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) return false
   wsInstance.send(JSON.stringify(msg))
@@ -96,14 +104,19 @@ function handleMessage(msg: ServerMessage) {
     case 'param':
       queueParam(msg.data)
       break
+    case 'param_batch':
+      queueParams(msg.data)
+      break
     case 'param_complete':
       flushParamBatch()
       paramStore.setParamComplete(msg.data.count)
       break
     case 'param_retry':
+      flushParamBatch()
       paramStore.setParamRetry(msg.data.attempt, msg.data.missing, msg.data.total)
       break
     case 'param_failed':
+      flushParamBatch()
       paramStore.setParamFailed(msg.data.received, msg.data.total)
       break
     case 'ekf_status':

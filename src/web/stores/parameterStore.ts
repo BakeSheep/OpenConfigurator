@@ -9,6 +9,7 @@ interface ParameterState {
   retryCount: number
   missingCount: number
   error: string | null
+  receivedIndices: Set<number>
   addParam: (param: ParamData) => void
   addParams: (params: ParamData[]) => void
   setParamComplete: (count: number) => void
@@ -26,24 +27,44 @@ export const useParameterStore = create<ParameterState>((set) => ({
   retryCount: 0,
   missingCount: 0,
   error: null,
+  receivedIndices: new Set(),
   addParam: (param) => set((state) => {
     const newMap = new Map(state.params)
     newMap.set(param.id, param)
-    return { params: newMap, receivedCount: newMap.size, totalCount: param.param_count }
+    const receivedIndices = new Set(state.receivedIndices)
+    const hasValidListIndex = param.param_index >= 0 && param.param_index < param.param_count
+    const totalCount = state.totalCount || (
+      hasValidListIndex && param.param_count > 0 && param.param_count < 0xffff
+        ? param.param_count
+        : 0
+    )
+    if (totalCount > 0 && param.param_index < totalCount) receivedIndices.add(param.param_index)
+    return { params: newMap, receivedIndices, receivedCount: receivedIndices.size, totalCount }
   }),
   addParams: (params) => set((state) => {
     if (params.length === 0) return state
     const newMap = new Map(state.params)
+    const receivedIndices = new Set(state.receivedIndices)
     let totalCount = state.totalCount
     for (const param of params) {
       newMap.set(param.id, param)
-      totalCount = Math.max(totalCount, param.param_count)
+      if (
+        totalCount === 0
+        && param.param_count > 0
+        && param.param_count < 0xffff
+        && param.param_index >= 0
+        && param.param_index < param.param_count
+      ) {
+        totalCount = param.param_count
+      }
+      if (totalCount > 0 && param.param_index < totalCount) receivedIndices.add(param.param_index)
     }
-    return { params: newMap, receivedCount: newMap.size, totalCount }
+    return { params: newMap, receivedIndices, receivedCount: receivedIndices.size, totalCount }
   }),
   setParamComplete: (count) => set({
     loading: false,
     totalCount: count,
+    receivedCount: count,
     retryCount: 0,
     missingCount: 0,
     error: null,
@@ -76,5 +97,6 @@ export const useParameterStore = create<ParameterState>((set) => ({
     retryCount: 0,
     missingCount: 0,
     error: null,
+    receivedIndices: new Set(),
   }),
 }))

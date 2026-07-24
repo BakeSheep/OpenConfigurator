@@ -1,15 +1,55 @@
 import { EventEmitter } from 'events'
-import { MavlinkParser, type MavlinkMessage } from './MavlinkParser'
+import {
+  common,
+  minimal,
+  standard,
+  decode,
+  serialize,
+  createPacketStream,
+  type MavlinkMessage,
+} from './codec'
+import type { MavLinkPacket } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
 import { MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
-import type { ServerMessage, ClientMessage, RcChannelsData } from '../../shared/types'
+import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
 
-const PARAM_STALL_TIMEOUT_MS = 1500
-const PARAM_RETRY_BATCH_SIZE = 32
-const PARAM_MAX_STALL_RETRIES = 5
+const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
+const BLUETOOTH_PARAM_STALL_TIMEOUT_MS = 3500
+const SERIAL_PARAM_RETRY_BATCH_SIZE = 16
+const BLUETOOTH_PARAM_RETRY_BATCH_SIZE = 4
+const PARAM_MAX_STALL_RETRIES = 12
 const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE = 16n
 const MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_C_CAST = 131072n
 type ParamEncoding = 'bytewise' | 'c-cast'
+type TelemetryProfile = 'normal' | 'parameter-sync'
+
+const MAV_SYS_STATUS_SENSOR_LABELS: Array<[number, string]> = [
+  [0x00000001, '陀螺仪'],
+  [0x00000002, '加速度计'],
+  [0x00000004, '磁力计'],
+  [0x00000008, '气压计'],
+  [0x00000010, '差压计'],
+  [0x00000020, 'GPS'],
+  [0x00000040, '光流'],
+  [0x00000080, '视觉定位'],
+  [0x00000100, '测距仪'],
+  [0x00000400, '角速度控制'],
+  [0x00000800, '姿态控制'],
+  [0x00001000, '偏航估计'],
+  [0x00002000, '高度估计'],
+  [0x00004000, '水平位置估计'],
+  [0x00008000, '电机输出'],
+  [0x00010000, 'RC 输入'],
+  [0x00100000, '地理围栏'],
+  [0x00200000, 'AHRS'],
+  [0x00400000, '地形'],
+  [0x01000000, '日志'],
+  [0x02000000, '电池'],
+  [0x04000000, '近距传感器'],
+  [0x10000000, '飞行前检查'],
+  [0x20000000, '避障'],
+  [0x40000000, '推进系统'],
+]
 
 const BOARD_NAMES: Record<number, string> = {
   1139: 'MicoAir405',
@@ -21,41 +61,66 @@ const BOARD_NAMES: Record<number, string> = {
 }
 
 export class MavlinkBridge extends EventEmitter {
-  private parser = new MavlinkParser()
   private connManager: ConnectionManager
+  // node-mavlink ingest pipeline: raw serial bytes are written to `splitter`
+  // and emerge on `parser` as framed, CRC-validated packets (see onPacket).
+  private stream: ReturnType<typeof createPacketStream>
+  private crcErrorCount = 0
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private requestedTelemetryStreams = false
   private paramExpectedCount = 0
   private paramIndices = new Set<number>()
   private paramDownloadActive = false
   private paramRetryAttempt = 0
+  private paramRetryCursor = 0
   private paramRetryTimer: ReturnType<typeof setTimeout> | null = null
   private paramEncoding: ParamEncoding = 'c-cast'
   private paramEncodingNegotiated = false
   private requestedAutopilotVersion = false
   private targetSysId = 1
   private targetCompId = 1
+  private statustextChunks = new Map<number, { severity: number; text: string; nextSequence: number }>()
+  private telemetryProfile: TelemetryProfile | null = null
 
   private onData = (data: Buffer) => {
-    const messages = this.parser.parse(data)
-    for (const msg of messages) {
-      try {
-        this.handleMessage(msg)
-      } catch (err) {
-        console.error('[MAVLink] handler error for msgId', msg.msgId, err)
+    // Malformed bytes on a noisy link are dropped inside the splitter; writing
+    // never throws for bad MAVLink, so no try/catch is needed here.
+    this.stream.splitter.write(data)
+  }
+
+  private onPacket = (packet: MavLinkPacket) => {
+    // Trim node-mavlink's zero-padded payload back to the frame's true length
+    // so handlers that inspect msg.payload.length (servo count, statustext
+    // chunk detection, param encoding) see exactly what the vehicle sent.
+    // decode() re-pads per message as needed.
+    const msg: MavlinkMessage = {
+      msgId: packet.header.msgid,
+      payload: packet.payload.subarray(0, packet.header.payloadLength),
+      seq: packet.header.seq,
+      sysId: packet.header.sysid,
+      compId: packet.header.compid,
+    }
+    try {
+      if (msg.sysId === this.targetSysId) {
+        this.connManager.notifyAutopilotActivity()
       }
+      this.handleMessage(msg)
+    } catch (err) {
+      console.error('[MAVLink] handler error for msgId', msg.msgId, err)
     }
   }
 
   private onStatusChange = (status: string) => {
-    this.cancelParamDownload()
+    this.cancelParamDownload(false)
     if (status === 'connected') {
       this.requestedTelemetryStreams = false
+      this.telemetryProfile = null
       this.targetSysId = 1
       this.targetCompId = 1
       this.paramEncoding = 'c-cast'
       this.paramEncodingNegotiated = false
       this.requestedAutopilotVersion = false
+      this.statustextChunks.clear()
       this.startHeartbeat()
     } else {
       this.requestedTelemetryStreams = false
@@ -66,6 +131,12 @@ export class MavlinkBridge extends EventEmitter {
   constructor(connManager: ConnectionManager) {
     super()
     this.connManager = connManager
+    this.stream = createPacketStream(() => {
+      // CRC failure = corrupted frame (common on noisy Bluetooth SPP). Count
+      // for link-quality diagnostics; the frame itself is already discarded.
+      this.crcErrorCount++
+    })
+    this.stream.parser.on('data', this.onPacket)
     this.connManager.on('data', this.onData)
     this.connManager.on('statusChange', this.onStatusChange)
   }
@@ -84,20 +155,18 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private sendHeartbeat() {
-    // HEARTBEAT: type=6(GCS), autopilot=8(invalid).
-    // base_mode = MAV_MODE_FLAG_CUSTOM_MODE_ENABLED(1) so the FC recognises a
-    // valid GCS; system_status = MAV_STATE_ACTIVE(4) so the FC sees a healthy
-    // GCS and enables capability negotiation (a zero status can make PX4 treat
-    // the GCS as faulty and withhold some MAVLink capabilities).
-    const payload = Buffer.alloc(9)
-    payload.writeUInt32LE(0, 0)  // custom_mode
-    payload[4] = 6               // type: MAV_TYPE_GCS
-    payload[5] = 8               // autopilot: MAV_AUTOPILOT_INVALID
-    payload[6] = 1               // base_mode: MAV_MODE_FLAG_CUSTOM_MODE_ENABLED
-    payload[7] = 4               // system_status: MAV_STATE_ACTIVE
-    payload[8] = 3               // mavlink_version
-    const msg = this.parser.encode(0, payload)
-    this.connManager.write(msg)
+    // HEARTBEAT as a GCS: type=GCS(6), autopilot=INVALID(8),
+    // base_mode=CUSTOM_MODE_ENABLED(1), system_status=ACTIVE(4). A healthy,
+    // valid GCS heartbeat makes PX4 enable capability negotiation (a zero
+    // status can make PX4 treat the GCS as faulty and withhold capabilities).
+    const hb = new minimal.Heartbeat()
+    hb.customMode = 0
+    hb.type = 6
+    hb.autopilot = 8
+    hb.baseMode = 1
+    hb.systemStatus = 4
+    hb.mavlinkVersion = 3
+    this.connManager.write(serialize(hb))
   }
 
   private handleMessage(msg: MavlinkMessage) {
@@ -173,7 +242,10 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleHeartbeat(msg: MavlinkMessage) {
-    if (msg.payload.length < 8 || msg.payload[5] === 8) return
+    const hb = decode<minimal.Heartbeat>(0, msg.payload)
+    // Ignore heartbeats from non-autopilot components (autopilot=INVALID(8)),
+    // e.g. a companion computer, camera, or gimbal sharing the MAVLink system.
+    if (!hb || hb.autopilot === 8) return
     this.connManager.notifyAutopilotHeartbeat()
     if (msg.sysId > 0 && msg.sysId < 255) {
       this.targetSysId = msg.sysId
@@ -182,17 +254,15 @@ export class MavlinkBridge extends EventEmitter {
     // Use the autopilot class only as an early compatibility fallback. The
     // authoritative encoding is negotiated from AUTOPILOT_VERSION capabilities.
     if (!this.paramEncodingNegotiated) {
-      this.paramEncoding = msg.payload[5] === 12 ? 'bytewise' : 'c-cast'
+      this.paramEncoding = hb.autopilot === 12 ? 'bytewise' : 'c-cast'
     }
     if (!this.requestedAutopilotVersion) {
       this.requestedAutopilotVersion = true
       this.sendCommand('MAV_CMD_REQUEST_MESSAGE', [148, 0, 0, 0, 0, 0, 0])
     }
 
-    const customMode = msg.payload.readUInt32LE(0)
-    const baseMode = msg.payload[6]
-    const armed = (baseMode & 0x80) !== 0
-    const mode = this.getMode(customMode)
+    const armed = (hb.baseMode & 0x80) !== 0
+    const mode = this.getMode(hb.customMode)
     this.emit('message', {
       type: 'status',
       data: {
@@ -204,7 +274,7 @@ export class MavlinkBridge extends EventEmitter {
         // here. Report 'unknown' instead of a misleading hardcoded false - a
         // safety-critical field must never silently claim "no failsafe".
         failsafe: 'unknown',
-        systemStatus: msg.payload[7],
+        systemStatus: hb.systemStatus,
       },
     } as ServerMessage)
 
@@ -214,42 +284,60 @@ export class MavlinkBridge extends EventEmitter {
     // both. The bridge normalizes either format into the shared ImuData shape.
     if (!this.requestedTelemetryStreams) {
       this.requestedTelemetryStreams = true
-      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [36, 100_000, 0, 0, 0, 0, 0])
-      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [26, 50_000, 0, 0, 0, 0, 0])
-      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [105, 50_000, 0, 0, 0, 0, 0])
-      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [116, 50_000, 0, 0, 0, 0, 0])
-      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [129, 50_000, 0, 0, 0, 0, 0])
+      this.applyTelemetryProfile('normal')
     }
   }
 
   private handleServoOutputRaw(msg: MavlinkMessage) {
     if (msg.payload.length < 21) return
-    const outputs: Array<number | null> = []
-    for (let i = 0; i < 16; i++) {
+    const d = decode<common.ServoOutputRaw>(36, msg.payload)
+    if (!d) return
+    const servoValues = [
+      d.servo1Raw, d.servo2Raw, d.servo3Raw, d.servo4Raw,
+      d.servo5Raw, d.servo6Raw, d.servo7Raw, d.servo8Raw,
+      d.servo9Raw, d.servo10Raw, d.servo11Raw, d.servo12Raw,
+      d.servo13Raw, d.servo14Raw, d.servo15Raw, d.servo16Raw,
+    ]
+    // A servo output is only "present" if its bytes were actually transmitted.
+    // Trailing absent channels stay null (not 0), keyed off the frame's true
+    // length, so the UI does not draw motors the vehicle never reported.
+    const outputs: Array<number | null> = servoValues.map((value, i) => {
       const offset = i < 8 ? 4 + i * 2 : 21 + (i - 8) * 2
-      outputs.push(offset + 2 <= msg.payload.length ? msg.payload.readUInt16LE(offset) : null)
-    }
+      return offset + 2 <= msg.payload.length ? value : null
+    })
     while (outputs.length > 4 && outputs[outputs.length - 1] == null) outputs.pop()
     this.emit('message', {
       type: 'motor_outputs',
       data: {
-        time_usec: msg.payload.readUInt32LE(0),
-        port: msg.payload[20],
+        time_usec: d.timeUsec,
+        port: d.port,
         outputs,
       },
     } as ServerMessage)
   }
 
   private handleSysStatus(msg: MavlinkMessage) {
-    if (msg.payload.length < 31) return
-    const sensorsPresent = msg.payload.readUInt32LE(0)
-    const sensorsEnabled = msg.payload.readUInt32LE(4)
-    const sensorsHealth = msg.payload.readUInt32LE(8)
-    const voltageBattery = msg.payload.readUInt16LE(14) / 1000
-    const currentBattery = msg.payload.readInt16LE(16) / 100
-    const batteryRemaining = msg.payload.readInt8(18)
+    const d = decode<common.SysStatus>(1, msg.payload)
+    if (!d) return
+    // These are bitmask fields; node-mavlink types them as the sensor enum, so
+    // widen to number for the bitwise/comparison logic below.
+    const sensorsPresent: number = d.onboardControlSensorsPresent
+    const sensorsEnabled: number = d.onboardControlSensorsEnabled
+    const sensorsHealth: number = d.onboardControlSensorsHealth
+    const voltageBattery = d.voltageBattery / 1000
+    const currentBattery = d.currentBattery / 100
+    // battery_remaining is at wire offset 30. The previous hand-rolled parser
+    // read offset 18 (drop_rate_comm) - a latent bug fixed by this migration.
+    const batteryRemaining = d.batteryRemaining
     const prearmCheckMask = 0x10000000
     const supportsPreflightCheck = (sensorsPresent & prearmCheckMask) !== 0
+    const unhealthySensorMask = (sensorsEnabled & ~sensorsHealth) >>> 0
+    const unhealthySensors = MAV_SYS_STATUS_SENSOR_LABELS
+      .filter(([mask]) => (unhealthySensorMask & mask) !== 0)
+      .map(([, label]) => label)
+    const knownMask = MAV_SYS_STATUS_SENSOR_LABELS.reduce((mask, [sensorMask]) => (mask | sensorMask) >>> 0, 0)
+    const unknownMask = (unhealthySensorMask & ~knownMask) >>> 0
+    if (unknownMask !== 0) unhealthySensors.push(`未知系统 0x${unknownMask.toString(16).padStart(8, '0')}`)
     this.emit('message', {
       type: 'telemetry',
       msgType: 'SYS_STATUS',
@@ -260,8 +348,10 @@ export class MavlinkBridge extends EventEmitter {
         sensorsPresent,
         sensorsEnabled,
         sensorsHealth,
+        unhealthySensorMask,
+        unhealthySensors,
         sensorsHealthy: sensorsEnabled !== 0
-          ? (sensorsEnabled & ~sensorsHealth) === 0
+          ? unhealthySensorMask === 0
           : null,
         preflightCheck: supportsPreflightCheck
           ? (sensorsHealth & prearmCheckMask) !== 0
@@ -271,215 +361,221 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleGps(msg: MavlinkMessage) {
-    if (msg.payload.length < 30) return
+    const d = decode<common.GpsRawInt>(24, msg.payload)
+    if (!d) return
     const data = {
-      fix_type: msg.payload[28],
-      lat: msg.payload.readInt32LE(8) / 1e7,
-      lon: msg.payload.readInt32LE(12) / 1e7,
-      alt: msg.payload.readInt32LE(16) / 1000,
-      eph: msg.payload.readUInt16LE(20),
-      epv: msg.payload.readUInt16LE(22),
-      vel: msg.payload.readUInt16LE(24) / 100,
-      cog: msg.payload.readUInt16LE(26) / 100,
-      satellites_visible: msg.payload[29],
+      fix_type: d.fixType,
+      lat: d.lat / 1e7,
+      lon: d.lon / 1e7,
+      alt: d.alt / 1000,
+      eph: d.eph,
+      epv: d.epv,
+      vel: d.vel / 100,
+      cog: d.cog / 100,
+      satellites_visible: d.satellitesVisible,
     }
     this.emit('message', { type: 'telemetry', msgType: 'GPS_RAW_INT', data } as ServerMessage)
   }
 
   private handleScaledImu(msg: MavlinkMessage) {
-    if (msg.payload.length < 22) return
+    const d = decode<common.ScaledImu>(msg.msgId, msg.payload)
+    if (!d) return
     const data = {
       instance: msg.msgId === 116 ? 1 : msg.msgId === 129 ? 2 : 0,
-      xacc: msg.payload.readInt16LE(4) / 1000,
-      yacc: msg.payload.readInt16LE(6) / 1000,
-      zacc: msg.payload.readInt16LE(8) / 1000,
-      xgyro: msg.payload.readInt16LE(10) / 1000,
-      ygyro: msg.payload.readInt16LE(12) / 1000,
-      zgyro: msg.payload.readInt16LE(14) / 1000,
-      xmag: msg.payload.readInt16LE(16),
-      ymag: msg.payload.readInt16LE(18),
-      zmag: msg.payload.readInt16LE(20),
-      temperature: msg.payload.length >= 24 ? msg.payload.readInt16LE(22) / 100 : 0,
+      xacc: d.xacc / 1000,
+      yacc: d.yacc / 1000,
+      zacc: d.zacc / 1000,
+      xgyro: d.xgyro / 1000,
+      ygyro: d.ygyro / 1000,
+      zgyro: d.zgyro / 1000,
+      xmag: d.xmag,
+      ymag: d.ymag,
+      zmag: d.zmag,
+      temperature: d.temperature / 100,
     }
     this.emit('message', { type: 'sensor', msgType: msg.msgId === 116 ? 'SCALED_IMU2' : msg.msgId === 129 ? 'SCALED_IMU3' : 'SCALED_IMU', data } as ServerMessage)
   }
 
   private handleHighresImu(msg: MavlinkMessage) {
-    if (msg.payload.length < 62) return
+    const d = decode<common.HighresImu>(105, msg.payload)
+    if (!d) return
     const standardGravity = 9.80665
     const data = {
-      instance: msg.payload.length >= 63 ? msg.payload[62] : 0,
+      instance: d.id,
       // Keep the frontend's existing units: acceleration in g, angular speed
       // in rad/s, and magnetic field in milligauss.
-      xacc: msg.payload.readFloatLE(8) / standardGravity,
-      yacc: msg.payload.readFloatLE(12) / standardGravity,
-      zacc: msg.payload.readFloatLE(16) / standardGravity,
-      xgyro: msg.payload.readFloatLE(20),
-      ygyro: msg.payload.readFloatLE(24),
-      zgyro: msg.payload.readFloatLE(28),
-      xmag: msg.payload.readFloatLE(32) * 1000,
-      ymag: msg.payload.readFloatLE(36) * 1000,
-      zmag: msg.payload.readFloatLE(40) * 1000,
-      temperature: msg.payload.readFloatLE(56),
+      xacc: d.xacc / standardGravity,
+      yacc: d.yacc / standardGravity,
+      zacc: d.zacc / standardGravity,
+      xgyro: d.xgyro,
+      ygyro: d.ygyro,
+      zgyro: d.zgyro,
+      xmag: d.xmag * 1000,
+      ymag: d.ymag * 1000,
+      zmag: d.zmag * 1000,
+      temperature: d.temperature,
     }
     this.emit('message', { type: 'sensor', msgType: 'HIGHRES_IMU', data } as ServerMessage)
   }
 
   private handleRawImu(msg: MavlinkMessage) {
-    if (msg.payload.length < 26) return
+    const d = decode<common.RawImu>(27, msg.payload)
+    if (!d) return
     const data = {
-      instance: msg.payload.length >= 27 ? msg.payload[26] : 0,
-      xacc: msg.payload.readInt16LE(8),
-      yacc: msg.payload.readInt16LE(10),
-      zacc: msg.payload.readInt16LE(12),
-      xgyro: msg.payload.readInt16LE(14),
-      ygyro: msg.payload.readInt16LE(16),
-      zgyro: msg.payload.readInt16LE(18),
-      xmag: msg.payload.readInt16LE(20),
-      ymag: msg.payload.readInt16LE(22),
-      zmag: msg.payload.readInt16LE(24),
-      temperature: msg.payload.length >= 29 ? msg.payload.readInt16LE(27) / 100 : 0,
+      instance: d.id,
+      xacc: d.xacc,
+      yacc: d.yacc,
+      zacc: d.zacc,
+      xgyro: d.xgyro,
+      ygyro: d.ygyro,
+      zgyro: d.zgyro,
+      xmag: d.xmag,
+      ymag: d.ymag,
+      zmag: d.zmag,
+      temperature: d.temperature / 100,
     }
     this.emit('message', { type: 'sensor', msgType: 'RAW_IMU', data } as ServerMessage)
   }
 
   private handleScaledPressure(msg: MavlinkMessage) {
-    if (msg.payload.length < 14) return
+    const d = decode<common.ScaledPressure>(29, msg.payload)
+    if (!d) return
     const data = {
-      press_abs: msg.payload.readFloatLE(4),
-      press_diff: msg.payload.readFloatLE(8),
-      temperature: msg.payload.readInt16LE(12) / 100,
-      altitude: 44330 * (1 - Math.pow(msg.payload.readFloatLE(4) / 1013.25, 0.1903)),
+      press_abs: d.pressAbs,
+      press_diff: d.pressDiff,
+      temperature: d.temperature / 100,
+      altitude: 44330 * (1 - Math.pow(d.pressAbs / 1013.25, 0.1903)),
     }
     this.emit('message', { type: 'sensor', msgType: 'SCALED_PRESSURE', data } as ServerMessage)
   }
 
   private handleAttitude(msg: MavlinkMessage) {
-    if (msg.payload.length < 28) return
+    const d = decode<common.Attitude>(30, msg.payload)
+    if (!d) return
     const data = {
-      time_boot_ms: msg.payload.readUInt32LE(0),
-      roll: msg.payload.readFloatLE(4),
-      pitch: msg.payload.readFloatLE(8),
-      yaw: msg.payload.readFloatLE(12),
-      rollspeed: msg.payload.readFloatLE(16),
-      pitchspeed: msg.payload.readFloatLE(20),
-      yawspeed: msg.payload.readFloatLE(24),
+      time_boot_ms: d.timeBootMs,
+      roll: d.roll,
+      pitch: d.pitch,
+      yaw: d.yaw,
+      rollspeed: d.rollspeed,
+      pitchspeed: d.pitchspeed,
+      yawspeed: d.yawspeed,
     }
     this.emit('message', { type: 'telemetry', msgType: 'ATTITUDE', data } as ServerMessage)
   }
 
   private handleGlobalPosition(msg: MavlinkMessage) {
-    if (msg.payload.length < 28) return
+    const d = decode<common.GlobalPositionInt>(33, msg.payload)
+    if (!d) return
     const data = {
-      lat: msg.payload.readInt32LE(4) / 1e7,
-      lon: msg.payload.readInt32LE(8) / 1e7,
-      alt: msg.payload.readInt32LE(12) / 1000,
-      relative_alt: msg.payload.readInt32LE(16) / 1000,
-      vx: msg.payload.readInt16LE(20) / 100,
-      vy: msg.payload.readInt16LE(22) / 100,
-      vz: msg.payload.readInt16LE(24) / 100,
-      hdg: msg.payload.readUInt16LE(26) / 100,
+      lat: d.lat / 1e7,
+      lon: d.lon / 1e7,
+      alt: d.alt / 1000,
+      relative_alt: d.relativeAlt / 1000,
+      vx: d.vx / 100,
+      vy: d.vy / 100,
+      vz: d.vz / 100,
+      hdg: d.hdg / 100,
     }
     this.emit('message', { type: 'telemetry', msgType: 'GLOBAL_POSITION_INT', data } as ServerMessage)
   }
 
   private handleRcChannels(msg: MavlinkMessage) {
-    // RC_CHANNELS payload: time_boot_ms(4) + chancount(1) + 18 * uint16 = 41 bytes
-    // Guard explicitly so a truncated/malformed frame throws a clean no-op
-    // rather than a RangeError that would otherwise be caught by the
-    // per-message try/catch in the data handler.
-    if (msg.payload.length < 5 + 18 * 2) return
-    const channels = [
-      'ch1', 'ch2', 'ch3', 'ch4', 'ch5', 'ch6', 'ch7', 'ch8',
-      'ch9', 'ch10', 'ch11', 'ch12', 'ch13', 'ch14', 'ch15', 'ch16',
-      'ch17', 'ch18',
-    ] as const
-    const data = {} as RcChannelsData
-    for (let i = 0; i < channels.length; i++) {
-      data[channels[i]] = msg.payload.readUInt16LE(5 + i * 2)
-    }
+    const d = decode<common.RcChannels>(65, msg.payload)
+    if (!d) return
+    // node-mavlink decodes the size-grouped wire layout (18 uint16 channels
+    // after time_boot_ms, then chancount/rssi), removing the manual offset
+    // arithmetic that previously shifted channels when it was done wrong.
+    const data = {
+      ch1: d.chan1Raw, ch2: d.chan2Raw, ch3: d.chan3Raw, ch4: d.chan4Raw,
+      ch5: d.chan5Raw, ch6: d.chan6Raw, ch7: d.chan7Raw, ch8: d.chan8Raw,
+      ch9: d.chan9Raw, ch10: d.chan10Raw, ch11: d.chan11Raw, ch12: d.chan12Raw,
+      ch13: d.chan13Raw, ch14: d.chan14Raw, ch15: d.chan15Raw, ch16: d.chan16Raw,
+      ch17: d.chan17Raw, ch18: d.chan18Raw,
+    } as RcChannelsData
     this.emit('message', { type: 'rc_channels', data } as ServerMessage)
   }
 
   private handleVfrHud(msg: MavlinkMessage) {
-    if (msg.payload.length < 20) return
+    const d = decode<common.VfrHud>(74, msg.payload)
+    if (!d) return
     const finite = (value: number) => Number.isFinite(value) ? value : 0
     const data = {
-      airspeed: finite(msg.payload.readFloatLE(0)),
-      groundspeed: finite(msg.payload.readFloatLE(4)),
-      alt: finite(msg.payload.readFloatLE(8)),
-      climb: finite(msg.payload.readFloatLE(12)),
-      heading: msg.payload.readInt16LE(16),
-      throttle: msg.payload.readUInt16LE(18),
+      airspeed: finite(d.airspeed),
+      groundspeed: finite(d.groundspeed),
+      alt: finite(d.alt),
+      climb: finite(d.climb),
+      heading: d.heading,
+      throttle: d.throttle,
     }
     this.emit('message', { type: 'telemetry', msgType: 'VFR_HUD', data } as ServerMessage)
   }
 
   private handleCommandAck(msg: MavlinkMessage) {
-    if (msg.payload.length < 3) return
+    const d = decode<common.CommandAck>(77, msg.payload)
+    if (!d) return
     const data = {
-      command: msg.payload.readUInt16LE(0),
-      result: msg.payload[2],
+      command: d.command,
+      result: d.result,
     }
     this.emit('message', { type: 'command_ack', data } as ServerMessage)
   }
 
   private handleOpticalFlow(msg: MavlinkMessage) {
-    if (msg.payload.length < 44) return
+    const d = decode<common.OpticalFlowRad>(106, msg.payload)
+    if (!d) return
     const data = {
-      sensor_id: msg.payload[42],
-      flow_x: msg.payload.readFloatLE(12),
-      flow_y: msg.payload.readFloatLE(16),
-      flow_comp_m_x: msg.payload.readFloatLE(20),
-      flow_comp_m_y: msg.payload.readFloatLE(24),
-      quality: msg.payload[43],
-      ground_distance: msg.payload.readFloatLE(36),
+      sensor_id: d.sensorId,
+      flow_x: d.integratedX,
+      flow_y: d.integratedY,
+      flow_comp_m_x: d.integratedXgyro,
+      flow_comp_m_y: d.integratedYgyro,
+      quality: d.quality,
+      ground_distance: d.distance,
     }
     this.emit('message', { type: 'sensor', msgType: 'OPTICAL_FLOW_RAD', data } as ServerMessage)
   }
 
   private handleDistanceSensor(msg: MavlinkMessage) {
-    if (msg.payload.length < 13) return
+    const d = decode<common.DistanceSensor>(132, msg.payload)
+    if (!d) return
     const data = {
-      min_distance: msg.payload.readUInt16LE(4),
-      max_distance: msg.payload.readUInt16LE(6),
-      current_distance: msg.payload.readUInt16LE(8),
-      type: msg.payload[10],
-      id: msg.payload[11],
-      orientation: msg.payload[12],
-      signal_quality: msg.payload.length > 38 ? msg.payload[38] : 0,
+      min_distance: d.minDistance,
+      max_distance: d.maxDistance,
+      current_distance: d.currentDistance,
+      type: d.type,
+      id: d.id,
+      orientation: d.orientation,
+      signal_quality: msg.payload.length > 38 ? d.signalQuality : 0,
     }
     this.emit('message', { type: 'sensor', msgType: 'DISTANCE_SENSOR', data } as ServerMessage)
   }
 
   private handleBattery(msg: MavlinkMessage) {
-    // Generated MAVLink common dialect wire offsets (MIN_LEN=36).
-    if (msg.payload.length < 36) return
-    const cellVoltages = Array.from({ length: 10 }, (_, index) => msg.payload.readUInt16LE(10 + index * 2))
-      .filter((voltage) => voltage > 0 && voltage < 0xffff)
+    const d = decode<common.BatteryStatus>(147, msg.payload)
+    if (!d) return
+    const cellVoltages = (d.voltages ?? []).filter((voltage) => voltage > 0 && voltage < 0xffff)
     const data = {
       voltage: cellVoltages.reduce((sum, voltage) => sum + voltage, 0) / 1000,
-      current: msg.payload.readInt16LE(30) / 100,
-      consumed_mah: msg.payload.readInt32LE(0),
-      remaining: msg.payload.readInt8(35),
+      current: d.currentBattery / 100,
+      consumed_mah: d.currentConsumed,
+      remaining: d.batteryRemaining,
     }
     this.emit('message', { type: 'telemetry', msgType: 'BATTERY_STATUS', data } as ServerMessage)
   }
 
   private handleEstimatorStatus(msg: MavlinkMessage) {
-    if (msg.payload.length < 42) return
-    // ESTIMATOR_STATUS (msg #230). The previous code read `health_flags` AND
-    // `control_mode_flags` from the SAME offset 40 - a duplicate read bug.
-    // ESTIMATOR_STATUS has no `control_mode_flags` field; the EkfStatusData
-    // type field has been removed to match. Innovation offsets are left
-    // unchanged (PX4-specific estimator innovation magnitudes, already in use
-    // by DashboardPage).
+    const d = decode<common.EstimatorStatus>(230, msg.payload)
+    if (!d) return
+    // Field names preserved from the previous implementation. gps_check_fail is
+    // a PX4-specific trailer past the standard 42-byte message, so it is still
+    // read from the raw payload when present.
     const data = {
-      health_flags: msg.payload.readUInt16LE(40),
-      innovation_vel: msg.payload.readFloatLE(8),
-      innovation_pos: msg.payload.readFloatLE(12),
-      innovation_hgt: msg.payload.readFloatLE(16),
-      innovation_mag: msg.payload.readFloatLE(20),
+      health_flags: d.flags,
+      innovation_vel: d.velRatio,
+      innovation_pos: d.posHorizRatio,
+      innovation_hgt: d.posVertRatio,
+      innovation_mag: d.magRatio,
       gps_check_fail_flags: msg.payload.length >= 44 ? msg.payload.readUInt16LE(42) : 0,
     }
     this.emit('message', { type: 'ekf_status', data } as ServerMessage)
@@ -490,15 +586,19 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleParamValue(msg: MavlinkMessage) {
-    if (msg.payload.length < 25) return
     // Parameter storage in this GCS belongs to the selected autopilot
     // component. Ignore unrelated camera/gimbal parameter broadcasts.
     if (msg.sysId !== this.targetSysId || msg.compId !== this.targetCompId) return
-    const paramType = msg.payload[24]
-    const value = this.decodeParamValue(msg.payload, paramType)
-    const paramCount = msg.payload.readUInt16LE(4)
-    const paramIndex = msg.payload.readUInt16LE(6)
-    const idBytes = msg.payload.subarray(8, 24)
+    // Restore a trimmed v2 payload to PARAM_VALUE's 25-byte base before reading
+    // the type byte (offset 24) and id (offsets 8..23).
+    const payload = msg.payload.length >= 25
+      ? msg.payload
+      : Buffer.concat([msg.payload, Buffer.alloc(25 - msg.payload.length)])
+    const paramType = payload[24]
+    const value = this.decodeParamValue(payload, paramType)
+    const paramCount = payload.readUInt16LE(4)
+    const paramIndex = payload.readUInt16LE(6)
+    const idBytes = payload.subarray(8, 24)
     const id = idBytes.toString('ascii').replace(/\0/g, '')
 
     this.emit('message', {
@@ -508,8 +608,19 @@ export class MavlinkBridge extends EventEmitter {
 
     if (!this.paramDownloadActive) return
 
-    this.paramExpectedCount = Math.max(this.paramExpectedCount, paramCount)
-    if (paramIndex < paramCount) {
+    // The first valid count belongs to this list transaction and is
+    // authoritative. Chasing later outliers can leave the UI permanently
+    // waiting for an index that does not exist in this download.
+    if (
+      this.paramExpectedCount === 0
+      && paramCount > 0
+      && paramCount < 0xffff
+      && paramIndex >= 0
+      && paramIndex < paramCount
+    ) {
+      this.paramExpectedCount = paramCount
+    }
+    if (this.paramExpectedCount > 0 && paramIndex < this.paramExpectedCount) {
       const previousSize = this.paramIndices.size
       this.paramIndices.add(paramIndex)
       if (this.paramIndices.size > previousSize) {
@@ -526,10 +637,51 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleStatustext(msg: MavlinkMessage) {
-    if (msg.payload.length < 2) return
-    const severity = msg.payload[0]
-    const text = msg.payload.subarray(1).toString('ascii').replace(/\0/g, '')
-    this.emit('message', { type: 'statustext', data: { severity, text } } as ServerMessage)
+    // Restore the trimmed v2 payload to STATUSTEXT's 54-byte base so the id and
+    // chunk_seq extension fields (offsets 51/53) read correctly even when the
+    // vehicle trimmed trailing zero bytes (node-mavlink hands us the exact
+    // on-wire length).
+    const payload = msg.payload.length >= 54
+      ? msg.payload
+      : Buffer.concat([msg.payload, Buffer.alloc(54 - msg.payload.length)])
+    const severity = payload[0]
+    const rawText = payload.subarray(1, 51)
+    const terminatorIndex = rawText.indexOf(0)
+    const text = rawText.subarray(0, terminatorIndex >= 0 ? terminatorIndex : rawText.length).toString('utf8')
+    const id = payload.readUInt16LE(51)
+    const chunkSequence = payload[53]
+    const chunkComplete = terminatorIndex >= 0 || rawText.length < 50
+
+    // id === 0 marks a single, non-chunked message: emit directly.
+    if (id === 0) {
+      if (text) this.emit('message', { type: 'statustext', data: { severity, text } } as ServerMessage)
+      return
+    }
+
+    if (chunkSequence === 0) {
+      if (chunkComplete) {
+        if (text) this.emit('message', { type: 'statustext', data: { severity, text } } as ServerMessage)
+      } else {
+        this.statustextChunks.set(id, { severity, text, nextSequence: 1 })
+      }
+      return
+    }
+
+    const pending = this.statustextChunks.get(id)
+    if (!pending || pending.nextSequence !== chunkSequence) {
+      this.statustextChunks.delete(id)
+      return
+    }
+
+    pending.text += text
+    pending.nextSequence++
+    if (chunkComplete) {
+      this.statustextChunks.delete(id)
+      this.emit('message', {
+        type: 'statustext',
+        data: { severity: pending.severity, text: pending.text },
+      } as ServerMessage)
+    }
   }
 
   // Send commands from frontend
@@ -544,8 +696,8 @@ export class MavlinkBridge extends EventEmitter {
       case 'param_request_list':
         this.sendParamRequestList()
         break
-      case 'rc_channels_override':
-        this.sendRcChannelsOverride(msg.data)
+      case 'manual_control':
+        this.sendManualControl(msg.data)
         break
       case 'motor_test':
         this.sendMotorTest(msg.data.instance, msg.data.throttle, msg.data.duration)
@@ -557,39 +709,46 @@ export class MavlinkBridge extends EventEmitter {
     const cmdId = (MAVLINK_COMMANDS as any)[cmd]
     if (!cmdId) return
 
-    // COMMAND_LONG (msg #76)
-    const payload = Buffer.alloc(33)
-    for (let i = 0; i < 7 && i < params.length; i++) {
-      payload.writeFloatLE(params[i], i * 4)
-    }
-    payload.writeUInt16LE(cmdId, 28) // command
-    payload.writeUInt8(this.targetSysId, 30)       // target_system
-    payload.writeUInt8(this.targetCompId, 31)      // target_component
-    payload.writeUInt8(0, 32)       // confirmation
-    const encoded = this.parser.encode(76, payload)
-    this.connManager.write(encoded)
+    // COMMAND_LONG (msg #76). CommandLong exposes param1..7 as the underscore-
+    // prefixed serialized fields.
+    const command = new common.CommandLong()
+    command._param1 = params[0] ?? 0
+    command._param2 = params[1] ?? 0
+    command._param3 = params[2] ?? 0
+    command._param4 = params[3] ?? 0
+    command._param5 = params[4] ?? 0
+    command._param6 = params[5] ?? 0
+    command._param7 = params[6] ?? 0
+    command.command = cmdId
+    command.targetSystem = this.targetSysId
+    command.targetComponent = this.targetCompId
+    command.confirmation = 0
+    this.connManager.write(serialize(command))
   }
 
   private sendParamSet(id: string, value: number, paramType: number) {
-    // PARAM_SET (msg #23)
-    const payload = Buffer.alloc(23)
-    this.writeParamValue(payload, value, paramType)
-    payload.writeUInt8(this.targetSysId, 4)  // target_system
-    payload.writeUInt8(this.targetCompId, 5)  // target_component
-    const idBuf = Buffer.alloc(16)
-    Buffer.from(id, 'ascii').copy(idBuf)
-    idBuf.copy(payload, 6)
-    payload.writeUInt8(paramType, 22)
-    const encoded = this.parser.encode(23, payload)
-    this.connManager.write(encoded)
+    // PARAM_SET (msg #23). PX4 bytewise encoding places the raw typed bytes in
+    // the float param_value field, so build those 4 bytes with writeParamValue
+    // and reinterpret them as the float the wire field expects.
+    const valueBuf = Buffer.alloc(4)
+    this.writeParamValue(valueBuf, value, paramType)
+    const paramSet = new common.ParamSet()
+    paramSet.paramValue = valueBuf.readFloatLE(0)
+    paramSet.targetSystem = this.targetSysId
+    paramSet.targetComponent = this.targetCompId
+    paramSet.paramId = id
+    paramSet.paramType = paramType
+    this.connManager.write(serialize(paramSet))
   }
 
   private sendParamRequestList() {
-    this.cancelParamDownload()
+    this.cancelParamDownload(false)
     this.paramExpectedCount = 0
     this.paramIndices.clear()
     this.paramDownloadActive = true
     this.paramRetryAttempt = 0
+    this.paramRetryCursor = 0
+    this.applyTelemetryProfile('parameter-sync')
     this.writeParamRequestList()
     this.scheduleParamRetry()
   }
@@ -601,7 +760,11 @@ export class MavlinkBridge extends EventEmitter {
       || msg.compId !== this.targetCompId
     ) return
 
-    const capabilities = msg.payload.readBigUInt64LE(0)
+    const d = decode<standard.AutopilotVersion>(148, msg.payload)
+    if (!d) return
+    // capabilities is a uint64 bitmask (bigint at runtime); node-mavlink types
+    // it as an enum, so cast to bigint for the capability bit tests below.
+    const capabilities = d.capabilities as unknown as bigint
     if ((capabilities & MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE) !== 0n) {
       this.paramEncoding = 'bytewise'
       this.paramEncodingNegotiated = true
@@ -611,11 +774,11 @@ export class MavlinkBridge extends EventEmitter {
     }
 
     if (msg.payload.length < 60) return
-    const flightSwVersion = msg.payload.readUInt32LE(16)
+    const flightSwVersion = d.flightSwVersion
     const major = (flightSwVersion >>> 24) & 0xff
     const minor = (flightSwVersion >>> 16) & 0xff
     const patch = (flightSwVersion >>> 8) & 0xff
-    const boardVersion = msg.payload.readUInt32LE(28)
+    const boardVersion = d.boardVersion
     const upperBoardId = boardVersion >>> 16
     const lowerBoardId = boardVersion & 0xffff
     const boardId = BOARD_NAMES[upperBoardId] ? upperBoardId : BOARD_NAMES[lowerBoardId] ? lowerBoardId : upperBoardId || lowerBoardId
@@ -627,19 +790,20 @@ export class MavlinkBridge extends EventEmitter {
         boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'PX4 Flight Controller'),
         firmwareVersion,
         firmwareLabel: `PX4 v${firmwareVersion}`,
-        vendorId: msg.payload.readUInt16LE(56),
-        productId: msg.payload.readUInt16LE(58),
+        // vendor/product are at wire offsets 32/34. The previous parser read
+        // 56/58 (inside os_custom_version) - a latent bug fixed by node-mavlink.
+        vendorId: d.vendorId,
+        productId: d.productId,
       },
     } as ServerMessage)
   }
 
   private writeParamRequestList() {
     // PARAM_REQUEST_LIST (msg #21)
-    const payload = Buffer.alloc(2)
-    payload.writeUInt8(this.targetSysId, 0)  // target_system
-    payload.writeUInt8(this.targetCompId, 1)  // target_component
-    const encoded = this.parser.encode(21, payload)
-    this.connManager.write(encoded)
+    const request = new common.ParamRequestList()
+    request.targetSystem = this.targetSysId
+    request.targetComponent = this.targetCompId
+    this.connManager.write(serialize(request))
   }
 
   private decodeParamValue(payload: Buffer, paramType: number) {
@@ -692,18 +856,21 @@ export class MavlinkBridge extends EventEmitter {
   private sendParamRequestRead(index: number) {
     // PARAM_REQUEST_READ (msg #20): an empty param_id with a non-negative
     // param_index asks PX4 to retransmit that exact missing list entry.
-    const payload = Buffer.alloc(20)
-    payload.writeInt16LE(index, 0)
-    payload.writeUInt8(this.targetSysId, 2)
-    payload.writeUInt8(this.targetCompId, 3)
-    const encoded = this.parser.encode(20, payload)
-    this.connManager.write(encoded)
+    const request = new common.ParamRequestRead()
+    request.paramIndex = index
+    request.targetSystem = this.targetSysId
+    request.targetComponent = this.targetCompId
+    request.paramId = ''
+    this.connManager.write(serialize(request))
   }
 
   private scheduleParamRetry() {
     if (!this.paramDownloadActive) return
     if (this.paramRetryTimer) clearTimeout(this.paramRetryTimer)
-    this.paramRetryTimer = setTimeout(() => this.retryMissingParams(), PARAM_STALL_TIMEOUT_MS)
+    const timeout = this.connManager.config?.type === 'bluetooth'
+      ? BLUETOOTH_PARAM_STALL_TIMEOUT_MS
+      : SERIAL_PARAM_STALL_TIMEOUT_MS
+    this.paramRetryTimer = setTimeout(() => this.retryMissingParams(), timeout)
   }
 
   private retryMissingParams() {
@@ -711,11 +878,7 @@ export class MavlinkBridge extends EventEmitter {
     if (!this.paramDownloadActive) return
 
     if (this.paramRetryAttempt >= PARAM_MAX_STALL_RETRIES) {
-      this.paramDownloadActive = false
-      this.emit('message', {
-        type: 'param_failed',
-        data: { received: this.paramIndices.size, total: this.paramExpectedCount },
-      } as ServerMessage)
+      this.failParamDownload()
       return
     }
 
@@ -739,9 +902,17 @@ export class MavlinkBridge extends EventEmitter {
         return
       }
 
-      for (const index of missing.slice(0, PARAM_RETRY_BATCH_SIZE)) {
-        this.sendParamRequestRead(index)
+      const batchSize = this.connManager.config?.type === 'bluetooth'
+        ? BLUETOOTH_PARAM_RETRY_BATCH_SIZE
+        : SERIAL_PARAM_RETRY_BATCH_SIZE
+      const requestCount = Math.min(batchSize, missing.length)
+      for (let offset = 0; offset < requestCount; offset += 1) {
+        const missingIndex = (this.paramRetryCursor + offset) % missing.length
+        this.sendParamRequestRead(missing[missingIndex])
       }
+      // Rotate through all gaps instead of repeatedly hammering the first
+      // permanently missing index and starving later recoverable entries.
+      this.paramRetryCursor = (this.paramRetryCursor + requestCount) % missing.length
       this.emit('message', {
         type: 'param_retry',
         data: {
@@ -764,32 +935,54 @@ export class MavlinkBridge extends EventEmitter {
       type: 'param_complete',
       data: { count: this.paramExpectedCount },
     } as ServerMessage)
+    this.applyTelemetryProfile('normal')
   }
 
-  private cancelParamDownload() {
+  private failParamDownload() {
     this.paramDownloadActive = false
     if (this.paramRetryTimer) {
       clearTimeout(this.paramRetryTimer)
       this.paramRetryTimer = null
     }
+    this.emit('message', {
+      type: 'param_failed',
+      data: { received: this.paramIndices.size, total: this.paramExpectedCount },
+    } as ServerMessage)
+    this.applyTelemetryProfile('normal')
   }
 
-  private sendRcChannelsOverride(data: RcChannelsData) {
-    // RC_CHANNELS_OVERRIDE (msg #70)
-    const payload = Buffer.alloc(38)
-    const channels = [
-      data.ch1, data.ch2, data.ch3, data.ch4,
-      data.ch5, data.ch6, data.ch7, data.ch8,
-      data.ch9 || 0, data.ch10 || 0, data.ch11 || 0, data.ch12 || 0,
-      data.ch13 || 0, data.ch14 || 0, data.ch15 || 0, data.ch16 || 0,
-      data.ch17 || 0, data.ch18 || 0,
-    ]
-    for (let i = 0; i < 8; i++) payload.writeUInt16LE(channels[i], i * 2)
-    payload.writeUInt8(this.targetSysId, 16)  // target_system
-    payload.writeUInt8(this.targetCompId, 17)  // target_component
-    for (let i = 8; i < 18; i++) payload.writeUInt16LE(channels[i], 18 + (i - 8) * 2)
-    const encoded = this.parser.encode(70, payload)
-    this.connManager.write(encoded)
+  private cancelParamDownload(restoreTelemetry = true) {
+    this.paramDownloadActive = false
+    if (this.paramRetryTimer) {
+      clearTimeout(this.paramRetryTimer)
+      this.paramRetryTimer = null
+    }
+    if (restoreTelemetry) this.applyTelemetryProfile('normal')
+  }
+
+  private applyTelemetryProfile(profile: TelemetryProfile) {
+    if (this.telemetryProfile === profile || this.connManager.status !== 'connected') return
+    this.telemetryProfile = profile
+    const intervalUs = profile === 'parameter-sync' ? 500_000 : 50_000
+    const servoIntervalUs = profile === 'parameter-sync' ? 500_000 : 100_000
+    this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [36, servoIntervalUs, 0, 0, 0, 0, 0])
+    for (const messageId of [26, 105, 116, 129]) {
+      this.sendCommand('MAV_CMD_SET_MESSAGE_INTERVAL', [messageId, intervalUs, 0, 0, 0, 0, 0])
+    }
+  }
+
+  private sendManualControl(data: ManualControlData) {
+    // MANUAL_CONTROL (msg #69) is PX4's MAVLink joystick input path used by
+    // COM_RC_IN_MODE=1. RC_CHANNELS_OVERRIDE feeds the simulated receiver
+    // pipeline instead and does not satisfy MAVLink-only manual-control health.
+    const control = new common.ManualControl()
+    control.x = Math.max(-1000, Math.min(1000, Math.round(data.x)))
+    control.y = Math.max(-1000, Math.min(1000, Math.round(data.y)))
+    control.z = Math.max(0, Math.min(1000, Math.round(data.z)))
+    control.r = Math.max(-1000, Math.min(1000, Math.round(data.r)))
+    control.buttons = (data.buttons ?? 0) & 0xffff
+    control.target = this.targetSysId
+    this.connManager.write(serialize(control))
   }
 
   private sendMotorTest(instance: number, throttle: number, duration: number) {
@@ -823,6 +1016,8 @@ export class MavlinkBridge extends EventEmitter {
   destroy() {
     this.cancelParamDownload()
     this.stopHeartbeat()
+    this.stream.parser.removeAllListeners()
+    this.stream.splitter.unpipe(this.stream.parser)
     this.connManager.off('data', this.onData)
     this.connManager.off('statusChange', this.onStatusChange)
   }

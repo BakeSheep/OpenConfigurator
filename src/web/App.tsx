@@ -6,6 +6,7 @@ import StatusBar from './components/layout/StatusBar'
 import TelemetryBar from './components/layout/TelemetryBar'
 import Topbar from './components/layout/Topbar'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useGamepadController } from './hooks/useGamepadController'
 import ConnectionPage from './pages/ConnectionPage'
 import DashboardPage from './pages/DashboardPage'
 import FlightControlPage from './pages/FlightControlPage'
@@ -21,7 +22,8 @@ import WaveformPage from './pages/WaveformPage'
 import WorkspacePlaceholderPage from './pages/WorkspacePlaceholderPage'
 
 export default function App() {
-  useWebSocket()
+  const { send } = useWebSocket()
+  useGamepadController(send)
 
   return (
     <HashRouter>

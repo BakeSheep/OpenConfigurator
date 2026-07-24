@@ -1,16 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { PX4_MODES } from '../../shared/constants'
+import { useState } from 'react'
 import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
 import Icon from '../components/ui/Icon'
 import { PageHeader, PageTabs } from '../components/ui/PageFrame'
-import { useWebSocket } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
   useGamepadStore,
   type GamepadActionId,
-  type GamepadMapping,
 } from '../stores/gamepadStore'
-import { useTelemetryStore } from '../stores/telemetryStore'
 
 const tabs = [
   { id: 'overview', label: '手柄状态' },
@@ -42,18 +38,6 @@ const actionOptions: Array<{ id: GamepadActionId; label: string }> = [
   { id: 'acro', label: 'Acro 模式' },
 ]
 
-const actionModes: Partial<Record<GamepadActionId, (typeof PX4_MODES)[keyof typeof PX4_MODES]>> = {
-  manual: PX4_MODES.MANUAL,
-  altitude: PX4_MODES.ALTCTL,
-  position: PX4_MODES.POSCTL,
-  mission: PX4_MODES.AUTO_MISSION,
-  hold: PX4_MODES.AUTO_LOITER,
-  rtl: PX4_MODES.AUTO_RTL,
-  land: PX4_MODES.AUTO_LAND,
-  stabilized: PX4_MODES.STABILIZED,
-  acro: PX4_MODES.ACRO,
-}
-
 function ToggleSetting({ label, hint, checked, onChange }: {
   label: string
   hint: string
@@ -75,165 +59,12 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
   const gamepadState = useGamepadStore()
   const {
     connected, id, axes, buttons, mapping, buttonAssignments,
-    deadzone, expo, advanced, enabled,
-    setConnected, setAxes, setButtons, setEnabled, setDeadzone, setExpo,
+    deadzone, expo, advanced, enabled, actionNotice,
+    setEnabled, setDeadzone, setExpo,
     setMapping, setButtonAssignment, setAdvanced,
   } = gamepadState
-  const { send } = useWebSocket()
   const [activeTab, setActiveTab] = useState('overview')
-  const [actionNotice, setActionNotice] = useState('')
-  const rafRef = useRef<number>(0)
-  const lastAxisSendRef = useRef(0)
-  const lastButtonFireRef = useRef<Record<number, number>>({})
-  const previousButtonsRef = useRef<boolean[]>([])
-  const pendingArmRef = useRef<{ button: number; expires: number } | null>(null)
-  const smoothedThrottleRef = useRef(0)
   const flightControllerConnected = useConnectionStore((state) => state.status === 'connected')
-
-  const stateRef = useRef(gamepadState)
-  stateRef.current = gamepadState
-  const actionsRef = useRef({ setConnected, setAxes, setButtons, send })
-  actionsRef.current = { setConnected, setAxes, setButtons, send }
-
-  const releaseOverride = useCallback(() => {
-    actionsRef.current.send({
-      type: 'rc_channels_override',
-      data: { ch1: 0, ch2: 0, ch3: 0, ch4: 0, ch5: 0, ch6: 0, ch7: 0, ch8: 0 },
-    })
-  }, [])
-
-  useEffect(() => {
-    if (!enabled) releaseOverride()
-  }, [enabled, releaseOverride])
-
-  useEffect(() => {
-    if (!connected) releaseOverride()
-  }, [connected, releaseOverride])
-
-  useEffect(() => useConnectionStore.subscribe((state) => {
-    if (state.status !== 'connected' && useGamepadStore.getState().enabled) {
-      useGamepadStore.getState().setEnabled(false)
-    }
-  }), [])
-
-  useEffect(() => {
-    const fireAction = (action: GamepadActionId, button: number) => {
-      if (action === 'none') return
-      const actions = actionsRef.current
-      const armed = useTelemetryStore.getState().status?.armed ?? false
-      const armCommand = (arm: boolean) => actions.send({
-        type: 'command',
-        cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
-        params: [arm ? 1 : 0, 0, 0, 0, 0, 0, 0],
-      })
-
-      if (action === 'arm' || (action === 'toggle_arm' && !armed)) {
-        const now = Date.now()
-        if (pendingArmRef.current?.button === button && pendingArmRef.current.expires > now) {
-          armCommand(true)
-          pendingArmRef.current = null
-          setActionNotice(`B${button}：已发送解锁指令`)
-        } else {
-          pendingArmRef.current = { button, expires: now + 3000 }
-          setActionNotice(`B${button}：3 秒内再次按下以确认解锁`)
-        }
-        return
-      }
-      if (action === 'disarm' || action === 'toggle_arm') {
-        armCommand(false)
-        setActionNotice(`B${button}：已发送上锁指令`)
-        return
-      }
-      const mode = actionModes[action]
-      if (mode) {
-        actions.send({
-          type: 'command',
-          cmd: 'MAV_CMD_DO_SET_MODE',
-          params: [1, mode.mainMode, mode.subMode, 0, 0, 0, 0],
-        })
-        setActionNotice(`B${button}：切换至 ${mode.name}`)
-      }
-    }
-
-    const pollGamepad = () => {
-      const current = stateRef.current
-      const actions = actionsRef.current
-      const controllerConnected = useConnectionStore.getState().status === 'connected'
-      const gamepads = navigator.getGamepads()
-      const gamepad = gamepads[0] || gamepads[1] || gamepads[2] || gamepads[3]
-
-      if (gamepad) {
-        if (!current.connected) actions.setConnected(true, gamepad.id)
-        const rawButtons = gamepad.buttons.map((button) => button.pressed)
-        actions.setAxes(Array.from(gamepad.axes))
-        actions.setButtons(rawButtons)
-
-        if (current.enabled && controllerConnected) {
-          const now = Date.now()
-          const buttonDelay = 1000 / Math.max(1, current.advanced.buttonFrequencyHz)
-          rawButtons.forEach((pressed, index) => {
-            const assignment = current.buttonAssignments[index]
-            const downTransition = pressed && !previousButtonsRef.current[index]
-            const repeatDue = pressed && assignment?.repeat && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
-            if (assignment && (downTransition || repeatDue)) {
-              lastButtonFireRef.current[index] = now
-              fireAction(assignment.action, index)
-            }
-          })
-
-          const axisDelay = 1000 / Math.max(1, current.advanced.axisFrequencyHz)
-          if (now - lastAxisSendRef.current >= axisDelay) {
-            const deltaSeconds = Math.min((now - lastAxisSendRef.current) / 1000, 0.1)
-            lastAxisSendRef.current = now
-            const shape = (value: number) => {
-              let result = value
-              if (current.advanced.useDeadband) {
-                if (Math.abs(result) < current.deadzone) return 0
-                result = Math.sign(result) * (Math.abs(result) - current.deadzone) / (1 - current.deadzone)
-              }
-              result = result * (1 - current.expo) + result ** 3 * current.expo
-              if (current.advanced.circleCorrection) {
-                const limited = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, result))
-                result = Math.tan(Math.asin(limited))
-              }
-              return Math.max(-1, Math.min(1, result))
-            }
-            const axis = (key: keyof Pick<GamepadMapping, 'roll' | 'pitch' | 'yaw' | 'throttle'>) =>
-              shape(gamepad.axes[current.mapping[key]] ?? 0)
-            const toPwm = (value: number) => Math.round(1500 + value * 500)
-            let throttle = -axis('throttle')
-            if (current.advanced.throttleModeCenterZero) throttle = Math.max(0, throttle) * 2 - 1
-            if (current.advanced.throttleSmoothing) {
-              const maxStep = deltaSeconds
-              const difference = throttle - smoothedThrottleRef.current
-              smoothedThrottleRef.current += Math.max(-maxStep, Math.min(maxStep, difference))
-              throttle = smoothedThrottleRef.current
-            } else {
-              smoothedThrottleRef.current = throttle
-            }
-            actions.send({
-              type: 'rc_channels_override',
-              data: {
-                ch1: toPwm(axis('roll')),
-                ch2: toPwm(-axis('pitch')),
-                ch3: toPwm(throttle),
-                ch4: toPwm(axis('yaw')),
-                ch5: 1500, ch6: 1500, ch7: 1500, ch8: 1500,
-              },
-            })
-          }
-        }
-        previousButtonsRef.current = rawButtons
-      } else if (current.connected) {
-        actions.setConnected(false)
-        previousButtonsRef.current = []
-      }
-      rafRef.current = requestAnimationFrame(pollGamepad)
-    }
-
-    rafRef.current = requestAnimationFrame(pollGamepad)
-    return () => cancelAnimationFrame(rafRef.current)
-  }, [])
 
   const axisCount = Math.max(axes.length, 4)
   const buttonCount = Math.max(buttons.length, 16)
@@ -260,14 +91,14 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
           <section className="mc-card p-5">
             <div className="flex items-start gap-3">
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl" style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }}><Icon name="warning" size={18} /></span>
-              <div><h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>安全控制</h2><p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>手柄不会自动接管飞控；飞控断链后会立刻停止并关闭 RC 覆盖。</p></div>
+              <div><h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>安全控制</h2><p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>手柄不会自动接管飞控；飞控断链后会立刻停止 MAVLink 手动输入。</p></div>
             </div>
             <label className="mt-5 flex cursor-pointer items-center justify-between rounded-xl border p-3" style={{ borderColor: enabled ? 'var(--accent)' : 'var(--border)', background: enabled ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
-              <span><span className="block text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span><span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>RC_CHANNELS_OVERRIDE · {advanced.axisFrequencyHz} Hz</span></span>
+              <span><span className="block text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span><span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span></span>
               <input type="checkbox" checked={enabled} disabled={!connected || !flightControllerConnected} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
             </label>
             {actionNotice && <p className="mt-3 rounded-lg px-3 py-2 text-[11px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{actionNotice}</p>}
-            {!flightControllerConnected && <p className="mt-3 text-[11px]" style={{ color: 'var(--warning)' }}>请先连接飞控，才能手动启用 RC 覆盖。</p>}
+            {!flightControllerConnected && <p className="mt-3 text-[11px]" style={{ color: 'var(--warning)' }}>请先连接飞控，才能手动启用 MAVLink 输入。</p>}
           </section>
         </section>
       )}
