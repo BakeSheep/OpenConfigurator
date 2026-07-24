@@ -25,6 +25,7 @@ export default function TelemetryBar() {
   const heading = useTelemetryStore((state) => state.heading)
   const preflightCheck = useTelemetryStore((state) => state.preflightCheck)
   const sensorsHealthy = useTelemetryStore((state) => state.sensorsHealthy)
+  const unhealthySensors = useTelemetryStore((state) => state.unhealthySensors)
   const isStale = useTelemetryStore((state) => state.isStale)
   const status = useConnectionStore((state) => state.status)
   const connected = status === 'connected'
@@ -32,17 +33,21 @@ export default function TelemetryBar() {
   const gpsStale = !connected || isStale('gps')
   const batteryStale = !connected || (isStale('battery') && isStale('sysStatus'))
   const preflightStale = !connected || isStale('sysStatus')
-  const preflightLabel = preflightStale
-    ? (connected ? '预检中' : '预检 —')
-    : preflightCheck === true
-      ? '预检通过'
-      : preflightCheck === false
-        ? '预检未通过'
-        : sensorsHealthy === true
-          ? '传感器正常'
-          : sensorsHealthy === false
-            ? '传感器异常'
-            : '状态未知'
+  let preflightLabel = '状态未知'
+  if (preflightStale) preflightLabel = connected ? '预检中' : '预检 —'
+  else if (preflightCheck === true) preflightLabel = '预检通过'
+  else if (preflightCheck === false) preflightLabel = '预检未通过'
+  else if (sensorsHealthy === true) preflightLabel = '系统健康正常'
+  else if (sensorsHealthy === false) {
+    preflightLabel = unhealthySensors.length > 0
+      ? `${unhealthySensors[0]}异常`
+      : '系统健康异常'
+  }
+  const preflightTitle = !connected
+    ? '连接飞控后显示预检状态'
+    : unhealthySensors.length > 0
+      ? `飞控 SYS_STATUS：${unhealthySensors.join('、')}异常`
+      : '飞控 SYS_STATUS 预检结果'
 
   return (
     <div className="mc-telemetry" aria-label="飞行遥测">
@@ -62,7 +67,7 @@ export default function TelemetryBar() {
           <Icon name="settings" size={13} />
           <span>设置引导</span>
         </NavLink>
-        <span className="mc-telemetry__pill is-muted" title={connected ? '飞控 SYS_STATUS 预检结果' : '连接飞控后显示预检状态'}>
+        <span className="mc-telemetry__pill is-muted" title={preflightTitle}>
           <Icon name="check" size={13} />
           <span>{preflightLabel}</span>
         </span>

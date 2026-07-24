@@ -41,6 +41,8 @@ interface TelemetryState {
   autopilotVersion: AutopilotVersionData | null
   preflightCheck: boolean | null
   sensorsHealthy: boolean | null
+  unhealthySensorMask: number
+  unhealthySensors: string[]
   altitude: number
   relativeAlt: number
   groundSpeed: number
@@ -93,6 +95,8 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   autopilotVersion: null,
   preflightCheck: null,
   sensorsHealthy: null,
+  unhealthySensorMask: 0,
+  unhealthySensors: [],
   altitude: 0,
   relativeAlt: 0,
   groundSpeed: 0,
@@ -165,6 +169,8 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
       battery: fallbackBattery,
       preflightCheck: data.preflightCheck,
       sensorsHealthy: data.sensorsHealthy,
+      unhealthySensorMask: data.unhealthySensorMask,
+      unhealthySensors: data.unhealthySensors,
       lastUpdate: { ...state.lastUpdate, sysStatus: now },
     }
   }),

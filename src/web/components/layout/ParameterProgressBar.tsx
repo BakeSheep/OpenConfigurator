@@ -6,6 +6,7 @@ import Icon from '../ui/Icon'
 export default function ParameterProgressBar() {
   const { send } = useWebSocket()
   const connected = useConnectionStore((state) => state.status === 'connected')
+  const connectionType = useConnectionStore((state) => state.type)
   const {
     loading,
     receivedCount,
@@ -53,6 +54,9 @@ export default function ParameterProgressBar() {
             <strong>{totalCount > 0 ? `${receivedCount}/${totalCount}` : '等待响应'}</strong>
             {retryCount > 0 && (
               <small>正在补读第 {retryCount} 次{missingCount > 0 ? ` · 缺 ${missingCount} 项` : ''}</small>
+            )}
+            {connectionType === 'bluetooth' && retryCount === 0 && (
+              <small>蓝牙低带宽同步 · 已临时降低遥测速率</small>
             )}
           </>
         )}

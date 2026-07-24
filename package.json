@@ -35,6 +35,8 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "leaflet": "^1.9.4",
+    "mavlink-mappings": "^1.0.22-20260311",
+    "node-mavlink": "^2.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-leaflet": "^5.0.0",

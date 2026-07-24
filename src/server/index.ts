@@ -6,7 +6,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
-import type { ClientMessage } from '../shared/types'
+import type { ClientMessage, ParamData, ServerMessage } from '../shared/types'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -42,13 +42,43 @@ function broadcast(data: any) {
   })
 }
 
+// PARAM_VALUE can arrive as a >1000-message burst. Batch it before crossing
+// the WebSocket boundary so the browser does not process and render a thousand
+// individual message events while the Bluetooth link is already saturated.
+const PARAM_BATCH_INTERVAL_MS = 120
+let pendingParams: ParamData[] = []
+let paramBatchTimer: ReturnType<typeof setTimeout> | null = null
+function flushParamBatch() {
+  if (paramBatchTimer) {
+    clearTimeout(paramBatchTimer)
+    paramBatchTimer = null
+  }
+  if (pendingParams.length === 0) return
+  const batch = pendingParams
+  pendingParams = []
+  broadcast({ type: 'param_batch', data: batch } satisfies ServerMessage)
+}
+
 // Forward MAVLink messages to WebSocket clients
 mavlinkBridge.on('message', (msg) => {
+  if (msg.type === 'param') {
+    pendingParams.push(msg.data)
+    if (!paramBatchTimer) paramBatchTimer = setTimeout(flushParamBatch, PARAM_BATCH_INTERVAL_MS)
+    return
+  }
+  if (msg.type === 'param_complete' || msg.type === 'param_failed' || msg.type === 'param_retry') {
+    flushParamBatch()
+  }
   broadcast(msg)
 })
 
 // Forward connection status changes
 connManager.on('statusChange', (status) => {
+  if (status !== 'connected') {
+    pendingParams = []
+    if (paramBatchTimer) clearTimeout(paramBatchTimer)
+    paramBatchTimer = null
+  }
   broadcast({
     type: 'connection',
     data: {
@@ -82,6 +112,14 @@ wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     try {
       const msg: ClientMessage = JSON.parse(raw.toString())
+      if (msg.type === 'param_request_list') {
+        // A manual refresh starts a new transaction. Do not let a not-yet-
+        // flushed tail from the previous download repopulate the freshly
+        // cleared browser store with stale entries.
+        pendingParams = []
+        if (paramBatchTimer) clearTimeout(paramBatchTimer)
+        paramBatchTimer = null
+      }
       mavlinkBridge.handleClientMessage(msg)
     } catch (err) {
       console.error('[WS] Invalid message:', err)

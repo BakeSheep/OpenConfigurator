@@ -22,7 +22,7 @@ c:\Users\28951\Documents\Qoder\2026-07-19\chat-1\px4-web-gcs
 | 路由 | React Router (HashRouter) |
 | 后端 | Node.js + Express 5 + ws (WebSocket) |
 | 串口通信 | serialport |
-| MAVLink | 自实现 MAVLink v1/v2 解析器 |
+| MAVLink | node-mavlink（v1/v2 解析+序列化），由 src/server/mavlink/codec.ts 封装 |
 | 手柄输入 | Web Gamepad API |
 
 ## 架构
@@ -78,7 +78,7 @@ px4-web-gcs/
 │   │   │   ├── SerialConnection.ts    # USB 串口
 │   │   │   └── BluetoothConnection.ts # 蓝牙 SPP
 │   │   └── mavlink/
-│   │       ├── MavlinkParser.ts       # MAVLink v1/v2 解析与编码
+│   │       ├── codec.ts               # node-mavlink 封装（decode/serialize + REGISTRY）
 │   │       └── MavlinkBridge.ts       # 消息处理 + WS 桥接
 │   └── web/                      # React 前端
 │       ├── main.tsx             # React 入口
@@ -117,14 +117,14 @@ px4-web-gcs/
 | 模块 | 功能 | 状态 |
 |------|------|------|
 | 连接管理 | USB 串口 + 蓝牙 SPP，端口扫描/连接/断开 | 已完成 |
-| MAVLink 通信 | v1/v2 解析、CRC 校验、心跳、命令发送 | 已完成 |
+| MAVLink 通信 | v1/v2 解析（node-mavlink）、CRC 校验、心跳、命令发送 | 已完成 |
 | 仪表盘 | 3D 姿态、飞行数据卡片、传感器实时监控 | 已完成 |
 | 传感器监控 | IMU/磁力计/气压计/光流/测距/GPS | 已完成 |
 | EKF 融合配置 | GPS/Baro/Mag/OF/RNG/EV 开关 + 高度源 | 已完成 |
 | 传感器校准 | 加速度计6面/陀螺仪/磁力计/气压计/ESC/遥控器 | 已完成 |
 | 参数管理 | 下载/搜索/分组/编辑/导出 | 已完成 |
 | 电机测试 | 可视化布局 + 单电机/顺序测试 + 安全机制 | 已完成 |
-| 手柄控制 | Web Gamepad API + 死区/Expo + RC Override 20Hz | 已完成 |
+| 手柄控制 | Web Gamepad API + 死区/Expo + MANUAL_CONTROL 20Hz | 已完成 |
 | 飞行控制 | 解锁/上锁/起飞/降落/RTL/模式切换/飞行前检查 | 已完成 |
 | 实时曲线 | 高度/电压/速度多通道 | 已完成 |
 
@@ -141,7 +141,7 @@ px4-web-gcs/
 | DISTANCE_SENSOR | #132 | 测距 |
 | ESTIMATOR_STATUS | #230 | EKF 状态 |
 | PARAM_VALUE | #22 | 参数值 |
-| RC_CHANNELS_OVERRIDE | #70 | 手柄覆盖 |
+| MANUAL_CONTROL | #69 | 游戏手柄 MAVLink 手动输入 |
 | COMMAND_LONG | #76 | 命令发送 |
 
 ## 待完善事项

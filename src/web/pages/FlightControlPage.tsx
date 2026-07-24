@@ -14,8 +14,14 @@ export default function FlightControlPage() {
   const gps = useTelemetryStore((state) => state.gps)
   const ekfStatus = useTelemetryStore((state) => state.ekfStatus)
   const preflightCheck = useTelemetryStore((state) => state.preflightCheck)
+  const sensorsHealthy = useTelemetryStore((state) => state.sensorsHealthy)
+  const unhealthySensors = useTelemetryStore((state) => state.unhealthySensors)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
+  const isTelemetryStale = useTelemetryStore((state) => state.isStale)
   const sensorHealth = useSensorStore((state) => state.sensorHealth)
+  const opticalFlow = useSensorStore((state) => state.opticalFlow)
+  const distanceSensor = useSensorStore((state) => state.distanceSensor)
+  const isSensorStale = useSensorStore((state) => state.isStale)
   const connected = useConnectionStore((state) => state.status === 'connected')
   const [takeoffAltitude, setTakeoffAltitude] = useState(2.5)
   const [armConfirmation, setArmConfirmation] = useState(false)
@@ -42,14 +48,30 @@ export default function FlightControlPage() {
     command('MAV_CMD_DO_SET_MODE', [1, mainMode, subMode, 0, 0, 0, 0])
 
   const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
-  const hasFlowPosition = sensorHealth.opticalFlow === 'ok' && sensorHealth.rangefinder === 'ok'
+  const hasValidOpticalFlow = sensorHealth.opticalFlow === 'ok'
+    && !isSensorStale('opticalFlow')
+    && (opticalFlow?.quality ?? 0) > 0
+  const hasValidRangefinder = sensorHealth.rangefinder === 'ok'
+    && !isSensorStale('distanceSensor')
+    && distanceSensor !== null
+    && distanceSensor.current_distance >= distanceSensor.min_distance
+    && distanceSensor.current_distance <= distanceSensor.max_distance
+    && distanceSensor.signal_quality !== 1
+  const hasFlowPosition = hasValidOpticalFlow && hasValidRangefinder
+  const sysStatusFresh = !isTelemetryStale('sysStatus')
+  const systemHealthLabel = unhealthySensors.length > 0
+    ? `飞控系统健康（${unhealthySensors.join('、')}异常）`
+    : '飞控系统健康'
   const checks = [
     { label: '位置源（GPS 或光流+测距）', ok: hasGpsPosition || hasFlowPosition },
     { label: '电池电量 > 20%', ok: (battery?.remaining ?? 0) > 20 },
-    { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' },
-    { label: '气压计正常', ok: sensorHealth.baro === 'ok' },
-    { label: 'EKF 正常', ok: Boolean(ekfStatus) },
-    { label: '飞控预检', ok: preflightCheck !== false },
+    { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' && !isSensorStale('imu') },
+    { label: '气压计正常', ok: sensorHealth.baro === 'ok' && !isSensorStale('baro') },
+    { label: 'EKF 正常', ok: ekfStatus !== null && !isTelemetryStale('ekfStatus') && ekfStatus.health_flags !== 0 },
+    { label: systemHealthLabel, ok: sysStatusFresh && sensorsHealthy === true },
+    ...(preflightCheck === null
+      ? []
+      : [{ label: '飞控预检', ok: sysStatusFresh && preflightCheck === true }]),
   ]
   const allChecksPassed = checks.every((check) => check.ok)
   const latestArmMessage = statusLogs.find((entry) =>

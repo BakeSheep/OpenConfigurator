@@ -122,7 +122,7 @@ export default function GamepadVisualizer({
           <p className="mc-section-title mb-1">连接状态</p>
           <ConnectionRow label="游戏手柄" value={connected ? controllerId ?? '已连接' : '未检测到设备'} active={connected} />
           <ConnectionRow label="飞控链路" value={flightControllerConnected ? '已连接' : '未连接'} active={flightControllerConnected} />
-          <ConnectionRow label="RC 覆盖" value={enabled ? '已手动启用' : '未启用'} active={enabled} accent />
+          <ConnectionRow label="MAVLink 手动输入" value={enabled ? '已手动启用' : '未启用'} active={enabled} accent />
         </section>
 
         <section className="rounded-xl border p-4" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>

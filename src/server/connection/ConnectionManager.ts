@@ -3,11 +3,12 @@ import { SerialConnection } from './SerialConnection'
 import { BluetoothConnection } from './BluetoothConnection'
 import type { ConnectionConfig, ConnectionStatus, PortInfo } from '../../shared/types'
 
-// 5s without an autopilot HEARTBEAT (msg #0) means the link is dead. PX4 emits
-// heartbeats at 1 Hz, so this tolerates 4 consecutive losses - same threshold
-// QGroundControl uses. Triggers an automatic disconnect so downstream clients
-// are notified via the existing statusChange('disconnected') path.
-const HEARTBEAT_TIMEOUT_MS = 5000
+// USB serial can use a tight heartbeat timeout. Bluetooth SPP at 57600 baud
+// needs substantially more headroom: a ~1000-entry PARAM_VALUE stream alone
+// occupies more than six seconds of wire time and may delay HEARTBEAT packets.
+const SERIAL_HEARTBEAT_TIMEOUT_MS = 5000
+const BLUETOOTH_HEARTBEAT_TIMEOUT_MS = 20000
+const BLUETOOTH_ACTIVITY_TIMEOUT_MS = 8000
 const HEARTBEAT_CHECK_INTERVAL_MS = 1000
 
 export class ConnectionManager extends EventEmitter {
@@ -16,6 +17,7 @@ export class ConnectionManager extends EventEmitter {
   private _config: ConnectionConfig | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private lastHeartbeat = 0
+  private lastMavlinkActivity = 0
   // Guard against the timeout firing more than once per drop. Cleared on every
   // fresh connect so the next drop can fire again.
   private heartbeatTimeoutFired = false
@@ -151,17 +153,37 @@ export class ConnectionManager extends EventEmitter {
   // raw serial bytes are NOT sufficient because a FC can stall mid-stream.
   notifyAutopilotHeartbeat(): void {
     this.lastHeartbeat = Date.now()
+    this.lastMavlinkActivity = this.lastHeartbeat
     this.heartbeatTimeoutFired = false
+  }
+
+  // Called for every successfully parsed MAVLink frame. On Bluetooth this is a
+  // secondary liveness signal while a large parameter stream queues ahead of
+  // the next HEARTBEAT. Invalid/raw serial noise never reaches this method.
+  notifyAutopilotActivity(): void {
+    this.lastMavlinkActivity = Date.now()
   }
 
   private startHeartbeatMonitor() {
     this.lastHeartbeat = Date.now()
+    this.lastMavlinkActivity = this.lastHeartbeat
     this.heartbeatTimeoutFired = false
     this.heartbeatTimer = setInterval(() => {
       if (this._status !== 'connected') return
-      if (Date.now() - this.lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
+      const now = Date.now()
+      const bluetooth = this._config?.type === 'bluetooth'
+      const heartbeatTimeout = bluetooth
+        ? BLUETOOTH_HEARTBEAT_TIMEOUT_MS
+        : SERIAL_HEARTBEAT_TIMEOUT_MS
+      const heartbeatStale = now - this.lastHeartbeat > heartbeatTimeout
+      const activityStale = now - this.lastMavlinkActivity > BLUETOOTH_ACTIVITY_TIMEOUT_MS
+      if (heartbeatStale && (!bluetooth || activityStale)) {
         if (this.heartbeatTimeoutFired) return
         this.heartbeatTimeoutFired = true
+        console.warn(
+          `[Connection] MAVLink timeout: heartbeat=${now - this.lastHeartbeat}ms`
+          + ` activity=${now - this.lastMavlinkActivity}ms type=${this._config?.type ?? 'unknown'}`,
+        )
         this.emit('heartbeatTimeout')
         // Auto-disconnect so the frontend is notified via the standard
         // statusChange('disconnected') -> WebSocket broadcast path.

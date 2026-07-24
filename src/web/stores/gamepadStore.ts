@@ -41,6 +41,7 @@ interface GamepadState {
   expo: number
   advanced: GamepadAdvancedSettings
   enabled: boolean
+  actionNotice: string
   setConnected: (connected: boolean, id?: string) => void
   setAxes: (axes: number[]) => void
   setButtons: (buttons: boolean[]) => void
@@ -50,6 +51,7 @@ interface GamepadState {
   setExpo: (expo: number) => void
   setAdvanced: (settings: Partial<GamepadAdvancedSettings>) => void
   setEnabled: (enabled: boolean) => void
+  setActionNotice: (notice: string) => void
 }
 
 const defaultMapping: GamepadMapping = {
@@ -119,9 +121,10 @@ export const useGamepadStore = create<GamepadState>((set) => ({
   buttons: [],
   ...storedSettings,
   enabled: false,
+  actionNotice: '',
   setConnected: (connected, id) => set(connected
     ? { connected: true, id: id || null }
-    : { connected: false, id: null, axes: [], buttons: [], enabled: false }),
+    : { connected: false, id: null, axes: [], buttons: [], enabled: false, actionNotice: '' }),
   setAxes: (axes) => set((state) =>
     state.axes.length === axes.length && axes.every((value, index) => Math.abs(value - state.axes[index]) < 0.001)
       ? state
@@ -163,4 +166,5 @@ export const useGamepadStore = create<GamepadState>((set) => ({
     return { advanced: next }
   }),
   setEnabled: (enabled) => set({ enabled }),
+  setActionNotice: (actionNotice) => set({ actionNotice }),
 }))
