@@ -1,29 +1,159 @@
 import { EventEmitter } from 'events'
-import { SerialConnection } from './SerialConnection'
+import { performance } from 'node:perf_hooks'
+import { SerialConnection, type SerialWritePriority } from './SerialConnection'
 import { BluetoothConnection } from './BluetoothConnection'
+import {
+  BluetoothWorker,
+  type ReconnectProgress,
+  type ReconnectTerminalReason,
+} from './BluetoothWorker'
 import type { ConnectionConfig, ConnectionStatus, PortInfo } from '../../shared/types'
 
-// USB serial can use a tight heartbeat timeout. Bluetooth SPP at 57600 baud
-// needs substantially more headroom: a ~1000-entry PARAM_VALUE stream alone
-// occupies more than six seconds of wire time and may delay HEARTBEAT packets.
-const SERIAL_HEARTBEAT_TIMEOUT_MS = 5000
-const BLUETOOTH_HEARTBEAT_TIMEOUT_MS = 20000
-const BLUETOOTH_ACTIVITY_TIMEOUT_MS = 8000
-const HEARTBEAT_CHECK_INTERVAL_MS = 1000
+const DEFAULT_SERIAL_SOFT_HEARTBEAT_TIMEOUT_MS = 5000
+const DEFAULT_BLUETOOTH_SOFT_HEARTBEAT_TIMEOUT_MS = 20000
+const DEFAULT_ACTIVITY_GRACE_MS = 8000
+const DEFAULT_SERIAL_HARD_HEARTBEAT_TIMEOUT_MS = 15000
+const DEFAULT_BLUETOOTH_HARD_HEARTBEAT_TIMEOUT_MS = 30000
+const DEFAULT_HEARTBEAT_CHECK_INTERVAL_MS = 1000
+const MAX_PRE_TRANSPORT_DATA_BYTES = 256 * 1024
+
+export type ConnectionErrorPhase =
+  | 'connect'
+  | 'runtime'
+  | 'disconnect'
+  | 'heartbeat'
+  | 'reconnect'
+
+export interface ConnectionErrorDetail {
+  phase: ConnectionErrorPhase
+  message: string
+  code?: string
+  timestamp: number
+}
+
+interface ManagedLink extends EventEmitter {
+  readonly connected: boolean
+  disconnect(timeoutMs?: number): Promise<void>
+  write(data: Buffer, priority?: SerialWritePriority): boolean | void
+}
+
+interface ManagedSerialLink extends ManagedLink {
+  connect(path: string, baudRate: number, timeoutMs?: number): Promise<void>
+}
+
+interface ManagedBluetoothLink extends ManagedLink {
+  readonly resolvedPort: string
+  readonly terminalReason: ReconnectTerminalReason | null
+  connect(): Promise<void>
+  confirmVehicleHeartbeat(): void
+  forceReconnect(reason?: string): void
+}
+
+export interface ConnectionManagerOptions {
+  serialFactory?: () => ManagedSerialLink
+  bluetoothFactory?: (config: ConnectionConfig) => ManagedBluetoothLink
+  listSerialPorts?: () => Promise<PortInfo[]>
+  listBluetoothPorts?: () => Promise<PortInfo[]>
+  monotonicNow?: () => number
+  wallClock?: () => number
+  setIntervalFn?: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setInterval>
+  clearIntervalFn?: (timer: ReturnType<typeof setInterval>) => void
+  heartbeatCheckIntervalMs?: number
+  serialSoftHeartbeatTimeoutMs?: number
+  bluetoothSoftHeartbeatTimeoutMs?: number
+  activityGraceMs?: number
+  serialHardHeartbeatTimeoutMs?: number
+  bluetoothHardHeartbeatTimeoutMs?: number
+}
+
+interface LinkHandlers {
+  link: ManagedLink
+  generation: number
+  onData: (data: Buffer) => void
+  onDataSent: (count: number) => void
+  onOverflow: (details: unknown) => void
+  onDisconnected: () => void
+  onError: (error: Error) => void
+  onDiagnostic: (details: unknown) => void
+  onConnected?: (details?: unknown) => void
+  onTransportConnected?: (details?: unknown) => void
+  onTransportDisconnected?: (details?: unknown) => void
+  onReconnecting?: (progress: ReconnectProgress) => void
+  onTerminal?: (reason: ReconnectTerminalReason) => void
+  onVehicleReadyChange?: (ready: boolean) => void
+}
 
 export class ConnectionManager extends EventEmitter {
-  private serialConn: SerialConnection | null = null
+  private link: ManagedLink | null = null
+  private linkKind: ConnectionConfig['type'] | null = null
+  private linkHandlers: LinkHandlers | null = null
   private _status: ConnectionStatus = 'disconnected'
   private _config: ConnectionConfig | null = null
+  private _transportOpen = false
+  private _vehicleReady = false
+  private _lastError: ConnectionErrorDetail | null = null
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private lastHeartbeat = 0
   private lastMavlinkActivity = 0
-  // Guard against the timeout firing more than once per drop. Cleared on every
-  // fresh connect so the next drop can fire again.
   private heartbeatTimeoutFired = false
-  // Serialize connect/disconnect so concurrent browser requests cannot race
-  // on serialConn assignment or COM-port ownership.
   private pendingOp: Promise<void> = Promise.resolve()
+  private nextConnectRequestId = 0
+  private cancelConnectThrough = 0
+  private connectionGeneration = 0
+  private cleanupGeneration: number | null = null
+  private activeCleanup: {
+    link: ManagedLink
+    generation: number
+    promise: Promise<void>
+  } | null = null
+  private readonly scheduledCleanupGenerations = new Set<number>()
+  private preTransportData: Buffer[] = []
+  private preTransportDataBytes = 0
+  private _bytesReceived = 0
+  private _bytesSent = 0
+  private _reconnect: ReconnectProgress | null = null
+  private _reconnectTerminalReason: ReconnectTerminalReason | null = null
+
+  private readonly serialFactory: () => ManagedSerialLink
+  private readonly bluetoothFactory: (config: ConnectionConfig) => ManagedBluetoothLink
+  private readonly listSerialPorts: () => Promise<PortInfo[]>
+  private readonly listBluetoothPorts: () => Promise<PortInfo[]>
+  private readonly monotonicNow: () => number
+  private readonly wallClock: () => number
+  private readonly setIntervalFn: NonNullable<ConnectionManagerOptions['setIntervalFn']>
+  private readonly clearIntervalFn: NonNullable<ConnectionManagerOptions['clearIntervalFn']>
+  private readonly heartbeatCheckIntervalMs: number
+  private readonly serialSoftHeartbeatTimeoutMs: number
+  private readonly bluetoothSoftHeartbeatTimeoutMs: number
+  private readonly activityGraceMs: number
+  private readonly serialHardHeartbeatTimeoutMs: number
+  private readonly bluetoothHardHeartbeatTimeoutMs: number
+
+  constructor(options: ConnectionManagerOptions = {}) {
+    super()
+    this.serialFactory = options.serialFactory ?? (() => new SerialConnection())
+    this.bluetoothFactory = options.bluetoothFactory ?? ((config) => new BluetoothWorker(config))
+    this.listSerialPorts = options.listSerialPorts ?? (() => SerialConnection.listPorts())
+    this.listBluetoothPorts = options.listBluetoothPorts ?? (() => BluetoothConnection.scanDevices())
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now())
+    this.wallClock = options.wallClock ?? Date.now
+    this.setIntervalFn = options.setIntervalFn ?? ((callback, delayMs) => setInterval(callback, delayMs))
+    this.clearIntervalFn = options.clearIntervalFn ?? ((timer) => clearInterval(timer))
+    this.heartbeatCheckIntervalMs = options.heartbeatCheckIntervalMs
+      ?? DEFAULT_HEARTBEAT_CHECK_INTERVAL_MS
+    this.serialSoftHeartbeatTimeoutMs = options.serialSoftHeartbeatTimeoutMs
+      ?? DEFAULT_SERIAL_SOFT_HEARTBEAT_TIMEOUT_MS
+    this.bluetoothSoftHeartbeatTimeoutMs = options.bluetoothSoftHeartbeatTimeoutMs
+      ?? DEFAULT_BLUETOOTH_SOFT_HEARTBEAT_TIMEOUT_MS
+    this.activityGraceMs = options.activityGraceMs ?? DEFAULT_ACTIVITY_GRACE_MS
+    this.serialHardHeartbeatTimeoutMs = options.serialHardHeartbeatTimeoutMs
+      ?? DEFAULT_SERIAL_HARD_HEARTBEAT_TIMEOUT_MS
+    this.bluetoothHardHeartbeatTimeoutMs = options.bluetoothHardHeartbeatTimeoutMs
+      ?? DEFAULT_BLUETOOTH_HARD_HEARTBEAT_TIMEOUT_MS
+  }
 
   get status() {
     return this._status
@@ -33,171 +163,651 @@ export class ConnectionManager extends EventEmitter {
     return this._config
   }
 
-  private setStatus(status: ConnectionStatus) {
-    this._status = status
-    this.emit('statusChange', status)
+  get transportOpen() {
+    return this._transportOpen
+  }
+
+  get vehicleReady() {
+    return this._vehicleReady
+  }
+
+  get lastError() {
+    return this._lastError
+  }
+
+  get bytesReceived() {
+    return this._bytesReceived
+  }
+
+  get bytesSent() {
+    return this._bytesSent
+  }
+
+  get reconnect() {
+    return this._reconnect
+  }
+
+  get reconnectTerminalReason() {
+    return this._reconnectTerminalReason
   }
 
   async scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }> {
-    const serial = await SerialConnection.listPorts()
-    const bluetooth = await BluetoothConnection.scanDevices()
+    const [serial, bluetooth] = await Promise.all([
+      this.listSerialPorts(),
+      this.listBluetoothPorts(),
+    ])
     return { serial, bluetooth }
   }
 
   async connect(config: ConnectionConfig): Promise<void> {
-    // Serialize: wait for any in-flight connect/disconnect to settle first.
-    const run = async () => {
-      // A failed/opening connection may still own the COM port. Always dispose
-      // the previous instance before another attempt.
-      if (this.serialConn) {
-        // We are already executing inside pendingOp. Calling disconnect() here
-        // would enqueue behind this connect() and then wait for itself forever.
-        await this.cleanup()
+    const requestId = ++this.nextConnectRequestId
+    return this.enqueueOperation(async () => {
+      if (this.isConnectRequestCancelled(requestId)) {
+        throw this.connectionCancelledError()
+      }
+      if (this.link) {
+        this.prepareForTeardown('connecting')
+        try {
+          await this.awaitActiveLinkCleanup(this.link, this.connectionGeneration)
+        } catch (error) {
+          const failure = this.toError(error)
+          this.setLastError(this.errorDetail('disconnect', failure.message, failure))
+          this.setStatus('error')
+          this.emit('connectionError', failure)
+          throw failure
+        }
+      }
+      if (this.isConnectRequestCancelled(requestId)) {
+        this.setStatus('disconnected')
+        throw this.connectionCancelledError()
       }
 
+      const generation = ++this.connectionGeneration
+      this._config = { ...config }
+      this.linkKind = config.type
+      this._bytesReceived = 0
+      this._bytesSent = 0
+      this._reconnect = null
+      this._reconnectTerminalReason = null
+      this.clearPreTransportData()
+      this.setLastError(null)
+      this.setTransportOpen(false)
+      this.setVehicleReady(false)
       this.setStatus('connecting')
-      this._config = config
-      let portPath = config.port
 
       try {
-        // For Bluetooth, resolve the device chosen via the browser-side Web
-        // Serial chooser back to a Windows SPP COM port before opening.
         if (config.type === 'bluetooth') {
-          const resolved = await BluetoothConnection.findPortByIds({
-            vendorId: config.vendorId,
-            productId: config.productId,
-            bluetoothServiceClassId: config.bluetoothServiceClassId,
-            label: config.port,
-          })
-          if (!resolved) {
-            throw new Error(`未找到蓝牙设备 "${config.port}" 对应的 SPP 串口。请确认设备已配对并启用 SPP 服务。`)
+          const worker = this.bluetoothFactory(config)
+          this.link = worker
+          this.wireLink(worker, generation, 'bluetooth')
+          await worker.connect()
+          if (this.isConnectRequestCancelled(requestId)) {
+            throw this.connectionCancelledError()
           }
-          portPath = resolved
-          // Store the resolved COM port so the UI shows it after connecting
-          this._config = { ...config, port: portPath }
+          if (this.isActive(worker, generation) && !this._transportOpen) {
+            this.onLinkTransportConnected(worker, generation)
+          }
+        } else {
+          const connection = this.serialFactory()
+          this.link = connection
+          this.wireLink(connection, generation, 'serial')
+          await connection.connect(config.port, config.baudRate, 5000)
+          if (this.isConnectRequestCancelled(requestId)) {
+            throw this.connectionCancelledError()
+          }
+          this.onLinkTransportConnected(connection, generation)
         }
-
-        this.serialConn = new SerialConnection()
-
-        this.serialConn.on('data', (data: Buffer) => {
-          // NOTE: lastHeartbeat is now driven by autopilot HEARTBEAT msg #0
-          // (see notifyAutopilotHeartbeat), NOT by raw serial bytes. A FC that
-          // stops emitting heartbeats but still streams ATTITUDE will now be
-          // correctly detected as a stale link.
-          this.emit('data', data)
-        })
-
-        this.serialConn.on('disconnected', () => {
-          void this.cleanup()
+      } catch (error) {
+        const connectError = this.toError(error)
+        const cancelled = this.isConnectRequestCancelled(requestId)
+        let cleanupError: Error | null = null
+        if (this.link && this.connectionGeneration === generation) {
+          try {
+            await this.awaitActiveLinkCleanup(this.link, generation)
+          } catch (failure) {
+            cleanupError = this.toError(failure)
+          }
+        }
+        if (cancelled && !cleanupError) {
           this.setStatus('disconnected')
-        })
-
-        this.serialConn.on('error', (err: Error) => {
-          void this.cleanup()
-          this.setStatus('error')
-          this.emit('connectionError', err)
-        })
-
-        await this.serialConn.connect(portPath, config.baudRate, config.type === 'bluetooth' ? 20000 : 5000)
-        this.heartbeatTimeoutFired = false
-        this.setStatus('connected')
-        this.startHeartbeatMonitor()
-      } catch (err) {
-        await this.cleanup()
-        this.setStatus('error')
-        if (config.type === 'bluetooth' && err instanceof Error && /(?:code 121|semaphore timeout)/i.test(err.message)) {
-          throw new Error(`蓝牙设备未响应（${portPath}）。请确认选择的是飞控对应端口、飞控已上电且未被其他软件连接。`)
+          throw this.connectionCancelledError()
         }
-        throw err
+        const surfaced = this.translateBluetoothOpenError(connectError, config)
+        const detailMessage = cleanupError
+          ? `${surfaced.message}；同时清理失败：${cleanupError.message}`
+          : surfaced.message
+        this.setLastError(this.errorDetail('connect', detailMessage, surfaced))
+        this.setStatus('error')
+        throw surfaced
       }
-    }
-
-    this.pendingOp = this.pendingOp.then(run, run)
-    return this.pendingOp
+    })
   }
 
   async disconnect(): Promise<void> {
-    const run = async () => {
-      await this.cleanup()
+    // Cancellation must reach a provisional SerialConnection/BluetoothWorker
+    // immediately. Waiting behind connect() in pendingOp makes their explicit
+    // cancellation support unreachable when native open/discovery stalls.
+    this.cancelConnectThrough = this.nextConnectRequestId
+    const provisionalLink = this.link
+    const provisionalGeneration = this.connectionGeneration
+    if (provisionalLink) {
+      this.prepareForTeardown('disconnected')
+      void this.beginActiveLinkCleanup(provisionalLink, provisionalGeneration).catch(() => undefined)
+    }
+
+    return this.enqueueOperation(async () => {
+      const link = this.link
+      const generation = this.connectionGeneration
+      if (link) {
+        this.prepareForTeardown('disconnected')
+        try {
+          await this.awaitActiveLinkCleanup(link, generation)
+        } catch (error) {
+          const failure = this.toError(error)
+          this.setLastError(this.errorDetail('disconnect', failure.message, failure))
+          this.setStatus('error')
+          this.emit('connectionError', failure)
+          throw failure
+        }
+      } else {
+        this.stopHeartbeatMonitor()
+        this.setTransportOpen(false)
+        this.setVehicleReady(false)
+      }
+
+      ++this.connectionGeneration
       this._config = null
-      if (this._status !== 'disconnected') {
-        this.setStatus('disconnected')
-      }
-    }
-    this.pendingOp = this.pendingOp.then(run, run)
-    return this.pendingOp
+      this.linkKind = null
+      this._reconnect = null
+      this._reconnectTerminalReason = null
+      this.clearPreTransportData()
+      this.setLastError(null)
+      // Publish a final snapshot after config/error/reconnect fields are
+      // cleared. The early disconnected event intentionally stops writes,
+      // while this forced event lets WS clients discard all stale metadata.
+      this.setStatus('disconnected', true)
+    })
   }
 
-  // Shared teardown for both explicit disconnect and error/drop paths. Stops
-  // the heartbeat monitor (so the timer stops firing into the void), nulls
-  // serialConn so write() becomes a no-op, and closes the underlying port.
-  private async cleanup(): Promise<void> {
-    this.stopHeartbeatMonitor()
-    const connection = this.serialConn
-    if (!connection) return
-    // Detach first so the port's close event cannot recursively enter cleanup
-    // or overwrite the status of a newer connection attempt.
-    this.serialConn = null
-    connection.removeAllListeners()
-    await connection.disconnect().catch(() => undefined)
+  write(data: Buffer, priority: SerialWritePriority = 'normal'): boolean {
+    if (!this.link || !this._transportOpen || this._status !== 'connected') return false
+    return this.link.write(data, priority) !== false
   }
 
-  write(data: Buffer): void {
-    if (this.serialConn && this._status === 'connected') {
-      this.serialConn.write(data)
-    }
-  }
-
-  // Called by MavlinkBridge.handleHeartbeat whenever an autopilot HEARTBEAT
-  // (msg #0) is received. This is the true application-layer liveness signal;
-  // raw serial bytes are NOT sufficient because a FC can stall mid-stream.
+  /**
+   * Called only for a validated HEARTBEAT from the selected autopilot.
+   * Transport readiness remains separate so Bridge can parse before this point.
+   */
   notifyAutopilotHeartbeat(): void {
-    this.lastHeartbeat = Date.now()
-    this.lastMavlinkActivity = this.lastHeartbeat
+    if (
+      !this.link
+      || this.cleanupGeneration === this.connectionGeneration
+      || !this._transportOpen
+      || this._status !== 'connected'
+    ) return
+
+    const now = this.monotonicNow()
+    this.lastHeartbeat = now
+    this.lastMavlinkActivity = now
     this.heartbeatTimeoutFired = false
-  }
-
-  // Called for every successfully parsed MAVLink frame. On Bluetooth this is a
-  // secondary liveness signal while a large parameter stream queues ahead of
-  // the next HEARTBEAT. Invalid/raw serial noise never reaches this method.
-  notifyAutopilotActivity(): void {
-    this.lastMavlinkActivity = Date.now()
-  }
-
-  private startHeartbeatMonitor() {
-    this.lastHeartbeat = Date.now()
-    this.lastMavlinkActivity = this.lastHeartbeat
-    this.heartbeatTimeoutFired = false
-    this.heartbeatTimer = setInterval(() => {
-      if (this._status !== 'connected') return
-      const now = Date.now()
-      const bluetooth = this._config?.type === 'bluetooth'
-      const heartbeatTimeout = bluetooth
-        ? BLUETOOTH_HEARTBEAT_TIMEOUT_MS
-        : SERIAL_HEARTBEAT_TIMEOUT_MS
-      const heartbeatStale = now - this.lastHeartbeat > heartbeatTimeout
-      const activityStale = now - this.lastMavlinkActivity > BLUETOOTH_ACTIVITY_TIMEOUT_MS
-      if (heartbeatStale && (!bluetooth || activityStale)) {
-        if (this.heartbeatTimeoutFired) return
-        this.heartbeatTimeoutFired = true
-        console.warn(
-          `[Connection] MAVLink timeout: heartbeat=${now - this.lastHeartbeat}ms`
-          + ` activity=${now - this.lastMavlinkActivity}ms type=${this._config?.type ?? 'unknown'}`,
-        )
-        this.emit('heartbeatTimeout')
-        // Auto-disconnect so the frontend is notified via the standard
-        // statusChange('disconnected') -> WebSocket broadcast path.
-        void this.disconnect().catch((err) => {
-          console.error('[Connection] auto-disconnect after heartbeat timeout failed:', err)
-        })
-      }
-    }, HEARTBEAT_CHECK_INTERVAL_MS)
-  }
-
-  private stopHeartbeatMonitor() {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
+    if (this._lastError?.phase === 'heartbeat' || this._lastError?.phase === 'reconnect') {
+      this.setLastError(null)
     }
+    this.setVehicleReady(true)
+    if (this.linkKind === 'bluetooth') {
+      ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
+    }
+  }
+
+  /** Called for every valid frame from the selected autopilot. */
+  notifyAutopilotActivity(): void {
+    if (
+      !this.link
+      || this.cleanupGeneration === this.connectionGeneration
+      || !this._transportOpen
+      || this._status !== 'connected'
+    ) return
+    this.lastMavlinkActivity = this.monotonicNow()
+  }
+
+  private wireLink(
+    link: ManagedLink,
+    generation: number,
+    kind: ConnectionConfig['type'],
+  ): void {
+    const handlers: LinkHandlers = {
+      link,
+      generation,
+      onData: (data: Buffer) => {
+        if (!this.isActive(link, generation)) return
+        this._bytesReceived += data.length
+        if (this.cleanupGeneration === generation) return
+        if (!this._transportOpen || this._status !== 'connected') {
+          if (this._status === 'connecting' || this._status === 'reconnecting') {
+            this.bufferPreTransportData(data)
+          }
+          return
+        }
+        this.emit('data', data)
+      },
+      onDataSent: (count: number) => {
+        if (this.isActive(link, generation)) this._bytesSent += count
+      },
+      onOverflow: (details: unknown) => {
+        if (this.isActive(link, generation)) this.emit('writeOverflow', details)
+      },
+      onDisconnected: () => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        this.scheduleSpontaneousCleanup(link, generation, 'disconnected')
+      },
+      onError: (error: Error) => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        if (kind === 'bluetooth') {
+          if (!this._reconnectTerminalReason) {
+            this.setLastError(this.errorDetail('reconnect', error.message, error))
+          }
+          this.emit('connectionError', error)
+          return
+        }
+        this.scheduleSpontaneousCleanup(link, generation, 'error', error)
+      },
+      onDiagnostic: (details: unknown) => {
+        if (this.isActive(link, generation)) this.emit('diagnostic', details)
+      },
+    }
+
+    if (kind === 'bluetooth') {
+      const bluetooth = link as ManagedBluetoothLink
+      handlers.onTransportConnected = () => this.onLinkTransportConnected(link, generation)
+      handlers.onConnected = () => this.onLinkTransportConnected(link, generation)
+      handlers.onTransportDisconnected = () => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        this.stopHeartbeatMonitor()
+        this.clearPreTransportData()
+        this.setVehicleReady(false)
+        this.setTransportOpen(false)
+        this.setStatus('reconnecting')
+      }
+      handlers.onReconnecting = (progress) => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        this._reconnect = progress
+        this.stopHeartbeatMonitor()
+        this.clearPreTransportData()
+        this.setVehicleReady(false)
+        this.setTransportOpen(false)
+        this.setStatus('reconnecting')
+      }
+      handlers.onTerminal = (reason) => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        this._reconnectTerminalReason = reason
+        this.setLastError(this.errorDetail('reconnect', reason.message, { code: reason.code }))
+        this.stopHeartbeatMonitor()
+        this.clearPreTransportData()
+        this.setTransportOpen(false)
+        this.scheduleSpontaneousCleanup(link, generation, 'error')
+      }
+      handlers.onVehicleReadyChange = (ready) => {
+        if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        if (ready && (!this._transportOpen || this._status !== 'connected')) return
+        this.setVehicleReady(ready)
+      }
+      bluetooth.on('transportConnected', handlers.onTransportConnected)
+      bluetooth.on('connected', handlers.onConnected)
+      bluetooth.on('transportDisconnected', handlers.onTransportDisconnected)
+      bluetooth.on('reconnecting', handlers.onReconnecting)
+      bluetooth.on('terminal', handlers.onTerminal)
+      bluetooth.on('vehicleReadyChange', handlers.onVehicleReadyChange)
+    }
+
+    link.on('data', handlers.onData)
+    link.on('dataSent', handlers.onDataSent)
+    link.on('overflow', handlers.onOverflow)
+    link.on('disconnected', handlers.onDisconnected)
+    link.on('error', handlers.onError)
+    link.on('diagnostic', handlers.onDiagnostic)
+    this.linkHandlers = handlers
+  }
+
+  private detachLinkHandlers(handlers: LinkHandlers): void {
+    const { link } = handlers
+    link.off('data', handlers.onData)
+    link.off('dataSent', handlers.onDataSent)
+    link.off('overflow', handlers.onOverflow)
+    link.off('disconnected', handlers.onDisconnected)
+    link.off('error', handlers.onError)
+    link.off('diagnostic', handlers.onDiagnostic)
+    if (handlers.onTransportConnected) {
+      link.off('transportConnected', handlers.onTransportConnected)
+    }
+    if (handlers.onConnected) link.off('connected', handlers.onConnected)
+    if (handlers.onTransportDisconnected) {
+      link.off('transportDisconnected', handlers.onTransportDisconnected)
+    }
+    if (handlers.onReconnecting) link.off('reconnecting', handlers.onReconnecting)
+    if (handlers.onTerminal) link.off('terminal', handlers.onTerminal)
+    if (handlers.onVehicleReadyChange) {
+      link.off('vehicleReadyChange', handlers.onVehicleReadyChange)
+    }
+    if (this.linkHandlers === handlers) this.linkHandlers = null
+  }
+
+  private onLinkTransportConnected(link: ManagedLink, generation: number): void {
+    if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+    if (this._transportOpen && this._status === 'connected') return
+    if (this.linkKind === 'bluetooth' && this._config) {
+      this._config = {
+        ...this._config,
+        port: (link as ManagedBluetoothLink).resolvedPort,
+      }
+    }
+
+    this._reconnect = null
+    this._reconnectTerminalReason = null
+    this.heartbeatTimeoutFired = false
+    this.setTransportOpen(true)
+    this.setVehicleReady(false)
+    this.setStatus('connected')
+    this.startHeartbeatMonitor(this._vehicleReady)
+    this.flushPreTransportData(link, generation)
+  }
+
+  /**
+   * A native serial binding may deliver bytes immediately before its connect
+   * promise resumes. Hold those bytes until statusChange('connected') has
+   * synchronously reset the MAVLink session, then replay them in order.
+   */
+  private bufferPreTransportData(data: Buffer): void {
+    const chunk = Buffer.from(data)
+    let droppedBytes = 0
+
+    if (chunk.length >= MAX_PRE_TRANSPORT_DATA_BYTES) {
+      droppedBytes = this.preTransportDataBytes
+        + chunk.length
+        - MAX_PRE_TRANSPORT_DATA_BYTES
+      this.preTransportData = [
+        Buffer.from(chunk.subarray(chunk.length - MAX_PRE_TRANSPORT_DATA_BYTES)),
+      ]
+      this.preTransportDataBytes = MAX_PRE_TRANSPORT_DATA_BYTES
+    } else {
+      while (
+        this.preTransportData.length > 0
+        && this.preTransportDataBytes + chunk.length > MAX_PRE_TRANSPORT_DATA_BYTES
+      ) {
+        const dropped = this.preTransportData.shift()
+        if (dropped) {
+          this.preTransportDataBytes -= dropped.length
+          droppedBytes += dropped.length
+        }
+      }
+      this.preTransportData.push(chunk)
+      this.preTransportDataBytes += chunk.length
+    }
+
+    if (droppedBytes > 0) {
+      this.emit('diagnostic', {
+        kind: 'preTransportDataOverflow',
+        droppedBytes,
+        bufferedBytes: this.preTransportDataBytes,
+      })
+    }
+  }
+
+  private clearPreTransportData(): void {
+    this.preTransportData = []
+    this.preTransportDataBytes = 0
+  }
+
+  private flushPreTransportData(link: ManagedLink, generation: number): void {
+    const buffered = this.preTransportData
+    this.clearPreTransportData()
+    for (const data of buffered) {
+      if (
+        !this.isActive(link, generation)
+        || !this._transportOpen
+        || this._status !== 'connected'
+      ) return
+      this.emit('data', data)
+    }
+  }
+
+  private scheduleSpontaneousCleanup(
+    link: ManagedLink,
+    generation: number,
+    terminalStatus: 'disconnected' | 'error',
+    error?: Error,
+  ): void {
+    if (this.scheduledCleanupGenerations.has(generation)) return
+    this.scheduledCleanupGenerations.add(generation)
+    if (error) {
+      this.setLastError(this.errorDetail('runtime', error.message, error))
+      this.emit('connectionError', error)
+    }
+    this.prepareForTeardown(terminalStatus)
+    void this.enqueueOperation(async () => {
+      try {
+        if (!this.isActive(link, generation)) return
+        await this.awaitActiveLinkCleanup(link, generation)
+      } catch (cleanupError) {
+        const failure = this.toError(cleanupError)
+        this.setLastError(this.errorDetail('disconnect', failure.message, failure))
+        this.setStatus('error')
+        this.emit('connectionError', failure)
+      } finally {
+        this.scheduledCleanupGenerations.delete(generation)
+      }
+    }).catch((queueError) => {
+      this.scheduledCleanupGenerations.delete(generation)
+      this.emit('connectionError', this.toError(queueError))
+    })
+  }
+
+  private async cleanupActiveLink(link: ManagedLink, generation: number): Promise<void> {
+    if (!this.isActive(link, generation)) return
+    this.cleanupGeneration = generation
+    this.stopHeartbeatMonitor()
+    this.clearPreTransportData()
+    this.setVehicleReady(false)
+    this.setTransportOpen(false)
+    this._reconnect = null
+    try {
+      await link.disconnect()
+    } catch (error) {
+      throw this.toError(error)
+    } finally {
+      this.cleanupGeneration = null
+    }
+
+    if (!this.isActive(link, generation)) return
+    if (this.linkHandlers?.link === link) this.detachLinkHandlers(this.linkHandlers)
+    this.link = null
+  }
+
+  private beginActiveLinkCleanup(link: ManagedLink, generation: number): Promise<void> {
+    if (
+      this.activeCleanup?.link === link
+      && this.activeCleanup.generation === generation
+    ) return this.activeCleanup.promise
+
+    const promise = this.cleanupActiveLink(link, generation)
+    this.activeCleanup = { link, generation, promise }
+    void promise.then(
+      () => {
+        if (this.activeCleanup?.promise === promise) this.activeCleanup = null
+      },
+      () => undefined,
+    )
+    return promise
+  }
+
+  private async awaitActiveLinkCleanup(link: ManagedLink, generation: number): Promise<void> {
+    const promise = this.beginActiveLinkCleanup(link, generation)
+    try {
+      await promise
+    } finally {
+      if (
+        this.activeCleanup?.link === link
+        && this.activeCleanup.generation === generation
+        && this.activeCleanup.promise === promise
+      ) this.activeCleanup = null
+    }
+  }
+
+  private startHeartbeatMonitor(preserveHeartbeat: boolean): void {
+    this.stopHeartbeatMonitor()
+    const now = this.monotonicNow()
+    if (!preserveHeartbeat) this.lastHeartbeat = now
+    this.lastMavlinkActivity = preserveHeartbeat ? this.lastMavlinkActivity : now
+    this.heartbeatTimeoutFired = false
+    this.heartbeatTimer = this.setIntervalFn(
+      () => this.checkHeartbeatLiveness(),
+      this.heartbeatCheckIntervalMs,
+    )
+  }
+
+  private checkHeartbeatLiveness(): void {
+    if (!this._transportOpen || this._status !== 'connected') return
+    const now = this.monotonicNow()
+    const bluetooth = this.linkKind === 'bluetooth'
+    const softDeadline = bluetooth
+      ? this.bluetoothSoftHeartbeatTimeoutMs
+      : this.serialSoftHeartbeatTimeoutMs
+    const hardDeadline = bluetooth
+      ? this.bluetoothHardHeartbeatTimeoutMs
+      : this.serialHardHeartbeatTimeoutMs
+    const heartbeatAge = now - this.lastHeartbeat
+    const activityAge = now - this.lastMavlinkActivity
+    const softExpiredWithoutActivity = heartbeatAge > softDeadline
+      && activityAge > this.activityGraceMs
+    const hardExpired = heartbeatAge > hardDeadline
+    if (!softExpiredWithoutActivity && !hardExpired) return
+    if (this.heartbeatTimeoutFired) return
+
+    this.heartbeatTimeoutFired = true
+    this.setVehicleReady(false)
+    const reason = hardExpired
+      ? `飞控心跳超过硬期限 ${Math.round(hardDeadline)}ms`
+      : `飞控心跳超时且 ${Math.round(activityAge)}ms 内无有效 MAVLink 活动`
+    const error = new Error(reason)
+    this.setLastError(this.errorDetail('heartbeat', reason, error))
+    console.warn(
+      `[Connection] MAVLink timeout: heartbeat=${Math.round(heartbeatAge)}ms`
+      + ` activity=${Math.round(activityAge)}ms type=${this.linkKind ?? 'unknown'}`
+      + ` hard=${hardExpired}`,
+    )
+    this.emit('heartbeatTimeout', {
+      heartbeatAge,
+      activityAge,
+      hardExpired,
+    })
+
+    if (bluetooth && this.link) {
+      ;(this.link as ManagedBluetoothLink).forceReconnect(reason)
+    } else if (this.link) {
+      this.emit('connectionError', error)
+      this.scheduleSpontaneousCleanup(
+        this.link,
+        this.connectionGeneration,
+        'disconnected',
+      )
+    }
+  }
+
+  private stopHeartbeatMonitor(): void {
+    if (!this.heartbeatTimer) return
+    this.clearIntervalFn(this.heartbeatTimer)
+    this.heartbeatTimer = null
+  }
+
+  private prepareForTeardown(status: ConnectionStatus): void {
+    this.stopHeartbeatMonitor()
+    this.clearPreTransportData()
+    this.setVehicleReady(false)
+    this.setTransportOpen(false)
+    this._reconnect = null
+    this.setStatus(status)
+  }
+
+  private setStatus(status: ConnectionStatus, force = false): void {
+    if (this._status === status && !force) return
+    this._status = status
+    this.emit('statusChange', status)
+  }
+
+  private setTransportOpen(open: boolean): void {
+    if (!open) this.setVehicleReady(false)
+    if (this._transportOpen === open) return
+    this._transportOpen = open
+    this.emit('transportChange', open)
+  }
+
+  private setVehicleReady(ready: boolean): void {
+    const effectiveReady = ready && this._transportOpen
+    if (this._vehicleReady === effectiveReady) return
+    this._vehicleReady = effectiveReady
+    this.emit('vehicleReadyChange', effectiveReady)
+  }
+
+  private setLastError(error: ConnectionErrorDetail | null): void {
+    this._lastError = error
+    this.emit('errorDetailChange', error)
+  }
+
+  private enqueueOperation(operation: () => Promise<void>): Promise<void> {
+    const queued = this.pendingOp.then(operation, operation)
+    this.pendingOp = queued
+    return queued
+  }
+
+  private isActive(link: ManagedLink, generation: number): boolean {
+    return this.link === link && this.connectionGeneration === generation
+  }
+
+  private isConnectRequestCancelled(requestId: number): boolean {
+    return requestId <= this.cancelConnectThrough
+  }
+
+  private connectionCancelledError(): Error {
+    const error = new Error('连接请求已取消') as Error & { code?: string }
+    error.code = 'ECANCELED'
+    return error
+  }
+
+  private errorDetail(
+    phase: ConnectionErrorPhase,
+    message: string,
+    error?: unknown,
+  ): ConnectionErrorDetail {
+    const possibleCode = typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined
+    const code = typeof possibleCode === 'string' ? possibleCode : undefined
+    return {
+      phase,
+      message,
+      ...(code ? { code } : {}),
+      timestamp: this.wallClock(),
+    }
+  }
+
+  private translateBluetoothOpenError(
+    error: Error,
+    config: ConnectionConfig,
+  ): Error {
+    if (
+      config.type === 'bluetooth'
+      && /(?:code 121|semaphore timeout)/i.test(error.message)
+    ) {
+      return new Error(
+        `蓝牙设备未响应（${this._config?.port ?? config.port}）。`
+        + '请确认选择的是飞控对应端口、飞控已上电且未被其他软件连接。',
+      )
+    }
+    return error
+  }
+
+  private toError(error: unknown): Error {
+    return error instanceof Error ? error : new Error(String(error))
   }
 }

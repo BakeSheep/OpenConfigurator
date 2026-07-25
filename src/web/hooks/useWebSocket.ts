@@ -13,6 +13,7 @@ let wsInstance: WebSocket | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let autoParamRequestPending = false
+let restControlToken: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -64,6 +65,9 @@ function handleMessage(msg: ServerMessage) {
   const paramStore = useParameterStore.getState()
 
   switch (msg.type) {
+    case 'hello':
+      restControlToken = msg.data.restControlToken
+      break
     case 'connection':
       if (msg.data.connected) {
         connStore.setConnected(msg.data.port || '', msg.data.type || '')
@@ -74,6 +78,17 @@ function handleMessage(msg: ServerMessage) {
         paramStore.clear()
         paramStore.setLoading(true)
         autoParamRequestPending = true
+      } else if (msg.data.reconnect) {
+        // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
+        // last-known telemetry visible (greyed) instead of a full reset: the
+        // link is expected back shortly. Params are cleared because they will
+        // re-download automatically once the autopilot heartbeat returns.
+        autoParamRequestPending = false
+        discardParamBatch()
+        connStore.setReconnecting(msg.data.reconnect)
+        telemetryStore.markAllStale()
+        sensorStore.markAllOffline()
+        paramStore.clear()
       } else {
         autoParamRequestPending = false
         discardParamBatch()
@@ -131,6 +146,9 @@ function handleMessage(msg: ServerMessage) {
     case 'autopilot_version':
       telemetryStore.setAutopilotVersion(msg.data)
       break
+    case 'link_stats':
+      connStore.setLinkStats(msg.data)
+      break
     case 'command_ack':
       // Surface command results so the user gets feedback on arm/takeoff/etc.
       telemetryStore.addStatusLog(
@@ -138,6 +156,12 @@ function handleMessage(msg: ServerMessage) {
         msg.data.result === 0
           ? `指令 #${msg.data.command} 已接受`
           : `指令 #${msg.data.command} 失败 (result=${msg.data.result})`
+      )
+      break
+    case 'motor_test_status':
+      telemetryStore.addStatusLog(
+        5,
+        `电机 ${msg.data.instance} ${msg.data.action === 'stop' ? '停止' : '测试'}命令已发送（飞控 ACK 无实例字段，结果未确认）`,
       )
       break
     case 'statustext':
@@ -232,6 +256,7 @@ function connectSocket() {
   }
 
   ws.onclose = () => {
+    if (wsInstance === ws) restControlToken = null
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return
     console.log('[WS] Disconnected, reconnecting in 3s...')
@@ -241,6 +266,12 @@ function connectSocket() {
   ws.onerror = () => {
     ws.close()
   }
+}
+
+export function getRestControlHeaders(): Record<string, string> {
+  return restControlToken
+    ? { 'X-SkyLab-Control-Token': restControlToken }
+    : {}
 }
 
 export function useWebSocket() {

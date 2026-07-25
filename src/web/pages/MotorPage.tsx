@@ -163,7 +163,12 @@ export default function MotorPage() {
     setLevels((current) => current.map((value, motorIndex) => motorIndex === index ? throttle : value))
     send({
       type: 'motor_test',
-      data: { instance: index + 1, throttle, duration: throttle > 0 ? 2 : 0 },
+      data: {
+        instance: index + 1,
+        throttle,
+        duration: throttle > 0 ? 2 : 0,
+        ...(throttle > 0 ? { propsRemoved: true } : {}),
+      },
     })
   }
 
@@ -174,7 +179,12 @@ export default function MotorPage() {
     for (let index = 0; index < motorCount; index += 1) {
       send({
         type: 'motor_test',
-        data: { instance: index + 1, throttle, duration: throttle > 0 ? 2 : 0 },
+        data: {
+          instance: index + 1,
+          throttle,
+          duration: throttle > 0 ? 2 : 0,
+          ...(throttle > 0 ? { propsRemoved: true } : {}),
+        },
       })
     }
   }

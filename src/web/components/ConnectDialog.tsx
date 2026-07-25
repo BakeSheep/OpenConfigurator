@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
+import { getRestControlHeaders } from '../hooks/useWebSocket'
 
 // Convert decimal vendor/product id from Web Serial to the lowercase hex
 // string format used by serialport's PortInfo (e.g. 1A86, 7523).
@@ -122,7 +123,10 @@ export default function ConnectDialog() {
     try {
       const res = await fetch('/api/connections/connect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getRestControlHeaders(),
+        },
         body: JSON.stringify(body),
       })
       // Robust JSON parse - backend may return empty body on crash/hang
@@ -147,7 +151,15 @@ export default function ConnectDialog() {
     setError(null)
     if (connType === 'bluetooth') {
       if (selectedBtPort) {
-        await postConnect({ type: 'bluetooth', port: selectedBtPort, baudRate })
+        const selected = bluetoothPorts.find((port) => port.path === selectedBtPort)
+        await postConnect({
+          type: 'bluetooth',
+          port: selectedBtPort,
+          baudRate,
+          vendorId: selected?.vendorId,
+          productId: selected?.productId,
+          bluetoothAddress: selected?.bluetoothAddress,
+        })
         return
       }
       if (!pickedBt) { setError('请选择已配对的蓝牙串口，或使用浏览器选择器'); return }
@@ -169,7 +181,10 @@ export default function ConnectDialog() {
     // Clear any lingering error so a previous failure does not persist across
     // reconnect cycles (the dialog may stay open and show a stale error).
     setError(null)
-    await fetch('/api/connections/disconnect', { method: 'POST' })
+    await fetch('/api/connections/disconnect', {
+      method: 'POST',
+      headers: getRestControlHeaders(),
+    })
   }
 
   if (!connectDialogOpen) return null

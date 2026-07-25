@@ -15,24 +15,30 @@ export interface GpsData {
   lat: number
   lon: number
   alt: number
-  eph: number
-  epv: number
-  vel: number
-  cog: number
-  satellites_visible: number
+  /** Horizontal dilution of precision. null means MAVLink unknown (UINT16_MAX). */
+  eph: number | null
+  /** Vertical dilution of precision. null means MAVLink unknown (UINT16_MAX). */
+  epv: number | null
+  vel: number | null
+  cog: number | null
+  satellites_visible: number | null
 }
 
 export interface BatteryData {
-  voltage: number
-  current: number
-  remaining: number
-  consumed_mah: number
+  /** MAVLink battery instance; independent batteries are never combined. */
+  id: number
+  voltage: number | null
+  /** Individual cell voltages in volts, including BATTERY_STATUS.voltages_ext. */
+  cell_voltages: Array<number | null>
+  current: number | null
+  remaining: number | null
+  consumed_mah: number | null
 }
 
 export interface SysStatusData {
-  voltageBattery: number
-  currentBattery: number
-  batteryRemaining: number
+  voltageBattery: number | null
+  currentBattery: number | null
+  batteryRemaining: number | null
   sensorsPresent: number
   sensorsEnabled: number
   sensorsHealth: number
@@ -49,6 +55,8 @@ export interface SysStatusData {
 export interface ImuData {
   /** Zero-based physical IMU instance (0 = IMU 1). */
   instance?: number
+  /** RAW_IMU values are device counts; other variants are normalized SI/G units. */
+  units?: 'raw' | 'normalized'
   xacc: number
   yacc: number
   zacc: number
@@ -58,7 +66,7 @@ export interface ImuData {
   xmag: number
   ymag: number
   zmag: number
-  temperature: number
+  temperature: number | null
 }
 
 export interface AutopilotVersionData {
@@ -74,16 +82,30 @@ export interface BaroData {
   press_abs: number
   press_diff: number
   temperature: number
-  altitude: number
+  altitude: number | null
 }
 
 export interface OpticalFlowData {
+  integration_time_us: number
+  integrated_x_rad: number
+  integrated_y_rad: number
+  integrated_xgyro_rad: number
+  integrated_ygyro_rad: number
+  integrated_zgyro_rad: number
+  temperature_c: number | null
+  time_delta_distance_us: number
+  distance_m: number | null
+  /** @deprecated Use integrated_x_rad. */
   flow_x: number
+  /** @deprecated Use integrated_y_rad. */
   flow_y: number
+  /** @deprecated Historical alias; use integrated_xgyro_rad. */
   flow_comp_m_x: number
+  /** @deprecated Historical alias; use integrated_ygyro_rad. */
   flow_comp_m_y: number
   quality: number
-  ground_distance: number
+  /** @deprecated Use distance_m. */
+  ground_distance: number | null
   sensor_id: number
 }
 
@@ -91,7 +113,7 @@ export interface DistanceSensorData {
   current_distance: number
   min_distance: number
   max_distance: number
-  signal_quality: number
+  signal_quality: number | null
   type: number
   id: number
   orientation: number
@@ -103,7 +125,8 @@ export interface EkfStatusData {
   innovation_pos: number
   innovation_hgt: number
   innovation_mag: number
-  gps_check_fail_flags: number
+  /** null because the active standard dialect does not define this PX4 field. */
+  gps_check_fail_flags: number | null
 }
 
 // Failsafe/safety state. 'unknown' is used when the state cannot be reliably
@@ -170,29 +193,213 @@ export interface MotorOutputData {
 
 // WebSocket message types (server -> client)
 export type ServerMessage =
+  | {
+      type: 'hello'
+      data: {
+        protocolVersion: number
+        clientId: string
+        /** Per-WebSocket secret used to authorize REST connect/disconnect while this client owns the lease. */
+        restControlToken: string
+        capabilities: string[]
+        maxPayload: number
+        controllerLeaseMs: number
+      }
+    }
+  | {
+      type: 'client_error'
+      data: {
+        code: string
+        message: string
+        requestId?: string
+        retryable: boolean
+        details?: Record<string, unknown>
+      }
+    }
+  | {
+      type: 'controller'
+      data: {
+        clientId: string | null
+        expiresAt: number | null
+        reason:
+          | 'claimed'
+          | 'renewed'
+          | 'released'
+          | 'expired'
+          | 'disconnected'
+          | 'connection_changed'
+          | 'snapshot'
+      }
+    }
+  | {
+      type: 'param_sync'
+      data: {
+        generation: number
+        status: 'started' | 'complete' | 'failed' | 'cancelled'
+        ownerClientId: string
+        reason?: string
+      }
+    }
   | { type: 'telemetry'; msgType: string; data: any }
   | { type: 'sensor'; msgType: string; data: any }
   | { type: 'param'; data: ParamData }
-  | { type: 'param_batch'; data: ParamData[] }
-  | { type: 'param_complete'; data: { count: number } }
-  | { type: 'param_retry'; data: { attempt: number; missing: number; total: number } }
-  | { type: 'param_failed'; data: { received: number; total: number } }
+  | { type: 'param_batch'; generation?: number; data: ParamData[] }
+  | { type: 'param_complete'; generation?: number; data: { count: number } }
+  | {
+      type: 'param_retry'
+      generation?: number
+      data: { attempt: number; missing: number; total: number }
+    }
+  | {
+      type: 'param_failed'
+      generation?: number
+      data: { received: number; total: number; reason?: string }
+    }
   | { type: 'status'; data: VehicleStatus }
-  | { type: 'connection'; data: { connected: boolean; port?: string; type?: string } }
-  | { type: 'command_ack'; data: { command: number; result: number } }
+  | {
+      type: 'connection'
+      data: {
+        connected: boolean
+        status?: ConnectionStatus
+        transportOpen?: boolean
+        vehicleReady?: boolean
+        port?: string
+        type?: string
+        error?: {
+          phase: 'connect' | 'runtime' | 'disconnect' | 'heartbeat' | 'reconnect'
+          message: string
+          code?: string
+          timestamp: number
+          retryable?: boolean
+        }
+        // Present while the backend is auto-reconnecting a dropped Bluetooth
+        // link (status === 'reconnecting'). Lets the UI show retry progress
+        // instead of a bare "disconnected".
+        reconnect?: { attempt: number; maxAttempts: number; delayMs: number; lastError?: string }
+        reconnectTerminalReason?: {
+          code: string
+          message: string
+          attempt: number
+          timestamp: number
+        }
+      }
+    }
+  | {
+      type: 'command_ack'
+      data: {
+        command: number
+        result: number
+        requestId?: string
+        progress?: number
+        resultParam2?: number
+        targetSystem?: number
+        targetComponent?: number
+        terminal?: boolean
+        attempt?: number
+        /** ACK was received outside an attributable transaction window. */
+        stale?: boolean
+      }
+    }
+  | {
+      type: 'param_set_result'
+      data: {
+        requestId?: string
+        id: string
+        requestedValue: number
+        acceptedValue?: number
+        accepted: boolean
+        attempt: number
+        reason?: string
+      }
+    }
+  | {
+      type: 'motor_test_status'
+      data: {
+        requestId?: string
+        instance: number
+        action: 'start' | 'stop'
+        /** MAV_CMD_ACTUATOR_TEST ACK has no actuator instance; dispatch is explicit but unconfirmed. */
+        status: 'sent_unconfirmed'
+        reason: string
+      }
+    }
+  | {
+      type: 'operation_error'
+      generation?: number
+      data: {
+        requestId?: string
+        operation: string
+        code: string
+        message: string
+        retryable?: boolean
+      }
+    }
+  | {
+      type: 'target'
+      data: {
+        systemId: number | null
+        componentId: number | null
+        ready: boolean
+        reason: 'discovered' | 'selected' | 'reset'
+        discovered?: Array<{
+          systemId: number
+          componentId: number
+          autopilot: number
+        }>
+      }
+    }
   | { type: 'statustext'; data: { severity: number; text: string } }
   | { type: 'rc_channels'; data: RcChannelsData }
   | { type: 'ekf_status'; data: EkfStatusData }
   | { type: 'motor_outputs'; data: MotorOutputData }
   | { type: 'autopilot_version'; data: AutopilotVersionData }
+  | {
+      // Link-quality telemetry surfaced ~1 Hz. Bytes/sec throughput plus CRC
+      // error rate stand in for the RSSI that a raw SPP COM port cannot expose.
+      type: 'link_stats'
+      data: {
+        rxBps: number
+        txBps: number
+        crcErrors: number
+        crcErrorsPerSec: number
+        rxPackets?: number
+        txPackets?: number
+        rxSequenceLost?: number
+        rxDuplicates?: number
+        rxOutOfOrder?: number
+        rejectedPackets?: number
+        garbageBytes?: number
+        protocolVersion?: 1 | 2
+      }
+    }
 
 // WebSocket message types (client -> server)
 export type ClientMessage =
-  | { type: 'command'; cmd: string; params: number[] }
-  | { type: 'param_set'; data: { id: string; value: number; paramType: number } }
-  | { type: 'param_request_list' }
-  | { type: 'manual_control'; data: ManualControlData }
-  | { type: 'motor_test'; data: { instance: number; throttle: number; duration: number } }
+  | {
+      type: 'command'
+      requestId?: string
+      cmd: string
+      params: number[]
+      safetyConfirmation?: 'arm' | 'disarm' | 'takeoff'
+    }
+  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | { type: 'param_request_list'; requestId?: string }
+  | { type: 'manual_control'; requestId?: string; data: ManualControlData }
+  | {
+      type: 'motor_test'
+      requestId?: string
+      data: {
+        instance: number
+        throttle: number
+        duration: number
+        propsRemoved?: boolean
+      }
+    }
+  | {
+      type: 'select_target'
+      requestId?: string
+      data: { systemId: number; componentId: number }
+    }
+  | { type: 'release_control'; requestId?: string }
 
 export interface PortInfo {
   path: string
@@ -213,7 +420,8 @@ export interface ConnectionConfig {
   // browser-selected device back to a Windows SPP COM port on the backend.
   vendorId?: string
   productId?: string
+  bluetoothAddress?: string
   bluetoothServiceClassId?: string
 }
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'

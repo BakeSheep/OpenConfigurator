@@ -60,7 +60,15 @@ export default function TelemetryBar() {
       <TelemetryItem icon={<Icon name="altitude" size={15} />} label="高度" width="110px" value={connected && !isStale('vfrHud') ? relativeAlt.toFixed(1) + 'm' : '—m'} muted={!connected || isStale('vfrHud')} />
       <TelemetryItem label="航向" width="94px" value={connected && !isStale('vfrHud') ? heading.toFixed(0) + '°' : '—°'} muted={!connected || isStale('vfrHud')} />
       <TelemetryItem icon={<Icon name="satellite" size={15} />} label="GPS" width="106px" value={gpsStale ? 'N/A' : String(gps?.satellites_visible ?? 0) + ' SAT'} muted={gpsStale} />
-      <TelemetryItem icon={<Icon name="battery" size={15} />} label="电池" width="154px" value={batteryStale ? '—' : (battery?.voltage.toFixed(1) ?? '—') + 'V · ' + (battery?.remaining ?? 0) + '%'} muted={batteryStale} />
+      <TelemetryItem
+        icon={<Icon name="battery" size={15} />}
+        label="电池"
+        width="154px"
+        value={batteryStale
+          ? '—'
+          : `${battery?.voltage == null ? '—' : battery.voltage.toFixed(1)}V · ${battery?.remaining == null ? '—' : battery.remaining}%`}
+        muted={batteryStale}
+      />
       <div className="mc-telemetry__spacer" />
       <div className="mc-telemetry__tools" aria-label="飞控快捷操作">
         <NavLink to="/settings" className="mc-telemetry__pill">

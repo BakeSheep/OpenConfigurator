@@ -4,13 +4,16 @@ import { useThemeStore } from '../../stores/themeStore'
 import Icon from '../ui/Icon'
 
 export default function Topbar() {
-  const { status, port, type, setConnectDialogOpen } = useConnectionStore()
+  const { status, port, type, reconnect, setConnectDialogOpen } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
   const autopilotVersion = useTelemetryStore((state) => state.autopilotVersion)
   const connected = status === 'connected'
+  const reconnecting = status === 'reconnecting'
   const connectionLabel = connected
     ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '已连接')
-    : status === 'connecting' ? '连接中' : '未连接'
+    : reconnecting
+      ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
+      : status === 'connecting' ? '连接中' : '未连接'
 
   return (
     <header className="mc-topbar">
@@ -44,7 +47,7 @@ export default function Topbar() {
           className={'mc-topbar__connect' + (connected ? ' is-connected' : '')}
           onClick={() => setConnectDialogOpen(true)}
         >
-          <span className="mc-status-dot" style={{ background: connected ? 'var(--success)' : status === 'connecting' ? 'var(--warning)' : 'var(--text-disabled)' }} />
+          <span className="mc-status-dot" style={{ background: connected ? 'var(--success)' : (reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
           <span>{connectionLabel}</span>
         </button>
       </div>

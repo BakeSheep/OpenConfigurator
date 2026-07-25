@@ -51,6 +51,7 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
         type: 'command',
         cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
         params: [arm ? 1 : 0, 0, 0, 0, 0, 0, 0],
+        safetyConfirmation: arm ? 'arm' : 'disarm',
       })
 
       if (action === 'arm' || (action === 'toggle_arm' && !armed)) {
