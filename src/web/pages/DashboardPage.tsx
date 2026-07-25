@@ -190,7 +190,7 @@ export default function DashboardPage() {
       <section className="mt-4 grid grid-cols-2 gap-4 xl:grid-cols-4">
         <MetricCard label="相对高度" value={relativeAlt.toFixed(1)} unit="m" icon="altitude" accent />
         <MetricCard label="地速" value={groundSpeed.toFixed(1)} unit="m/s" icon="flight" />
-        <MetricCard label="电池电压" value={battery?.voltage.toFixed(1) ?? '—'} unit="V" icon="battery" />
+        <MetricCard label="电池电压" value={battery?.voltage == null ? '—' : battery.voltage.toFixed(1)} unit="V" icon="battery" />
         <MetricCard label="GPS 卫星" value={String(gps?.satellites_visible ?? 0)} unit="SAT" icon="satellite" />
       </section>
 

@@ -138,12 +138,12 @@ export default function SensorPage() {
       )}
       {activeTab === 'baro' && (
         <>
-          <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro ? `${baro.temperature.toFixed(1)} °C` : '—'], ["气压高度", baro ? `${baro.altitude.toFixed(1)} m` : '—']]} />
+          <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro ? `${baro.temperature.toFixed(1)} °C` : '—'], ["气压高度", baro?.altitude == null ? '—' : `${baro.altitude.toFixed(1)} m`]]} />
           <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={calibrating !== null}>开始气压计校准</button></div>{calibrationNotice}</section>
         </>
       )}
       {activeTab === 'gps' && <SensorStatusCard title="GPS" values={[["定位类型", gps ? String(gps.fix_type) : '—'], ["卫星数量", gps ? String(gps.satellites_visible) : '—'], ["水平精度", gps ? String(gps.eph) : '—'], ["状态", gps && gps.fix_type >= 3 ? '定位正常' : '未定位']]} />}
-      {activeTab === 'optflow' && <SensorStatusCard title="光流" values={[["Flow X", opticalFlow?.flow_x.toFixed(3) ?? '—'], ["Flow Y", opticalFlow?.flow_y.toFixed(3) ?? '—'], ["质量", opticalFlow ? `${opticalFlow.quality} / 255` : '—'], ["离地距离", opticalFlow ? `${opticalFlow.ground_distance.toFixed(2)} m` : '—']]} />}
+      {activeTab === 'optflow' && <SensorStatusCard title="光流" values={[["Flow X", opticalFlow?.flow_x.toFixed(3) ?? '—'], ["Flow Y", opticalFlow?.flow_y.toFixed(3) ?? '—'], ["质量", opticalFlow ? `${opticalFlow.quality} / 255` : '—'], ["离地距离", opticalFlow?.ground_distance == null ? '—' : `${opticalFlow.ground_distance.toFixed(2)} m`]]} />}
       {activeTab === 'rangefinder' && <SensorStatusCard title="测距仪" values={[["当前距离", distance ? `${distance.current_distance} cm` : '—'], ["最小量程", distance ? `${distance.min_distance} cm` : '—'], ["最大量程", distance ? `${distance.max_distance} cm` : '—'], ["信号质量", distance ? String(distance.signal_quality) : '—']]} />}
     </div>
   )

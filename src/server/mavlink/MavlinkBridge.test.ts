@@ -1,506 +1,1079 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import {
+  common,
+  minimal,
+  standard,
+  MavLinkPacketSignature,
+  MavLinkProtocolV1,
+  MavLinkProtocolV2,
+} from 'node-mavlink'
 import { MavlinkBridge } from './MavlinkBridge'
+import { MavlinkCodecSession, type MavlinkMessage } from './codec'
+
+const wait = (milliseconds: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail('timed out waiting for asynchronous condition')
+    await wait(5)
+  }
+}
+
+function last<T>(values: T[]): T | undefined {
+  return values.length > 0 ? values[values.length - 1] : undefined
+}
+
+function findLast<T>(values: T[], predicate: (value: T) => boolean): T | undefined {
+  for (let index = values.length - 1; index >= 0; index--) {
+    if (predicate(values[index])) return values[index]
+  }
+  return undefined
+}
+
+function makeHeartbeat(autopilot = 12): minimal.Heartbeat {
+  const heartbeat = new minimal.Heartbeat()
+  heartbeat.customMode = 0x03040000
+  heartbeat.type = 2
+  heartbeat.autopilot = autopilot
+  heartbeat.baseMode = 0 as never
+  heartbeat.systemStatus = 4
+  heartbeat.mavlinkVersion = 3
+  return heartbeat
+}
+
+function heartbeatPayload(autopilot = 12): Buffer {
+  const payload = Buffer.alloc(9)
+  payload.writeUInt32LE(0x03040000, 0)
+  payload[4] = autopilot === 8 ? 18 : 2
+  payload[5] = autopilot
+  payload[7] = 4
+  payload[8] = 3
+  return payload
+}
+
+function frameMessageId(frame: Buffer): number {
+  return frame[0] === MavLinkProtocolV2.START_BYTE
+    ? frame.readUIntLE(7, 3)
+    : frame[5]
+}
+
+function framePayload(frame: Buffer): Buffer {
+  const offset = frame[0] === MavLinkProtocolV2.START_BYTE ? 10 : 6
+  return frame.subarray(offset, offset + frame[1])
+}
+
+// ---------------------------------------------------------------------------
+// Codec sessions: real v1/v2 framing, bounded garbage, negotiation and signing.
+// ---------------------------------------------------------------------------
+{
+  const session = new MavlinkCodecSession({ protocol: 'auto', maxBufferedBytes: 512 })
+  const received: MavlinkMessage[] = []
+  session.on('message', (message) => received.push(message))
+
+  const v1 = new MavLinkProtocolV1(42, 1).serialize(makeHeartbeat(), 7)
+  session.write(v1.subarray(0, 4))
+  session.write(v1.subarray(4))
+  assert.equal(received.length, 1)
+  assert.equal(received[0].version, 1)
+  assert.equal(received[0].payload.length, 9)
+  assert.equal(session.serialize(makeHeartbeat())[0], MavLinkProtocolV1.START_BYTE)
+
+  const vfr = new common.VfrHud()
+  vfr.airspeed = 12.5
+  vfr.groundspeed = 0
+  vfr.alt = 0
+  vfr.climb = 0
+  vfr.heading = 0
+  vfr.throttle = 0
+  const truncatedV2 = new MavLinkProtocolV2(42, 1).serialize(vfr, 8)
+  assert.ok(truncatedV2[1] < common.VfrHud.PAYLOAD_LENGTH)
+  session.write(truncatedV2)
+  assert.equal(last(received)?.version, 2)
+  assert.equal(last(received)?.payload.length, truncatedV2[1])
+  assert.equal(session.protocolVersion, 2)
+  assert.equal(session.serialize(makeHeartbeat())[0], MavLinkProtocolV2.START_BYTE)
+  const sequenceProtocol = new MavLinkProtocolV2(42, 1)
+  session.write(sequenceProtocol.serialize(makeHeartbeat(), 12))
+  assert.equal(session.stats.rxSequenceLost, 3)
+  session.write(sequenceProtocol.serialize(makeHeartbeat(), 0))
+  assert.equal(session.stats.rxOutOfOrder, 1)
+  session.write(sequenceProtocol.serialize(makeHeartbeat(), 1))
+  assert.equal(session.stats.rxOutOfOrder, 1)
+
+  const independent = new MavlinkCodecSession({ protocol: 'v2' })
+  assert.equal(independent.serialize(makeHeartbeat())[4], 0)
+  assert.equal(independent.serialize(makeHeartbeat())[4], 1)
+  const secondIndependent = new MavlinkCodecSession({ protocol: 'v2' })
+  assert.equal(secondIndependent.serialize(makeHeartbeat())[4], 0)
+
+  const noiseSession = new MavlinkCodecSession({ protocol: 'auto', maxBufferedBytes: 512 })
+  const noiseMessages: MavlinkMessage[] = []
+  noiseSession.on('message', (message) => noiseMessages.push(message))
+  noiseSession.write(Buffer.alloc(1024 * 1024, 0x55))
+  assert.equal(noiseSession.stats.bufferedBytes, 0)
+  assert.equal(noiseSession.stats.garbageBytes, 1024 * 1024)
+
+  // A normal serial data event may coalesce well over 4 KiB of complete
+  // frames. The ingress bound applies only to residual garbage/partials.
+  const burstSession = new MavlinkCodecSession({ protocol: 'v2', maxBufferedBytes: 512 })
+  let burstPackets = 0
+  burstSession.on('message', () => { burstPackets++ })
+  const burst = Buffer.concat(Array.from(
+    { length: 300 },
+    (_, sequence) => new MavLinkProtocolV2(42, 1).serialize(
+      makeHeartbeat(),
+      sequence & 0xff,
+    ),
+  ))
+  assert.ok(burst.length > 4096)
+  burstSession.write(burst)
+  assert.equal(burstPackets, 300)
+  assert.equal(burstSession.stats.bufferedBytes, 0)
+  assert.equal(burstSession.stats.garbageBytes, 0)
+
+  // A false STX claiming a 255-byte payload must not block a valid frame that
+  // is already complete later in the same chunk.
+  const v2Heartbeat = new MavLinkProtocolV2(42, 1).serialize(makeHeartbeat(), 9)
+  noiseSession.write(Buffer.concat([Buffer.from([0xfd, 0xff, 0, 0, 0]), v2Heartbeat]))
+  assert.equal(noiseMessages.length, 1)
+
+  const corrupted = Buffer.from(v2Heartbeat)
+  corrupted[10] ^= 0x01
+  noiseSession.write(corrupted)
+  assert.ok(noiseSession.stats.crcErrors >= 1)
+  noiseSession.write(v2Heartbeat)
+  assert.equal(noiseMessages.length, 2)
+
+  const unsupportedFlags = new MavLinkProtocolV2(42, 1, 0x02)
+    .serialize(makeHeartbeat(), 10)
+  const rejectedBefore = noiseSession.stats.rejectedPackets
+  noiseSession.write(unsupportedFlags)
+  assert.equal(noiseSession.stats.rejectedPackets, rejectedBefore + 1)
+
+  const rebuildsBefore = noiseSession.stats.parserRebuilds
+  ;(noiseSession as unknown as { parser: EventEmitter }).parser.emit(
+    'error',
+    new Error('synthetic parser failure'),
+  )
+  assert.equal(noiseSession.stats.parserRebuilds, rebuildsBefore + 1)
+
+  const signingKey = MavLinkPacketSignature.key('SkyLab protocol test')
+  const signedSession = new MavlinkCodecSession({
+    signing: { key: signingKey, linkId: 7, requireSigned: true },
+  })
+  const signedMessages: MavlinkMessage[] = []
+  signedSession.on('message', (message) => signedMessages.push(message))
+  const signingProtocol = new MavLinkProtocolV2(
+    42,
+    1,
+    MavLinkProtocolV2.IFLAG_SIGNED,
+  )
+  const unsignedSignedFrame = signingProtocol.serialize(makeHeartbeat(), 11)
+  const signedFrame = signingProtocol.sign(
+    unsignedSignedFrame,
+    7,
+    signingKey,
+    Date.now(),
+  )
+  signedSession.write(signedFrame)
+  signedSession.write(signedFrame)
+  assert.equal(signedMessages.length, 1)
+  assert.equal(signedMessages[0].signed, true)
+  assert.equal(signedSession.stats.rejectedPackets, 1)
+  signedSession.reset()
+  signedSession.write(signedFrame)
+  assert.equal(
+    signedMessages.length,
+    1,
+    'a physical-session reset must not make a recorded signed frame valid again',
+  )
+  assert.equal(signedSession.stats.rejectedPackets, 1)
+
+  const staleSigningSession = new MavlinkCodecSession({
+    signing: { key: signingKey, linkId: 7, requireSigned: true },
+  })
+  let staleSigningMessages = 0
+  staleSigningSession.on('message', () => { staleSigningMessages++ })
+  staleSigningSession.write(signingProtocol.sign(
+    signingProtocol.serialize(makeHeartbeat(), 12),
+    7,
+    signingKey,
+    Date.now() - 24 * 60 * 60 * 1000,
+  ))
+  assert.equal(staleSigningMessages, 0)
+  assert.equal(staleSigningSession.stats.rejectedPackets, 1)
+  for (let index = 0; index < 300; index++) {
+    const systemId = (index % 250) + 1
+    const componentId = Math.floor(index / 250) + 1
+    const protocol = new MavLinkProtocolV2(
+      systemId,
+      componentId,
+      MavLinkProtocolV2.IFLAG_SIGNED,
+    )
+    signedSession.write(protocol.sign(
+      protocol.serialize(makeHeartbeat(), index & 0xff),
+      7,
+      signingKey,
+      Date.now() + index + 1000,
+    ))
+  }
+  const boundedSigningSession = signedSession as unknown as {
+    replayTimestamps: Map<string, number>
+    lastRxSeq: Map<string, number>
+  }
+  assert.ok(boundedSigningSession.replayTimestamps.size <= 256)
+  assert.ok(boundedSigningSession.lastRxSeq.size <= 256)
+
+  const dyingSession = new MavlinkCodecSession({ protocol: 'v2' })
+  const dyingParser = (dyingSession as unknown as { parser: EventEmitter }).parser
+  dyingSession.on('parserError', () => dyingSession.destroy())
+  dyingParser.emit('error', new Error('destroy during parser recovery'))
+  await Promise.resolve()
+  assert.equal(dyingSession.stats.parserRebuilds, 0)
+  assert.equal(dyingSession.eventNames().length, 0)
+  assert.equal(dyingParser.eventNames().length, 0)
+  dyingSession.write(v2Heartbeat)
+  assert.throws(() => dyingSession.serialize(makeHeartbeat()), /destroyed/)
+
+  session.destroy()
+  independent.destroy()
+  secondIndependent.destroy()
+  noiseSession.destroy()
+  burstSession.destroy()
+  signedSession.destroy()
+  staleSigningSession.destroy()
+}
 
 class FakeConnection extends EventEmitter {
   frames: Buffer[] = []
+  writePriorities: string[] = []
   status = 'connected'
-  config = { type: 'serial' }
+  config: { type: 'serial' | 'bluetooth' } = { type: 'serial' }
+  vehicleReady = false
+  bytesReceived = 0
+  bytesSent = 0
+  heartbeatNotifications = 0
+  activityNotifications = 0
 
-  write(frame: Buffer) {
+  write(frame: Buffer, priority = 'normal'): boolean {
     this.frames.push(frame)
+    this.writePriorities.push(priority)
+    this.bytesSent += frame.length
+    return true
   }
 
-  notifyAutopilotHeartbeat() {}
-  notifyAutopilotActivity() {}
+  feed(frame: Buffer): void {
+    this.bytesReceived += frame.length
+    this.emit('data', frame)
+  }
+
+  notifyAutopilotHeartbeat(): void {
+    this.heartbeatNotifications++
+    this.vehicleReady = true
+  }
+
+  notifyAutopilotActivity(): void {
+    this.activityNotifications++
+  }
 }
 
-const connection = new FakeConnection()
-const bridge = new MavlinkBridge(connection as never)
-bridge.setMaxListeners(20)
-const lastFrame = (offset = 1) => connection.frames[connection.frames.length - offset]
+type PrivateBridge = {
+  handleMessage: (message: MavlinkMessage) => void
+  targetSysId: number | null
+  targetCompId: number | null
+  pendingCommands: Map<number, unknown>
+  pendingParamSets: Map<string, unknown>
+  paramDownloadActive: boolean
+  discoveredTargets: Map<string, unknown>
+  paramEncoding: string
+  messageIntervalSupport: string
+}
 
+function inject(
+  bridge: MavlinkBridge,
+  msgId: number,
+  payload: Buffer,
+  sysId = 42,
+  compId = 1,
+): void {
+  ;(bridge as unknown as PrivateBridge).handleMessage({
+    msgId,
+    payload,
+    seq: 0,
+    sysId,
+    compId,
+    version: 2,
+  })
+}
+
+function commandAckPayload(
+  command: number,
+  result: number,
+  targetSystem = 255,
+  targetComponent = 190,
+  progress = 0xff,
+): Buffer {
+  const payload = Buffer.alloc(10)
+  payload.writeUInt16LE(command, 0)
+  payload[2] = result
+  payload[3] = progress
+  payload[8] = targetSystem
+  payload[9] = targetComponent
+  return payload
+}
+
+function paramValuePayload(
+  id: string,
+  value: number,
+  type = 9,
+  count = 1,
+  index = 0,
+): Buffer {
+  const payload = Buffer.alloc(25)
+  if (type === 9) payload.writeFloatLE(value, 0)
+  else payload.writeInt32LE(value, 0)
+  payload.writeUInt16LE(count, 4)
+  payload.writeUInt16LE(index, 6)
+  Buffer.from(id, 'ascii').copy(payload, 8, 0, 16)
+  payload[24] = type
+  return payload
+}
+
+// ---------------------------------------------------------------------------
+// Bridge target selection, transactions, fallbacks and telemetry semantics.
+// ---------------------------------------------------------------------------
+const connection = new FakeConnection()
+const bridge = new MavlinkBridge(connection as never, {
+  codec: { protocol: 'v2' },
+  commandTimeoutMs: 20,
+  paramSetTimeoutMs: 20,
+  versionRetryMs: 20,
+})
+bridge.setMaxListeners(30)
+const messages: any[] = []
+bridge.on('message', (message) => messages.push(message))
+
+const framesBeforeHeartbeat = connection.frames.length
+;(bridge as unknown as { sendHeartbeat: () => void }).sendHeartbeat()
+assert.equal(connection.frames.length, framesBeforeHeartbeat + 1)
+assert.equal(connection.writePriorities[connection.writePriorities.length - 1], 'high')
+
+// Mutating operations are rejected until a validated autopilot heartbeat.
+const framesBeforeUnreadyCommand = connection.frames.length
 bridge.handleClientMessage({
   type: 'command',
+  requestId: 'arm-before-ready',
   cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
   params: [1, 0, 0, 0, 0, 0, 0],
+  safetyConfirmation: 'arm',
 })
-const commandPayload = lastFrame().subarray(10, 43)
-assert.equal(commandPayload.readFloatLE(0), 1)
-assert.equal(commandPayload.readUInt16LE(28), 400)
-assert.equal(commandPayload[30], 1)
-assert.equal(commandPayload[31], 1)
+assert.equal(connection.frames.length, framesBeforeUnreadyCommand)
+assert.equal(last(messages)?.data.code, 'target_not_ready')
 
-// Ignore heartbeats from non-autopilot components. A companion computer,
-// camera, or gimbal must not steal the command target from the flight
-// controller when it shares the same MAVLink system.
-const componentHeartbeat = Buffer.alloc(9)
-componentHeartbeat[4] = 18 // MAV_TYPE_ONBOARD_CONTROLLER
-componentHeartbeat[5] = 8  // MAV_AUTOPILOT_INVALID
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 0, payload: componentHeartbeat, seq: 0, sysId: 42, compId: 191,
-})
-bridge.handleClientMessage({
-  type: 'command',
-  cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
-  params: [0, 0, 0, 0, 0, 0, 0],
-})
-const postComponentHeartbeatPayload = lastFrame().subarray(10, 43)
-assert.equal(postComponentHeartbeatPayload[30], 1)
-assert.equal(postComponentHeartbeatPayload[31], 1)
+// Companion/camera heartbeats do not qualify as a target.
+inject(bridge, 0, heartbeatPayload(8), 42, 191)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, null)
 
-const autopilotHeartbeat = Buffer.alloc(9)
-autopilotHeartbeat.writeUInt32LE(0x03040000, 0) // PX4 main=4, sub=3 (Hold)
-autopilotHeartbeat[4] = 2 // MAV_TYPE_QUADROTOR
-autopilotHeartbeat[5] = 12 // MAV_AUTOPILOT_PX4
-let heartbeatStatus: { mode: string; modeId: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'status') heartbeatStatus = message.data
-})
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 0, payload: autopilotHeartbeat, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(heartbeatStatus?.mode, 'Hold')
-assert.equal(heartbeatStatus?.modeId, 5)
-const commandFramesAfterHeartbeat = connection.frames
-  .filter((frame) => frame[7] === 76)
-  .map((frame) => frame.subarray(10, 43))
-const versionRequestPayload = commandFramesAfterHeartbeat.find((payload) =>
-  payload.readUInt16LE(28) === 512 && payload.readFloatLE(0) === 148
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, 42)
+assert.equal((bridge as unknown as PrivateBridge).targetCompId, 1)
+assert.equal(connection.vehicleReady, true)
+assert.equal(connection.heartbeatNotifications, 1)
+assert.ok(messages.some((message) => message.type === 'status' && message.data.mode === 'Hold'))
+
+const initialCommandFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
+assert.ok(initialCommandFrames.some((frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 512 && payload.readFloatLE(0) === 148
+}))
+assert.ok(initialCommandFrames.some((frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 105
+}))
+
+// A second autopilot is discovered but cannot steal status/liveness/target.
+const statusCountBeforeSecondTarget = messages.filter((message) => message.type === 'status').length
+inject(bridge, 0, heartbeatPayload(), 43, 1)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, 42)
+assert.equal(
+  messages.filter((message) => message.type === 'status').length,
+  statusCountBeforeSecondTarget,
 )
-assert.ok(versionRequestPayload)
-assert.equal(versionRequestPayload.readUInt16LE(28), 512)
-assert.equal(versionRequestPayload.readFloatLE(0), 148)
-const requestedMessageIds = commandFramesAfterHeartbeat
-  .filter((payload) => payload.readUInt16LE(28) === 511)
-  .map((payload) => payload.readFloatLE(0))
-assert.ok(requestedMessageIds.includes(26))
-assert.ok(requestedMessageIds.includes(105))
-assert.ok(requestedMessageIds.includes(116))
-assert.ok(requestedMessageIds.includes(129))
+assert.equal(connection.heartbeatNotifications, 1)
+const activityBeforeForeignTelemetry = connection.activityNotifications
+inject(bridge, 30, Buffer.alloc(28), 43, 1)
+assert.equal(connection.activityNotifications, activityBeforeForeignTelemetry)
+inject(bridge, 200, Buffer.alloc(4), 43, 1)
+assert.equal(connection.activityNotifications, activityBeforeForeignTelemetry)
+inject(bridge, 200, Buffer.alloc(4), 42, 1)
+assert.equal(connection.activityNotifications, activityBeforeForeignTelemetry + 1)
+inject(bridge, 30, Buffer.alloc(28), 42, 1)
+assert.equal(connection.activityNotifications, activityBeforeForeignTelemetry + 2)
+
+// COMMAND_LONG carries the selected target. ACK extensions addressed to a
+// different GCS must not complete the local transaction.
 bridge.handleClientMessage({
   type: 'command',
+  requestId: 'arm-1',
+  cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+  params: [1, 0, 0, 0, 0, 0, 0],
+  safetyConfirmation: 'arm',
+})
+const armFrame = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 400,
+)
+assert.ok(armFrame)
+assert.equal(connection.writePriorities[connection.frames.indexOf(armFrame)], 'high')
+assert.equal(framePayload(armFrame)[30], 42)
+assert.equal(framePayload(armFrame)[31], 1)
+
+inject(bridge, 77, commandAckPayload(400, 0, 99, 1))
+assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(400), true)
+// target fields are optional extensions; progress may be the only extension
+// left in a trailing-zero-truncated v2 ACK.
+inject(bridge, 77, commandAckPayload(400, 5, 0, 0, 45).subarray(0, 4))
+const progressAck = findLast(
+  messages,
+  (message) => message.type === 'command_ack' && message.data.command === 400,
+)
+assert.equal(progressAck.data.requestId, 'arm-1')
+assert.equal(progressAck.data.progress, 45)
+assert.equal(progressAck.data.terminal, false)
+inject(bridge, 77, commandAckPayload(400, 0))
+assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(400), false)
+
+// Emergency disarm bypasses the same-command ACK quarantine. It is delivered
+// immediately but deliberately not opened as a correlatable transaction.
+const armDisarmFramesBeforeEmergency = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 400
+).length
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'emergency-disarm',
   cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
   params: [0, 0, 0, 0, 0, 0, 0],
+  safetyConfirmation: 'disarm',
 })
-const postAutopilotHeartbeatPayload = lastFrame().subarray(10, 43)
-assert.equal(postAutopilotHeartbeatPayload[30], 42)
-assert.equal(postAutopilotHeartbeatPayload[31], 1)
+assert.equal(
+  connection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 400
+  ).length,
+  armDisarmFramesBeforeEmergency + 1,
+)
+assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(400), false)
+assert.equal(connection.writePriorities[connection.writePriorities.length - 1], 'critical')
+inject(bridge, 77, commandAckPayload(400, 0))
+const staleDisarmAck = findLast(
+  messages,
+  (message) => message.type === 'command_ack' && message.data.command === 400,
+)
+assert.equal(staleDisarmAck.data.requestId, undefined)
+assert.equal(staleDisarmAck.data.stale, true)
 
-// AUTOPILOT_VERSION capabilities are authoritative. Once C-cast is negotiated,
-// a later PX4 heartbeat must not overwrite it with the vendor-based fallback.
-const cCastVersionPayload = Buffer.alloc(60)
-cCastVersionPayload.writeBigUInt64LE(131072n, 0)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 148, payload: cCastVersionPayload, seq: 0, sysId: 42, compId: 1,
+// Normal-risk commands retry once with confirmation incremented, then timeout.
+const modeFramesBefore = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+).length
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'mode-timeout',
+  cmd: 'MAV_CMD_DO_SET_MODE',
+  params: [1, 4, 3, 0, 0, 0, 0],
 })
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 0, payload: autopilotHeartbeat, seq: 0, sysId: 42, compId: 1,
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'mode-concurrent',
+  cmd: 'MAV_CMD_DO_SET_MODE',
+  params: [1, 4, 4, 0, 0, 0, 0],
 })
-assert.equal((bridge as unknown as { paramEncoding: string }).paramEncoding, 'c-cast')
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'mode-concurrent'
+  && message.data.code === 'command_busy'
+))
+await waitFor(() => messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'mode-timeout'
+  && message.data.code === 'command_timeout'
+))
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'mode-after-timeout',
+  cmd: 'MAV_CMD_DO_SET_MODE',
+  params: [1, 4, 4, 0, 0, 0, 0],
+})
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'mode-after-timeout'
+  && message.data.code === 'command_result_uncertain'
+))
+inject(bridge, 77, commandAckPayload(176, 0))
+const staleModeAck = findLast(
+  messages,
+  (message) => message.type === 'command_ack' && message.data.command === 176,
+)
+assert.equal(staleModeAck.data.requestId, undefined)
+assert.equal(staleModeAck.data.stale, true)
+const modeFrames = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+).slice(modeFramesBefore)
+assert.equal(modeFrames.length, 2)
+assert.equal(framePayload(modeFrames[0])[32] ?? 0, 0)
+assert.equal(framePayload(modeFrames[1])[32], 1)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'mode-timeout'
+  && message.data.code === 'command_timeout'
+))
 
-const bytewiseVersionPayload = Buffer.alloc(60)
-bytewiseVersionPayload.writeBigUInt64LE(16n, 0)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 148, payload: bytewiseVersionPayload, seq: 0, sysId: 42, compId: 1,
+// ACTUATOR_TEST ACK cannot identify the motor instance. Safe motor commands
+// are dispatched immediately, with an explicit sent_unconfirmed status for
+// each request; ACKs remain deliberately uncorrelated so a delayed ACK can
+// never be assigned to another motor request.
+const actuatorFrameCount = () => connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+).length
+const actuatorStart = actuatorFrameCount()
+bridge.handleClientMessage({
+  type: 'motor_test',
+  requestId: 'motor-1',
+  data: { instance: 1, throttle: 15, duration: 2, propsRemoved: true },
 })
-assert.equal((bridge as unknown as { paramEncoding: string }).paramEncoding, 'bytewise')
+bridge.handleClientMessage({
+  type: 'motor_test',
+  requestId: 'motor-2',
+  data: { instance: 2, throttle: 15, duration: 2, propsRemoved: true },
+})
+assert.equal(actuatorFrameCount() - actuatorStart, 2)
+const startedActuatorFrames = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+).slice(actuatorStart)
+assert.deepEqual(
+  startedActuatorFrames.map((frame) => connection.writePriorities[connection.frames.indexOf(frame)]),
+  ['high', 'high'],
+)
+assert.ok(messages.some((message) =>
+  message.type === 'motor_test_status'
+  && message.data.requestId === 'motor-1'
+  && message.data.action === 'start'
+  && message.data.status === 'sent_unconfirmed'
+))
+assert.ok(messages.some((message) =>
+  message.type === 'motor_test_status'
+  && message.data.requestId === 'motor-2'
+  && message.data.action === 'start'
+))
+bridge.handleClientMessage({
+  type: 'motor_test',
+  requestId: 'motor-stop-3',
+  data: { instance: 3, throttle: 0, duration: 0 },
+})
+assert.equal(actuatorFrameCount() - actuatorStart, 3)
+assert.equal(connection.writePriorities[connection.writePriorities.length - 1], 'critical')
+assert.ok(messages.some((message) =>
+  message.type === 'motor_test_status'
+  && message.data.requestId === 'motor-stop-3'
+  && message.data.action === 'stop'
+))
+let latestActuator = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 310,
+)
+assert.ok(latestActuator)
+assert.ok(Number.isNaN(framePayload(latestActuator).readFloatLE(0)))
+assert.equal(framePayload(latestActuator).readFloatLE(16), 1103)
+bridge.handleClientMessage({
+  type: 'motor_test',
+  requestId: 'motor-stop-4',
+  data: { instance: 4, throttle: 0, duration: 0 },
+})
+assert.equal(actuatorFrameCount() - actuatorStart, 4)
+latestActuator = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 310,
+)
+assert.equal(framePayload(latestActuator!).readFloatLE(16), 1104)
+inject(bridge, 77, commandAckPayload(310, 0))
+const uncorrelatedMotorAck = findLast(
+  messages,
+  (message) => message.type === 'command_ack' && message.data.command === 310,
+)
+assert.equal(uncorrelatedMotorAck.data.requestId, undefined)
 
-let autopilotVersionData: { boardId: number; boardName: string; firmwareLabel: string } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'autopilot_version') autopilotVersionData = message.data
-})
-const identifiedVersionPayload = Buffer.alloc(60)
-identifiedVersionPayload.writeBigUInt64LE(16n, 0)
-identifiedVersionPayload.writeUInt32LE((1 << 24) | (17 << 16), 16)
-identifiedVersionPayload.writeUInt32LE(1179 << 16, 28)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 148, payload: identifiedVersionPayload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(autopilotVersionData?.boardId, 1179)
-assert.equal(autopilotVersionData?.boardName, 'MicoAir743v2')
-assert.equal(autopilotVersionData?.firmwareLabel, 'PX4 v1.17.0')
+// Malformed PARAM_VALUE packets never reach the cache or transaction layer.
+const paramMessagesBeforeMalformed = messages.filter((message) => message.type === 'param').length
+inject(bridge, 22, Buffer.alloc(24))
+const unsupportedParamType = paramValuePayload('BAD_TYPE', 1)
+unsupportedParamType[24] = 99
+inject(bridge, 22, unsupportedParamType)
+const nonFiniteParam = paramValuePayload('BAD_VALUE', 1)
+nonFiniteParam.writeFloatLE(Number.NaN, 0)
+inject(bridge, 22, nonFiniteParam)
+const invalidIdParam = paramValuePayload('BAD_ID', 1)
+invalidIdParam[8] = 0x01
+inject(bridge, 22, invalidIdParam)
+assert.equal(
+  messages.filter((message) => message.type === 'param').length,
+  paramMessagesBeforeMalformed,
+)
 
-let secondaryImuData: { instance: number; xacc: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'sensor' && message.msgType === 'SCALED_IMU2') {
-    secondaryImuData = message.data
-  }
+// PARAM_SET validates inputs, waits through stale mismatched broadcasts for a
+// matching echo, and carries requestId through the final result.
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-ok',
+  data: { id: 'TEST_PARAM', value: 12.5, paramType: 9 },
 })
-const scaledImu2Payload = Buffer.alloc(24)
-scaledImu2Payload.writeInt16LE(1250, 4)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 116, payload: scaledImu2Payload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(secondaryImuData?.instance, 1)
-assert.equal(secondaryImuData?.xacc, 1.25)
+const paramSetFrame = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23),
+  (frame) => framePayload(frame).subarray(6, 16).toString('ascii') === 'TEST_PARAM',
+)
+assert.ok(paramSetFrame)
+assert.equal(framePayload(paramSetFrame).readFloatLE(0), 12.5)
+const paramResultsBeforeMismatch = messages.filter(
+  (message) => message.type === 'param_set_result',
+).length
+inject(bridge, 22, paramValuePayload('TEST_PARAM', 11.5))
+assert.equal(
+  messages.filter((message) => message.type === 'param_set_result').length,
+  paramResultsBeforeMismatch,
+)
+assert.equal((bridge as unknown as PrivateBridge).pendingParamSets.has('TEST_PARAM'), true)
+inject(bridge, 22, paramValuePayload('TEST_PARAM', 12.5))
+const successfulParamSet = findLast(
+  messages,
+  (message) => message.type === 'param_set_result' && message.data.requestId === 'param-ok',
+)
+assert.equal(successfulParamSet.data.accepted, true)
+assert.equal(successfulParamSet.data.acceptedValue, 12.5)
 
-let sysStatusData: {
-  preflightCheck: boolean | null
-  sensorsHealthy: boolean | null
-  sensorsHealth: number
-  batteryRemaining: number
-  unhealthySensorMask: number
-  unhealthySensors: string[]
-} | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'telemetry' && message.msgType === 'SYS_STATUS') {
-    sysStatusData = message.data
-  }
+const framesBeforeInvalidParam = connection.frames.length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-invalid',
+  data: { id: '参数', value: 1, paramType: 9 },
 })
-const sysStatusPayload = Buffer.alloc(31)
-sysStatusPayload.writeUInt32LE(0x10000000, 0)
-sysStatusPayload.writeUInt32LE(0x10000000, 4)
-sysStatusPayload.writeUInt32LE(0x10000000, 8)
-// battery_remaining lives at wire offset 30 (uint16 group precedes it). The
-// prior hand-rolled parser mistakenly read offset 18 (drop_rate_comm).
-sysStatusPayload.writeInt8(67, 30)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 1, payload: sysStatusPayload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(sysStatusData?.preflightCheck, true)
-assert.equal(sysStatusData?.sensorsHealthy, true)
-assert.equal(sysStatusData?.sensorsHealth, 0x10000000)
-assert.equal(sysStatusData?.batteryRemaining, 67)
-assert.equal(sysStatusData?.unhealthySensorMask, 0)
-assert.deepEqual(sysStatusData?.unhealthySensors, [])
+assert.equal(connection.frames.length, framesBeforeInvalidParam)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'param-invalid'
+  && message.data.code === 'invalid_param'
+))
 
-const rcFailureStatusPayload = Buffer.alloc(31)
-rcFailureStatusPayload.writeUInt32LE(0x00010000, 0)
-rcFailureStatusPayload.writeUInt32LE(0x00010000, 4)
-rcFailureStatusPayload.writeUInt32LE(0, 8)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 1, payload: rcFailureStatusPayload, seq: 0, sysId: 42, compId: 1,
+// C-cast transports must reject integer values that float32 would silently
+// round; bytewise PARAM encoding remains able to carry the full 32-bit range.
+;(bridge as unknown as PrivateBridge).paramEncoding = 'c-cast'
+const paramFramesBeforeUnrepresentable = connection.frames.filter(
+  (frame) => frameMessageId(frame) === 23,
+).length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-unrepresentable',
+  data: { id: 'UINT32_MAX', value: 0xffffffff, paramType: 5 },
 })
-assert.equal(sysStatusData?.sensorsHealthy, false)
-assert.equal(sysStatusData?.unhealthySensorMask, 0x00010000)
-assert.deepEqual(sysStatusData?.unhealthySensors, ['RC 输入'])
+assert.equal(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+  paramFramesBeforeUnrepresentable,
+)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'param-unrepresentable'
+  && message.data.code === 'invalid_param'
+  && /float32/.test(message.data.message)
+))
+;(bridge as unknown as PrivateBridge).paramEncoding = 'bytewise'
 
 bridge.handleClientMessage({
   type: 'param_set',
-  data: { id: 'TEST_PARAM', value: 12.5, paramType: 9 },
+  requestId: 'param-timeout',
+  data: { id: 'TIMEOUT_PARAM', value: 2, paramType: 9 },
 })
-const paramPayload = lastFrame().subarray(10, 33)
-assert.equal(paramPayload.readFloatLE(0), 12.5)
-assert.equal(paramPayload.subarray(6, 16).toString('ascii'), 'TEST_PARAM')
+inject(bridge, 22, paramValuePayload('TIMEOUT_PARAM', 3))
+await waitFor(() => messages.some((message) =>
+  message.type === 'param_set_result' && message.data.requestId === 'param-timeout'
+))
+const timedOutParam = findLast(
+  messages,
+  (message) =>
+    message.type === 'param_set_result' && message.data.requestId === 'param-timeout',
+)
+assert.equal(timedOutParam.data.accepted, false)
+assert.equal(timedOutParam.data.attempt, 3)
+assert.equal(timedOutParam.data.acceptedValue, 3)
+assert.equal(timedOutParam.data.reason, 'value_mismatch')
 
+// MANUAL_CONTROL coalesces replaceable updates at the bridge boundary.
+const manualBefore = connection.frames.filter((frame) => frameMessageId(frame) === 69).length
 bridge.handleClientMessage({
   type: 'manual_control',
-  data: { x: -750, y: 250, z: 625, r: 1000, buttons: 0x0005 },
+  data: { x: 10, y: 20, z: 30, r: 40 },
 })
-const manualControlFrame = lastFrame()
-assert.equal(manualControlFrame[7], 69)
-const manualControlPayload = manualControlFrame.subarray(10, 21)
-assert.equal(manualControlPayload.readInt16LE(0), -750)
-assert.equal(manualControlPayload.readInt16LE(2), 250)
-assert.equal(manualControlPayload.readInt16LE(4), 625)
-assert.equal(manualControlPayload.readInt16LE(6), 1000)
-assert.equal(manualControlPayload.readUInt16LE(8), 0x0005)
-assert.equal(manualControlPayload[10], 42)
-
-// RC_CHANNELS wire layout stores the 18 uint16 channels immediately after
-// time_boot_ms. chancount follows at offset 40 despite appearing earlier in XML.
-let rcChannelsData: { ch1: number; ch2: number; ch18?: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'rc_channels') rcChannelsData = message.data
-})
-const rcChannelsPayload = Buffer.alloc(42)
-for (let i = 0; i < 18; i++) rcChannelsPayload.writeUInt16LE(1001 + i, 4 + i * 2)
-rcChannelsPayload[40] = 18
-rcChannelsPayload[41] = 200
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 65, payload: rcChannelsPayload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(rcChannelsData?.ch1, 1001)
-assert.equal(rcChannelsData?.ch2, 1002)
-assert.equal(rcChannelsData?.ch18, 1018)
-
-// MAVLink 2 STATUSTEXT chunks must be reassembled without leaking the id and
-// chunk sequence extension bytes into the user-visible message.
-let reassembledStatusText: string | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'statustext') reassembledStatusText = message.data.text
-})
-const firstStatusChunk = Buffer.alloc(52)
-firstStatusChunk[0] = 4
-Buffer.from('A'.repeat(50), 'ascii').copy(firstStatusChunk, 1)
-firstStatusChunk.writeUInt8(7, 51) // id low byte; id high byte + chunk_seq trimmed on the wire
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 253, payload: firstStatusChunk, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(reassembledStatusText, undefined)
-const finalStatusChunk = Buffer.alloc(54)
-finalStatusChunk[0] = 4
-Buffer.from(' complete', 'ascii').copy(finalStatusChunk, 1)
-finalStatusChunk.writeUInt16LE(7, 51)
-finalStatusChunk[53] = 1
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 253, payload: finalStatusChunk, seq: 1, sysId: 42, compId: 1,
-})
-assert.equal(reassembledStatusText, `${'A'.repeat(50)} complete`)
-
 bridge.handleClientMessage({
-  type: 'motor_test',
-  data: { instance: 1, throttle: 15, duration: 2 },
+  type: 'manual_control',
+  data: { x: 700, y: -200, z: 650, r: 900, buttons: 5 },
 })
-const motorTestPayload = lastFrame().subarray(10, 43)
-assert.equal(motorTestPayload.readUInt16LE(28), 310)
-assert.ok(Math.abs(motorTestPayload.readFloatLE(0) - 0.15) < 1e-6)
-assert.equal(motorTestPayload.readFloatLE(4), 2)
-assert.equal(motorTestPayload.readFloatLE(16), 1101)
+await wait(0)
+const manualFrames = connection.frames.filter((frame) => frameMessageId(frame) === 69)
+assert.equal(manualFrames.length - manualBefore, 1)
+assert.equal(framePayload(last(manualFrames)!).readInt16LE(0), 700)
+assert.equal(framePayload(last(manualFrames)!).readInt16LE(2), -200)
 
-bridge.handleClientMessage({
-  type: 'motor_test',
-  data: { instance: 4, throttle: 0, duration: 0 },
-})
-const motorStopPayload = lastFrame().subarray(10, 43)
-assert.equal(motorStopPayload.readUInt16LE(28), 310)
-assert.ok(Number.isNaN(motorStopPayload.readFloatLE(0)))
-assert.equal(motorStopPayload.readFloatLE(16), 1104)
-
-let motorOutput: { outputs: Array<number | null> } | undefined
+// Real, truncated MAVLink 2 STATUSTEXT: id=7 is represented by only its low
+// byte (wire payload length 52). It must still start a chunk assembly.
+let assembledText: string | undefined
 bridge.on('message', (message) => {
-  if (message.type === 'motor_outputs') motorOutput = message.data
+  if (message.type === 'statustext') assembledText = message.data.text
 })
-const servoPayload = Buffer.alloc(21)
-servoPayload.writeUInt32LE(123, 0)
-;[1100, 1200, 1300, 1400, 0, 0, 0, 0].forEach((value, index) => {
-  servoPayload.writeUInt16LE(value, 4 + index * 2)
-})
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 36,
-  payload: servoPayload,
-  seq: 0,
-  sysId: 1,
-  compId: 1,
-})
-assert.ok(motorOutput)
-assert.equal(motorOutput.outputs[3], 1400)
+const firstText = new common.StatusText()
+firstText.severity = 4
+firstText.text = 'A'.repeat(50)
+firstText.id = 7
+firstText.chunkSeq = 0
+const firstTextFrame = new MavLinkProtocolV2(42, 1).serialize(firstText, 30)
+assert.equal(firstTextFrame[1], 52)
+connection.feed(firstTextFrame)
+assert.equal(assembledText, undefined)
+const lastText = new common.StatusText()
+lastText.severity = 4
+lastText.text = ' complete'
+lastText.id = 7
+lastText.chunkSeq = 1
+connection.feed(new MavLinkProtocolV2(42, 1).serialize(lastText, 31))
+assert.equal(assembledText, `${'A'.repeat(50)} complete`)
 
-// MAVLink 2 may truncate trailing zero fields. A 16-byte VFR_HUD payload must
-// be zero-padded to its 20-byte base before fixed-offset decoding.
-let vfrData: { airspeed: number; heading: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'telemetry' && message.msgType === 'VFR_HUD') vfrData = message.data
-})
-const truncatedVfrPayload = Buffer.alloc(16)
-truncatedVfrPayload.writeFloatLE(12.5, 0) // airspeed; heading (offset 16) trimmed
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 74, payload: truncatedVfrPayload, seq: 0, sysId: 1, compId: 1,
-})
-assert.ok(vfrData)
-assert.equal(vfrData.airspeed, 12.5)
-assert.equal(vfrData.heading, 0)
+// Assemble bytes first, then decode UTF-8: the three-byte character is split
+// across chunk boundaries and must not turn into replacement characters.
+const euroBytes = Buffer.from('€', 'utf8')
+const utf8First = Buffer.alloc(53)
+utf8First[0] = 4
+Buffer.from('B'.repeat(49), 'ascii').copy(utf8First, 1)
+utf8First[50] = euroBytes[0]
+utf8First.writeUInt16LE(8, 51)
+inject(bridge, 253, utf8First)
+const utf8Last = Buffer.alloc(54)
+utf8Last[0] = 4
+utf8Last[1] = euroBytes[1]
+utf8Last[2] = euroBytes[2]
+utf8Last.writeUInt16LE(8, 51)
+utf8Last[53] = 1
+inject(bridge, 253, utf8Last)
+assert.equal(assembledText, `${'B'.repeat(49)}€`)
 
-// AUTOPILOT_VERSION often truncates to just the non-zero capability bytes.
-// decode() must zero-pad to the 78-byte base before reading the uint64
-// capability bitmap. Force a different encoding, then prove a truncated 8-byte
-// capabilities payload re-negotiates it.
-;(bridge as unknown as { paramEncoding: string }).paramEncoding = 'c-cast'
-const truncatedVersionPayload = Buffer.alloc(8)
-truncatedVersionPayload.writeBigUInt64LE(16n, 0) // MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 148, payload: truncatedVersionPayload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal((bridge as unknown as { paramEncoding: string }).paramEncoding, 'bytewise')
+// AUTOPILOT_VERSION is commonly a truncated v2 payload: identity fields are
+// valid even when the trailing custom-version and uid2 arrays are all zero.
+const version = new standard.AutopilotVersion()
+version.capabilities = 8192n as never
+version.uid = 0n
+version.flightSwVersion = (1 << 24) | (17 << 16)
+version.middlewareSwVersion = 0
+version.osSwVersion = 0
+version.boardVersion = 1179 << 16
+version.vendorId = 123
+version.productId = 456
+version.flightCustomVersion = Array(8).fill(0)
+version.middlewareCustomVersion = Array(8).fill(0)
+version.osCustomVersion = Array(8).fill(0)
+version.uid2 = Array(18).fill(0)
+const truncatedVersionFrame = new MavLinkProtocolV2(42, 1).serialize(version, 32)
+assert.ok(truncatedVersionFrame[1] < 60)
+connection.feed(truncatedVersionFrame)
+const versionData = findLast(
+  messages,
+  (message) => message.type === 'autopilot_version',
+)?.data
+assert.equal(versionData.boardName, 'MicoAir743v2')
+assert.equal(versionData.firmwareLabel, 'PX4 v1.17.0')
+assert.equal(versionData.vendorId, 123)
+assert.equal(versionData.productId, 456)
 
-// GPS_RAW_INT fields are wire-aligned by type size, not XML declaration order.
+const extendedStatePayload = Buffer.from([2, 1])
+inject(bridge, 245, extendedStatePayload)
+const extendedState = findLast(
+  messages,
+  (message) =>
+    message.type === 'telemetry' && message.msgType === 'EXTENDED_SYS_STATE',
+)?.data
+assert.equal(extendedState.vtol_state, 2)
+assert.equal(extendedState.landed_state, 1)
+
+// GPS unknown sentinels become null and DOP is scaled from centi-units.
 const gpsPayload = Buffer.alloc(30)
 gpsPayload.writeInt32LE(31_234_567, 8)
 gpsPayload.writeInt32LE(121_234_567, 12)
+gpsPayload.writeUInt16LE(250, 20)
+gpsPayload.writeUInt16LE(0xffff, 22)
+gpsPayload.writeUInt16LE(0xffff, 24)
+gpsPayload.writeUInt16LE(0xffff, 26)
 gpsPayload[28] = 3
-gpsPayload[29] = 12
-let gpsData: { fix_type: number; lat: number; satellites_visible: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'telemetry' && message.msgType === 'GPS_RAW_INT') gpsData = message.data
-})
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 24, payload: gpsPayload, seq: 0, sysId: 1, compId: 1,
-})
-assert.equal(gpsData?.fix_type, 3)
-assert.equal(gpsData?.lat, 3.1234567)
-assert.equal(gpsData?.satellites_visible, 12)
+gpsPayload[29] = 0xff
+inject(bridge, 24, gpsPayload)
+const gps = findLast(
+  messages,
+  (message) => message.type === 'telemetry' && message.msgType === 'GPS_RAW_INT',
+)?.data
+assert.equal(gps.eph, 2.5)
+assert.equal(gps.epv, null)
+assert.equal(gps.vel, null)
+assert.equal(gps.cog, null)
+assert.equal(gps.satellites_visible, null)
 
-// PX4 commonly streams HIGHRES_IMU instead of SCALED_IMU. Normalize its SI
-// units to the frontend's existing g/rad-s/milligauss representation.
-const highresImuPayload = Buffer.alloc(62)
-highresImuPayload.writeFloatLE(9.80665, 8)
-highresImuPayload.writeFloatLE(-4.903325, 12)
-highresImuPayload.writeFloatLE(0.25, 20)
-highresImuPayload.writeFloatLE(0.42, 32)
-highresImuPayload.writeFloatLE(24.5, 56)
-let highresImuData: { xacc: number; yacc: number; xgyro: number; xmag: number; temperature: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'sensor' && message.msgType === 'HIGHRES_IMU') highresImuData = message.data
-})
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 105, payload: highresImuPayload, seq: 0, sysId: 1, compId: 1,
-})
-assert.ok(highresImuData)
-assert.ok(Math.abs(highresImuData.xacc - 1) < 1e-6)
-assert.ok(Math.abs(highresImuData.yacc + 0.5) < 1e-6)
-assert.equal(highresImuData.xgyro, 0.25)
-assert.ok(Math.abs(highresImuData.xmag - 420) < 1e-4)
-assert.equal(highresImuData.temperature, 24.5)
-
-// BATTERY_STATUS generated common-dialect wire offsets (MIN_LEN=36).
-const batteryPayload = Buffer.alloc(36)
-batteryPayload.writeInt32LE(1234, 0)           // current_consumed (mAh)
-batteryPayload.writeInt16LE(2500, 8)           // temperature
-// Two cells at 3.7V (3700 mV) each -> total 7.4V
-;[3700, 3700, 0, 0, 0, 0, 0, 0, 0, 0].forEach((v, i) => {
-  batteryPayload.writeUInt16LE(v, 10 + i * 2)
-})
-batteryPayload.writeInt16LE(1500, 30)          // current_battery (centi-A -> 15.0A)
-batteryPayload.writeInt8(82, 35)               // battery_remaining (%)
-let batteryData: { voltage: number; current: number; consumed_mah: number; remaining: number } | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'telemetry' && message.msgType === 'BATTERY_STATUS') batteryData = message.data
-})
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 147, payload: batteryPayload, seq: 0, sysId: 1, compId: 1,
-})
-assert.equal(batteryData?.consumed_mah, 1234)
-assert.equal(batteryData?.voltage, 7.4)
-assert.equal(batteryData?.current, 15.0)
-assert.equal(batteryData?.remaining, 82)
-
-// Parameter downloads recover individual missing list entries by index instead
-// of remaining stuck forever after one lost PARAM_VALUE packet.
-const parameterEvents: Array<{ type: string; data: any }> = []
-bridge.on('message', (message) => {
-  if (message.type.startsWith('param_')) parameterEvents.push(message)
-})
-const framesBeforeParamSync = connection.frames.length
-bridge.handleClientMessage({ type: 'param_request_list' })
-const paramListFrame = connection.frames[connection.frames.length - 1]
-assert.equal(paramListFrame[7], 21)
-assert.equal(paramListFrame[10], 42)
-assert.equal(paramListFrame[11], 1)
-const parameterSyncCommands = connection.frames
-  .slice(framesBeforeParamSync)
-  .filter((frame) => frame[7] === 76 && frame.subarray(10).readUInt16LE(28) === 511)
-assert.equal(parameterSyncCommands.length, 5)
-for (const frame of parameterSyncCommands) {
-  assert.equal(frame.subarray(10).readFloatLE(4), 500_000)
+// Battery instance and extension cells are preserved; unknown measurements are
+// null and independent batteries are not combined.
+const batteryPayload = Buffer.alloc(54)
+batteryPayload.writeInt32LE(-1, 0)
+for (let index = 0; index < 10; index++) {
+  batteryPayload.writeUInt16LE(0xffff, 10 + index * 2)
 }
+batteryPayload.writeUInt16LE(3700, 10)
+batteryPayload.writeUInt16LE(3700, 12)
+batteryPayload.writeInt16LE(-1, 30)
+batteryPayload[32] = 2
+batteryPayload.writeInt8(-1, 35)
+batteryPayload.writeUInt16LE(3800, 41)
+inject(bridge, 147, batteryPayload)
+const battery = findLast(
+  messages,
+  (message) => message.type === 'telemetry' && message.msgType === 'BATTERY_STATUS',
+)?.data
+assert.equal(battery.id, 2)
+assert.ok(Math.abs(battery.voltage - 11.2) < 1e-9)
+assert.equal(battery.cell_voltages[0], 3.7)
+assert.equal(battery.cell_voltages[10], 3.8)
+assert.equal(battery.current, null)
+assert.equal(battery.consumed_mah, null)
+assert.equal(battery.remaining, null)
 
-const internalBridge = bridge as unknown as {
-  paramExpectedCount: number
-  paramIndices: Set<number>
-  paramDownloadActive: boolean
-  paramRetryTimer: ReturnType<typeof setTimeout> | null
-  retryMissingParams: () => void
+const rawImuPayload = Buffer.alloc(29)
+rawImuPayload.writeInt16LE(123, 8)
+rawImuPayload[26] = 2
+rawImuPayload.writeInt16LE(0, 27)
+inject(bridge, 27, rawImuPayload)
+const rawImu = findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'RAW_IMU',
+)?.data
+assert.equal(rawImu.units, 'raw')
+assert.equal(rawImu.xacc, 123)
+assert.equal(rawImu.temperature, null)
+
+const flowPayload = Buffer.alloc(44)
+flowPayload.writeUInt32LE(20_000, 8)
+flowPayload.writeFloatLE(0.1, 12)
+flowPayload.writeFloatLE(-0.2, 16)
+flowPayload.writeFloatLE(0.01, 20)
+flowPayload.writeFloatLE(0.02, 24)
+flowPayload.writeFloatLE(0.03, 28)
+flowPayload.writeUInt32LE(5000, 32)
+flowPayload.writeFloatLE(-1, 36)
+flowPayload.writeInt16LE(2350, 40)
+flowPayload[42] = 3
+flowPayload[43] = 200
+inject(bridge, 106, flowPayload)
+const flow = findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'OPTICAL_FLOW_RAD',
+)?.data
+assert.equal(flow.integration_time_us, 20_000)
+assert.ok(Math.abs(flow.integrated_x_rad - 0.1) < 1e-6)
+assert.ok(Math.abs(flow.integrated_zgyro_rad - 0.03) < 1e-6)
+assert.equal(flow.distance_m, null)
+assert.equal(flow.ground_distance, null)
+
+const estimatorPayload = Buffer.alloc(44)
+estimatorPayload.writeUInt16LE(0x1234, 42)
+inject(bridge, 230, estimatorPayload)
+assert.equal(
+  findLast(messages, (message) => message.type === 'ekf_status')
+    ?.data.gps_check_fail_flags,
+  null,
+)
+
+const distancePayload = Buffer.alloc(14)
+inject(bridge, 132, distancePayload)
+assert.equal(
+  findLast(
+    messages,
+    (message) => message.type === 'sensor' && message.msgType === 'DISTANCE_SENSOR',
+  )?.data.signal_quality,
+  null,
+)
+
+const invalidPressure = Buffer.alloc(16)
+invalidPressure.writeFloatLE(0, 4)
+inject(bridge, 29, invalidPressure)
+assert.equal(
+  findLast(
+    messages,
+    (message) => message.type === 'sensor' && message.msgType === 'SCALED_PRESSURE',
+  )?.data.altitude,
+  null,
+)
+
+// Oversized parameter counts fail the bounded transaction immediately.
+const failedBeforeRestart = messages.filter((message) => message.type === 'param_failed').length
+bridge.handleClientMessage({ type: 'param_request_list', requestId: 'expired-list' })
+bridge.handleClientMessage({ type: 'param_request_list', requestId: 'list-too-large' })
+assert.equal(
+  messages.filter((message) => message.type === 'param_failed').length,
+  failedBeforeRestart,
+)
+inject(bridge, 22, paramValuePayload('P0', 1, 9, 9000, 0))
+assert.ok(messages.some((message) =>
+  message.type === 'param_failed'
+  && message.data.reason === 'parameter_count_exceeds_limit'
+))
+
+// SET_MESSAGE_INTERVAL unsupported -> bounded legacy REQUEST_DATA_STREAM
+// fallback instead of silently losing telemetry.
+const legacyBefore = connection.frames.filter((frame) => frameMessageId(frame) === 66).length
+inject(bridge, 77, commandAckPayload(511, 3))
+const legacyAfter = connection.frames.filter((frame) => frameMessageId(frame) === 66).length
+assert.ok(legacyAfter - legacyBefore >= 7)
+
+// Explicit selection resets readiness. Old-target ACK/telemetry cannot affect
+// the new transaction until the selected target sends a fresh heartbeat.
+for (let systemId = 50; systemId < 90; systemId++) {
+  inject(bridge, 0, heartbeatPayload(), systemId, 1)
 }
-// The first valid list entry defines the authoritative count. A later packet
-// with an inconsistent count must not make the downloader wait for a phantom
-// parameter forever.
-const firstCountPayload = Buffer.alloc(25)
-firstCountPayload.writeUInt16LE(3, 4)
-firstCountPayload.writeUInt16LE(0, 6)
-Buffer.from('COUNT_FIRST', 'ascii').copy(firstCountPayload, 8)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 22, payload: firstCountPayload, seq: 0, sysId: 42, compId: 1,
-})
-const outlierCountPayload = Buffer.from(firstCountPayload)
-outlierCountPayload.writeUInt16LE(4, 4)
-outlierCountPayload.writeUInt16LE(1, 6)
-Buffer.from('COUNT_OUTLIER', 'ascii').copy(outlierCountPayload, 8)
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 22, payload: outlierCountPayload, seq: 0, sysId: 42, compId: 1,
-})
-assert.equal(internalBridge.paramExpectedCount, 3)
-
-internalBridge.paramExpectedCount = 3
-internalBridge.paramIndices = new Set([0, 2])
-internalBridge.paramDownloadActive = true
-if (internalBridge.paramRetryTimer) clearTimeout(internalBridge.paramRetryTimer)
-internalBridge.paramRetryTimer = null
-internalBridge.retryMissingParams()
-
-const paramReadFrame = connection.frames[connection.frames.length - 1]
-assert.equal(paramReadFrame[7], 20)
-assert.equal(paramReadFrame.subarray(10).readInt16LE(0), 1)
-assert.equal(paramReadFrame[12], 42)
-assert.equal(paramReadFrame[13], 1)
-assert.equal(parameterEvents[parameterEvents.length - 1]?.type, 'param_retry')
-assert.equal(parameterEvents[parameterEvents.length - 1]?.data.missing, 1)
-
-const recoveredParamPayload = Buffer.alloc(25)
-recoveredParamPayload.writeFloatLE(17, 0)
-recoveredParamPayload.writeUInt16LE(3, 4)
-recoveredParamPayload.writeUInt16LE(1, 6)
-Buffer.from('RECOVERED_PARAM', 'ascii').copy(recoveredParamPayload, 8)
-recoveredParamPayload[24] = 9
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 22,
-  payload: recoveredParamPayload,
-  seq: 0,
-  sysId: 42,
-  compId: 1,
-})
-assert.equal(parameterEvents[parameterEvents.length - 1]?.type, 'param_complete')
-assert.equal(parameterEvents[parameterEvents.length - 1]?.data.count, 3)
-
-// PX4 sets MAV_PROTOCOL_CAPABILITY_PARAM_ENCODE_BYTEWISE: integer parameter
-// bits must be decoded by MAV_PARAM_TYPE rather than interpreted as a float.
-let decodedRotorCount: number | undefined
-bridge.on('message', (message) => {
-  if (message.type === 'param' && message.data.id === 'CA_ROTOR_COUNT') {
-    decodedRotorCount = message.data.value
-  }
-})
-const integerParamPayload = Buffer.alloc(25)
-integerParamPayload.writeInt32LE(4, 0)
-integerParamPayload.writeUInt16LE(1, 4)
-integerParamPayload.writeUInt16LE(0, 6)
-Buffer.from('CA_ROTOR_COUNT', 'ascii').copy(integerParamPayload, 8)
-integerParamPayload[24] = 6 // MAV_PARAM_TYPE_INT32
-;(bridge as unknown as { handleMessage: (message: unknown) => void }).handleMessage({
-  msgId: 22,
-  payload: integerParamPayload,
-  seq: 0,
-  sysId: 42,
-  compId: 1,
-})
-assert.equal(decodedRotorCount, 4)
-
+assert.ok((bridge as unknown as PrivateBridge).discoveredTargets.size <= 32)
+// Refresh the desired target in case bounded discovery evicted its old entry.
+inject(bridge, 0, heartbeatPayload(), 43, 1)
+bridge.handleClientMessage({ type: 'param_request_list', requestId: 'switching-list' })
+assert.equal((bridge as unknown as PrivateBridge).paramDownloadActive, true)
 bridge.handleClientMessage({
-  type: 'param_set',
-  data: { id: 'SYS_AUTOSTART', value: 4001, paramType: 6 },
+  type: 'select_target',
+  requestId: 'select-43',
+  data: { systemId: 43, componentId: 1 },
 })
-const integerParamSetFrame = connection.frames[connection.frames.length - 1]
-const integerParamSetPayload = integerParamSetFrame.subarray(10, 33)
-assert.equal(integerParamSetPayload.readInt32LE(0), 4001)
-assert.notEqual(integerParamSetPayload.readFloatLE(0), 4001)
-
-// Bluetooth recovery deliberately requests only four missing indices per
-// stall, then rotates to the next group. This avoids a retry burst starving
-// heartbeats on a 57600-baud SPP link.
-connection.config = { type: 'bluetooth' }
-bridge.handleClientMessage({ type: 'param_request_list' })
-if (internalBridge.paramRetryTimer) clearTimeout(internalBridge.paramRetryTimer)
-internalBridge.paramRetryTimer = null
-internalBridge.paramExpectedCount = 10
-internalBridge.paramIndices = new Set([0])
-internalBridge.paramDownloadActive = true
-const firstBluetoothRetryStart = connection.frames.length
-internalBridge.retryMissingParams()
-const firstBluetoothRetryIndices = connection.frames
-  .slice(firstBluetoothRetryStart)
-  .filter((frame) => frame[7] === 20)
-  .map((frame) => frame.subarray(10).readInt16LE(0))
-assert.deepEqual(firstBluetoothRetryIndices, [1, 2, 3, 4])
-
-if (internalBridge.paramRetryTimer) clearTimeout(internalBridge.paramRetryTimer)
-internalBridge.paramRetryTimer = null
-const secondBluetoothRetryStart = connection.frames.length
-internalBridge.retryMissingParams()
-const secondBluetoothRetryIndices = connection.frames
-  .slice(secondBluetoothRetryStart)
-  .filter((frame) => frame[7] === 20)
-  .map((frame) => frame.subarray(10).readInt16LE(0))
-assert.deepEqual(secondBluetoothRetryIndices, [5, 6, 7, 8])
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, 43)
+assert.ok(messages.some((message) =>
+  message.type === 'param_failed' && message.data.reason === 'target_switched'
+))
+const framesBeforeUnready43 = connection.frames.length
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'mode-before-43-heartbeat',
+  cmd: 'MAV_CMD_DO_SET_MODE',
+  params: [1, 4, 3, 0, 0, 0, 0],
+})
+assert.equal(connection.frames.length, framesBeforeUnready43)
+inject(bridge, 0, heartbeatPayload(), 43, 1)
+bridge.handleClientMessage({
+  type: 'command',
+  requestId: 'mode-43',
+  cmd: 'MAV_CMD_DO_SET_MODE',
+  params: [1, 4, 3, 0, 0, 0, 0],
+})
+const target43Command = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 176,
+)
+assert.equal(framePayload(target43Command!)[30], 43)
+inject(bridge, 77, commandAckPayload(176, 0), 42, 1)
+assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(176), true)
+inject(bridge, 77, commandAckPayload(176, 0), 43, 1)
+assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(176), false)
 
 bridge.destroy()
-console.log('MAVLink frame layout and motor telemetry checks passed')
+
+// Repeated IN_PROGRESS ACKs may extend the ordinary response window, but they
+// cannot extend the fixed transaction deadline forever.
+{
+  const progressConnection = new FakeConnection()
+  const progressBridge = new MavlinkBridge(progressConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 10,
+    versionRetryMs: 20,
+  })
+  const progressMessages: any[] = []
+  progressBridge.on('message', (message) => progressMessages.push(message))
+  inject(progressBridge, 0, heartbeatPayload(), 7, 1)
+  progressBridge.handleClientMessage({
+    type: 'command',
+    requestId: 'bounded-progress',
+    cmd: 'MAV_CMD_DO_SET_MODE',
+    params: [1, 4, 3, 0, 0, 0, 0],
+  })
+
+  let progressCount = 0
+  const progressTicker = setInterval(() => {
+    progressCount++
+    inject(progressBridge, 77, commandAckPayload(176, 5, 255, 190, 50), 7, 1)
+  }, 5)
+  try {
+    await waitFor(() => progressMessages.some((message) =>
+      message.type === 'operation_error'
+      && message.data.requestId === 'bounded-progress'
+      && message.data.code === 'command_timeout'
+    ), 500)
+    assert.ok(progressCount >= 4)
+    assert.equal(
+      (progressBridge as unknown as PrivateBridge).pendingCommands.has(176),
+      false,
+    )
+  } finally {
+    clearInterval(progressTicker)
+    progressBridge.destroy()
+  }
+}
+
+// IN_PROGRESS is not terminal proof of SET_MESSAGE_INTERVAL support. A later
+// terminal failure must immediately restore legacy REQUEST_DATA_STREAM.
+{
+  const fallbackConnection = new FakeConnection()
+  const fallbackBridge = new MavlinkBridge(fallbackConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 200,
+    versionRetryMs: 200,
+  })
+  inject(fallbackBridge, 0, heartbeatPayload(), 8, 1)
+  const legacyBeforeProgress = fallbackConnection.frames.filter(
+    (frame) => frameMessageId(frame) === 66,
+  ).length
+  inject(fallbackBridge, 77, commandAckPayload(511, 5), 8, 1)
+  assert.equal(
+    (fallbackBridge as unknown as PrivateBridge).messageIntervalSupport,
+    'unknown',
+  )
+  assert.equal(
+    fallbackConnection.frames.filter((frame) => frameMessageId(frame) === 66).length,
+    legacyBeforeProgress,
+  )
+  inject(fallbackBridge, 77, commandAckPayload(511, 4), 8, 1)
+  assert.equal(
+    (fallbackBridge as unknown as PrivateBridge).messageIntervalSupport,
+    'unsupported',
+  )
+  assert.ok(
+    fallbackConnection.frames.filter((frame) => frameMessageId(frame) === 66).length
+      - legacyBeforeProgress >= 7,
+  )
+  fallbackBridge.destroy()
+}
+
+// Destroy cancels a scheduled MANUAL_CONTROL flush; no stale write is allowed
+// to escape into a later/closed physical session.
+{
+  const destroyConnection = new FakeConnection()
+  const destroyBridge = new MavlinkBridge(destroyConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(destroyBridge, 0, heartbeatPayload(), 9, 1)
+  const before = destroyConnection.frames.filter((frame) => frameMessageId(frame) === 69).length
+  destroyBridge.handleClientMessage({
+    type: 'manual_control',
+    data: { x: 100, y: 100, z: 500, r: 0 },
+  })
+  destroyBridge.destroy()
+  await wait(0)
+  const after = destroyConnection.frames.filter((frame) => frameMessageId(frame) === 69).length
+  assert.equal(after, before)
+}
+
+console.log('MAVLink codec, transaction, target and telemetry checks passed')

@@ -3,20 +3,25 @@ import { PageHeader } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
 
 export default function ConnectionPage() {
-  const { status, port, type, setConnectDialogOpen } = useConnectionStore()
+  const { status, port, type, reconnect, setConnectDialogOpen } = useConnectionStore()
   const connected = status === 'connected'
+  const reconnecting = status === 'reconnecting'
 
   return (
     <div className="mc-workspace mc-fade-in">
       <PageHeader title="连接飞控" description="通过 USB 串口或蓝牙 SPP 与 PX4 飞控建立连接" />
       <section className="mc-card mx-auto max-w-xl overflow-hidden">
         <div className="flex flex-col items-center border-b px-6 py-9 text-center" style={{ borderColor: 'var(--border)' }}>
-          <span className="grid h-16 w-16 place-items-center rounded-2xl" style={{ background: connected ? 'var(--success-dim)' : 'var(--accent-dim)', color: connected ? 'var(--success)' : 'var(--accent)' }}>
+          <span className="grid h-16 w-16 place-items-center rounded-2xl" style={{ background: connected ? 'var(--success-dim)' : reconnecting ? 'var(--warning-dim)' : 'var(--accent-dim)', color: connected ? 'var(--success)' : reconnecting ? 'var(--warning)' : 'var(--accent)' }}>
             <Icon name="plug" size={29} />
           </span>
-          <h2 className="mt-5 text-[19px] font-bold" style={{ color: 'var(--text-primary)' }}>{connected ? '飞控已连接' : status === 'connecting' ? '正在连接飞控' : '尚未连接飞控'}</h2>
+          <h2 className="mt-5 text-[19px] font-bold" style={{ color: 'var(--text-primary)' }}>{connected ? '飞控已连接' : reconnecting ? '正在重连飞控' : status === 'connecting' ? '正在连接飞控' : '尚未连接飞控'}</h2>
           <p className="mt-2 text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-            {connected ? (type === 'bluetooth' ? '蓝牙 SPP · ' : 'USB 串口 · ') + (port ?? '—') : '点击下方按钮选择可用串口设备。'}
+            {connected
+              ? (type === 'bluetooth' ? '蓝牙 SPP · ' : 'USB 串口 · ') + (port ?? '—')
+              : reconnecting
+                ? `蓝牙链路中断，正在自动重连${reconnect ? `（第 ${reconnect.attempt}/${reconnect.maxAttempts} 次）` : ''}…`
+                : '点击下方按钮选择可用串口设备。'}
           </p>
         </div>
         <div className="p-6">

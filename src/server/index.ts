@@ -1,208 +1,1313 @@
-import express from 'express'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { EventEmitter } from 'node:events'
+import {
+  createServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+} from 'node:http'
+import type { Socket } from 'node:net'
+import path from 'node:path'
+import { performance } from 'node:perf_hooks'
+import { fileURLToPath } from 'node:url'
 import cors from 'cors'
-import { WebSocketServer, WebSocket } from 'ws'
-import { createServer } from 'http'
-import path from 'path'
-import { fileURLToPath } from 'url'
+import express, {
+  type NextFunction,
+  type Request,
+  type Response,
+} from 'express'
+import {
+  WebSocket,
+  WebSocketServer,
+  type RawData,
+} from 'ws'
+import type {
+  ClientMessage,
+  ConnectionConfig,
+  ConnectionStatus,
+  ParamData,
+  PortInfo,
+  ServerMessage,
+} from '../shared/types'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
-import type { ClientMessage, ParamData, ServerMessage } from '../shared/types'
+import {
+  InputValidationError,
+  isAllowedOrigin,
+  isLoopbackAddress,
+  parseClientMessage,
+  parseConnectionConfig,
+  parseServerConfig,
+  type BoundaryClientMessage,
+  type ServerConfig,
+} from './validation'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const app = express()
-const server = createServer(app)
-const wss = new WebSocketServer({ server, path: '/ws' })
+const modulePath = fileURLToPath(import.meta.url)
+const moduleDir = path.dirname(modulePath)
+const distPath = path.resolve(moduleDir, '../../dist')
 
-app.use(cors())
-app.use(express.json())
+const PROTOCOL_VERSION = 1
+const JSON_BODY_LIMIT = '16kb'
+const MAX_BUFFERED_AMOUNT = 512 * 1024
+const PARAM_BATCH_INTERVAL_MS = 120
+const MAX_PARAM_BATCH_ITEMS = 2048
+const PARAM_SYNC_TIMEOUT_MS = 120_000
+const CONTROLLER_LEASE_MS = 30_000
+const WS_HEARTBEAT_INTERVAL_MS = 15_000
+const RATE_LIMIT_CAPACITY = 80
+const RATE_LIMIT_REFILL_PER_SECOND = 40
+const MAX_RATE_LIMIT_VIOLATIONS = 3
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000
 
-// Serve static files in production
-const distPath = path.resolve(__dirname, '../../dist')
-app.use(express.static(distPath))
+type ConnectionErrorDetail = {
+  phase: 'connect' | 'runtime' | 'disconnect' | 'heartbeat' | 'reconnect'
+  message: string
+  code?: string
+  timestamp: number
+  retryable?: boolean
+}
 
-// Core services
-const connManager = new ConnectionManager()
-const mavlinkBridge = new MavlinkBridge(connManager)
+export interface ConnectionManagerBoundary extends EventEmitter {
+  readonly status: ConnectionStatus
+  readonly config: ConnectionConfig | null
+  readonly reconnect: {
+    attempt: number
+    maxAttempts: number
+    delayMs: number
+    lastError?: string
+  } | null
+  readonly reconnectTerminalReason?: {
+    code: string
+    message: string
+    attempt: number
+    timestamp: number
+  } | null
+  readonly transportOpen?: boolean
+  readonly vehicleReady?: boolean
+  readonly lastError?: ConnectionErrorDetail | null
+  scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }>
+  connect(config: ConnectionConfig): Promise<void>
+  disconnect(): Promise<void>
+}
 
-// Broadcast to all WebSocket clients. A slow/stalled client could otherwise
-// grow backend RSS without bound: MAVLink telemetry at 10+ Hz keeps calling
-// client.send() and buffering unsent frames per client. Drop clients whose
-// buffered amount exceeds 1 MB so a single stuck browser cannot starve others.
-const MAX_BUFFERED_AMOUNT = 1 * 1024 * 1024
-function broadcast(data: any) {
-  const msg = JSON.stringify(data)
-  wss.clients.forEach((client) => {
-    if (client.readyState !== WebSocket.OPEN) return
-    if (client.bufferedAmount > MAX_BUFFERED_AMOUNT) {
-      console.warn('[WS] Dropping slow client: bufferedAmount=' + client.bufferedAmount)
-      client.close(1011, 'backend backpressure: client too slow')
-      return
+export interface MavlinkBridgeBoundary extends EventEmitter {
+  handleClientMessage(message: ClientMessage): void
+  cancelParameterDownload?(): void
+  destroy(): void | Promise<void>
+}
+
+export interface BackendServices {
+  connManager: ConnectionManagerBoundary
+  mavlinkBridge: MavlinkBridgeBoundary
+}
+
+export interface CreateAppOptions {
+  config?: ServerConfig
+  services?: Partial<BackendServices>
+  heartbeatIntervalMs?: number
+  controllerLeaseMs?: number
+  parameterSyncTimeoutMs?: number
+  shutdownTimeoutMs?: number
+  logger?: Pick<Console, 'log' | 'warn' | 'error'>
+}
+
+export interface StartServerOptions extends CreateAppOptions {
+  installSignalHandlers?: boolean
+}
+
+type LocalServerMessage = Extract<
+  ServerMessage,
+  { type: 'hello' | 'client_error' | 'controller' | 'param_sync' | 'connection' }
+>
+
+type WireMessage = ServerMessage
+
+type ClientContext = {
+  id: string
+  restControlToken: string
+  isAlive: boolean
+  tokens: number
+  lastRefill: number
+  rateLimitViolations: number
+}
+
+type ControllerLease = {
+  clientId: string
+  expiresAt: number
+}
+
+type ParamSyncState = {
+  generation: number
+  ownerClientId: string
+  startedAt: number
+}
+
+class HttpBoundaryError extends Error {
+  readonly status: number
+  readonly code: string
+
+  constructor(status: number, code: string, message: string) {
+    super(message)
+    this.name = 'HttpBoundaryError'
+    this.status = status
+    this.code = code
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function normalizeConnectionError(error: unknown): ConnectionErrorDetail {
+  if (typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string') {
+    const candidate = error as {
+      phase?: unknown
+      message: string
+      code?: unknown
+      timestamp?: unknown
+      retryable?: unknown
     }
-    client.send(msg)
+    return {
+      phase: candidate.phase === 'connect'
+        || candidate.phase === 'disconnect'
+        || candidate.phase === 'heartbeat'
+        || candidate.phase === 'reconnect'
+        || candidate.phase === 'runtime'
+        ? candidate.phase
+        : 'runtime',
+      message: candidate.message,
+      ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+      timestamp: typeof candidate.timestamp === 'number' && Number.isFinite(candidate.timestamp)
+        ? candidate.timestamp
+        : Date.now(),
+      ...(typeof candidate.retryable === 'boolean' ? { retryable: candidate.retryable } : {}),
+    }
+  }
+  return { phase: 'runtime', message: String(error), timestamp: Date.now() }
+}
+
+function isRetryableConnectionError(detail: ConnectionErrorDetail): boolean {
+  if (detail.retryable !== undefined) return detail.retryable
+  return detail.phase === 'heartbeat'
+    || detail.phase === 'reconnect'
+    || /^(?:EAGAIN|EBUSY|ECONNRESET|ETIMEDOUT|EIO)$/.test(detail.code ?? '')
+}
+
+function isMutatingMessage(message: BoundaryClientMessage): boolean {
+  return message.type === 'command'
+    || message.type === 'param_set'
+    || message.type === 'param_request_list'
+    || message.type === 'manual_control'
+    || message.type === 'motor_test'
+    || message.type === 'select_target'
+}
+
+function requiresReadyTarget(message: BoundaryClientMessage): boolean {
+  return message.type !== 'release_control'
+}
+
+function messageRequestId(message: BoundaryClientMessage): string | undefined {
+  return 'requestId' in message ? message.requestId : undefined
+}
+
+function isParameterOperationError(message: unknown): boolean {
+  if (typeof message !== 'object' || message === null) return false
+  const candidate = message as {
+    type?: unknown
+    data?: { operation?: unknown }
+  }
+  if (candidate.type !== 'operation_error') return false
+  return candidate.data?.operation === 'param_request_list'
+    || candidate.data?.operation === 'parameter_download'
+    || candidate.data?.operation === 'param_sync'
+}
+
+function tokenMatches(candidate: string | undefined, expected: string | null): boolean {
+  if (!candidate || !expected) return false
+  const candidateBuffer = Buffer.from(candidate)
+  const expectedBuffer = Buffer.from(expected)
+  return candidateBuffer.length === expectedBuffer.length
+    && timingSafeEqual(candidateBuffer, expectedBuffer)
+}
+
+function bearerToken(header: string | string[] | undefined): string | undefined {
+  if (Array.isArray(header)) return undefined
+  const match = header?.match(/^Bearer ([\x21-\x7e]+)$/)
+  return match?.[1]
+}
+
+function wsToken(request: IncomingMessage): string | undefined {
+  const authorization = bearerToken(request.headers.authorization)
+  if (authorization) return authorization
+  try {
+    return new URL(request.url ?? '/', 'http://localhost').searchParams.get('token') ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+function upgradeResponse(socket: Socket, status: number, reason: string): void {
+  if (!socket.writable) {
+    socket.destroy()
+    return
+  }
+  const body = JSON.stringify({ success: false, error: reason })
+  const label = status === 401
+    ? 'Unauthorized'
+    : status === 403
+      ? 'Forbidden'
+      : status === 503
+        ? 'Service Unavailable'
+        : 'Bad Request'
+  socket.end(
+    `HTTP/1.1 ${status} ${label}\r\n`
+      + 'Connection: close\r\n'
+      + 'Content-Type: application/json; charset=utf-8\r\n'
+      + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+      + '\r\n'
+      + body,
+  )
+}
+
+function closeHttpServer(server: HttpServer): Promise<void> {
+  if (!server.listening) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+    server.closeIdleConnections?.()
   })
 }
 
-// PARAM_VALUE can arrive as a >1000-message burst. Batch it before crossing
-// the WebSocket boundary so the browser does not process and render a thousand
-// individual message events while the Bluetooth link is already saturated.
-const PARAM_BATCH_INTERVAL_MS = 120
-let pendingParams: ParamData[] = []
-let paramBatchTimer: ReturnType<typeof setTimeout> | null = null
-function flushParamBatch() {
-  if (paramBatchTimer) {
-    clearTimeout(paramBatchTimer)
-    paramBatchTimer = null
-  }
-  if (pendingParams.length === 0) return
-  const batch = pendingParams
-  pendingParams = []
-  broadcast({ type: 'param_batch', data: batch } satisfies ServerMessage)
+function closeWebSocketServer(wss: WebSocketServer): Promise<void> {
+  return new Promise((resolve) => {
+    wss.close(() => resolve())
+  })
 }
 
-// Forward MAVLink messages to WebSocket clients
-mavlinkBridge.on('message', (msg) => {
-  if (msg.type === 'param') {
-    pendingParams.push(msg.data)
-    if (!paramBatchTimer) paramBatchTimer = setTimeout(flushParamBatch, PARAM_BATCH_INTERVAL_MS)
-    return
-  }
-  if (msg.type === 'param_complete' || msg.type === 'param_failed' || msg.type === 'param_retry') {
-    flushParamBatch()
-  }
-  broadcast(msg)
-})
+export interface ShutdownResult {
+  timedOut: boolean
+}
 
-// Forward connection status changes
-connManager.on('statusChange', (status) => {
-  if (status !== 'connected') {
+export interface BackendRuntime {
+  app: express.Express
+  server: HttpServer
+  wss: WebSocketServer
+  config: ServerConfig
+  services: BackendServices
+  shutdown(reason?: string): Promise<ShutdownResult>
+  addShutdownCleanup(cleanup: () => void): void
+}
+
+export function createApp(options: CreateAppOptions = {}): BackendRuntime {
+  const config = options.config
+    ? parseServerConfig({}, options.config)
+    : parseServerConfig()
+  const logger = options.logger ?? console
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? WS_HEARTBEAT_INTERVAL_MS
+  const controllerLeaseMs = options.controllerLeaseMs ?? CONTROLLER_LEASE_MS
+  const parameterSyncTimeoutMs = options.parameterSyncTimeoutMs ?? PARAM_SYNC_TIMEOUT_MS
+  const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS
+
+  const connManager = options.services?.connManager ?? new ConnectionManager()
+  const mavlinkBridge = options.services?.mavlinkBridge
+    ?? new MavlinkBridge(connManager as ConnectionManager)
+  const services: BackendServices = { connManager, mavlinkBridge }
+
+  const app = express()
+  app.disable('x-powered-by')
+  const server = createServer(app)
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: config.wsMaxPayload,
+    perMessageDeflate: false,
+  })
+
+  const clientContexts = new Map<WebSocket, ClientContext>()
+  const shutdownCleanups = new Set<() => void>()
+  let controllerLease: ControllerLease | null = null
+  let parameterSync: ParamSyncState | null = null
+  let parameterSyncTimer: ReturnType<typeof setTimeout> | null = null
+  let nextParameterGeneration = 0
+  let pendingParams: ParamData[] = []
+  let paramBatchTimer: ReturnType<typeof setTimeout> | null = null
+  let lastConnectionError: ConnectionErrorDetail | null = null
+  let shuttingDown = false
+  let shutdownPromise: Promise<ShutdownResult> | null = null
+
+  function connectionMessage(): LocalServerMessage {
+    const manager = connManager as ConnectionManagerBoundary
+    const status = manager.status
+    const transportOpen = manager.transportOpen ?? status === 'connected'
+    const vehicleReady = manager.vehicleReady ?? transportOpen
+    const managerError = manager.lastError
+      ? normalizeConnectionError(manager.lastError)
+      : lastConnectionError
+    return {
+      type: 'connection',
+      data: {
+        connected: transportOpen,
+        status,
+        transportOpen,
+        vehicleReady,
+        ...(manager.config?.port ? { port: manager.config.port } : {}),
+        ...(manager.config?.type ? { type: manager.config.type } : {}),
+        ...(status === 'reconnecting' && manager.reconnect
+          ? { reconnect: manager.reconnect }
+          : {}),
+        ...(manager.reconnectTerminalReason
+          ? { reconnectTerminalReason: manager.reconnectTerminalReason }
+          : {}),
+        ...(managerError ? { error: managerError } : {}),
+      },
+    }
+  }
+
+  function serializeMessage(data: WireMessage): string | null {
+    try {
+      return JSON.stringify(data)
+    } catch (error) {
+      logger.error('[WS] Unable to serialize server message:', error)
+      return null
+    }
+  }
+
+  function safeSendSerialized(ws: WebSocket, serialized: string): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false
+    if (ws.bufferedAmount >= MAX_BUFFERED_AMOUNT) {
+      logger.warn(`[WS] Terminating slow client: bufferedAmount=${ws.bufferedAmount}`)
+      ws.terminate()
+      return false
+    }
+
+    try {
+      ws.send(serialized, (error) => {
+        if (!error) return
+        logger.warn('[WS] Send failed:', error.message)
+        ws.terminate()
+      })
+      return true
+    } catch (error) {
+      logger.warn('[WS] Send threw:', errorMessage(error))
+      ws.terminate()
+      return false
+    }
+  }
+
+  function safeSend(ws: WebSocket, data: WireMessage): boolean {
+    const serialized = serializeMessage(data)
+    return serialized === null ? false : safeSendSerialized(ws, serialized)
+  }
+
+  function broadcast(data: WireMessage): void {
+    const serialized = serializeMessage(data)
+    if (serialized === null) return
+    for (const client of wss.clients) safeSendSerialized(client, serialized)
+  }
+
+  function sendClientError(
+    ws: WebSocket,
+    code: string,
+    message: string,
+    requestId?: string,
+    retryable = false,
+    details?: Record<string, unknown>,
+  ): void {
+    safeSend(ws, {
+      type: 'client_error',
+      data: {
+        code,
+        message,
+        ...(requestId ? { requestId } : {}),
+        retryable,
+        ...(details ? { details } : {}),
+      },
+    })
+  }
+
+  function controllerMessage(
+    reason: Extract<LocalServerMessage, { type: 'controller' }>['data']['reason'],
+  ): LocalServerMessage {
+    return {
+      type: 'controller',
+      data: {
+        clientId: controllerLease?.clientId ?? null,
+        expiresAt: controllerLease?.expiresAt ?? null,
+        reason,
+      },
+    }
+  }
+
+  function expireController(now = Date.now()): void {
+    if (!controllerLease || controllerLease.expiresAt > now) return
+    controllerLease = null
+    broadcast(controllerMessage('expired'))
+  }
+
+  function ensureController(ws: WebSocket, context: ClientContext, requestId?: string): boolean {
+    const now = Date.now()
+    expireController(now)
+    if (!controllerLease) {
+      controllerLease = { clientId: context.id, expiresAt: now + controllerLeaseMs }
+      broadcast(controllerMessage('claimed'))
+      return true
+    }
+    if (controllerLease.clientId !== context.id) {
+      sendClientError(
+        ws,
+        'controller_conflict',
+        '另一个客户端当前持有飞控控制权',
+        requestId,
+        true,
+        { expiresAt: controllerLease.expiresAt },
+      )
+      return false
+    }
+    controllerLease.expiresAt = now + controllerLeaseMs
+    return true
+  }
+
+  function releaseController(context: ClientContext, reason: 'released' | 'disconnected'): boolean {
+    expireController()
+    if (controllerLease?.clientId !== context.id) return false
+    controllerLease = null
+    broadcast(controllerMessage(reason))
+    return true
+  }
+
+  function requireRestConnectionControl(request: Request): void {
+    expireController()
+    if (!controllerLease) return
+
+    const owner = [...clientContexts.values()]
+      .find((context) => context.id === controllerLease?.clientId)
+    const candidate = typeof request.headers['x-skylab-control-token'] === 'string'
+      ? request.headers['x-skylab-control-token']
+      : undefined
+    if (!owner || !tokenMatches(candidate, owner.restControlToken)) {
+      throw new HttpBoundaryError(
+        409,
+        'controller_conflict',
+        '当前连接操作需要控制者授权',
+      )
+    }
+  }
+
+  function consumeRateLimit(context: ClientContext, cost: number): boolean {
+    const now = performance.now()
+    const elapsedSeconds = Math.max(0, now - context.lastRefill) / 1000
+    context.tokens = Math.min(
+      RATE_LIMIT_CAPACITY,
+      context.tokens + elapsedSeconds * RATE_LIMIT_REFILL_PER_SECOND,
+    )
+    context.lastRefill = now
+    if (context.tokens < cost) return false
+    context.tokens -= cost
+    context.rateLimitViolations = 0
+    return true
+  }
+
+  function clearParamBatch(): void {
     pendingParams = []
     if (paramBatchTimer) clearTimeout(paramBatchTimer)
     paramBatchTimer = null
   }
-  broadcast({
-    type: 'connection',
-    data: {
-      connected: status === 'connected',
-      port: connManager.config?.port,
-      type: connManager.config?.type,
-    },
+
+  function cancelBridgeParameterDownload(reason: string): void {
+    try {
+      mavlinkBridge.cancelParameterDownload?.()
+    } catch (error) {
+      logger.warn(`[MAVLink] Parameter download cancellation failed (${reason}):`, error)
+    }
+  }
+
+  function flushParamBatch(): void {
+    if (paramBatchTimer) {
+      clearTimeout(paramBatchTimer)
+      paramBatchTimer = null
+    }
+    if (pendingParams.length === 0) return
+    const batch = pendingParams
+    pendingParams = []
+    broadcast({
+      type: 'param_batch',
+      data: batch,
+      ...(parameterSync ? { generation: parameterSync.generation } : {}),
+    })
+  }
+
+  function finishParameterSync(
+    status: 'complete' | 'failed' | 'cancelled',
+    reason?: string,
+  ): void {
+    if (!parameterSync) return
+    if (parameterSyncTimer) {
+      clearTimeout(parameterSyncTimer)
+      parameterSyncTimer = null
+    }
+    const completed = parameterSync
+    broadcast({
+      type: 'param_sync',
+      data: {
+        generation: completed.generation,
+        status,
+        ownerClientId: completed.ownerClientId,
+        ...(reason ? { reason } : {}),
+      },
+    })
+    parameterSync = null
+  }
+
+  function beginParameterSync(ws: WebSocket, context: ClientContext, requestId?: string): boolean {
+    const now = Date.now()
+    if (parameterSync && now - parameterSync.startedAt < parameterSyncTimeoutMs) {
+      sendClientError(
+        ws,
+        'param_sync_conflict',
+        '参数下载已在进行中',
+        requestId,
+        true,
+        {
+          generation: parameterSync.generation,
+          ownerClientId: parameterSync.ownerClientId,
+        },
+      )
+      return false
+    }
+    if (parameterSync) {
+      cancelBridgeParameterDownload('expired')
+      finishParameterSync('cancelled', 'expired')
+    }
+    if (!ensureController(ws, context, requestId)) return false
+
+    clearParamBatch()
+    parameterSync = {
+      generation: ++nextParameterGeneration,
+      ownerClientId: context.id,
+      startedAt: now,
+    }
+    const generation = parameterSync.generation
+    parameterSyncTimer = setTimeout(() => {
+      if (parameterSync?.generation !== generation) return
+      cancelBridgeParameterDownload('timeout')
+      clearParamBatch()
+      finishParameterSync('cancelled', 'timeout')
+    }, parameterSyncTimeoutMs)
+    parameterSyncTimer.unref?.()
+    broadcast({
+      type: 'param_sync',
+      data: {
+        generation: parameterSync.generation,
+        status: 'started',
+        ownerClientId: context.id,
+      },
+    })
+    return true
+  }
+
+  const onBridgeMessage = (rawMessage: unknown): void => {
+    if (typeof rawMessage !== 'object' || rawMessage === null) {
+      logger.warn('[MAVLink] Ignoring non-object bridge message')
+      return
+    }
+    const message = rawMessage as ServerMessage & {
+      type: string
+      data?: unknown
+      generation?: number
+    }
+
+    if (message.type === 'param') {
+      const data = message.data as ParamData
+      pendingParams.push(data)
+      if (pendingParams.length >= MAX_PARAM_BATCH_ITEMS) {
+        flushParamBatch()
+      } else if (!paramBatchTimer) {
+        paramBatchTimer = setTimeout(flushParamBatch, PARAM_BATCH_INTERVAL_MS)
+        paramBatchTimer.unref?.()
+      }
+      return
+    }
+
+    if (
+      message.type === 'param_complete'
+      || message.type === 'param_failed'
+      || message.type === 'param_retry'
+    ) {
+      flushParamBatch()
+    }
+
+    const carriesParameterGeneration = message.type === 'param_complete'
+      || message.type === 'param_failed'
+      || message.type === 'param_retry'
+      || isParameterOperationError(message)
+    const generation = carriesParameterGeneration
+      ? parameterSync?.generation
+      : undefined
+    const wireMessage = {
+      ...(message as unknown as Record<string, unknown>),
+      ...(generation === undefined ? {} : { generation }),
+    } as ServerMessage
+    broadcast(wireMessage)
+
+    if (message.type === 'param_complete') finishParameterSync('complete')
+    else if (message.type === 'param_failed') finishParameterSync('failed')
+    else if (isParameterOperationError(message)) {
+      clearParamBatch()
+      finishParameterSync('failed', 'bridge_rejected')
+    }
+  }
+
+  const onStatusChange = (status: ConnectionStatus): void => {
+    if (status === 'connecting' || status === 'connected') {
+      lastConnectionError = null
+    }
+    if (status !== 'connected') {
+      if (controllerLease) {
+        controllerLease = null
+        broadcast(controllerMessage('connection_changed'))
+      }
+      if (parameterSync) {
+        cancelBridgeParameterDownload(`connection_${status}`)
+        finishParameterSync('cancelled', `connection_${status}`)
+      }
+      clearParamBatch()
+    }
+    broadcast(connectionMessage())
+  }
+
+  const onConnectionStateDetail = (): void => {
+    broadcast(connectionMessage())
+  }
+
+  const onConnectionError = (error: unknown): void => {
+    lastConnectionError = normalizeConnectionError(error)
+    logger.error('[Connection] runtime error:', lastConnectionError.message)
+    broadcast(connectionMessage())
+  }
+
+  const onErrorDetailChange = (detail: ConnectionErrorDetail | null): void => {
+    lastConnectionError = detail ? normalizeConnectionError(detail) : null
+    broadcast(connectionMessage())
+  }
+
+  mavlinkBridge.on('message', onBridgeMessage)
+  connManager.on('statusChange', onStatusChange)
+  connManager.on('connectionError', onConnectionError)
+  connManager.on('transportChange', onConnectionStateDetail)
+  connManager.on('vehicleReadyChange', onConnectionStateDetail)
+  connManager.on('errorDetailChange', onErrorDetailChange)
+
+  app.use((request, response, next) => {
+    response.set({
+      'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+      'Cross-Origin-Resource-Policy': 'same-origin',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+    })
+    if (request.path === '/api' || request.path.startsWith('/api/')) {
+      response.set('Cache-Control', 'no-store')
+    }
+    next()
   })
-})
 
-// EventEmitter treats an unhandled event named "error" as fatal. Connection
-// errors are reported to clients without terminating the backend process.
-connManager.on('connectionError', (error: Error) => {
-  console.error('[Connection] runtime error:', error.message)
-})
+  app.use((request, _response, next) => {
+    const origin = request.get('origin')
+    if (origin) {
+      if (!isAllowedOrigin(origin, config)) {
+        next(new HttpBoundaryError(403, 'origin_forbidden', '请求 Origin 不在允许列表中'))
+        return
+      }
+    } else if (!isLoopbackAddress(request.socket.remoteAddress)) {
+      next(new HttpBoundaryError(403, 'origin_required', '非本机请求必须提供允许的 Origin'))
+      return
+    }
+    next()
+  })
 
-// WebSocket connection handling
-wss.on('connection', (ws) => {
-  console.log('[WS] Client connected')
-
-  // Send current connection status
-  ws.send(JSON.stringify({
-    type: 'connection',
-    data: {
-      connected: connManager.status === 'connected',
-      port: connManager.config?.port,
-      type: connManager.config?.type,
+  app.use(cors({
+    origin(origin, callback) {
+      callback(null, origin ? isAllowedOrigin(origin, config) : false)
     },
+    methods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'X-SkyLab-Token',
+      'X-SkyLab-Control-Token',
+    ],
+    maxAge: 600,
   }))
 
-  ws.on('message', (raw) => {
+  app.use('/api', (request, _response, next) => {
+    if (!config.remoteEnabled) {
+      next()
+      return
+    }
+    const candidate = bearerToken(request.headers.authorization)
+      ?? (typeof request.headers['x-skylab-token'] === 'string'
+        ? request.headers['x-skylab-token']
+        : undefined)
+    if (!tokenMatches(candidate, config.authToken)) {
+      next(new HttpBoundaryError(401, 'unauthorized', '缺少或无效的访问令牌'))
+      return
+    }
+    next()
+  })
+
+  app.use(express.json({ limit: JSON_BODY_LIMIT, strict: true }))
+
+  app.get('/api/connections/scan', async (_request, response, next) => {
     try {
-      const msg: ClientMessage = JSON.parse(raw.toString())
-      if (msg.type === 'param_request_list') {
-        // A manual refresh starts a new transaction. Do not let a not-yet-
-        // flushed tail from the previous download repopulate the freshly
-        // cleared browser store with stale entries.
-        pendingParams = []
-        if (paramBatchTimer) clearTimeout(paramBatchTimer)
-        paramBatchTimer = null
-      }
-      mavlinkBridge.handleClientMessage(msg)
-    } catch (err) {
-      console.error('[WS] Invalid message:', err)
+      const ports = await connManager.scanPorts()
+      response.json({ success: true, data: ports })
+    } catch (error) {
+      next(error)
     }
   })
 
-  ws.on('close', () => {
-    console.log('[WS] Client disconnected')
+  app.get('/api/connections/debug-ports', async (_request, response, next) => {
+    try {
+      const { SerialPort } = await import('serialport')
+      const ports = await SerialPort.list()
+      response.json({
+        success: true,
+        data: ports.map((port) => ({
+          path: port.path,
+          manufacturer: port.manufacturer,
+          vendorId: port.vendorId,
+          productId: port.productId,
+          pnpId: port.pnpId,
+        })),
+      })
+    } catch (error) {
+      next(error)
+    }
   })
-})
 
-// REST API: Connection management
-app.get('/api/connections/scan', async (_req, res) => {
-  try {
-    const ports = await connManager.scanPorts()
-    res.json({ success: true, data: ports })
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message })
-  }
-})
+  app.post('/api/connections/connect', async (request, response, next) => {
+    try {
+      if (shuttingDown) throw new HttpBoundaryError(503, 'shutting_down', '服务正在关闭')
+      requireRestConnectionControl(request)
+      const connectionConfig = parseConnectionConfig(request.body)
+      logger.log('[API] connect request:', {
+        type: connectionConfig.type,
+        port: connectionConfig.port,
+        baudRate: connectionConfig.baudRate,
+      })
+      await connManager.connect(connectionConfig)
+      response.json({ success: true })
+    } catch (error) {
+      next(error)
+    }
+  })
 
-// Diagnostic endpoint: list ALL serial ports with full metadata for debugging
-// the browser-side Web Serial pick -> backend COM port matching.
-app.get('/api/connections/debug-ports', async (_req, res) => {
-  try {
-    const { SerialPort } = await import('serialport')
-    const ports = await SerialPort.list()
-    res.json({
+  app.post('/api/connections/disconnect', async (request, response, next) => {
+    try {
+      if (shuttingDown) throw new HttpBoundaryError(503, 'shutting_down', '服务正在关闭')
+      requireRestConnectionControl(request)
+      await connManager.disconnect()
+      response.json({ success: true })
+    } catch (error) {
+      next(error)
+    }
+  })
+
+  app.get('/api/connections/status', (_request, response) => {
+    response.json({
       success: true,
-      data: ports.map((p) => ({
-        path: p.path,
-        manufacturer: p.manufacturer,
-        vendorId: p.vendorId,
-        productId: p.productId,
-        pnpId: p.pnpId,
-      })),
+      data: connectionMessage().data,
     })
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message })
-  }
-})
-
-app.post('/api/connections/connect', async (req, res) => {
-  try {
-    const { type, port, baudRate, vendorId, productId, bluetoothServiceClassId } = req.body || {}
-    console.log('[API] connect request:', { type, port, baudRate, vendorId, productId, bluetoothServiceClassId })
-    if (!type || !port) {
-      return res.status(400).json({ success: false, error: '缺少 type 或 port 参数' })
-    }
-    await connManager.connect({ type, port, baudRate, vendorId, productId, bluetoothServiceClassId })
-    res.json({ success: true })
-  } catch (err: any) {
-    console.error('[API] connect failed:', err)
-    res.status(500).json({ success: false, error: err?.message || String(err) })
-  }
-})
-
-app.post('/api/connections/disconnect', async (_req, res) => {
-  try {
-    await connManager.disconnect()
-    res.json({ success: true })
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message })
-  }
-})
-
-app.get('/api/connections/status', (_req, res) => {
-  res.json({
-    success: true,
-    data: {
-      status: connManager.status,
-      config: connManager.config,
-    },
   })
-})
 
-// SPA fallback
-app.get('/{*splat}', (_req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'))
-})
+  app.use('/api', (_request, response) => {
+    response.status(404).json({
+      success: false,
+      error: { code: 'api_not_found', message: 'API 路径不存在' },
+    })
+  })
 
-const PORT = 3000
-server.listen(PORT, () => {
-  console.log(`[Server] PX4 Web GCS running at http://localhost:${PORT}`)
-  console.log(`[Server] WebSocket at ws://localhost:${PORT}/ws`)
-})
+  app.use(express.static(distPath))
+
+  app.get('/{*splat}', (request, response, next) => {
+    if (!request.accepts('html')) {
+      response.status(404).json({
+        success: false,
+        error: { code: 'not_found', message: '资源不存在' },
+      })
+      return
+    }
+    response.sendFile(path.join(distPath, 'index.html'), (error) => {
+      if (error) next(error)
+    })
+  })
+
+  app.use((
+    error: unknown,
+    _request: Request,
+    response: Response,
+    _next: NextFunction,
+  ) => {
+    if (error instanceof HttpBoundaryError) {
+      response.status(error.status).json({
+        success: false,
+        error: { code: error.code, message: error.message },
+      })
+      return
+    }
+    if (error instanceof InputValidationError) {
+      response.status(400).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          ...(error.path ? { path: error.path } : {}),
+        },
+      })
+      return
+    }
+    const bodyError = error as {
+      type?: string
+      status?: number
+      body?: unknown
+    }
+    if (bodyError?.type === 'entity.too.large') {
+      response.status(413).json({
+        success: false,
+        error: { code: 'payload_too_large', message: 'JSON 请求体过大' },
+      })
+      return
+    }
+    if (error instanceof SyntaxError && 'body' in bodyError) {
+      response.status(400).json({
+        success: false,
+        error: { code: 'invalid_json', message: 'JSON 请求体格式无效' },
+      })
+      return
+    }
+
+    const detail = normalizeConnectionError(error)
+    logger.error('[API] request failed:', detail.message)
+    const status = Number.isInteger(bodyError?.status)
+      && bodyError.status! >= 400
+      && bodyError.status! <= 599
+      ? bodyError.status!
+      : 500
+    response.status(status).json({
+      success: false,
+      error: {
+        code: config.remoteEnabled ? 'internal_error' : (detail.code ?? 'internal_error'),
+        message: config.remoteEnabled
+          ? (status >= 500 ? '服务器内部错误' : '请求处理失败')
+          : (detail.message || '服务器内部错误'),
+        retryable: isRetryableConnectionError(detail),
+      },
+    })
+  })
+
+  function handleClientMessage(
+    ws: WebSocket,
+    context: ClientContext,
+    raw: RawData,
+    isBinary: boolean,
+  ): void {
+    if (isBinary) {
+      sendClientError(ws, 'binary_not_supported', '仅支持 UTF-8 JSON 文本消息')
+      ws.close(1003, 'binary messages are not supported')
+      return
+    }
+    if (!consumeRateLimit(context, 1)) {
+      context.rateLimitViolations += 1
+      sendClientError(ws, 'rate_limited', '消息发送过快', undefined, true)
+      if (context.rateLimitViolations >= MAX_RATE_LIMIT_VIOLATIONS) {
+        ws.terminate()
+      }
+      return
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw.toString())
+    } catch {
+      sendClientError(ws, 'invalid_json', '消息不是有效的 JSON')
+      return
+    }
+
+    let message: BoundaryClientMessage
+    try {
+      message = parseClientMessage(parsed)
+    } catch (error) {
+      if (error instanceof InputValidationError) {
+        const rawRequestId = typeof parsed === 'object'
+          && parsed !== null
+          && typeof (parsed as { requestId?: unknown }).requestId === 'string'
+          ? (parsed as { requestId: string }).requestId.slice(0, 64)
+          : undefined
+        sendClientError(ws, error.code, error.message, rawRequestId, false, {
+          ...(error.path ? { path: error.path } : {}),
+        })
+        return
+      }
+      logger.error('[WS] Message validation failed:', error)
+      sendClientError(ws, 'invalid_message', '消息校验失败')
+      return
+    }
+
+    const requestId = messageRequestId(message)
+    if (message.type === 'release_control') {
+      if (!releaseController(context, 'released')) {
+        sendClientError(ws, 'not_controller', '当前客户端未持有控制权', requestId)
+      }
+      return
+    }
+
+    if (
+      requiresReadyTarget(message)
+      && (
+        connManager.status !== 'connected'
+        || connManager.transportOpen === false
+        || connManager.vehicleReady === false
+      )
+    ) {
+      sendClientError(
+        ws,
+        'target_not_ready',
+        '飞控传输或已选目标尚未就绪',
+        requestId,
+        true,
+      )
+      return
+    }
+
+    if (message.type === 'param_request_list') {
+      // Report an in-flight parameter generation before controller ownership:
+      // observers need the more actionable generation conflict and must not be
+      // able to extend or steal a lease while a download is active.
+      if (!beginParameterSync(ws, context, requestId)) return
+    } else if (isMutatingMessage(message) && !ensureController(ws, context, requestId)) {
+      return
+    }
+
+    try {
+      mavlinkBridge.handleClientMessage(message as ClientMessage)
+    } catch (error) {
+      if (message.type === 'param_request_list') {
+        clearParamBatch()
+        finishParameterSync('failed', 'bridge_exception')
+      }
+      logger.error('[WS] Client message handling failed:', error)
+      sendClientError(ws, 'operation_failed', errorMessage(error), requestId, false)
+    }
+  }
+
+  wss.on('connection', (ws, request) => {
+    const context: ClientContext = {
+      id: randomUUID(),
+      restControlToken: randomUUID(),
+      isAlive: true,
+      tokens: RATE_LIMIT_CAPACITY,
+      lastRefill: performance.now(),
+      rateLimitViolations: 0,
+    }
+    clientContexts.set(ws, context)
+    logger.log(`[WS] Client connected (${context.id})`)
+
+    ws.on('error', (error) => {
+      logger.warn(`[WS] Client error (${context.id}):`, error.message)
+    })
+    ws.on('pong', () => {
+      context.isAlive = true
+    })
+    ws.on('message', (raw, isBinary) => {
+      handleClientMessage(ws, context, raw, isBinary)
+    })
+    ws.on('close', () => {
+      clientContexts.delete(ws)
+      releaseController(context, 'disconnected')
+      if (parameterSync?.ownerClientId === context.id) {
+        cancelBridgeParameterDownload('owner_disconnected')
+        clearParamBatch()
+        finishParameterSync('cancelled', 'owner_disconnected')
+      }
+      logger.log(`[WS] Client disconnected (${context.id})`)
+    })
+
+    safeSend(ws, {
+      type: 'hello',
+      data: {
+        protocolVersion: PROTOCOL_VERSION,
+        clientId: context.id,
+        restControlToken: context.restControlToken,
+        capabilities: [
+          'runtime-validation',
+          'controller-lease',
+          'parameter-generation',
+          'connection-readiness',
+          'structured-errors',
+          'rest-control-token',
+        ],
+        maxPayload: config.wsMaxPayload,
+        controllerLeaseMs,
+      },
+    })
+    safeSend(ws, connectionMessage())
+    safeSend(ws, controllerMessage('snapshot'))
+    if (parameterSync) {
+      safeSend(ws, {
+        type: 'param_sync',
+        data: {
+          generation: parameterSync.generation,
+          status: 'started',
+          ownerClientId: parameterSync.ownerClientId,
+        },
+      })
+    }
+
+    // Access only non-sensitive request metadata. Never log the URL because
+    // remote-mode browser clients can authenticate with ?token=.
+    void request
+  })
+
+  wss.on('error', (error) => {
+    logger.error('[WS] Server error:', error)
+  })
+
+  const onUpgrade = (request: IncomingMessage, socket: Socket, head: Buffer): void => {
+    if (shuttingDown) {
+      upgradeResponse(socket, 503, '服务正在关闭')
+      return
+    }
+
+    let pathname: string
+    try {
+      pathname = new URL(request.url ?? '/', 'http://localhost').pathname
+    } catch {
+      upgradeResponse(socket, 400, '无效的 WebSocket URL')
+      return
+    }
+    if (pathname !== '/ws') {
+      upgradeResponse(socket, 400, 'WebSocket 路径不存在')
+      return
+    }
+
+    const origin = request.headers.origin
+    if (origin) {
+      if (!isAllowedOrigin(origin, config)) {
+        upgradeResponse(socket, 403, 'Origin 不在允许列表中')
+        return
+      }
+    } else if (!isLoopbackAddress(request.socket.remoteAddress)) {
+      upgradeResponse(socket, 403, '非本机 WebSocket 请求必须提供 Origin')
+      return
+    }
+
+    if (config.remoteEnabled && !tokenMatches(wsToken(request), config.authToken)) {
+      upgradeResponse(socket, 401, '缺少或无效的访问令牌')
+      return
+    }
+    if (wss.clients.size >= config.wsMaxClients) {
+      upgradeResponse(socket, 503, 'WebSocket 客户端数量已达上限')
+      return
+    }
+
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request)
+      })
+    } catch (error) {
+      logger.warn('[WS] Upgrade failed:', errorMessage(error))
+      socket.destroy()
+    }
+  }
+
+  server.on('upgrade', onUpgrade)
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      logger.error(`[Server] ${config.host}:${config.port} 已被占用`)
+    } else {
+      logger.error('[Server] HTTP server error:', error)
+    }
+  })
+
+  const heartbeatTimer = setInterval(() => {
+    expireController()
+    for (const [ws, context] of clientContexts) {
+      if (!context.isAlive) {
+        logger.warn(`[WS] Terminating unresponsive client (${context.id})`)
+        ws.terminate()
+        continue
+      }
+      context.isAlive = false
+      try {
+        ws.ping()
+      } catch (error) {
+        logger.warn(`[WS] Ping failed (${context.id}):`, errorMessage(error))
+        ws.terminate()
+      }
+    }
+  }, heartbeatIntervalMs)
+  heartbeatTimer.unref?.()
+
+  function addShutdownCleanup(cleanup: () => void): void {
+    shutdownCleanups.add(cleanup)
+  }
+
+  async function shutdown(reason = 'requested'): Promise<ShutdownResult> {
+    if (shutdownPromise) return shutdownPromise
+    shuttingDown = true
+    shutdownPromise = (async () => {
+      logger.log(`[Server] Shutting down (${reason})`)
+      clearInterval(heartbeatTimer)
+      cancelBridgeParameterDownload('server_shutdown')
+      clearParamBatch()
+      finishParameterSync('cancelled', 'server_shutdown')
+      controllerLease = null
+      server.off('upgrade', onUpgrade)
+
+      const closeServerPromise = closeHttpServer(server)
+      for (const client of wss.clients) client.terminate()
+      const closeWsPromise = closeWebSocketServer(wss)
+
+      const cleanupWork = Promise.allSettled([
+        Promise.resolve().then(() => mavlinkBridge.destroy()).catch((error) => {
+          logger.error('[Server] MAVLink bridge cleanup failed:', error)
+        }),
+        Promise.resolve().then(() => connManager.disconnect()).catch((error) => {
+          logger.error('[Server] Connection cleanup failed:', error)
+        }),
+        closeWsPromise,
+        closeServerPromise,
+      ]).then(() => 'complete' as const)
+
+      let timeout: ReturnType<typeof setTimeout> | null = null
+      const deadline = new Promise<'timeout'>((resolve) => {
+        timeout = setTimeout(() => {
+          logger.error(`[Server] Shutdown exceeded ${shutdownTimeoutMs}ms; forcing network handles closed`)
+          server.closeAllConnections?.()
+          for (const client of wss.clients) client.terminate()
+          resolve('timeout')
+        }, shutdownTimeoutMs)
+      })
+      const outcome = await Promise.race([cleanupWork, deadline])
+      const timedOut = outcome === 'timeout'
+      if (!timedOut && timeout) clearTimeout(timeout)
+
+      mavlinkBridge.off('message', onBridgeMessage)
+      connManager.off('statusChange', onStatusChange)
+      connManager.off('connectionError', onConnectionError)
+      connManager.off('transportChange', onConnectionStateDetail)
+      connManager.off('vehicleReadyChange', onConnectionStateDetail)
+      connManager.off('errorDetailChange', onErrorDetailChange)
+      for (const cleanup of shutdownCleanups) {
+        try {
+          cleanup()
+        } catch (error) {
+          logger.warn('[Server] Shutdown cleanup hook failed:', error)
+        }
+      }
+      shutdownCleanups.clear()
+      logger.log(timedOut ? '[Server] Shutdown deadline reached' : '[Server] Shutdown complete')
+      return { timedOut }
+    })()
+    return shutdownPromise
+  }
+
+  return {
+    app,
+    server,
+    wss,
+    config,
+    services,
+    shutdown,
+    addShutdownCleanup,
+  }
+}
+
+function displayHost(host: string): string {
+  return host.includes(':') ? `[${host}]` : host
+}
+
+export async function startServer(options: StartServerOptions = {}): Promise<BackendRuntime> {
+  const config = options.config
+    ? parseServerConfig({}, options.config)
+    : parseServerConfig()
+  const logger = options.logger ?? console
+  const runtime = createApp({ ...options, config })
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onListenError = (error: Error) => {
+        runtime.server.off('listening', onListening)
+        reject(error)
+      }
+      const onListening = () => {
+        runtime.server.off('error', onListenError)
+        resolve()
+      }
+      runtime.server.once('error', onListenError)
+      runtime.server.once('listening', onListening)
+      runtime.server.listen(config.port, config.host)
+    })
+  } catch (error) {
+    await runtime.shutdown('listen_failed')
+    throw error
+  }
+
+  const address = runtime.server.address()
+  const actualPort = typeof address === 'object' && address ? address.port : config.port
+  const host = displayHost(config.host)
+  logger.log(`[Server] PX4 Web GCS running at http://${host}:${actualPort}`)
+  logger.log(`[Server] WebSocket at ws://${host}:${actualPort}/ws`)
+
+  if (options.installSignalHandlers) {
+    let signalReceived = false
+    const signalHandler = (signal: NodeJS.Signals) => {
+      if (signalReceived) return
+      signalReceived = true
+      const forcedExitTimer = setTimeout(() => {
+        console.error('[Server] Forced exit after shutdown deadline')
+        process.exit(1)
+      }, (options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS) + 250)
+      forcedExitTimer.unref()
+      void runtime.shutdown(signal).then((result) => {
+        if (!result.timedOut) {
+          clearTimeout(forcedExitTimer)
+          process.exitCode = 0
+        }
+      })
+    }
+    const onSigint = () => signalHandler('SIGINT')
+    const onSigterm = () => signalHandler('SIGTERM')
+    process.once('SIGINT', onSigint)
+    process.once('SIGTERM', onSigterm)
+    runtime.addShutdownCleanup(() => {
+      process.off('SIGINT', onSigint)
+      process.off('SIGTERM', onSigterm)
+    })
+  }
+
+  return runtime
+}
+
+function isDirectExecution(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  const resolvedEntry = path.resolve(entry)
+  const resolvedModule = path.resolve(modulePath)
+  return process.platform === 'win32'
+    ? resolvedEntry.toLowerCase() === resolvedModule.toLowerCase()
+    : resolvedEntry === resolvedModule
+}
+
+if (isDirectExecution()) {
+  void startServer({ installSignalHandlers: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'EADDRINUSE') {
+      const listenError = error as NodeJS.ErrnoException & { address?: string; port?: number }
+      console.error(`[Server] 启动失败：${listenError.address ?? '监听地址'}:${listenError.port ?? ''} 已被占用`)
+    } else {
+      console.error('[Server] 启动失败:', error)
+    }
+    process.exitCode = 1
+  })
+}

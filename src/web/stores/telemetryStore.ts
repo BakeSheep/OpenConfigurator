@@ -50,7 +50,7 @@ interface TelemetryState {
   climbRate: number
   heading: number
   throttle: number
-  globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number } | null
+  globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
   statusLogs: StatusLogEntry[]
   // Timestamp (Date.now()) of the last update per field. 0 = never received OR
   // explicitly marked stale by markAllStale() on disconnect. UI uses isStale()
@@ -109,26 +109,13 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
   setGps: (data) => set((state) => ({ gps: data, lastUpdate: { ...state.lastUpdate, gps: Date.now() } })),
-  setBattery: (data) => set((state) => {
-    const voltage = Number.isFinite(data.voltage) && data.voltage > 1
-      ? data.voltage
-      : state.battery?.voltage ?? 0
-    return {
-      battery: {
-        voltage,
-        current: Number.isFinite(data.current) && data.current >= 0
-          ? data.current
-          : state.battery?.current ?? 0,
-        remaining: data.remaining >= 0 && data.remaining <= 100
-          ? data.remaining
-          : state.battery?.remaining ?? 0,
-        consumed_mah: data.consumed_mah >= 0
-          ? data.consumed_mah
-          : state.battery?.consumed_mah ?? 0,
-      },
-      lastUpdate: { ...state.lastUpdate, battery: Date.now() },
-    }
-  }),
+  // Keep each BATTERY_STATUS instance intact. In particular, do not fill an
+  // unknown field from the previously displayed battery: independent battery
+  // IDs may be interleaved on the same MAVLink link.
+  setBattery: (data) => set((state) => ({
+    battery: data,
+    lastUpdate: { ...state.lastUpdate, battery: Date.now() },
+  })),
   setStatus: (data) => set((state) => ({ status: data, lastUpdate: { ...state.lastUpdate, status: Date.now() } })),
   setEkfStatus: (data) => set((state) => ({ ekfStatus: data, lastUpdate: { ...state.lastUpdate, ekfStatus: Date.now() } })),
   setRcChannels: (data) => set((state) => ({ rcChannels: data, lastUpdate: { ...state.lastUpdate, rcChannels: Date.now() } })),
@@ -153,17 +140,13 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     // MAVLink recommends BATTERY_STATUS over the ambiguous SYS_STATUS fields.
     // Only use SYS_STATUS as a fallback when no recent BATTERY_STATUS exists.
     const batteryStatusFresh = now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
-    const fallbackBattery = batteryStatusFresh ? state.battery : {
-      voltage: Number.isFinite(data.voltageBattery) && data.voltageBattery > 1
-        ? data.voltageBattery
-        : state.battery?.voltage ?? 0,
-      current: Number.isFinite(data.currentBattery) && data.currentBattery >= 0
-        ? data.currentBattery
-        : state.battery?.current ?? 0,
-      remaining: data.batteryRemaining >= 0 && data.batteryRemaining <= 100
-        ? data.batteryRemaining
-        : state.battery?.remaining ?? 0,
-      consumed_mah: state.battery?.consumed_mah ?? 0,
+    const fallbackBattery: BatteryData | null = batteryStatusFresh ? state.battery : {
+      id: 0,
+      voltage: data.voltageBattery,
+      cell_voltages: [],
+      current: data.currentBattery,
+      remaining: data.batteryRemaining,
+      consumed_mah: null,
     }
     return {
       battery: fallbackBattery,

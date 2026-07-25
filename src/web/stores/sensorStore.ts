@@ -88,8 +88,8 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     // MAVLink: signal_quality=1 is invalid and 0 means unknown/unset. When
     // quality is unknown, a value pinned to either range limit is treated as
     // warning because it commonly represents saturation/no return.
-    const signalUsable = data.signal_quality > 1
-      || (data.signal_quality === 0
+    const signalUsable = data.signal_quality !== null && data.signal_quality > 1
+      || ((data.signal_quality === null || data.signal_quality === 0)
         && data.current_distance > data.min_distance
         && data.current_distance < data.max_distance)
     return {

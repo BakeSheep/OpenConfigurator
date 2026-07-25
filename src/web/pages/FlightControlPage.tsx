@@ -38,11 +38,21 @@ export default function FlightControlPage() {
       confirmationTimer.current = window.setTimeout(() => setArmConfirmation(false), 3000)
       return
     }
-    send({ type: 'command', cmd: 'MAV_CMD_COMPONENT_ARM_DISARM', params: [1, 0, 0, 0, 0, 0, 0] })
+    send({
+      type: 'command',
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [1, 0, 0, 0, 0, 0, 0],
+      safetyConfirmation: 'arm',
+    })
     setArmConfirmation(false)
   }
 
-  const disarm = () => send({ type: 'command', cmd: 'MAV_CMD_COMPONENT_ARM_DISARM', params: [0, 0, 0, 0, 0, 0, 0] })
+  const disarm = () => send({
+    type: 'command',
+    cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+    params: [0, 0, 0, 0, 0, 0, 0],
+    safetyConfirmation: 'disarm',
+  })
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
   const setMode = (mainMode: number, subMode: number) =>
     command('MAV_CMD_DO_SET_MODE', [1, mainMode, subMode, 0, 0, 0, 0])
@@ -116,7 +126,19 @@ export default function FlightControlPage() {
               <input className="mt-4" type="range" min="1" max="10" step="0.5" value={takeoffAltitude} onChange={(event) => setTakeoffAltitude(Number(event.target.value))} />
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <button type="button" className="mc-btn mc-btn-primary min-h-10" disabled={!connected || !armed} onClick={() => command('MAV_CMD_NAV_TAKEOFF', [0, 0, 0, 0, 0, 0, takeoffAltitude])}>起飞</button>
+              <button
+                type="button"
+                className="mc-btn mc-btn-primary min-h-10"
+                disabled={!connected || !armed}
+                onClick={() => send({
+                  type: 'command',
+                  cmd: 'MAV_CMD_NAV_TAKEOFF',
+                  params: [0, 0, 0, 0, 0, 0, takeoffAltitude],
+                  safetyConfirmation: 'takeoff',
+                })}
+              >
+                起飞
+              </button>
               <button type="button" className="mc-btn min-h-10" disabled={!connected} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
               <button type="button" className="mc-btn min-h-10" disabled={!connected} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
             </div>
