@@ -3,6 +3,29 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
 import { getRestControlHeaders } from '../hooks/useWebSocket'
 
+// --- Preset storage (shared with Topbar) ---
+interface ConnectionPreset {
+  id: string
+  name: string
+  type: 'serial' | 'bluetooth'
+  port: string
+  baudRate: number
+}
+
+const PRESETS_KEY = 'oc-connection-presets'
+
+function loadPresets(): ConnectionPreset[] {
+  try {
+    const raw = localStorage.getItem(PRESETS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return []
+}
+
+function savePresets(presets: ConnectionPreset[]) {
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)) } catch { /* ignore */ }
+}
+
 // Convert decimal vendor/product id from Web Serial to the lowercase hex
 // string format used by serialport's PortInfo (e.g. 1A86, 7523).
 const toHexId = (n: number | undefined) =>
@@ -178,8 +201,6 @@ export default function ConnectDialog() {
   }
 
   const disconnect = async () => {
-    // Clear any lingering error so a previous failure does not persist across
-    // reconnect cycles (the dialog may stay open and show a stale error).
     setError(null)
     await fetch('/api/connections/disconnect', {
       method: 'POST',
@@ -187,9 +208,52 @@ export default function ConnectDialog() {
     })
   }
 
+  const saveAsPreset = () => {
+    setError(null)
+    let presetName = ''
+    let presetPort = ''
+    let presetType: 'serial' | 'bluetooth' = connType
+
+    if (connType === 'bluetooth') {
+      if (selectedBtPort) {
+        const selected = bluetoothPorts.find((p) => p.path === selectedBtPort)
+        presetPort = selectedBtPort
+        presetName = selected?.friendlyName || selected?.manufacturer || selectedBtPort
+      } else if (pickedBt) {
+        presetPort = pickedBt.label
+        presetName = pickedBt.label
+      } else {
+        setError('请先选择蓝牙设备')
+        return
+      }
+    } else {
+      if (!selectedPort) { setError('请先选择端口'); return }
+      presetPort = selectedPort
+      const portInfo = serialPorts.find((p) => p.path === selectedPort)
+      presetName = portInfo?.manufacturer ? `${selectedPort} (${portInfo.manufacturer})` : selectedPort
+    }
+
+    const existing = loadPresets()
+    // Avoid duplicates by port
+    if (existing.some((p) => p.port === presetPort)) {
+      setError('该设备已在预设列表中')
+      return
+    }
+    const preset: ConnectionPreset = {
+      id: Date.now().toString(36),
+      name: presetName,
+      type: presetType,
+      port: presetPort,
+      baudRate,
+    }
+    const updated = [...existing, preset]
+    savePresets(updated)
+    setConnectDialogOpen(false)
+  }
+
   if (!connectDialogOpen) return null
 
-  const connected = status === 'connected'
+  const connected = useConnectionStore((state) => state.transportOpen)
 
   return (
     <div
@@ -378,11 +442,11 @@ export default function ConnectDialog() {
             </button>
           ) : (
             <button
-              onClick={connect}
+              onClick={saveAsPreset}
               disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
               className="mc-btn mc-btn-primary flex-1 py-2.5"
             >
-              {status === 'connecting' ? '连接中…' : '连接'}
+              添加到预设
             </button>
           )}
         </div>

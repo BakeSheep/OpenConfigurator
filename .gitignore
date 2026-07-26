@@ -11,12 +11,19 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
+coverage
+.nyc_output
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
+Desktop.ini
 *.suo
 *.ntvs*
 *.njsproj

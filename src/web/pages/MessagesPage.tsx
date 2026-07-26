@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import Icon from '../components/ui/Icon'
-import { PageHeader, PageTabs } from '../components/ui/PageFrame'
+import { PageTabs } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -8,7 +8,6 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 const tabs = [
   { id: 'messages', label: '消息' },
   { id: 'status', label: '状态' },
-  { id: 'terminal', label: '终端' },
 ]
 
 const streamRows = [
@@ -27,10 +26,10 @@ const streamRows = [
   { id: 253, name: 'STATUSTEXT', source: 'statusText', rate: '事件' },
 ]
 
-export default function MessagesPage() {
+export default function MessagesPage({ embedded = false }: { embedded?: boolean }) {
   const [activeTab, setActiveTab] = useState('messages')
   const [paused, setPaused] = useState(false)
-  const connected = useConnectionStore((state) => state.status === 'connected')
+  const connected = useConnectionStore((state) => state.vehicleReady)
   const lastUpdate = useTelemetryStore((state) => state.lastUpdate)
   const sensorUpdate = useSensorStore((state) => state.lastUpdate)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
@@ -67,18 +66,12 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="mc-workspace mc-fade-in mc-data-workspace">
-      <PageHeader
-        title="消息控制台"
-        description="实时 MAVLink 消息监控"
-        actions={
-          <>
-            <span className="mc-toolbar-summary">{liveCount} 种活跃消息 · {displayLogs.length} 条状态记录</span>
-            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? '继续' : '暂停'} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-            <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空" onClick={clearLogs}><Icon name="trash" size={15} /></button>
-          </>
-        }
-      />
+    <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
+      <div className="flex items-center justify-end gap-2 mb-3">
+        <span className="mc-toolbar-summary">{liveCount} 种活跃消息 · {displayLogs.length} 条状态记录</span>
+        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? '继续' : '暂停'} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
+        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空" onClick={clearLogs}><Icon name="trash" size={15} /></button>
+      </div>
       <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
       {activeTab === 'messages' && (
@@ -94,14 +87,6 @@ export default function MessagesPage() {
               </div>
             ))}
           </section>
-
-          <aside className="mc-card mc-rate-panel">
-            <h3>消息频率控制</h3>
-            {['姿态', '位置', '传感器', '遥控', '状态', 'HUD', '光流/电池/振动'].map((label, index) => (
-              <label key={label}><span>{label}</span><select className="mc-select" defaultValue={index === 6 ? '100' : index < 3 ? '4' : '1'} disabled><option>1</option><option>2</option><option>4</option><option>10</option><option>100</option></select><small>Hz</small></label>
-            ))}
-            <button type="button" className="mc-btn mc-btn-ghost" disabled>恢复默认</button>
-          </aside>
 
           <section className="mc-card mc-link-stats">
             <h3>链路统计</h3>
@@ -120,7 +105,6 @@ export default function MessagesPage() {
         </section>
       )}
 
-      {activeTab === 'terminal' && <section className="mc-card mc-terminal"><p>SkyLab MAVLink Console</p><p className="is-muted">只读终端 · 等待飞控状态文本...</p></section>}
     </div>
   )
 }

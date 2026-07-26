@@ -393,6 +393,12 @@ assert.ok(initialCommandFrames.some((frame) => {
   const payload = framePayload(frame)
   return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 105
 }))
+for (const messageId of [106, 132]) {
+  assert.ok(initialCommandFrames.some((frame) => {
+    const payload = framePayload(frame)
+    return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === messageId
+  }), `expected telemetry interval request for MAVLink message #${messageId}`)
+}
 
 // A second autopilot is discovered but cannot steal status/liveness/target.
 const statusCountBeforeSecondTarget = messages.filter((message) => message.type === 'status').length

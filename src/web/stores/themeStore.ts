@@ -15,14 +15,14 @@ const applyTheme = (theme: Theme) => {
 }
 
 const getInitialTheme = (): Theme => {
-  if (typeof window === 'undefined') return 'light'
+  if (typeof window === 'undefined') return 'dark'
   try {
     const stored = localStorage.getItem('mc-theme') as Theme | null
     if (stored === 'light' || stored === 'dark') return stored
   } catch {
     // Storage can be unavailable in private browser contexts.
   }
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return 'dark'
 }
 
 const initialTheme = getInitialTheme()

@@ -1,18 +1,21 @@
 import { useRef } from 'react'
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
 import type { ParamData } from '../../../shared/types'
+import { useConnectionStore } from '../../stores/connectionStore'
 
 function Toggle({
   label,
   param,
   enabled,
+  canWrite,
   onToggle,
 }: {
   label: string
   param?: ParamData
   enabled: boolean
+  canWrite: boolean
   onToggle: () => void
 }) {
   return (
@@ -21,7 +24,7 @@ function Toggle({
       <button
         type="button"
         onClick={onToggle}
-        disabled={!param}
+        disabled={!param || !canWrite}
         title={param ? undefined : '当前固件未提供此参数'}
         className="relative transition-colors"
         style={{
@@ -30,8 +33,8 @@ function Toggle({
           borderRadius: 11,
           background: enabled ? 'var(--accent)' : 'var(--bg-hover)',
           border: '1px solid ' + (enabled ? 'var(--accent)' : 'var(--border)'),
-          opacity: param ? 1 : 0.45,
-          cursor: param ? 'pointer' : 'not-allowed',
+          opacity: param && canWrite ? 1 : 0.55,
+          cursor: param && canWrite ? 'pointer' : 'not-allowed',
         }}
       >
         <span
@@ -51,8 +54,9 @@ function Toggle({
 }
 
 export default function EkfFusionPanel() {
-  const { send } = useWebSocket()
+  const send = sendClientMessage
   const { params } = useParameterStore()
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const previousEnabledValues = useRef(new Map<string, number>())
   const hgtRefParam = params.get(EKF2_PARAMS.EKF2_HGT_REF)
 
@@ -63,7 +67,7 @@ export default function EkfFusionPanel() {
     defaultOnValue: number,
   ) => {
     const param = params.get(id)
-    if (!param) return
+    if (!param || !canWrite) return
     const enabled = isEnabled(param.value)
     if (enabled) previousEnabledValues.current.set(id, param.value)
     const value = enabled
@@ -85,13 +89,14 @@ export default function EkfFusionPanel() {
         label={label}
         param={param}
         enabled={param ? isEnabled(param.value) : false}
+        canWrite={canWrite}
         onToggle={() => toggleParam(id, isEnabled, offValue, defaultOnValue)}
       />
     )
   }
 
   const setHgtRefParam = (value: number) => {
-    if (!hgtRefParam) return
+    if (!hgtRefParam || !canWrite) return
     send({
       type: 'param_set',
       data: { id: hgtRefParam.id, value, paramType: hgtRefParam.type },
@@ -125,7 +130,7 @@ export default function EkfFusionPanel() {
           value={hgtRefParam?.value ?? ''}
           onChange={(e) => setHgtRefParam(Number(e.target.value))}
           className="mc-select"
-          disabled={!hgtRefParam}
+          disabled={!hgtRefParam || !canWrite}
           title={hgtRefParam ? undefined : '当前固件未提供 EKF2_HGT_REF'}
         >
           {!hgtRefParam && <option value="">参数不可用</option>}

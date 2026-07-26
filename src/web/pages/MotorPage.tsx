@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from '../components/ui/Icon'
-import { PageHeader } from '../components/ui/PageFrame'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { PageTabs } from '../components/ui/PageFrame'
+import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -77,12 +77,13 @@ function getFallbackRotor(index: number, count: number) {
   }
 }
 
-export default function MotorPage() {
-  const { send } = useWebSocket()
-  const connected = useConnectionStore((state) => state.status === 'connected')
+export default function MotorPage({ embedded = false }: { embedded?: boolean }) {
+  const send = sendClientMessage
+  const connected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const { params, loading, receivedCount, totalCount } = useParameterStore()
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
+  const [activePanel, setActivePanel] = useState<'mapping' | 'test'>('mapping')
   const [levels, setLevels] = useState<number[]>([])
   const motorCount = clampMotorCount(params.get('CA_ROTOR_COUNT')?.value)
   const sysAutostart = params.get('SYS_AUTOSTART')?.value
@@ -207,28 +208,33 @@ export default function MotorPage() {
 
   const commonLevel = levels.length > 0 && levels.every((level) => level === levels[0]) ? levels[0] : 0
 
+  const changePanel = (panel: string) => {
+    if (panel !== 'mapping' && panel !== 'test') return
+    if (panel === 'mapping' && safetyConfirmed) {
+      stopAll()
+      setSafetyConfirmed(false)
+    }
+    setActivePanel(panel)
+  }
+
   return (
-    <div className="mc-workspace mc-fade-in mc-motor-page">
-      <PageHeader
-        title="电机设置"
-        description="根据飞控参数验证物理输出、电机编号、位置与旋转方向"
-        actions={
-          <span className="mc-motor-param-status" data-loading={loading}>
-            <i />
-            {loading ? `参数读取中 ${receivedCount}/${totalCount || '…'}` : `${params.size} 个参数已同步`}
-          </span>
-        }
-      />
+    <div className={embedded ? 'mc-fade-in mc-motor-page' : 'mc-workspace mc-fade-in mc-motor-page'}>
+      <div className="flex items-center gap-3 mb-4">
+        <span className="mc-motor-param-status" data-loading={loading}>
+          <i />
+          {loading ? `参数读取中 ${receivedCount}/${totalCount || '…'}` : `${params.size} 个参数已同步`}
+        </span>
+      </div>
 
       <div className="mc-motor-toolbar">
-        <button type="button" className="mc-btn mc-btn-primary" disabled title="自动识别输出需要后续接入 PX4 电机分配流程">
-          <Icon name="settings" size={17} />引导式自动映射
-        </button>
+        <strong>执行器输出与无桨测试</strong>
         <p>输出功能来自飞控参数；修改下拉框会直接写入对应的 <span className="mc-mono">*_FUNCx</span> 参数。</p>
       </div>
 
-      <section className="mc-motor-console">
-        <div className="mc-motor-output-panel">
+      <PageTabs tabs={[{ id: 'mapping', label: '输出映射' }, { id: 'test', label: '电机测试' }]} active={activePanel} onChange={changePanel} />
+
+      <section className="mc-motor-workspace">
+        {activePanel === 'mapping' && <div className="mc-motor-output-panel">
           <div className="mc-motor-output-head">
             <span>物理输出</span>
             <span>实时值</span>
@@ -271,9 +277,9 @@ export default function MotorPage() {
               )
             })}
           </div>
-        </div>
+        </div>}
 
-        <aside className="mc-motor-test-panel">
+        {activePanel === 'test' && <aside className="mc-motor-test-panel mc-motor-test-panel--standalone">
           <p className="mc-motor-test-intro">手动控制各逻辑电机，用于验证输出映射、位置与方向</p>
           <AirframeDiagram rotors={rotors} airframeName={airframeName} />
 
@@ -310,7 +316,7 @@ export default function MotorPage() {
               />
             ))}
           </div>
-        </aside>
+        </aside>}
       </section>
     </div>
   )

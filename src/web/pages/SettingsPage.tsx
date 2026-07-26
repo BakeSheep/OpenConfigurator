@@ -1,95 +1,89 @@
-import { useState } from 'react'
-import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
-import Icon from '../components/ui/Icon'
-import { PageHeader, PageTabs } from '../components/ui/PageFrame'
-import FlightControlPage from './FlightControlPage'
-import JoystickPage from './JoystickPage'
-import MotorPage from './MotorPage'
-import ParameterPage from './ParameterPage'
-import PortSettingsPage from './PortSettingsPage'
-import ReceiverPage from './ReceiverPage'
+import { useSearchParams } from 'react-router-dom'
+import Icon, { type IconName } from '../components/ui/Icon'
+import { PageHeader } from '../components/ui/PageFrame'
 import { useParameterStore } from '../stores/parameterStore'
 import { getPx4AirframeInfo } from '../utils/px4Airframes'
+import JoystickPage from './JoystickPage'
+import MotorPage from './MotorPage'
+import PortSettingsPage from './PortSettingsPage'
+import ReceiverPage from './ReceiverPage'
+import SensorPage from './SensorPage'
 
-const tabs = [
-  { id: 'airframe', label: '机架类型' },
-  { id: 'motor', label: '电机设置' },
-  { id: 'receiver', label: '遥控器' },
-  { id: 'joystick', label: '游戏手柄' },
-  { id: 'ports', label: '端口设置' },
-  { id: 'pid', label: 'PID 调参' },
-  { id: 'ekf', label: 'EKF' },
-  { id: 'other', label: '其他' },
+type SetupSection = 'airframe' | 'sensors' | 'actuators' | 'receiver' | 'joystick' | 'ports'
+
+const sections: Array<{ id: SetupSection; label: string; description: string; icon: IconName }> = [
+  { id: 'airframe', label: '机架', description: '识别当前飞行器配置', icon: 'flight' },
+  { id: 'sensors', label: '传感器', description: '监控与校准', icon: 'sensor' },
+  { id: 'actuators', label: '执行器', description: '输出映射与电机测试', icon: 'motor' },
+  { id: 'receiver', label: '遥控器', description: '通道监控', icon: 'receiver' },
+  { id: 'joystick', label: '游戏手柄', description: '轴、按钮与响应曲线', icon: 'gamepad' },
+  { id: 'ports', label: '端口', description: 'MAVLink 串口实例', icon: 'plug' },
 ]
 
-const airframes = [
-  ['airship', 'Airship', 'Cloudship', 'flight'], ['autogyro', 'Autogyro', 'ThunderFly Auto-G2', 'flight'],
-  ['balloon', 'Balloon', 'ThunderFly balloon TF-B1', 'altitude'], ['dodeca', 'Dodecarotor coaxial', 'Generic Dodecarotor', 'motor'],
-  ['helicopter', 'Helicopter', 'Generic Helicopter', 'flight'], ['hexa-plus', 'Hexarotor +', 'Generic Hexarotor +', 'motor'],
-  ['hexa-coax', 'Hexarotor Coaxial', 'Generic Hexarotor coaxial', 'motor'], ['hexa-x', 'Hexarotor X', 'Generic Hexarotor X', 'motor'],
-  ['octo-plus', 'Octorotor +', 'Generic Octocopter +', 'motor'], ['octo-x', 'Octorotor X', 'Generic Octocopter X', 'motor'],
-  ['quad-plus', 'Quadrotor +', 'Generic Quad +', 'motor'], ['quad-x', 'Quadrotor X', 'Generic Quadcopter', 'motor'],
-] as const
+function isSetupSection(value: string | null): value is SetupSection {
+  return sections.some((section) => section.id === value)
+}
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('airframe')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const sectionParam = searchParams.get('section')
+  const activeSection: SetupSection = isSetupSection(sectionParam) ? sectionParam : 'airframe'
   const sysAutostart = useParameterStore((state) => state.params.get('SYS_AUTOSTART')?.value)
   const airframeInfo = getPx4AirframeInfo(sysAutostart)
   const autostartId = Number.isFinite(sysAutostart) ? Math.round(sysAutostart!) : null
 
-  return (
-    <div className="mc-workspace mc-fade-in mc-data-workspace">
-      <PageHeader title="飞控设置" description="配置飞控参数、输入设备与硬件设置" />
-      <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+  const selectSection = (section: SetupSection) => {
+    setSearchParams(section === 'airframe' ? {} : { section }, { replace: true })
+  }
 
-      {activeTab === 'airframe' ? (
-        <section className="mc-airframe-section">
-          <header><h2>机架类型</h2><p>选择与您的无人机匹配的机架类型</p></header>
-          <div className="mc-capability-note" data-state={airframeInfo ? 'detected' : 'waiting'}>
-            <Icon name={airframeInfo ? 'check' : 'warning'} size={15} />
-            <span>
-              {airframeInfo && autostartId !== null
-                ? `当前飞控机架：${airframeInfo.name}（SYS_AUTOSTART ${autostartId}）`
-                : '连接飞控并完成参数同步后，将根据 SYS_AUTOSTART 自动识别当前机架。'}
-            </span>
-          </div>
-          <div className="mc-airframe-grid">
-            {airframes.map(([id, title, option, icon]) => (
-              <button
-                type="button"
-                key={id}
-                disabled
-                data-active={airframeInfo?.cardId === id}
-                aria-current={airframeInfo?.cardId === id ? 'true' : undefined}
-                title={airframeInfo?.cardId === id ? `当前机架 · SYS_AUTOSTART ${autostartId}` : '机架参数写入尚未接入'}
-              >
-                <span className="mc-airframe-illustration"><Icon name={icon} size={58} /><i /><i /><i /><i /></span>
-                <strong>{title}</strong>
-                <select className="mc-select" value={option} onChange={() => undefined} disabled aria-label={title + ' 型号'}><option>{option}</option></select>
-              </button>
-            ))}
-          </div>
+  return (
+    <div className="mc-workspace mc-workspace--wide mc-fade-in">
+      <PageHeader title="飞行器设置" description="按硬件配置流程组织机架、传感器、执行器与控制输入。" />
+      <div className="mc-subworkspace">
+        <nav className="mc-subnav" aria-label="飞行器设置">
+          {sections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              data-active={section.id === activeSection}
+              aria-current={section.id === activeSection ? 'page' : undefined}
+              onClick={() => selectSection(section.id)}
+            >
+              <span><Icon name={section.icon} size={18} /></span>
+              <span><strong>{section.label}</strong><small>{section.description}</small></span>
+            </button>
+          ))}
+        </nav>
+
+        <section className="mc-subworkspace__content" aria-live="polite">
+          {activeSection === 'airframe' && (
+            <div className="mc-setup-overview mc-fade-in">
+              <section className="mc-card mc-setup-identity">
+                <span className="mc-setup-identity__icon"><Icon name="flight" size={34} /></span>
+                <div>
+                  <span className="mc-eyebrow">当前机架</span>
+                  <h2>{airframeInfo?.name ?? '等待飞控参数'}</h2>
+                  <p>{autostartId === null ? '连接飞控并完成参数同步后自动识别。' : `SYS_AUTOSTART ${autostartId}`}</p>
+                </div>
+              </section>
+              <section className="mc-card mc-setup-guidance">
+                <h2>配置顺序</h2>
+                <ol>
+                  <li><span>1</span><div><strong>确认机架</strong><small>核对飞控中的 SYS_AUTOSTART，不在未支持的界面中修改机架。</small></div></li>
+                  <li><span>2</span><div><strong>校准传感器</strong><small>完成 IMU、罗盘和气压计校准，并检查实时数据。</small></div></li>
+                  <li><span>3</span><div><strong>映射执行器</strong><small>确认物理输出、电机编号与旋向，再执行无桨测试。</small></div></li>
+                  <li><span>4</span><div><strong>检查控制输入</strong><small>确认遥控器或游戏手柄通道响应正确。</small></div></li>
+                </ol>
+              </section>
+            </div>
+          )}
+          {activeSection === 'sensors' && <SensorPage embedded />}
+          {activeSection === 'actuators' && <MotorPage embedded />}
+          {activeSection === 'receiver' && <ReceiverPage embedded />}
+          {activeSection === 'joystick' && <JoystickPage embedded />}
+          {activeSection === 'ports' && <PortSettingsPage />}
         </section>
-      ) : <SettingsInlinePanel activeTab={activeTab} />}
+      </div>
     </div>
-  )
-}
-
-function SettingsInlinePanel({ activeTab }: { activeTab: string }) {
-  return (
-    <section className="mc-settings-inline mc-fade-in" key={activeTab}>
-      {activeTab === 'motor' && <MotorPage />}
-      {activeTab === 'receiver' && <ReceiverPage embedded />}
-      {activeTab === 'joystick' && <JoystickPage embedded />}
-      {activeTab === 'ports' && <PortSettingsPage />}
-      {activeTab === 'pid' && <ParameterPage />}
-      {activeTab === 'ekf' && (
-        <div className="mc-settings-ekf">
-          <header><h2>EKF 融合设置</h2><p>选择参与状态估计的传感器与高度参考源。</p></header>
-          <EkfFusionPanel />
-        </div>
-      )}
-      {activeTab === 'other' && <FlightControlPage />}
-    </section>
   )
 }

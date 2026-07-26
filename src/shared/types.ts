@@ -150,6 +150,16 @@ export interface ParamData {
   param_index: number
 }
 
+export interface ParamSetResultData {
+  requestId?: string
+  id: string
+  requestedValue: number
+  acceptedValue?: number
+  accepted: boolean
+  attempt: number
+  reason?: string
+}
+
 export interface RcChannelsData {
   ch1: number
   ch2: number
@@ -301,15 +311,7 @@ export type ServerMessage =
     }
   | {
       type: 'param_set_result'
-      data: {
-        requestId?: string
-        id: string
-        requestedValue: number
-        acceptedValue?: number
-        accepted: boolean
-        attempt: number
-        reason?: string
-      }
+      data: ParamSetResultData
     }
   | {
       type: 'motor_test_status'

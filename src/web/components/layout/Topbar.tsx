@@ -1,33 +1,341 @@
+import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { PX4_MODES } from '../../../shared/constants'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
+import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
 import Icon from '../ui/Icon'
 
+const radToDeg = (r: number) => r * 180 / Math.PI
+
+interface ConnectionPreset {
+  id: string
+  name: string
+  type: 'serial' | 'bluetooth'
+  port: string
+  baudRate: number
+}
+
+const PRESETS_KEY = 'oc-connection-presets'
+
+function loadPresets(): ConnectionPreset[] {
+  try {
+    const raw = localStorage.getItem(PRESETS_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return []
+}
+
+function savePresets(presets: ConnectionPreset[]) {
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)) } catch { /* ignore */ }
+}
+
 export default function Topbar() {
-  const { status, port, type, reconnect, setConnectDialogOpen } = useConnectionStore()
+  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
-  const autopilotVersion = useTelemetryStore((state) => state.autopilotVersion)
-  const connected = status === 'connected'
   const reconnecting = status === 'reconnecting'
-  const connectionLabel = connected
-    ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '已连接')
+  const connectionLabel = vehicleReady
+    ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '飞控已就绪')
+    : transportOpen
+      ? '等待飞控'
     : reconnecting
       ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? '连接中' : '未连接'
 
+  // Presets for QGC-style connection dropdown
+  const [presets, setPresets] = useState(loadPresets)
+  const [connectDropdown, setConnectDropdown] = useState(false)
+  const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | null>(null)
+  const [armDragProgress, setArmDragProgress] = useState(0)
+  const [armDragging, setArmDragging] = useState(false)
+  const topbarRef = useRef<HTMLElement | null>(null)
+  const armSliderRef = useRef<HTMLButtonElement | null>(null)
+  const armDraggingRef = useRef(false)
+
+  const connectPreset = async (preset: ConnectionPreset) => {
+    setConnectDropdown(false)
+    setStatus('connecting')
+    try {
+      const res = await fetch('/api/connections/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getRestControlHeaders() },
+        body: JSON.stringify({ type: preset.type, port: preset.port, baudRate: preset.baudRate }),
+      })
+      const text = await res.text()
+      if (!res.ok) setStatus('error')
+    } catch { setStatus('error') }
+  }
+
+  const removePreset = (id: string) => {
+    const updated = presets.filter((p) => p.id !== id)
+    setPresets(updated)
+    savePresets(updated)
+  }
+
+  // Telemetry data
+  const attitude = useTelemetryStore((s) => s.attitude)
+  const gps = useTelemetryStore((s) => s.gps)
+  const battery = useTelemetryStore((s) => s.battery)
+  const vehicle = useTelemetryStore((s) => s.status)
+  const relativeAlt = useTelemetryStore((s) => s.relativeAlt)
+  const heading = useTelemetryStore((s) => s.heading)
+  const isStale = useTelemetryStore((s) => s.isStale)
+  const preflightCheck = useTelemetryStore((s) => s.preflightCheck)
+  const sensorsHealthy = useTelemetryStore((s) => s.sensorsHealthy)
+  const unhealthySensors = useTelemetryStore((s) => s.unhealthySensors)
+  const statusLogs = useTelemetryStore((s) => s.statusLogs)
+  const armed = vehicle?.armed ?? false
+  const confirmedArmed = vehicleReady && armed
+  const stale = !vehicleReady || isStale('attitude')
+  const gpsStale = !vehicleReady || isStale('gps')
+  const batteryStale = !vehicleReady || (isStale('battery') && isStale('sysStatus'))
+  const hasGps = !gpsStale && gps && (gps.satellites_visible ?? 0) > 0
+  const canArm = vehicleReady && canControl && preflightCheck !== false && sensorsHealthy !== false
+  const armTone = confirmedArmed ? 'var(--success)' : canArm ? 'var(--info)' : 'var(--danger)'
+  const armLabel = confirmedArmed ? '已解锁' : canArm ? '已上锁 · 可解锁' : vehicleReady ? '已上锁 · 不可解锁' : '飞控未就绪'
+  const recentArmErrors = statusLogs
+    .filter((entry) => /arm|arming|pre-arm|preflight|解锁|预检/i.test(entry.text))
+    .slice(0, 4)
+
+  useEffect(() => {
+    const closeOnOutside = (event: PointerEvent) => {
+      if (topbarRef.current && !topbarRef.current.contains(event.target as Node)) setActiveStatusMenu(null)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActiveStatusMenu(null)
+    }
+    document.addEventListener('pointerdown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [])
+
+  useEffect(() => {
+    setArmDragProgress(0)
+    setArmDragging(false)
+    armDraggingRef.current = false
+  }, [armed, canArm, vehicleReady])
+
+  const selectMode = (mainMode: number, subMode: number) => {
+    if (!vehicleReady || !canControl) return
+    sendClientMessage({
+      type: 'command',
+      requestId: `mode-${Date.now().toString(36)}`,
+      cmd: 'MAV_CMD_DO_SET_MODE',
+      params: [1, mainMode, subMode, 0, 0, 0, 0],
+    })
+    setActiveStatusMenu(null)
+  }
+
+  const commitArmChange = () => {
+    if (confirmedArmed) {
+      if (!canControl) return
+      sendClientMessage({
+        type: 'command',
+        requestId: `disarm-${Date.now().toString(36)}`,
+        cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+        params: [0, 0, 0, 0, 0, 0, 0],
+        safetyConfirmation: 'disarm',
+      })
+    } else {
+      if (!canArm) return
+      sendClientMessage({
+        type: 'command',
+        requestId: `arm-${Date.now().toString(36)}`,
+        cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+        params: [1, 0, 0, 0, 0, 0, 0],
+        safetyConfirmation: 'arm',
+      })
+    }
+    setArmDragProgress(0)
+    setArmDragging(false)
+    armDraggingRef.current = false
+    setActiveStatusMenu(null)
+  }
+
+  const armProgressFromPointer = (clientX: number) => {
+    const rect = armSliderRef.current?.getBoundingClientRect()
+    if (!rect) return 0
+    const thumbCenter = 25
+    const travel = Math.max(1, rect.width - thumbCenter * 2)
+    return Math.max(0, Math.min(1, (clientX - rect.left - thumbCenter) / travel))
+  }
+
+  const startArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!vehicleReady || !canControl || (!confirmedArmed && !canArm)) return
+    const startProgress = armProgressFromPointer(event.clientX)
+    if (startProgress > 0.18) return
+    event.currentTarget.setPointerCapture(event.pointerId)
+    armDraggingRef.current = true
+    setArmDragging(true)
+    setArmDragProgress(startProgress)
+  }
+
+  const moveArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!armDraggingRef.current) return
+    setArmDragProgress(armProgressFromPointer(event.clientX))
+  }
+
+  const finishArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!armDraggingRef.current) return
+    const progress = armProgressFromPointer(event.clientX)
+    armDraggingRef.current = false
+    setArmDragging(false)
+    if (progress >= 0.88) commitArmChange()
+    else setArmDragProgress(0)
+  }
+
+  const cancelArmDrag = () => {
+    armDraggingRef.current = false
+    setArmDragging(false)
+    setArmDragProgress(0)
+  }
+
+  const handleArmSliderKey = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home') return
+    event.preventDefault()
+    const next = event.key === 'Home' ? 0 : Math.max(0, Math.min(1, armDragProgress + (event.key === 'ArrowRight' ? 0.2 : -0.2)))
+    if (next >= 0.99) commitArmChange()
+    else setArmDragProgress(next)
+  }
+
   return (
-    <header className="mc-topbar">
+    <header className="mc-topbar" ref={topbarRef}>
       <div className="mc-topbar__brand">
-        <span className="mc-topbar__mark" aria-hidden="true">S</span>
-        <span className="mc-topbar__name">SkyLab</span>
+        <span className="mc-topbar__mark" aria-hidden="true">O</span>
+        <span className="mc-topbar__name">OpenConfigurator</span>
       </div>
 
-      <div className="mc-topbar__vehicle" aria-live="polite">
-        {connected && autopilotVersion && (
+      <div className="mc-topbar__status" aria-live="polite">
+        <div className="mc-topbar__status-item mc-topbar__status-menu">
+          <button
+            type="button"
+            className="mc-topbar__status-trigger"
+            aria-haspopup="menu"
+            aria-expanded={activeStatusMenu === 'arm'}
+            onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'arm' ? null : 'arm') }}
+            style={{ color: armTone }}
+          >
+            <span className="mc-status-dot" style={{ background: armTone }} />
+            <span>{armLabel}</span>
+            <Icon name="chevronDown" size={11} />
+          </button>
+          {activeStatusMenu === 'arm' && (
+            <section className="mc-topbar-menu mc-topbar-menu--arm" aria-label="解锁状态">
+              <header>
+                <div><strong>{armLabel}</strong><small>{confirmedArmed || canArm ? '将滑块完整拖到右端以确认操作' : '当前不允许操作'}</small></div>
+                <span style={{ color: armTone }}>{confirmedArmed ? 'ARMED' : canArm ? 'READY' : 'BLOCKED'}</span>
+              </header>
+              {(confirmedArmed || canArm) ? (
+                <div className="mc-arm-control">
+                  <button
+                    ref={armSliderRef}
+                    type="button"
+                    role="slider"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(armDragProgress * 100)}
+                    aria-label={confirmedArmed ? '滑动以上锁飞行器' : '滑动以解锁飞行器'}
+                    className="mc-arm-slider"
+                    data-armed={confirmedArmed}
+                    data-dragging={armDragging}
+                    disabled={!vehicleReady || !canControl}
+                    onPointerDown={startArmDrag}
+                    onPointerMove={moveArmDrag}
+                    onPointerUp={finishArmDrag}
+                    onPointerCancel={cancelArmDrag}
+                    onLostPointerCapture={() => { if (armDraggingRef.current) cancelArmDrag() }}
+                    onKeyDown={handleArmSliderKey}
+                    style={{
+                      '--arm-slide-progress': armDragProgress,
+                      '--arm-slide-tone': confirmedArmed ? 'var(--success)' : 'var(--info)',
+                    } as CSSProperties}
+                  >
+                    <span className="mc-arm-slider__fill" />
+                    <i aria-hidden="true">››</i>
+                  </button>
+                </div>
+              ) : (
+                <div className="mc-arm-errors" role="alert">
+                  {!vehicleReady && <p>尚未收到飞控有效心跳，飞控未就绪。</p>}
+                  {vehicleReady && !canControl && <p>控制权正由另一客户端持有，当前页面为只读。</p>}
+                  {vehicleReady && canControl && preflightCheck === false && recentArmErrors.length === 0 && <p>飞控预检未通过，请查看底部状态消息。</p>}
+                  {unhealthySensors.length > 0 && <p>传感器异常：{unhealthySensors.join('、')}</p>}
+                  {recentArmErrors.map((entry) => <p key={entry.id}>{entry.text}</p>)}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+
+        <div className="mc-topbar__status-item mc-topbar__status-menu">
+          <button
+            type="button"
+            className="mc-topbar__status-trigger"
+            aria-haspopup="menu"
+            aria-expanded={activeStatusMenu === 'mode'}
+            onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'mode' ? null : 'mode') }}
+          >
+            <span className="mc-topbar__status-label">模式</span>
+            <span className="mc-topbar__status-value">{vehicle?.mode ?? '—'}</span>
+            <Icon name="chevronDown" size={11} />
+          </button>
+          {activeStatusMenu === 'mode' && (
+            <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label="选择飞行模式">
+              <header><div><strong>飞行模式</strong><small>{vehicleReady && canControl ? '选择后立即向飞控发送模式切换指令' : '飞控未就绪或当前没有控制权'}</small></div></header>
+              <div role="menu">
+                {Object.values(PX4_MODES).map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    role="menuitem"
+                    disabled={!vehicleReady || !canControl}
+                    data-active={vehicle?.modeId === mode.id}
+                    onClick={() => selectMode(mode.mainMode, mode.subMode)}
+                  >
+                    <span>{mode.name}</span>
+                    {vehicle?.modeId === mode.id && <Icon name="check" size={14} />}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+
+        {vehicleReady && (
           <>
-            <strong>{autopilotVersion.boardName}</strong>
-            <i />
-            <span>{autopilotVersion.firmwareLabel}</span>
+            {!stale && attitude && (
+              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+                <span className="mc-topbar__status-label">姿态</span>
+                <span className="mc-topbar__status-value">{radToDeg(attitude.roll).toFixed(1)}° / {radToDeg(attitude.pitch).toFixed(1)}°</span>
+              </span>
+            )}
+            {!isStale('vfrHud') && (
+              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+                <Icon name="altitude" size={13} />
+                <span className="mc-topbar__status-value">{relativeAlt.toFixed(1)}m</span>
+              </span>
+            )}
+            {!isStale('vfrHud') && (
+              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+                <span className="mc-topbar__status-label">航向</span>
+                <span className="mc-topbar__status-value">{heading.toFixed(0)}°</span>
+              </span>
+            )}
+            {hasGps && (
+              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+                <Icon name="satellite" size={13} />
+                <span className="mc-topbar__status-value">{gps!.satellites_visible} SAT</span>
+              </span>
+            )}
+            {!batteryStale && battery && (
+              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+                <Icon name="battery" size={13} />
+                <span className="mc-topbar__status-value">{battery.voltage?.toFixed(1) ?? '—'}V · {battery.remaining ?? '—'}%</span>
+              </span>
+            )}
           </>
         )}
       </div>
@@ -37,19 +345,41 @@ export default function Topbar() {
           type="button"
           className="mc-topbar__link"
           title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
-          aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
           onClick={toggleTheme}
         >
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
         </button>
-        <button
-          type="button"
-          className={'mc-topbar__connect' + (connected ? ' is-connected' : '')}
-          onClick={() => setConnectDialogOpen(true)}
-        >
-          <span className="mc-status-dot" style={{ background: connected ? 'var(--success)' : (reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
-          <span>{connectionLabel}</span>
-        </button>
+        <div className="relative">
+          <button
+            type="button"
+            className={'mc-topbar__connect' + (vehicleReady ? ' is-connected' : transportOpen ? ' is-waiting' : '')}
+            onClick={() => { setActiveStatusMenu(null); if (transportOpen) setConnectDialogOpen(true); else { setPresets(loadPresets()); setConnectDropdown((v) => !v); } }}
+          >
+            <span className="mc-status-dot" style={{ background: vehicleReady ? 'var(--success)' : (transportOpen || reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
+            <span>{connectionLabel}</span>
+            {!transportOpen && <Icon name="chevronDown" size={11} />}
+          </button>
+          {connectDropdown && !transportOpen && (
+            <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>选择设备</p>
+                <button type="button" className="text-[15px] font-bold leading-none" style={{ color: 'var(--accent)' }} onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }} title="添加设备">+</button>
+              </div>
+              {presets.length === 0 && (
+                <p className="text-[10px] py-1.5" style={{ color: 'var(--text-disabled)' }}>暂无预设设备</p>
+              )}
+              {presets.map((p) => (
+                <div key={p.id} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--bg-hover)] cursor-pointer group">
+                  <button type="button" className="flex-1 text-left text-[11px]" style={{ color: 'var(--text-primary)' }} onClick={() => connectPreset(p)}>
+                    <span className="font-semibold">{p.name}</span>
+                    <span className="ml-1.5 mc-mono text-[9px]" style={{ color: 'var(--text-disabled)' }}>{p.port}</span>
+                  </button>
+                  <button type="button" className="opacity-0 group-hover:opacity-100 text-[10px]" style={{ color: 'var(--danger)' }} onClick={() => removePreset(p.id)}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </header>
   )

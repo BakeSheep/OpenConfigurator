@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import Icon from '../components/ui/Icon'
-import { PageHeader } from '../components/ui/PageFrame'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
@@ -28,7 +27,7 @@ const colors: Record<ChannelKey, string> = {
   flowX: '#26b8c4', flowY: '#a96fe7', quality: '#e6a23c',
 }
 
-export default function WaveformPage() {
+export default function WaveformPage({ embedded = false }: { embedded?: boolean }) {
   const [data, setData] = useState<WavePoint[]>([])
   const [selected, setSelected] = useState<ChannelKey[]>(['roll', 'pitch', 'yaw'])
   const [paused, setPaused] = useState(false)
@@ -72,8 +71,7 @@ export default function WaveformPage() {
   const toggleChannel = (channel: ChannelKey) => setSelected((current) => current.includes(channel) ? current.filter((item) => item !== channel) : current.length < 6 ? [...current, channel] : current)
 
   return (
-    <div className="mc-workspace mc-fade-in mc-wave-page">
-      <PageHeader title="波形" description="多通道实时数据图表" />
+    <div className={embedded ? 'mc-fade-in mc-wave-page' : 'mc-workspace mc-fade-in mc-wave-page'}>
       <div className="mc-wave-layout">
         <aside className="mc-card mc-wave-sources">
           <header><strong>数据源</strong><button type="button" className="mc-icon-btn" onClick={() => setSelected(['roll', 'pitch', 'yaw'])} aria-label="恢复默认"><Icon name="refresh" size={14} /></button></header>
@@ -99,8 +97,7 @@ export default function WaveformPage() {
             <div>{[5, 10, 30, 60].map((seconds) => <button type="button" key={seconds} data-active={windowSeconds === seconds} onClick={() => setWindowSeconds(seconds)}>{seconds}s</button>)}</div>
             <button type="button" className="mc-icon-btn" onClick={() => setPaused((value) => !value)} aria-label={paused ? '继续' : '暂停'}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
             <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label="清除数据"><Icon name="trash" size={15} /></button>
-            <div><button type="button" data-active>{SAMPLE_RATE_HZ}Hz</button><button type="button" disabled>50Hz</button><button type="button" disabled>100Hz</button></div>
-            <small>仅为图表采样率，非数据源刷新率</small>
+            <div><button type="button" data-active>{SAMPLE_RATE_HZ}Hz 图表采样</button></div>
             <span>{selected.length} 通道 · {visibleData.length} 采样</span>
           </div>
           <div className="mc-card mc-wave-chart">

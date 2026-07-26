@@ -1930,7 +1930,11 @@ export class MavlinkBridge extends EventEmitter {
       setIntervalCommand,
       [36, servoIntervalUs, 0, 0, 0, 0, 0],
     )
-    for (const messageId of [26, 105, 116, 129]) {
+    // Optical flow and its companion rangefinder are not part of every PX4
+    // default MAVLink stream profile. Request them explicitly so integrated
+    // flow/range modules are visible even when PX4 only publishes the range
+    // sample by default.
+    for (const messageId of [26, 105, 106, 116, 129, 132]) {
       this.sendInternalCommand(
         setIntervalCommand,
         [messageId, intervalUs, 0, 0, 0, 0, 0],

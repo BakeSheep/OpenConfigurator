@@ -14,29 +14,45 @@ const severityTone: Record<StatusSeverity, string> = {
   debug: 'var(--text-disabled)',
 }
 
-function formatBps(bytesPerSec: number): string {
-  if (bytesPerSec >= 1024) return `${(bytesPerSec / 1024).toFixed(1)}KB/s`
-  return `${bytesPerSec}B/s`
+function formatKBps(bytesPerSec: number): string {
+  return `${(bytesPerSec / 1024).toFixed(1)}KB/s`
+}
+
+function getLinkQuality(stats: { rxBps: number; crcErrorsPerSec: number } | null): { percent: number; color: string } {
+  if (!stats) return { percent: 0, color: 'var(--text-disabled)' }
+  // Quality based on throughput and CRC errors
+  const throughputScore = Math.min(stats.rxBps / 5000, 1) // max at 5KB/s
+  const errorPenalty = Math.min(stats.crcErrorsPerSec * 0.1, 0.5)
+  const quality = Math.max(0, Math.min(100, Math.round((throughputScore - errorPenalty) * 100)))
+  let color = 'var(--success)' // green >= 70
+  if (quality < 40) color = 'var(--danger)'
+  else if (quality < 70) color = 'var(--warning)'
+  return { percent: quality, color }
 }
 
 export default function StatusBar() {
   const [expanded, setExpanded] = useState(false)
   const connectionStatus = useConnectionStore((state) => state.status)
+  const transportOpen = useConnectionStore((state) => state.transportOpen)
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const reconnect = useConnectionStore((state) => state.reconnect)
   const linkStats = useConnectionStore((state) => state.linkStats)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
   const latest = statusLogs[0]
 
-  const statusText = connectionStatus === 'connected' ? '已连接'
+  const statusText = vehicleReady ? '飞控已就绪'
+    : transportOpen ? '端口已打开 · 等待飞控'
     : connectionStatus === 'reconnecting' ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
     : connectionStatus === 'connecting' ? '连接中' : '未连接'
-  const statusColor = connectionStatus === 'connected' ? 'var(--success)'
+  const statusColor = vehicleReady ? 'var(--success)'
+    : transportOpen ? 'var(--warning)'
     : connectionStatus === 'reconnecting' || connectionStatus === 'connecting' ? 'var(--warning)'
     : 'var(--text-disabled)'
-  const linkText = linkStats && connectionStatus === 'connected'
-    ? `↓${formatBps(linkStats.rxBps)} ↑${formatBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${linkStats.crcErrorsPerSec}/s` : ''}`
+  const linkText = linkStats && transportOpen
+    ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${(linkStats.crcErrorsPerSec / 1024).toFixed(1)}KB/s` : ''}`
     : null
+  const linkQuality = transportOpen ? getLinkQuality(linkStats) : { percent: 0, color: 'var(--text-disabled)' }
 
   return (
     <footer className="mc-statusbar">
@@ -45,7 +61,7 @@ export default function StatusBar() {
           <span className="mc-status-dot" style={{ background: latest ? severityTone[latest.severity] : statusColor }} />
           <span>状态 {statusText}</span>
         </span>
-        <span className="mc-statusbar__version">SkyLab · PX4 Web GCS</span>
+        <span className="mc-statusbar__version">OpenConfigurator</span>
         <span className="flex items-center gap-1.5">
           {linkText && (
             <span
@@ -54,6 +70,15 @@ export default function StatusBar() {
               title="链路吞吐（↓收 ↑发）/ CRC 错误率"
             >
               {linkText}
+            </span>
+          )}
+          {transportOpen && (
+            <span
+              className="mc-mono text-[11px] font-bold"
+              style={{ color: linkQuality.color }}
+              title="连接质量"
+            >
+              {linkQuality.percent}%
             </span>
           )}
           <span className="mc-statusbar__message">{latest?.text ?? '消息速率 —'}</span>
