@@ -28,6 +28,13 @@ const IMU_TEMP_PRIORITY: Record<ImuSource, number> = {
 // If the preferred stream stops for this long, fall back to a lower-priority one.
 const IMU_SOURCE_STALE_MS = 1500
 
+// Baro updates arrive from SCALED_PRESSURE (real baro message with the die
+// temperature) and from the HIGHRES_IMU pressure fallback (no trusted
+// temperature; PX4 fills a 15 degC ISA placeholder). Without arbitration the
+// two streams alternate-overwrite the card and the temperature flickers.
+export type BaroSource = 'SCALED_PRESSURE' | 'HIGHRES_IMU_PRESSURE'
+const BARO_SOURCE_STALE_MS = 2000
+
 interface SensorState {
   imu: ImuData | null
   imus: Partial<Record<number, ImuData>>
@@ -37,6 +44,9 @@ interface SensorState {
   imuSources: Partial<Record<number, { source: ImuSource; ts: number }>>
   imuTempSources: Partial<Record<number, { source: ImuSource; ts: number }>>
   baro: BaroData | null
+  // Winning baro stream; the HIGHRES_IMU fallback is dropped while
+  // SCALED_PRESSURE is fresh (see setBaro).
+  baroSource: { source: BaroSource; ts: number } | null
   opticalFlow: OpticalFlowData | null
   distanceSensor: DistanceSensorData | null
   magData: { x: number; y: number; z: number } | null
@@ -45,7 +55,7 @@ interface SensorState {
   // received OR marked stale by markAllOffline() on disconnect.
   lastUpdate: Record<SensorField, number>
   setImu: (data: ImuData, instance?: number, source?: ImuSource) => void
-  setBaro: (data: BaroData) => void
+  setBaro: (data: BaroData, source?: BaroSource) => void
   setOpticalFlow: (data: OpticalFlowData) => void
   setDistanceSensor: (data: DistanceSensorData) => void
   setMag: (data: { x: number; y: number; z: number }) => void
@@ -78,6 +88,7 @@ export const useSensorStore = create<SensorState>((set, get) => ({
   imuSources: {},
   imuTempSources: {},
   baro: null,
+  baroSource: null,
   opticalFlow: null,
   distanceSensor: null,
   magData: null,
@@ -134,11 +145,25 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     sensorHealth,
     lastUpdate: { ...state.lastUpdate, imu: now },
   }}),
-  setBaro: (data) => set((state) => ({
-    baro: data,
-    sensorHealth: { ...state.sensorHealth, baro: 'ok' },
-    lastUpdate: { ...state.lastUpdate, baro: Date.now() },
-  })),
+  setBaro: (data, source = 'SCALED_PRESSURE') => set((state) => {
+    const now = Date.now()
+    // SCALED_PRESSURE always wins; the HIGHRES_IMU pressure fallback is only
+    // accepted while no fresh SCALED_PRESSURE stream is active.
+    if (
+      source === 'HIGHRES_IMU_PRESSURE'
+      && state.baroSource?.source === 'SCALED_PRESSURE'
+      && now - state.baroSource.ts < BARO_SOURCE_STALE_MS
+    ) return state
+    // A null temperature never claims the slot: keep the last trusted reading
+    // instead of blanking the UI when the fallback source takes over.
+    const temperature = data.temperature ?? state.baro?.temperature ?? null
+    return {
+      baro: { ...data, temperature },
+      baroSource: { source, ts: now },
+      sensorHealth: { ...state.sensorHealth, baro: 'ok' },
+      lastUpdate: { ...state.lastUpdate, baro: now },
+    }
+  }),
   setOpticalFlow: (data) => set((state) => ({
     opticalFlow: data,
     sensorHealth: { ...state.sensorHealth, opticalFlow: data.quality > 0 ? 'ok' : 'warning' },
@@ -170,6 +195,7 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     // Reset stream arbitration so the next connection re-elects a winner.
     imuSources: {},
     imuTempSources: {},
+    baroSource: null,
   })),
   isStale: (field, thresholdMs) => {
     const ts = get().lastUpdate[field]

@@ -46,6 +46,13 @@ const STATUSTEXT_MAX_BYTES = 4096
 const MAX_DISCOVERED_TARGETS = 32
 const MAX_PENDING_PARAM_SETS = 64
 const VERSION_MAX_ATTEMPTS = 3
+// SET_MESSAGE_INTERVAL requests are fire-and-forget; on a lossy link a single
+// dropped frame must not silently degrade the whole session to the legacy
+// stream path, so the batch is re-sent a bounded number of times.
+const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
+// An ATTITUDE time_boot_ms regression larger than this margin means the FC
+// rebooted (its SET_MESSAGE_INTERVAL configuration is gone).
+const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
   1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 116, 129,
@@ -149,6 +156,7 @@ export class MavlinkBridge extends EventEmitter {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null
   private requestedTelemetryStreams = false
   private messageIntervalSupport: MessageIntervalSupport = 'unknown'
+  private messageIntervalAttempts = 0
   private messageIntervalFallbackTimer: ReturnType<typeof setTimeout> | null = null
   private paramExpectedCount = 0
   private paramIndices = new Set<number>()
@@ -171,6 +179,7 @@ export class MavlinkBridge extends EventEmitter {
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
+  private lastAttitudeBootMs: number | null = null
   private readonly pendingCommands = new Map<number, PendingCommand>()
   private readonly uncertainCommands = new Set<number>()
   private readonly commandQuarantineUntil = new Map<number, number>()
@@ -332,6 +341,8 @@ export class MavlinkBridge extends EventEmitter {
     this.requestedTelemetryStreams = false
     this.telemetryProfile = null
     this.messageIntervalSupport = 'unknown'
+    this.messageIntervalAttempts = 0
+    this.lastAttitudeBootMs = null
     if (this.messageIntervalFallbackTimer) {
       clearTimeout(this.messageIntervalFallbackTimer)
       this.messageIntervalFallbackTimer = null
@@ -626,7 +637,6 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleServoOutputRaw(msg: MavlinkMessage) {
-    if (msg.payload.length < 21) return
     const d = decode<common.ServoOutputRaw>(36, msg.payload)
     if (!d) return
     const servoValues = [
@@ -635,13 +645,14 @@ export class MavlinkBridge extends EventEmitter {
       d.servo9Raw, d.servo10Raw, d.servo11Raw, d.servo12Raw,
       d.servo13Raw, d.servo14Raw, d.servo15Raw, d.servo16Raw,
     ]
-    // A servo output is only "present" if its bytes were actually transmitted.
-    // Trailing absent channels stay null (not 0), keyed off the frame's true
-    // length, so the UI does not draw motors the vehicle never reported.
-    const outputs: Array<number | null> = servoValues.map((value, i) => {
-      const offset = i < 8 ? 4 + i * 2 : 21 + (i - 8) * 2
-      return offset + 2 <= msg.payload.length ? value : null
-    })
+    // MAVLink v2 zero-trims trailing payload bytes, so the wire length cannot
+    // be used as a presence test: a quad with servo5..16 = 0 and port = 0
+    // arrives as a 12-byte frame and decode() pads the rest back to zero.
+    // A raw value of 0 means "output not driven" (PX4 uses 0 for unassigned
+    // outputs; real PWM is never 0 us), so map 0 to null for the UI.
+    const outputs: Array<number | null> = servoValues.map((value) =>
+      value === 0 ? null : value,
+    )
     while (outputs.length > 4 && outputs[outputs.length - 1] == null) outputs.pop()
     this.emit('message', {
       type: 'motor_outputs',
@@ -759,6 +770,31 @@ export class MavlinkBridge extends EventEmitter {
       temperature: temperatureUpdated && Number.isFinite(d.temperature) ? d.temperature : null,
     }
     this.emit('message', { type: 'sensor', msgType: 'HIGHRES_IMU', data } as ServerMessage)
+
+    // HIGHRES_IMU also carries the barometer sample (abs_pressure in hPa).
+    // PX4 profiles that publish HIGHRES_IMU do not necessarily stream
+    // SCALED_PRESSURE, so surface the baro data from here as well; the
+    // frontend treats it like a SCALED_PRESSURE update (last writer wins).
+    const absPressureUpdated = (Number(d.fieldsUpdated) & 0x200) !== 0
+    if (absPressureUpdated && Number.isFinite(d.absPressure) && d.absPressure > 0) {
+      const diffPressureUpdated = (Number(d.fieldsUpdated) & 0x400) !== 0
+      // Same ISA formula as handleScaledPressure so altitude readings stay
+      // consistent no matter which message delivered the pressure sample.
+      const altitude = 44330 * (1 - Math.pow(d.absPressure / 1013.25, 0.1903))
+      this.emit('message', {
+        type: 'sensor',
+        msgType: 'HIGHRES_IMU_PRESSURE',
+        data: {
+          press_abs: d.absPressure,
+          press_diff: diffPressureUpdated && Number.isFinite(d.diffPressure) ? d.diffPressure : 0,
+          // Never trust HIGHRES_IMU temperature for the baro card: PX4 fills
+          // a 15 degC ISA placeholder and the fields_updated bit is not
+          // reliable across versions. SCALED_PRESSURE carries the real one.
+          temperature: null,
+          altitude: Number.isFinite(altitude) ? altitude : null,
+        },
+      } as ServerMessage)
+    }
   }
 
   private handleRawImu(msg: MavlinkMessage) {
@@ -799,6 +835,19 @@ export class MavlinkBridge extends EventEmitter {
   private handleAttitude(msg: MavlinkMessage) {
     const d = decode<common.Attitude>(30, msg.payload)
     if (!d) return
+    // A large time_boot_ms regression means the FC rebooted mid-session and
+    // lost every SET_MESSAGE_INTERVAL configuration. Re-request the active
+    // telemetry profile so the streams recover without a manual reconnect.
+    if (
+      this.lastAttitudeBootMs !== null
+      && d.timeBootMs < this.lastAttitudeBootMs - FC_REBOOT_DETECTION_MARGIN_MS
+    ) {
+      const profile: TelemetryProfile =
+        this.paramDownloadActive ? 'parameter-sync' : 'normal'
+      this.telemetryProfile = null
+      this.applyTelemetryProfile(profile)
+    }
+    this.lastAttitudeBootMs = d.timeBootMs
     const data = {
       time_boot_ms: d.timeBootMs,
       roll: d.roll,
@@ -833,13 +882,29 @@ export class MavlinkBridge extends EventEmitter {
     // node-mavlink decodes the size-grouped wire layout (18 uint16 channels
     // after time_boot_ms, then chancount/rssi), removing the manual offset
     // arithmetic that previously shifted channels when it was done wrong.
-    const data = {
-      ch1: d.chan1Raw, ch2: d.chan2Raw, ch3: d.chan3Raw, ch4: d.chan4Raw,
-      ch5: d.chan5Raw, ch6: d.chan6Raw, ch7: d.chan7Raw, ch8: d.chan8Raw,
-      ch9: d.chan9Raw, ch10: d.chan10Raw, ch11: d.chan11Raw, ch12: d.chan12Raw,
-      ch13: d.chan13Raw, ch14: d.chan14Raw, ch15: d.chan15Raw, ch16: d.chan16Raw,
-      ch17: d.chan17Raw, ch18: d.chan18Raw,
-    } as RcChannelsData
+    // Channels beyond chancount are UINT16_MAX per the MAVLink spec (PX4
+    // fills them exactly that way); forward those as null so the UI hides
+    // unused channels instead of rendering 65535 us bars.
+    const values = [
+      d.chan1Raw, d.chan2Raw, d.chan3Raw, d.chan4Raw, d.chan5Raw, d.chan6Raw,
+      d.chan7Raw, d.chan8Raw, d.chan9Raw, d.chan10Raw, d.chan11Raw, d.chan12Raw,
+      d.chan13Raw, d.chan14Raw, d.chan15Raw, d.chan16Raw, d.chan17Raw, d.chan18Raw,
+    ]
+    const channel = (index: number): number | null => {
+      const value = values[index]
+      if (value === 0xffff) return null
+      if (d.chancount > 0 && index >= d.chancount) return null
+      return value
+    }
+    const data: RcChannelsData = {
+      ch1: channel(0), ch2: channel(1), ch3: channel(2), ch4: channel(3),
+      ch5: channel(4), ch6: channel(5), ch7: channel(6), ch8: channel(7),
+      ch9: channel(8), ch10: channel(9), ch11: channel(10), ch12: channel(11),
+      ch13: channel(12), ch14: channel(13), ch15: channel(14), ch16: channel(15),
+      ch17: channel(16), ch18: channel(17),
+      // RSSI 255 = unknown per spec.
+      rssi: d.rssi === 255 ? null : d.rssi,
+    }
     this.emit('message', { type: 'rc_channels', data } as ServerMessage)
   }
 
@@ -861,12 +926,17 @@ export class MavlinkBridge extends EventEmitter {
   private handleCommandAck(msg: MavlinkMessage) {
     const d = decode<common.CommandAck>(77, msg.payload)
     if (!d) return
+    // MAVLink v2 zero-trims trailing payload bytes: a short v2 frame means
+    // the remaining extension bytes are zero (decode() already padded them),
+    // not absent. Only v1 frames genuinely lack the extension fields, so
+    // length-gating applies to them alone.
+    const hasExtensions = msg.version !== 1
     if (
-      msg.payload.length >= 9
+      (hasExtensions || msg.payload.length >= 9)
       && (
         (d.targetSystem !== 0 && d.targetSystem !== 255)
         || (
-          msg.payload.length >= 10
+          (hasExtensions || msg.payload.length >= 10)
           && d.targetComponent !== 0
           && d.targetComponent !== 190
         )
@@ -901,7 +971,8 @@ export class MavlinkBridge extends EventEmitter {
       this.uncertainCommands.has(commandId)
       || this.isCommandQuarantined(commandId)
     )
-    const progress = msg.payload.length >= 4 && d.progress !== COMMAND_ACK_PROGRESS_UNKNOWN
+    const progress = (hasExtensions || msg.payload.length >= 4)
+      && d.progress !== COMMAND_ACK_PROGRESS_UNKNOWN
       ? d.progress
       : undefined
     const willRetry = Boolean(
@@ -914,9 +985,9 @@ export class MavlinkBridge extends EventEmitter {
       result: d.result,
       requestId: pending?.requestId,
       progress,
-      resultParam2: msg.payload.length >= 8 ? d.resultParam2 : undefined,
-      targetSystem: msg.payload.length >= 9 ? d.targetSystem : undefined,
-      targetComponent: msg.payload.length >= 10 ? d.targetComponent : undefined,
+      resultParam2: hasExtensions || msg.payload.length >= 8 ? d.resultParam2 : undefined,
+      targetSystem: hasExtensions || msg.payload.length >= 9 ? d.targetSystem : undefined,
+      targetComponent: hasExtensions || msg.payload.length >= 10 ? d.targetComponent : undefined,
       terminal: d.result !== MAV_RESULT_IN_PROGRESS && !willRetry,
       attempt: pending?.attempt,
       stale: orphanedTransaction,
@@ -1650,8 +1721,9 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleAutopilotVersion(msg: MavlinkMessage) {
-    if (msg.payload.length < 8) return
-
+    // No raw-length precondition here: MAVLink v2 zero-trims trailing bytes,
+    // and decode() pads the frame back, so even a heavily trimmed frame
+    // yields spec-correct (zero) values for the untransmitted fields.
     const d = decode<standard.AutopilotVersion>(148, msg.payload)
     if (!d) return
     if (this.versionTimer) {
@@ -1924,6 +1996,14 @@ export class MavlinkBridge extends EventEmitter {
   private applyTelemetryProfile(profile: TelemetryProfile) {
     if (this.telemetryProfile === profile || this.connManager.status !== 'connected') return
     this.telemetryProfile = profile
+    this.messageIntervalAttempts = 0
+    this.sendTelemetryIntervalRequests()
+  }
+
+  private sendTelemetryIntervalRequests(): void {
+    const profile = this.telemetryProfile
+    if (this.destroyed || profile === null || this.connManager.status !== 'connected') return
+    this.messageIntervalAttempts += 1
     const intervalUs = profile === 'parameter-sync' ? 500_000 : 50_000
     const servoIntervalUs = profile === 'parameter-sync' ? 500_000 : 100_000
     const setIntervalCommand =
@@ -1932,15 +2012,21 @@ export class MavlinkBridge extends EventEmitter {
       this.useLegacyTelemetryStreams()
       return
     }
-    this.sendInternalCommand(
-      setIntervalCommand,
-      [36, servoIntervalUs, 0, 0, 0, 0, 0],
-    )
-    // Optical flow and its companion rangefinder are not part of every PX4
-    // default MAVLink stream profile. Request them explicitly so integrated
-    // flow/range modules are visible even when PX4 only publishes the range
-    // sample by default.
-    for (const messageId of [26, 105, 106, 116, 129, 132]) {
+    // SERVO_OUTPUT_RAW (#36) and RC_CHANNELS (#65) drive the dashboard
+    // input/output cards. Request both explicitly: some PX4 link profiles do
+    // not stream them by default (or stream slower than the UI's 1 s
+    // staleness threshold), which left the cards permanently OFFLINE.
+    for (const messageId of [36, 65]) {
+      this.sendInternalCommand(
+        setIntervalCommand,
+        [messageId, servoIntervalUs, 0, 0, 0, 0, 0],
+      )
+    }
+    // Barometer (SCALED_PRESSURE #29), optical flow and its companion
+    // rangefinder are not part of every PX4 default MAVLink stream profile.
+    // Request them explicitly so integrated sensors are visible even when
+    // the active profile does not publish them on its own.
+    for (const messageId of [26, 29, 105, 106, 116, 129, 132]) {
       this.sendInternalCommand(
         setIntervalCommand,
         [messageId, intervalUs, 0, 0, 0, 0, 0],
@@ -1950,7 +2036,16 @@ export class MavlinkBridge extends EventEmitter {
       if (this.messageIntervalFallbackTimer) clearTimeout(this.messageIntervalFallbackTimer)
       this.messageIntervalFallbackTimer = setTimeout(() => {
         this.messageIntervalFallbackTimer = null
-        if (this.messageIntervalSupport === 'unknown') this.useLegacyTelemetryStreams()
+        if (this.messageIntervalSupport !== 'unknown') return
+        // Still no terminal ACK. Retry the whole batch before concluding the
+        // command is unsupported - the legacy REQUEST_DATA_STREAM fallback is
+        // ignored by modern PX4, so a premature (sticky) downgrade would lose
+        // every explicitly requested stream for the rest of the session.
+        if (this.messageIntervalAttempts < MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS) {
+          this.sendTelemetryIntervalRequests()
+        } else {
+          this.useLegacyTelemetryStreams()
+        }
       }, this.commandTimeoutForLink() * 2)
     }
   }

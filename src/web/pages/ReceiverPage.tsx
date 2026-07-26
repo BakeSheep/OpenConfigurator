@@ -14,6 +14,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
     const key = ('ch' + (index + 1)) as keyof NonNullable<typeof rcChannels>
     return rcChannels?.[key] ?? 0
   }
+  const rssi = rcChannels?.rssi ?? null
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in'}>
@@ -25,7 +26,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
       <section className="mc-card overflow-hidden mt-4">
         <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
           <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>实时通道输入</h2>
-          <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>标准 RC PWM 范围为 1000–2000，1500 为中位。</p>
+          <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>标准 RC PWM 范围为 1000–2000，1500 为中位。{rssi !== null ? ` · 信号强度 RSSI ${rssi}/254` : ''}</p>
         </div>
         <ChannelBars
           labels={channelNames}

@@ -81,7 +81,11 @@ export interface AutopilotVersionData {
 export interface BaroData {
   press_abs: number
   press_diff: number
-  temperature: number
+  /**
+   * Baro/die temperature in degC. null = not trusted/not available (e.g. the
+   * HIGHRES_IMU fallback, where PX4 fills a 15 degC ISA placeholder).
+   */
+  temperature: number | null
   altitude: number | null
 }
 
@@ -160,25 +164,31 @@ export interface ParamSetResultData {
   reason?: string
 }
 
+/**
+ * RC_CHANNELS as reported by the FC. A null channel means the receiver does
+ * not provide it (beyond chancount, or UINT16_MAX per the MAVLink spec).
+ */
 export interface RcChannelsData {
-  ch1: number
-  ch2: number
-  ch3: number
-  ch4: number
-  ch5: number
-  ch6: number
-  ch7: number
-  ch8: number
-  ch9?: number
-  ch10?: number
-  ch11?: number
-  ch12?: number
-  ch13?: number
-  ch14?: number
-  ch15?: number
-  ch16?: number
-  ch17?: number
-  ch18?: number
+  ch1: number | null
+  ch2: number | null
+  ch3: number | null
+  ch4: number | null
+  ch5: number | null
+  ch6: number | null
+  ch7: number | null
+  ch8: number | null
+  ch9?: number | null
+  ch10?: number | null
+  ch11?: number | null
+  ch12?: number | null
+  ch13?: number | null
+  ch14?: number | null
+  ch15?: number | null
+  ch16?: number | null
+  ch17?: number | null
+  ch18?: number | null
+  /** Receive signal strength 0-254; null = unknown (wire value 255). */
+  rssi: number | null
 }
 
 export interface ManualControlData {

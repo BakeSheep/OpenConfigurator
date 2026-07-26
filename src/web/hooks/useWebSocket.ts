@@ -239,7 +239,11 @@ function handleSensor(msgType: string, data: any) {
       )
       break
     case 'SCALED_PRESSURE':
-      sensorStore.setBaro(data)
+    // Baro sample lifted out of HIGHRES_IMU for PX4 profiles that do not
+    // stream SCALED_PRESSURE. The store arbitrates: SCALED_PRESSURE wins
+    // while fresh, the HIGHRES fallback fills in only when it goes quiet.
+    case 'HIGHRES_IMU_PRESSURE':
+      sensorStore.setBaro(data, msgType)
       break
     case 'OPTICAL_FLOW_RAD':
       sensorStore.setOpticalFlow(data)

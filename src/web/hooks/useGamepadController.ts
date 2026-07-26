@@ -31,7 +31,6 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
   const lastAxisSendRef = useRef(0)
   const lastButtonFireRef = useRef<Record<number, number>>({})
   const previousButtonsRef = useRef<boolean[]>([])
-  const pendingArmRef = useRef<{ button: number; expires: number } | null>(null)
   const smoothedThrottleRef = useRef(0)
   const sendRef = useRef(send)
   sendRef.current = send
@@ -55,15 +54,12 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
       })
 
       if (action === 'arm' || (action === 'toggle_arm' && !armed)) {
-        const now = Date.now()
-        if (pendingArmRef.current?.button === button && pendingArmRef.current.expires > now) {
-          armCommand(true)
-          pendingArmRef.current = null
-          gamepadActions.setActionNotice(`B${button}：已发送解锁指令`)
-        } else {
-          pendingArmRef.current = { button, expires: now + 3000 }
-          gamepadActions.setActionNotice(`B${button}：3 秒内再次按下以确认解锁`)
-        }
+        // Physical controller arming mirrors an RC transmitter's arm switch:
+        // a single deliberate press fires immediately, no double-press
+        // confirmation. Button presses only reach here when the user has
+        // manually enabled gamepad control on a ready, controllable vehicle.
+        armCommand(true)
+        gamepadActions.setActionNotice(`B${button}：已发送解锁指令`)
         return
       }
       if (action === 'disarm' || action === 'toggle_arm') {

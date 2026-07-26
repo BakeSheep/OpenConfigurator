@@ -282,7 +282,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       )}
       {activeTab === 'baro' && (
         <>
-          <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro ? `${baro.temperature.toFixed(1)} °C` : '—'], ["气压高度", baro?.altitude == null ? '—' : `${baro.altitude.toFixed(1)} m`]]} />
+          <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro?.temperature == null ? '—' : `${baro.temperature.toFixed(1)} °C`], ["气压高度", baro?.altitude == null ? '—' : `${baro.altitude.toFixed(1)} m`]]} />
           <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={!canCalibrate || calibration !== null}>开始气压计校准</button></div>{calibrationWizard}</section>
         </>
       )}

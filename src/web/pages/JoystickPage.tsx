@@ -23,7 +23,7 @@ const mappingLabels = [
 
 const actionOptions: Array<{ id: GamepadActionId; label: string }> = [
   { id: 'none', label: '无动作' },
-  { id: 'arm', label: '解锁（需二次确认）' },
+  { id: 'arm', label: '解锁' },
   { id: 'disarm', label: '上锁' },
   { id: 'toggle_arm', label: '切换解锁状态' },
   { id: 'manual', label: 'Manual 模式' },

@@ -184,6 +184,7 @@ function pushFastTelemetry() {
     ch5: 1934, ch6: 1096, ch7: 1514, ch8: 1096,
     ch9: 1514, ch10: 1096, ch11: 1934, ch12: 1514,
     ch13: 1096, ch14: 1096, ch15: 1096, ch16: 1096,
+    rssi: 64,
   })
 
   // Quad outputs hover around 1500 us and mirror the roll/pitch corrections.

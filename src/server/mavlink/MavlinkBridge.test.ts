@@ -1061,6 +1061,89 @@ bridge.destroy()
   fallbackBridge.destroy()
 }
 
+// MAVLink v2 zero-trim semantics: a trimmed SERVO_OUTPUT_RAW frame is valid
+// (missing bytes are zeros), RC_CHANNELS filters UINT16_MAX/chancount
+// sentinels, COMMAND_ACK extensions decode from padded v2 frames, and an FC
+// reboot (time_boot_ms regression) re-requests the telemetry intervals.
+{
+  const trimConnection = new FakeConnection()
+  const trimBridge = new MavlinkBridge(trimConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 200,
+    versionRetryMs: 200,
+  })
+  const trimMessages: any[] = []
+  trimBridge.on('message', (message) => trimMessages.push(message))
+  inject(trimBridge, 0, heartbeatPayload(), 21, 1)
+
+  // Quad SERVO_OUTPUT_RAW: servo5..16 and port are zero, so the v2 wire
+  // frame carries only 12 bytes. It must still produce motor outputs.
+  const servoPayload = Buffer.alloc(12)
+  servoPayload.writeUInt32LE(123_456, 0)
+  for (let motor = 0; motor < 4; motor++) {
+    servoPayload.writeUInt16LE(1500 + motor, 4 + motor * 2)
+  }
+  inject(trimBridge, 36, servoPayload, 21, 1)
+  const motorMessage = findLast(trimMessages, (m) => m.type === 'motor_outputs')
+  assert.ok(motorMessage)
+  assert.deepEqual(motorMessage.data.outputs, [1500, 1501, 1502, 1503])
+
+  // RC_CHANNELS: 8-channel receiver, ch9.. filled with UINT16_MAX sentinels
+  // (exactly what PX4 sends) and rssi 255 = unknown.
+  const rcPayload = Buffer.alloc(42)
+  rcPayload.writeUInt32LE(123_456, 0)
+  for (let channelIndex = 0; channelIndex < 18; channelIndex++) {
+    rcPayload.writeUInt16LE(
+      channelIndex < 8 ? 1000 + channelIndex : 0xffff,
+      4 + channelIndex * 2,
+    )
+  }
+  rcPayload[40] = 8
+  rcPayload[41] = 255
+  inject(trimBridge, 65, rcPayload, 21, 1)
+  const rcMessage = findLast(trimMessages, (m) => m.type === 'rc_channels')
+  assert.ok(rcMessage)
+  assert.equal(rcMessage.data.ch1, 1000)
+  assert.equal(rcMessage.data.ch8, 1007)
+  assert.equal(rcMessage.data.ch9, null)
+  assert.equal(rcMessage.data.ch18, null)
+  assert.equal(rcMessage.data.rssi, null)
+
+  // COMMAND_ACK with a zero-trimmed result_param2 tail: v2 semantics say the
+  // missing bytes are zero, so the decoded value (256) must be surfaced.
+  const ackPayload = Buffer.alloc(6)
+  ackPayload.writeUInt16LE(511, 0)
+  ackPayload[2] = 0
+  ackPayload[3] = 0xff
+  ackPayload.writeUInt16LE(256, 4)
+  inject(trimBridge, 77, ackPayload, 21, 1)
+  const ackMessage = findLast(trimMessages, (m) => m.type === 'command_ack')
+  assert.ok(ackMessage)
+  assert.equal(ackMessage.data.resultParam2, 256)
+  assert.equal(ackMessage.data.progress, undefined)
+  assert.equal(
+    (trimBridge as unknown as PrivateBridge).messageIntervalSupport,
+    'supported',
+  )
+
+  // FC reboot: ATTITUDE time_boot_ms regression must re-send the full
+  // SET_MESSAGE_INTERVAL batch without a reconnect.
+  const attitudePayload = (bootMs: number) => {
+    const payload = Buffer.alloc(28)
+    payload.writeUInt32LE(bootMs, 0)
+    payload.writeFloatLE(0.1, 4)
+    return payload
+  }
+  const countIntervalFrames = () => trimConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 511
+  ).length
+  inject(trimBridge, 30, attitudePayload(600_000), 21, 1)
+  const intervalFramesBeforeReboot = countIntervalFrames()
+  inject(trimBridge, 30, attitudePayload(1_000), 21, 1)
+  assert.ok(countIntervalFrames() - intervalFramesBeforeReboot >= 9)
+  trimBridge.destroy()
+}
+
 // Destroy cancels a scheduled MANUAL_CONTROL flush; no stale write is allowed
 // to escape into a later/closed physical session.
 {
