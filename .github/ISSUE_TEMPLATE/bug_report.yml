@@ -1,0 +1,92 @@
+name: Bug 报告
+description: 提交可公开复现、已脱敏的 OpenConfigurator 问题
+title: "[Bug]: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢反馈。安全漏洞请按 SECURITY.md 私下报告；请勿上传 token、签名密钥、设备序列号、个人位置或未脱敏飞行日志。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 简洁说明实际行为及其影响。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动……
+        2. 连接……
+        3. 点击……
+        4. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: OpenConfigurator 版本
+      description: tag、commit SHA 或分支名。
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options: [Windows 11, Windows 10, Ubuntu/Linux, macOS, 其他]
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与 Node.js 版本
+      placeholder: Edge 136；Node.js 20.19.0
+    validations:
+      required: true
+  - type: input
+    id: flight_controller
+    attributes:
+      label: 飞控与 PX4 版本
+      placeholder: Pixhawk 6C；PX4 v1.15.x（无飞控时填“不适用”）
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: 连接方式
+      options: [USB 串口, Windows Bluetooth SPP, 未连接飞控, 其他]
+    validations:
+      required: true
+  - type: input
+    id: port
+    attributes:
+      label: 端口与波特率
+      description: 请隐藏设备序列号及蓝牙地址。
+      placeholder: COMx；115200（不适用时填“不适用”）
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 已脱敏日志或截图
+      description: 粘贴最小必要日志；不要上传私密飞行日志或密钥。
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有 Issue，未发现相同报告。
+          required: true
+        - label: 我已删除 token、密钥、设备标识、位置及其他敏感信息。
+          required: true
+        - label: 若涉及电机或飞行控制，我是在拆桨/受控环境中复现的。
+          required: true

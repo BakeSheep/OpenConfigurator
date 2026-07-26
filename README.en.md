@@ -60,4 +60,4 @@ Do not bypass the propeller-removal motor-test confirmation, arm/disarm confirma
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a change. Report vulnerabilities according to [SECURITY.md](SECURITY.md), not in a public issue.
 
-No open-source license has been selected yet. Until a license file is added, all rights are reserved and this repository is not ready for a final public release. See the [open-source release checklist](docs/OPEN_SOURCE_CHECKLIST.md).
+OpenConfigurator is licensed under the [MIT License](LICENSE). Hardware and PX4 version support is tracked separately in the [compatibility matrix](docs/COMPATIBILITY.md); combinations without validation evidence are not compatibility or flight-safety guarantees.

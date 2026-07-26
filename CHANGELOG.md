@@ -9,6 +9,9 @@
 - 开源项目 README（中文与英文）
 - 贡献指南、安全策略、行为准则、架构与部署文档
 - 路线图与开源发布检查清单
+- MIT License、Windows/Linux 基础 CI 与结构化 Bug 报告模板
+- PX4/USB/Bluetooth SPP 兼容性及硬件验证矩阵
+- 由 COMMAND_ACK 与飞控状态消息驱动的分步传感器校准向导
 
 ### Changed
 

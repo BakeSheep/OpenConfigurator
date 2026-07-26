@@ -4,7 +4,7 @@
 
 ## 必须由维护者决定
 
-- [ ] **选择许可证并添加根目录 `LICENSE`。** MIT 简单宽松；Apache-2.0 额外包含明确专利授权；GPL-3.0 要求分发衍生作品时保持同一许可证。此决定涉及项目所有者的法律与社区目标，不能由文档整理者代选。
+- [x] 已选择 MIT License，并添加根目录 `LICENSE` 与 `package.json` 许可证声明。
 - [ ] 确认所有代码、图标、字体、截图、名称和设计素材都有权公开与再分发。
 - [ ] 确认项目名、logo 及“MicoAir-style”等描述不会造成官方隶属或商标混淆。
 - [ ] 确定安全报告私密渠道，并在 `SECURITY.md` 中加入可用邮箱或 GitHub Private Vulnerability Reporting 状态。
@@ -33,9 +33,11 @@ npm audit --omit=dev --audit-level=high
 - [ ] 上述命令全部通过并记录 Node.js/操作系统版本。
 - [ ] 从空目录按 README 的 clone → install → dev 流程验证一次。
 - [ ] 验证生产 `npm start`、SPA fallback、API JSON 404 和干净关闭。
-- [ ] 建立至少一个受保护的 CI required check。
+- [x] 建立 Windows / Linux CI（typecheck、server tests、build）。仓库维护者仍需在托管平台启用 required check 分支保护。
 
 ## 硬件在环（HIL）
+
+公开记录格式与 PX4/平台/连接目标矩阵见 [COMPATIBILITY.md](COMPATIBILITY.md)。没有实机证据的组合必须保持“待验证”。
 
 - [ ] Windows USB 串口：连接、断开、拔插、重连、参数完整下载。
 - [ ] Windows Bluetooth SPP：区分 incoming/outgoing COM，断链与长时间重连。

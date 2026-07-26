@@ -167,11 +167,15 @@ function handleMessage(msg: ServerMessage) {
         command: msg.data.command,
         result: msg.data.result,
         requestId: msg.data.requestId,
+        progress: msg.data.progress,
+        terminal: msg.data.terminal,
       })
       // Surface command results so the user gets feedback on arm/takeoff/etc.
       telemetryStore.addStatusLog(
-        msg.data.result === 0 ? 6 : 3,
-        msg.data.result === 0
+        msg.data.result === 0 || msg.data.result === 5 ? 6 : 3,
+        msg.data.result === 5
+          ? `指令 #${msg.data.command} 执行中${msg.data.progress == null ? '' : `（${msg.data.progress}%）`}`
+          : msg.data.result === 0
           ? `指令 #${msg.data.command} 已接受`
           : `指令 #${msg.data.command} 失败 (result=${msg.data.result})`
       )

@@ -12,6 +12,7 @@
   <a href="README.en.md">English</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
   <a href="docs/DEPLOYMENT.md">部署</a> ·
+  <a href="docs/COMPATIBILITY.md">兼容性</a> ·
   <a href="CONTRIBUTING.md">参与贡献</a> ·
   <a href="SECURITY.md">安全策略</a>
 </p>
@@ -141,7 +142,7 @@ PX4 Flight Controller
 
 OpenConfigurator 当前处于 **pre-release** 阶段，API、协议和界面可能变化。
 
-本仓库尚未选定开源许可证，因此在许可证文件加入之前，代码默认保留全部权利，不能视为已完成开源发布。维护者应在公开发布前从 MIT、Apache-2.0、GPL-3.0 等方案中明确选择；参见 [开源发布清单](docs/OPEN_SOURCE_CHECKLIST.md)。
+OpenConfigurator 采用 [MIT License](LICENSE)。硬件与 PX4 版本的已验证范围单独记录在[兼容性矩阵](docs/COMPATIBILITY.md)中；未列为“已验证”的组合不构成兼容性或飞行安全承诺。
 
 ## 致谢
 

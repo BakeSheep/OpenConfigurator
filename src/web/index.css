@@ -1649,6 +1649,31 @@ input[type="range"]:disabled {
 .mc-calibration-bar > p { display: flex; align-items: center; gap: 7px; margin: 12px 0 0; color: var(--accent); font-size: 12px; }
 .mc-calibration-bar > p[data-state="accepted"] { color: var(--success); }
 .mc-calibration-bar > p[data-state="failed"] { color: var(--danger); }
+.mc-calibration-wizard { margin-top: 14px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent) 5%, var(--bg-tertiary)); }
+.mc-calibration-wizard[data-state="completed"] { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.mc-calibration-wizard[data-state="failed"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.mc-calibration-wizard > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mc-calibration-wizard > header > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.mc-calibration-wizard > header strong { font-size: 13px; }
+.mc-calibration-wizard > header span, .mc-calibration-wizard > p, .mc-calibration-wizard li span, .mc-calibration-wizard > footer { color: var(--text-secondary); font-size: 11px; }
+.mc-calibration-wizard > header b { color: var(--accent); font-size: 13px; }
+.mc-calibration-wizard[data-state="completed"] > header b { color: var(--success); }
+.mc-calibration-wizard[data-state="failed"] > header b { color: var(--danger); }
+.mc-calibration-wizard > p { margin: 10px 0; line-height: 1.6; }
+.mc-calibration-progress { height: 5px; overflow: hidden; border-radius: var(--radius-full); background: var(--bg-secondary); }
+.mc-calibration-progress > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s ease; }
+.mc-calibration-wizard[data-state="completed"] .mc-calibration-progress > span { background: var(--success); }
+.mc-calibration-wizard[data-state="failed"] .mc-calibration-progress > span { background: var(--danger); }
+.mc-calibration-wizard > ol { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.mc-calibration-wizard li { display: flex; min-width: 0; align-items: flex-start; gap: 8px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-secondary); color: var(--text-disabled); }
+.mc-calibration-wizard li[data-state="active"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+.mc-calibration-wizard li[data-state="completed"] { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); color: var(--success); }
+.mc-calibration-wizard li[data-state="failed"] { border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); color: var(--danger); }
+.mc-calibration-wizard li > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.mc-calibration-wizard li strong { color: var(--text-primary); font-size: 11px; }
+.mc-calibration-wizard > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); line-height: 1.5; }
+.mc-calibration-wizard > footer > span { overflow-wrap: anywhere; }
+.mc-calibration-wizard > footer .mc-btn { flex: 0 0 auto; }
 .mc-sensor-status-card { margin-top: 16px; padding: 20px; }
 .mc-sensor-status-card h2 { margin: 0; font-size: 16px; }
 .mc-sensor-status-card > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }

@@ -10,6 +10,15 @@ export interface StatusLogEntry {
   time: number
 }
 
+export interface CommandAckState {
+  command: number
+  result: number
+  requestId?: string
+  progress?: number
+  terminal?: boolean
+  time: number
+}
+
 // Per-field freshness thresholds (ms). High-rate streams (attitude/imu/motors)
 // must update frequently; low-rate streams (gps/battery) are allowed more
 // slack so they don't falsely report stale between valid updates.
@@ -52,7 +61,7 @@ interface TelemetryState {
   throttle: number
   globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
   statusLogs: StatusLogEntry[]
-  lastCommandAck: { command: number; result: number; requestId?: string; time: number } | null
+  lastCommandAck: CommandAckState | null
   // Timestamp (Date.now()) of the last update per field. 0 = never received OR
   // explicitly marked stale by markAllStale() on disconnect. UI uses isStale()
   // to decide whether to grey out / freeze rendering.
@@ -69,7 +78,7 @@ interface TelemetryState {
   setGlobalPosition: (data: any) => void
   setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
-  setCommandAck: (ack: { command: number; result: number; requestId?: string }) => void
+  setCommandAck: (ack: Omit<CommandAckState, 'time'>) => void
   clearStatusLogs: () => void
   // Called on link drop: keep the last values (so the UI can show "frozen"
   // state in grey) but force every field to be considered stale.
