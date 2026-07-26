@@ -37,7 +37,7 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
   sendRef.current = send
 
   useEffect(() => useConnectionStore.subscribe((state) => {
-    if (state.status !== 'connected' && useGamepadStore.getState().enabled) {
+    if ((!state.vehicleReady || !state.canControl) && useGamepadStore.getState().enabled) {
       useGamepadStore.getState().setEnabled(false)
     }
   }), [])
@@ -84,7 +84,8 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
 
     const pollGamepad = () => {
       const current = useGamepadStore.getState()
-      const controllerConnected = useConnectionStore.getState().status === 'connected'
+      const connection = useConnectionStore.getState()
+      const controllerConnected = connection.vehicleReady && connection.canControl
       const gamepads = navigator.getGamepads()
       const gamepad = gamepads[0] || gamepads[1] || gamepads[2] || gamepads[3]
 

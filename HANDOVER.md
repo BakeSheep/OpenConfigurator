@@ -4,11 +4,7 @@
 
 基于 Web 的 PX4 飞控地面站（GCS），UI 完全复刻 MicoAir Configurator 风格，功能对标 QGroundControl。支持通过 USB 串口/蓝牙连接 PX4 飞控，完成传感器校准、参数配置、电机测试、游戏手柄遥控、解锁起飞等操作。
 
-## 项目路径
-
-```
-c:\Users\28951\Documents\Qoder\2026-07-19\chat-1\px4-web-gcs
-```
+> 本文件记录实现细节与维护注意事项。面向使用者的安装、功能和安全说明以根目录 `README.md` 为入口；系统设计见 `docs/ARCHITECTURE.md`。
 
 ## 技术栈
 
@@ -151,7 +147,7 @@ px4-web-gcs/
 │   │       └── MavlinkBridge.ts       # 消息处理 + WS 桥接
 │   └── web/                      # React 前端
 │       ├── main.tsx             # React 入口
-│       ├── App.tsx              # 路由 + 布局
+│       ├── App.tsx              # 路由 + 布局（四个一级工作区，页面按路由懒加载）
 │       ├── index.css            # 全局样式（MicoAir 深色主题）
 │       ├── hooks/
 │       │   └── useWebSocket.ts  # WebSocket 连接 + 消息分发
@@ -170,15 +166,17 @@ px4-web-gcs/
 │       │   │   └── RealtimeChart.tsx      # 实时曲线（Recharts）
 │       │   └── ekf/
 │       │       └── EkfFusionPanel.tsx     # EKF 融合配置
-│       └── pages/               # 8 个功能页面
-│           ├── ConnectionPage.tsx    # 连接管理
-│           ├── DashboardPage.tsx     # 仪表盘 + 传感器监控
-│           ├── SensorPage.tsx        # 传感器校准（引导式）
+│       └── pages/
+│           ├── DashboardPage.tsx     # 飞行总览
+│           ├── FlightControlPage.tsx # 唯一飞行操作入口
+│           ├── SettingsPage.tsx      # 飞行器设置工作区（机架/传感器/执行器/输入/端口）
+│           ├── DiagnosticsPage.tsx   # 调参与诊断工作区（参数/PID/EKF/波形/消息）
+│           ├── PidTuningPage.tsx     # 多旋翼姿态与角速度 PID 滑块调参
+│           ├── SensorPage.tsx        # 传感器监控与校准
 │           ├── ParameterPage.tsx     # 参数管理
-│           ├── MotorPage.tsx         # 电机测试
-│           ├── ReceiverPage.tsx      # 遥控器校准
-│           ├── JoystickPage.tsx      # 游戏手柄
-│           └── FlightControlPage.tsx # 飞行控制
+│           ├── MotorPage.tsx         # 输出映射与无桨电机测试
+│           ├── ReceiverPage.tsx      # 遥控器通道监控
+│           └── JoystickPage.tsx      # 游戏手柄
 ```
 
 ## 功能清单
@@ -190,11 +188,13 @@ px4-web-gcs/
 | 仪表盘 | 3D 姿态、飞行数据卡片、传感器实时监控 | 已完成 |
 | 传感器监控 | IMU/磁力计/气压计/光流/测距/GPS | 已完成 |
 | EKF 融合配置 | GPS/Baro/Mag/OF/RNG/EV 开关 + 高度源 | 已完成 |
-| 传感器校准 | 加速度计6面/陀螺仪/磁力计/气压计/ESC/遥控器 | 已完成 |
+| 传感器校准 | 加速度计/陀螺仪/磁力计/气压计命令与 ACK 反馈 | 基础可用，完整分步向导待完善 |
 | 参数管理 | 下载/搜索/分组/编辑/导出 | 已完成 |
+| PID 调参 | 按飞控返回项显示姿态/角速度 PID，松手写入并展示确认回执 | 已完成 |
 | 电机测试 | 可视化布局 + 单电机/顺序测试 + 安全机制 | 已完成 |
 | 手柄控制 | Web Gamepad API + 死区/Expo + MANUAL_CONTROL 20Hz | 已完成 |
 | 飞行控制 | 解锁/上锁/起飞/降落/RTL/模式切换/飞行前检查 | 已完成 |
+| 遥控器 | 实时 RC 通道监控 | 已完成；校准与反向写入未接入，不在 UI 中伪装可用 |
 | 实时曲线 | 高度/电压/速度多通道 | 已完成 |
 
 ## 关键 MAVLink 消息
@@ -248,4 +248,4 @@ px4-web-gcs/
 - Vite 代理配置在 `vite.config.ts`，开发时 `/api` 和 `/ws` 代理到 3000 端口
 - 手柄控制需用户手动启用（勾选"启用手柄控制"），防止误操作
 - 电机测试需先勾选安全确认（"已移除螺旋桨"）
-- 解锁操作需二次点击确认（3 秒超时自动取消）
+- 飞行操作页解锁需二次点击确认（3 秒超时）；TopBar 使用 QGroundControl 风格完整拖拽确认，只有从左侧手柄拖到右端才发送解锁/上锁命令

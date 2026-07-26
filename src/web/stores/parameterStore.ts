@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ParamData } from '../../shared/types'
+import type { ParamData, ParamSetResultData } from '../../shared/types'
 
 interface ParameterState {
   params: Map<string, ParamData>
@@ -10,12 +10,14 @@ interface ParameterState {
   missingCount: number
   error: string | null
   receivedIndices: Set<number>
+  lastWriteResult: ParamSetResultData | null
   addParam: (param: ParamData) => void
   addParams: (params: ParamData[]) => void
   setParamComplete: (count: number) => void
   setParamRetry: (attempt: number, missing: number, total: number) => void
   setParamFailed: (received: number, total: number) => void
   setLoading: (loading: boolean) => void
+  setWriteResult: (result: ParamSetResultData | null) => void
   clear: () => void
 }
 
@@ -28,6 +30,7 @@ export const useParameterStore = create<ParameterState>((set) => ({
   missingCount: 0,
   error: null,
   receivedIndices: new Set(),
+  lastWriteResult: null,
   addParam: (param) => set((state) => {
     const newMap = new Map(state.params)
     newMap.set(param.id, param)
@@ -89,6 +92,7 @@ export const useParameterStore = create<ParameterState>((set) => ({
     loading,
     ...(loading ? { retryCount: 0, missingCount: 0, error: null } : {}),
   }),
+  setWriteResult: (lastWriteResult) => set({ lastWriteResult }),
   clear: () => set({
     params: new Map(),
     loading: false,
@@ -98,5 +102,6 @@ export const useParameterStore = create<ParameterState>((set) => ({
     missingCount: 0,
     error: null,
     receivedIndices: new Set(),
+    lastWriteResult: null,
   }),
 }))

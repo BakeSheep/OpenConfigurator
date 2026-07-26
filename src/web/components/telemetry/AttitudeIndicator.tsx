@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useConnectionStore } from '../../stores/connectionStore'
@@ -62,7 +63,7 @@ function Grid() {
 }
 
 export default function AttitudeIndicator() {
-  const connected = useConnectionStore((s) => s.status === 'connected')
+  const connected = useConnectionStore((s) => s.vehicleReady)
   const isStale = useTelemetryStore((s) => s.isStale)
   // Re-render every 1.5s so the stale overlay appears promptly once the
   // threshold is crossed, even if no new telemetry arrives to trigger it.
@@ -84,6 +85,7 @@ export default function AttitudeIndicator() {
         <pointLight position={[-3, 2, -3]} intensity={0.3} color="#3B82F6" />
         <DroneModel frozen={frozen} />
         <Grid />
+        <OrbitControls enablePan={false} enableZoom={true} minDistance={2} maxDistance={8} />
       </Canvas>
       {frozen && (
         <div

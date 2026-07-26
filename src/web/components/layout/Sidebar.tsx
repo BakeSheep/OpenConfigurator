@@ -8,15 +8,10 @@ interface NavigationItem {
 }
 
 const navigationItems: NavigationItem[] = [
-  { to: '/dashboard', label: '仪表盘', icon: 'dashboard' },
-  { to: '/settings', label: '设置', icon: 'settings' },
-  { to: '/sensors', label: '传感器', icon: 'sensor' },
-  { to: '/parameters', label: '参数', icon: 'parameters' },
-  { to: '/messages', label: '消息', icon: 'message' },
-  { to: '/missions', label: '航线', icon: 'route' },
-  { to: '/logs', label: '日志', icon: 'log' },
-  { to: '/waveforms', label: '波形', icon: 'waveform' },
-  { to: '/firmware', label: '固件', icon: 'firmware' },
+  { to: '/dashboard', label: '总览', icon: 'dashboard' },
+  { to: '/flight', label: '飞行操作', icon: 'flight' },
+  { to: '/settings', label: '飞行器设置', icon: 'settings' },
+  { to: '/diagnostics', label: '调参与诊断', icon: 'waveform' },
 ]
 
 export default function Sidebar() {
@@ -35,10 +30,6 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
-      <NavLink to="/rtk" title="RTK" className={({ isActive }) => 'mc-sidebar__item mc-sidebar__rtk' + (isActive ? ' is-active' : '')}>
-        <Icon name="rtk" size={20} />
-        <span>RTK</span>
-      </NavLink>
     </aside>
   )
 }

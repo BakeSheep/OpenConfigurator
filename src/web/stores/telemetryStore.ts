@@ -52,6 +52,7 @@ interface TelemetryState {
   throttle: number
   globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
   statusLogs: StatusLogEntry[]
+  lastCommandAck: { command: number; result: number; requestId?: string; time: number } | null
   // Timestamp (Date.now()) of the last update per field. 0 = never received OR
   // explicitly marked stale by markAllStale() on disconnect. UI uses isStale()
   // to decide whether to grey out / freeze rendering.
@@ -68,6 +69,7 @@ interface TelemetryState {
   setGlobalPosition: (data: any) => void
   setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
+  setCommandAck: (ack: { command: number; result: number; requestId?: string }) => void
   clearStatusLogs: () => void
   // Called on link drop: keep the last values (so the UI can show "frozen"
   // state in grey) but force every field to be considered stale.
@@ -106,6 +108,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   throttle: 0,
   globalPosition: null,
   statusLogs: [],
+  lastCommandAck: null,
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
   setGps: (data) => set((state) => ({ gps: data, lastUpdate: { ...state.lastUpdate, gps: Date.now() } })),
@@ -168,6 +171,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     const next = [entry, ...state.statusLogs]
     return { statusLogs: next.slice(0, 200) }
   }),
+  setCommandAck: (ack) => set({ lastCommandAck: { ...ack, time: Date.now() } }),
   clearStatusLogs: () => set({ statusLogs: [] }),
   markAllStale: () => set({ lastUpdate: zeroLastUpdate() }),
   isStale: (field, thresholdMs) => {

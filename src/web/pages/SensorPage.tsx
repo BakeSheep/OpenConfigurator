@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import Icon from '../components/ui/Icon'
-import { PageHeader, PageTabs } from '../components/ui/PageFrame'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { PageTabs } from '../components/ui/PageFrame'
+import { sendClientMessage } from '../hooks/useWebSocket'
+import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
 const tabs = [{ id: 'imu', label: 'IMU' }, { id: 'mag', label: '罗盘' }, { id: 'baro', label: '气压计' }, { id: 'gps', label: 'GPS' }, { id: 'optflow', label: '光流' }, { id: 'rangefinder', label: '测距仪' }]
 type CalibrationType = 'accel' | 'gyro' | 'mag' | 'baro'
+type CalibrationState = { type: CalibrationType; requestId: string; status: 'sending' | 'accepted' | 'failed' }
 
 const STANDARD_GRAVITY = 9.80665
 const RADIANS_TO_DEGREES = 180 / Math.PI
@@ -59,11 +61,12 @@ function SensorStatusCard({ title, values }: { title: string; values: Array<[str
   return <section className="mc-card mc-sensor-status-card"><h2>{title}</h2><div>{values.map(([label, value]) => <dl key={label}><dt>{label}</dt><dd className="mc-mono">{value}</dd></dl>)}</div></section>
 }
 
-export default function SensorPage() {
+export default function SensorPage({ embedded = false }: { embedded?: boolean }) {
   const [activeTab, setActiveTab] = useState('imu')
   const [imuIndex, setImuIndex] = useState('imu1')
-  const [calibrating, setCalibrating] = useState<CalibrationType | null>(null)
-  const { send } = useWebSocket()
+  const [calibration, setCalibration] = useState<CalibrationState | null>(null)
+  const send = sendClientMessage
+  const canCalibrate = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const [imus, setImus] = useState(() => useSensorStore.getState().imus)
   useEffect(() => {
     const timer = setInterval(() => setImus(useSensorStore.getState().imus), 200)
@@ -74,31 +77,52 @@ export default function SensorPage() {
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const distance = useSensorStore((state) => state.distanceSensor)
   const gps = useTelemetryStore((state) => state.gps)
+  const lastCommandAck = useTelemetryStore((state) => state.lastCommandAck)
   const selectedImuInstance = imuIndex === 'imu2' ? 1 : 0
   const imu = imus[selectedImuInstance] ?? null
 
+  useEffect(() => {
+    if (!calibration || lastCommandAck?.requestId !== calibration.requestId) return
+    setCalibration((current) => current ? {
+      ...current,
+      status: lastCommandAck.result === 0 ? 'accepted' : 'failed',
+    } : null)
+  }, [calibration?.requestId, lastCommandAck])
+
   const startCalibration = (type: CalibrationType) => {
+    if (!canCalibrate) return
     const params = [0, 0, 0, 0, 0, 0, 0]
     if (type === 'gyro') params[0] = 1
     if (type === 'mag') params[1] = 1
     if (type === 'baro') params[2] = 1
     if (type === 'accel') params[4] = 1
-    setCalibrating(type)
-    send({ type: 'command', cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
+    const requestId = `cal-${type}-${Date.now().toString(36)}`
+    setCalibration({ type, requestId, status: 'sending' })
+    send({ type: 'command', requestId, cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
   }
 
-  const calibrationNotice = calibrating && (
-    <p>
-      <Icon name="refresh" size={14} />
-      已发送{calibrationLabels[calibrating]}校准指令，请按照飞控提示完成操作。
-      <button type="button" className="mc-btn mc-btn-ghost" onClick={() => setCalibrating(null)}>关闭提示</button>
+  const calibrationNotice = calibration && (
+    <p data-state={calibration.status}>
+      <Icon name={calibration.status === 'failed' ? 'warning' : calibration.status === 'accepted' ? 'check' : 'refresh'} size={14} />
+      {calibration.status === 'sending'
+        ? `正在等待飞控确认${calibrationLabels[calibration.type]}校准指令…`
+        : calibration.status === 'accepted'
+          ? `飞控已接受${calibrationLabels[calibration.type]}校准，请按照飞控消息完成操作。`
+          : `${calibrationLabels[calibration.type]}校准指令被拒绝，请查看底部飞控消息。`}
+      <button type="button" className="mc-btn mc-btn-ghost" onClick={() => setCalibration(null)}>关闭提示</button>
     </p>
   )
 
   return (
-    <div className="mc-workspace mc-fade-in mc-data-workspace">
-      <PageHeader title="传感器" description="查看和校准传感器" />
-      <PageTabs tabs={tabs} active={activeTab} onChange={(tab) => { setActiveTab(tab); setCalibrating(null) }} />
+    <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
+      <PageTabs tabs={tabs} active={activeTab} onChange={(tab) => { setActiveTab(tab); setCalibration(null) }} />
+
+      {!canCalibrate && (
+        <div className="mc-capability-note" data-state="waiting">
+          <Icon name="warning" size={15} />
+          <span>连接飞控并取得控制权后才可执行校准；实时监控仍保持只读。</span>
+        </div>
+      )}
 
       {activeTab === 'imu' && (
         <>
@@ -124,7 +148,7 @@ export default function SensorPage() {
 
           <section className="mc-card mc-calibration-bar">
             <h2>校准</h2>
-            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={calibrating !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={calibrating !== null}>校准陀螺仪</button><button type="button" className="mc-btn mc-btn-ghost" style={{ color: 'var(--warning)', borderColor: 'color-mix(in srgb, var(--warning) 40%, var(--border))' }} disabled>重启飞控</button></div>
+            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={!canCalibrate || calibration !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={!canCalibrate || calibration !== null}>校准陀螺仪</button></div>
             {calibrationNotice}
           </section>
         </>
@@ -133,13 +157,13 @@ export default function SensorPage() {
       {activeTab === 'mag' && (
         <>
           <SensorStatusCard title="罗盘" values={[["磁场 X", mag?.x.toFixed(2) ?? '—'], ["磁场 Y", mag?.y.toFixed(2) ?? '—'], ["磁场 Z", mag?.z.toFixed(2) ?? '—'], ["校准状态", mag ? '数据正常' : '等待数据']]} />
-          <section className="mc-card mc-calibration-bar"><h2>罗盘校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('mag')} disabled={calibrating !== null}>开始罗盘校准</button></div>{calibrationNotice}</section>
+          <section className="mc-card mc-calibration-bar"><h2>罗盘校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('mag')} disabled={!canCalibrate || calibration !== null}>开始罗盘校准</button></div>{calibrationNotice}</section>
         </>
       )}
       {activeTab === 'baro' && (
         <>
           <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro ? `${baro.temperature.toFixed(1)} °C` : '—'], ["气压高度", baro?.altitude == null ? '—' : `${baro.altitude.toFixed(1)} m`]]} />
-          <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={calibrating !== null}>开始气压计校准</button></div>{calibrationNotice}</section>
+          <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={!canCalibrate || calibration !== null}>开始气压计校准</button></div>{calibrationNotice}</section>
         </>
       )}
       {activeTab === 'gps' && <SensorStatusCard title="GPS" values={[["定位类型", gps ? String(gps.fix_type) : '—'], ["卫星数量", gps ? String(gps.satellites_visible) : '—'], ["水平精度", gps ? String(gps.eph) : '—'], ["状态", gps && gps.fix_type >= 3 ? '定位正常' : '未定位']]} />}

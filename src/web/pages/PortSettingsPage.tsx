@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
+import { useConnectionStore } from '../stores/connectionStore'
 
 const PORT_OPTIONS = [
   [0, 'Disabled'],
@@ -41,7 +42,8 @@ const baudParamForPort = (portValue: number | undefined) => BAUD_PARAMS[portValu
 
 function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<readonly [number, string]> }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const { send } = useWebSocket()
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const send = sendClientMessage
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
 
@@ -50,7 +52,7 @@ function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<reado
       className="mc-select"
       aria-label={id}
       value={value}
-      disabled={!param}
+      disabled={!param || !canWrite}
       onChange={(event) => {
         if (!param) return
         send({ type: 'param_set', data: { id, value: Number(event.target.value), paramType: param.type } })
@@ -65,7 +67,8 @@ function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<reado
 
 function RateInput({ id }: { id: string }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const { send } = useWebSocket()
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const send = sendClientMessage
   return (
     <input
       key={`${id}-${param?.value ?? 'empty'}`}
@@ -73,7 +76,7 @@ function RateInput({ id }: { id: string }) {
       aria-label={id}
       defaultValue={param ? Math.round(param.value) : ''}
       placeholder="—"
-      disabled={!param}
+      disabled={!param || !canWrite}
       onBlur={(event) => {
         if (!param) return
         const value = Number(event.target.value)
@@ -122,7 +125,7 @@ export default function PortSettingsPage() {
               <RateInput id={`${prefix}_RATE`} />
               <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} />
               <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} />
-              <NavLink to="/parameters" className="mc-btn mc-btn-ghost">高级</NavLink>
+              <NavLink to="/diagnostics" className="mc-btn mc-btn-ghost">高级</NavLink>
             </div>
           ))}
         </div>

@@ -27,7 +27,7 @@ export default function RealtimeChart() {
     const interval = setInterval(() => {
       const connState = useConnectionStore.getState()
       const teleState = useTelemetryStore.getState()
-      const connected = connState.status === 'connected'
+      const connected = connState.vehicleReady
       // Stop sampling when the link is down OR when the data itself is stale
       // (FC stalled but COM port still open). Otherwise the chart would keep
       // appending the frozen value as a flat line, looking like live data.

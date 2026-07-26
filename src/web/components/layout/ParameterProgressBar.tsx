@@ -1,11 +1,11 @@
-import { useWebSocket } from '../../hooks/useWebSocket'
+import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import Icon from '../ui/Icon'
 
 export default function ParameterProgressBar() {
-  const { send } = useWebSocket()
-  const connected = useConnectionStore((state) => state.status === 'connected')
+  const send = sendClientMessage
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const connectionType = useConnectionStore((state) => state.type)
   const {
     loading,
@@ -62,7 +62,7 @@ export default function ParameterProgressBar() {
         )}
       </span>
       {error ? (
-        <button type="button" disabled={!connected} onClick={retry}>
+        <button type="button" disabled={!vehicleReady} onClick={retry}>
           <Icon name="refresh" size={13} />重新读取
         </button>
       ) : (

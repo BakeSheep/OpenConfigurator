@@ -1,18 +1,38 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from '../components/ui/Icon'
-import { EmptyState, PageHeader } from '../components/ui/PageFrame'
-import { useWebSocket } from '../hooks/useWebSocket'
+import { EmptyState } from '../components/ui/PageFrame'
+import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
+import { useConnectionStore } from '../stores/connectionStore'
 
-export default function ParameterPage() {
+export default function ParameterPage({ embedded = false }: { embedded?: boolean }) {
   const { params, loading, totalCount, receivedCount } = useParameterStore()
-  const { send } = useWebSocket()
+  const send = sendClientMessage
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
+  const [pendingWrite, setPendingWrite] = useState<{ id: string; value: number } | null>(null)
+  const [writeError, setWriteError] = useState<string | null>(null)
+  const writeTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!pendingWrite) return
+    const echoedValue = params.get(pendingWrite.id)?.value
+    if (echoedValue === undefined || Math.abs(echoedValue - pendingWrite.value) > 1e-6) return
+    if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
+    writeTimer.current = null
+    setPendingWrite(null)
+  }, [params, pendingWrite])
+
+  useEffect(() => () => {
+    if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
+  }, [])
 
   const requestParams = () => {
+    if (!canWrite) return
     useParameterStore.getState().clear()
     useParameterStore.getState().setLoading(true)
     send({ type: 'param_request_list' })
@@ -36,6 +56,7 @@ export default function ParameterPage() {
   }, [filteredParams])
 
   const saveParam = (id: string) => {
+    if (!canWrite) return
     const param = params.get(id)
     if (!param) return
     const parsedValue = Number.parseFloat(editValue)
@@ -43,7 +64,16 @@ export default function ParameterPage() {
     const value = param.type >= 1 && param.type <= 8
       ? Math.trunc(parsedValue)
       : parsedValue
-    send({ type: 'param_set', data: { id, value, paramType: param.type } })
+    setWriteError(null)
+    setPendingWrite({ id, value })
+    send({ type: 'param_set', requestId: `param-${id}-${Date.now().toString(36)}`, data: { id, value, paramType: param.type } })
+    if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
+    writeTimer.current = window.setTimeout(() => {
+      setPendingWrite((current) => {
+        if (current?.id === id) setWriteError(`${id} 未收到飞控回读确认`)
+        return current?.id === id ? null : current
+      })
+    }, 5000)
     setEditId(null)
   }
 
@@ -59,24 +89,20 @@ export default function ParameterPage() {
   }
 
   return (
-    <div className="mc-workspace mc-fade-in">
-      <PageHeader
-        title="参数配置"
-        description={loading ? '正在接收 ' + receivedCount + '/' + totalCount : (params.size || totalCount) + ' 个参数'}
-        actions={
-          <>
-            <button type="button" className="mc-btn mc-btn-ghost" onClick={requestParams} disabled={loading}>
-              <Icon name="refresh" size={15} />刷新参数
-            </button>
-            <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={loading}>
-              <Icon name="download" size={15} />{loading ? receivedCount + '/' + totalCount : '重新读取'}
-            </button>
-            <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
-            <button type="button" className="mc-btn mc-btn-danger" disabled title="恢复默认需要独立安全确认流程">恢复默认参数</button>
-            <button type="button" className="mc-btn mc-btn-ghost" disabled style={{ color: 'var(--warning)' }}>重启飞控</button>
-          </>
-        }
-      />
+    <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <span className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
+          {loading ? '正在接收 ' + receivedCount + '/' + totalCount : (params.size || totalCount) + ' 个参数'}
+        </span>
+        <span className="flex-1" />
+        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canWrite || loading}>
+          <Icon name="refresh" size={15} />{loading ? receivedCount + '/' + totalCount : '重新同步'}
+        </button>
+        <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
+      </div>
+
+      {!canWrite && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>连接飞控并取得控制权后可同步或修改参数。</span></div>}
+      {writeError && <div className="mc-capability-note" data-state="error"><Icon name="warning" size={15} /><span>{writeError}</span></div>}
 
       <div className="relative mb-4">
         <Icon name="search" size={17} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-disabled)' }} />
@@ -108,23 +134,27 @@ export default function ParameterPage() {
                 </button>
                 {!isCollapsed && (
                   <div className="border-t" style={{ borderColor: 'var(--border)' }}>
-                    {items.slice(0, 50).map((param) => (
+                    {items.slice(0, visibleCounts[prefix] ?? 80).map((param) => (
                       <div key={param.id} className="flex items-center gap-3 border-b px-5 py-2.5 last:border-b-0" style={{ borderColor: 'var(--border)' }}>
                         <span className="min-w-0 flex-1 truncate mc-mono text-[12px]" style={{ color: 'var(--text-primary)' }}>{param.id}</span>
                         {editId === param.id ? (
                           <div className="flex items-center gap-2">
                             <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
-                            <button type="button" className="mc-btn mc-btn-primary h-8" onClick={() => saveParam(param.id)}>保存</button>
+                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>保存</button>
                           </div>
                         ) : (
-                          <button type="button" className="mc-mono rounded-md px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--accent)' }} onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
-                            {param.value}
+                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-mono rounded-md px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--accent)' }} onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
+                            {pendingWrite?.id === param.id ? '确认中…' : param.value}
                           </button>
                         )}
                         <span className="hidden rounded px-1.5 py-0.5 text-[10px] sm:inline" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-disabled)' }}>T{param.type}</span>
                       </div>
                     ))}
-                    {items.length > 50 && <p className="px-5 py-3 text-[11px]" style={{ color: 'var(--text-secondary)' }}>还有 {items.length - 50} 个参数，请使用搜索缩小范围。</p>}
+                    {items.length > (visibleCounts[prefix] ?? 80) && (
+                      <button type="button" className="mc-load-more" onClick={() => setVisibleCounts((current) => ({ ...current, [prefix]: (current[prefix] ?? 80) + 80 }))}>
+                        显示更多 · 还有 {items.length - (visibleCounts[prefix] ?? 80)} 项
+                      </button>
+                    )}
                   </div>
                 )}
               </section>

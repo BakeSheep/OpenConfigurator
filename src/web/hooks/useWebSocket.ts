@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -67,10 +67,20 @@ function handleMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'hello':
       restControlToken = msg.data.restControlToken
+      connStore.setClientId(msg.data.clientId)
+      break
+    case 'controller':
+      connStore.setController(msg.data.clientId, msg.data.expiresAt)
       break
     case 'connection':
-      if (msg.data.connected) {
-        connStore.setConnected(msg.data.port || '', msg.data.type || '')
+      connStore.setConnectionSnapshot({
+        status: msg.data.status ?? (msg.data.connected ? 'connected' : 'disconnected'),
+        transportOpen: msg.data.transportOpen ?? msg.data.connected,
+        vehicleReady: msg.data.vehicleReady ?? msg.data.connected,
+        port: msg.data.port,
+        type: msg.data.type,
+      })
+      if (msg.data.vehicleReady ?? msg.data.connected) {
         // Wait for the first autopilot heartbeat before requesting parameters:
         // the backend learns the actual target system/component IDs from that
         // heartbeat, so the request cannot be sent to a stale/default target.
@@ -92,7 +102,7 @@ function handleMessage(msg: ServerMessage) {
       } else {
         autoParamRequestPending = false
         discardParamBatch()
-        connStore.setDisconnected()
+        if (!(msg.data.transportOpen ?? msg.data.connected)) connStore.setDisconnected()
         // On link drop: mark telemetry data as stale (values are retained so
         // the UI can render them greyed-out, showing the last known state),
         // revert sensor health dots to offline, and clear the parameter list
@@ -134,6 +144,9 @@ function handleMessage(msg: ServerMessage) {
       flushParamBatch()
       paramStore.setParamFailed(msg.data.received, msg.data.total)
       break
+    case 'param_set_result':
+      paramStore.setWriteResult(msg.data)
+      break
     case 'ekf_status':
       telemetryStore.setEkfStatus(msg.data)
       break
@@ -150,6 +163,11 @@ function handleMessage(msg: ServerMessage) {
       connStore.setLinkStats(msg.data)
       break
     case 'command_ack':
+      telemetryStore.setCommandAck({
+        command: msg.data.command,
+        result: msg.data.result,
+        requestId: msg.data.requestId,
+      })
       // Surface command results so the user gets feedback on arm/takeoff/etc.
       telemetryStore.addStatusLog(
         msg.data.result === 0 ? 6 : 3,
@@ -268,6 +286,12 @@ function connectSocket() {
   }
 }
 
+/** Send through the App-owned socket without mounting another socket lifecycle. */
+export function sendClientMessage(msg: ClientMessage): boolean {
+  if (msg.type === 'param_request_list') autoParamRequestPending = false
+  return sendToServer(msg)
+}
+
 export function getRestControlHeaders(): Record<string, string> {
   return restControlToken
     ? { 'X-SkyLab-Control-Token': restControlToken }
@@ -298,10 +322,5 @@ export function useWebSocket() {
     }
   }, [])
 
-  const send = useCallback((msg: ClientMessage) => {
-    if (msg.type === 'param_request_list') autoParamRequestPending = false
-    sendToServer(msg)
-  }, [])
-
-  return { send }
+  return { send: sendClientMessage }
 }
