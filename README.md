@@ -42,8 +42,6 @@ OpenConfigurator 是一个基于浏览器的 PX4 地面控制站（GCS）。Reac
 - 多客户端只读观察与单控制者租约，REST/WS 运行时输入校验
 - 深色/浅色主题与响应式四工作区界面
 
-尚未完成的能力见 [路线图](docs/ROADMAP.md)。
-
 ## 界面与工作区
 
 OpenConfigurator 将功能收敛为四个一级工作区：
@@ -132,21 +130,13 @@ PX4 Flight Controller
 
 设计约束与数据流详见 [架构文档](docs/ARCHITECTURE.md)。
 
-## 配置与远程访问
-
-默认配置无需 `.env` 文件。可复制 [.env.example](.env.example) 查看所有服务端与 MAVLink 选项。
-
-远程模式不会因设置 `HOST=0.0.0.0` 自动开启；还必须同时配置 `SKYLAB_ALLOW_REMOTE=true`、至少 32 字节的随机 token 和精确的允许 Origin。公开网络部署必须使用 HTTPS/WSS 反向代理。完整说明见 [部署指南](docs/DEPLOYMENT.md)。
-
 ## 安全操作底线
 
 - 电机测试前必须拆除全部螺旋桨，并在界面中明确确认。
 - 解锁需要二次点击或完整拖拽确认；不要移除或绕过这些保护。
 - 手柄 RC override 默认关闭，必须由操作者手动启用。
 - `transportOpen` 只代表串口已打开；只有 `vehicleReady` 才代表已收到目标飞控的有效心跳。
-- 自动化测试通过不等于真实飞行验证通过。真实硬件验证项目见 [开源发布清单](docs/OPEN_SOURCE_CHECKLIST.md)。
-
-安全漏洞请不要直接创建公开 Issue，请阅读 [SECURITY.md](SECURITY.md)。
+- 自动化测试通过不等于真实飞行验证通过。
 
 ## 参与贡献
 
