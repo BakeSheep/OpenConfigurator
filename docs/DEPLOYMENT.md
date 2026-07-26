@@ -2,7 +2,7 @@
 
 ## 本机模式（推荐）
 
-SkyLab 默认监听 `127.0.0.1:3000`，不需要 token：
+OpenConfigurator 默认监听 `127.0.0.1:3000`，不需要 token：
 
 ```bash
 npm ci
@@ -27,6 +27,8 @@ npm start
 | `MAVLINK_SIGNING_KEY` | — | 64 位 hex 的 32-byte key，或用于派生 key 的口令 |
 | `MAVLINK_SIGNING_LINK_ID` | `0` | signing link ID，范围 0–255 |
 | `MAVLINK_SIGNING_REQUIRE` | `false` | 启用后拒绝未签名入站帧，必须同时配置 signing key |
+
+`SKYLAB_*` 环境变量和 `X-SkyLab-*` HTTP header 是早期版本留下的兼容标识。项目更名为 OpenConfigurator 后暂时继续支持这些名称，避免破坏已有部署；未来如引入新前缀，将提供迁移期而不是直接删除。
 
 复制 `.env.example` 仅用于查看示例；当前启动脚本不会自动加载 `.env`。请通过操作系统、进程管理器或容器编排工具注入变量。
 

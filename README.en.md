@@ -1,11 +1,11 @@
-# SkyLab
+# OpenConfigurator
 
-SkyLab is a local-first, browser-based ground control station for PX4. A React SPA communicates with a local Node.js service over REST and one WebSocket; the service communicates with the flight controller over MAVLink v1/v2 using USB serial or Bluetooth SPP.
+OpenConfigurator is a local-first, browser-based ground control station for PX4. A React SPA communicates with a local Node.js service over REST and one WebSocket; the service communicates with the flight controller over MAVLink v1/v2 using USB serial or Bluetooth SPP.
 
 [中文说明](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 > [!WARNING]
-> SkyLab is pre-release software and is not a certified aviation safety system. Remove all propellers before bench testing, validate changes with real hardware in a controlled environment, and retain a manual takeover path.
+> OpenConfigurator is pre-release software and is not a certified aviation safety system. Remove all propellers before bench testing, validate changes with real hardware in a controlled environment, and retain a manual takeover path.
 
 ## Features
 
@@ -25,8 +25,8 @@ See the [roadmap](docs/ROADMAP.md) for work that is not implemented yet.
 Requirements: Node.js `^20.19.0` or `>=22.12.0`, npm, and a supported PX4 serial or paired Bluetooth SPP connection. Chrome or Edge 89+ is recommended for the Web Serial device picker.
 
 ```bash
-git clone https://github.com/BakeSheep/SkyLab.git
-cd SkyLab
+git clone https://github.com/BakeSheep/OpenConfigurator.git
+cd OpenConfigurator
 npm install
 npm run dev
 ```
