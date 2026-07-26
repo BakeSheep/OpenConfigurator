@@ -1,16 +1,5 @@
 # OpenConfigurator 路线图
 
-路线图表达方向而非交付承诺。优先级会依据安全风险、真实硬件反馈和维护资源调整。
-
-## 近期：公开预览版
-
-- [x] 选择并加入明确的开源许可证（MIT）
-- [ ] 补充界面截图、演示视频和首个版本发布说明（暂缓）
-- [x] 建立 Windows / Linux 的基础 CI：typecheck、server tests、build
-- [x] 建立主流 PX4 版本、USB 串口与 Windows Bluetooth SPP 的[硬件验证矩阵](COMPATIBILITY.md)（实机结果持续填写，不伪造未验证结论）
-- [x] 完善加速度计、陀螺仪、磁力计等分步校准体验
-- [x] 整理可公开复现的 Bug 报告模板与兼容设备清单
-
 ## 中期：可用性与连接能力
 
 - UDP 连接与 PX4 SITL 支持
