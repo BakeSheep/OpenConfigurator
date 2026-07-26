@@ -230,7 +230,13 @@ function handleSensor(msgType: string, data: any) {
     case 'SCALED_IMU3':
     case 'RAW_IMU':
     case 'HIGHRES_IMU':
-      sensorStore.setImu(data, data.instance ?? (msgType === 'SCALED_IMU2' ? 1 : msgType === 'SCALED_IMU3' ? 2 : 0))
+      sensorStore.setImu(
+        data,
+        data.instance ?? (msgType === 'SCALED_IMU2' ? 1 : msgType === 'SCALED_IMU3' ? 2 : 0),
+        // Source drives per-instance stream arbitration in the store; PX4 sends
+        // HIGHRES_IMU + SCALED_IMU + RAW_IMU concurrently for the same IMU.
+        msgType === 'HIGHRES_IMU' ? 'HIGHRES_IMU' : msgType === 'RAW_IMU' ? 'RAW_IMU' : 'SCALED_IMU',
+      )
       break
     case 'SCALED_PRESSURE':
       sensorStore.setBaro(data)

@@ -3,9 +3,39 @@ import type { ImuData, BaroData, OpticalFlowData, DistanceSensorData } from '../
 
 type SensorField = 'imu' | 'baro' | 'opticalFlow' | 'distanceSensor'
 
+// MAVLink message stream an IMU update came from. PX4 emits HIGHRES_IMU,
+// SCALED_IMU(2/3) and RAW_IMU concurrently for the same physical IMU; without
+// arbitration they alternate-overwrite the same instance slot and the UI
+// flickers between differently-scaled values (e.g. temperature 15 vs 47 degC).
+export type ImuSource = 'HIGHRES_IMU' | 'SCALED_IMU' | 'RAW_IMU'
+
+const IMU_SOURCE_PRIORITY: Record<ImuSource, number> = {
+  HIGHRES_IMU: 2,
+  SCALED_IMU: 1,
+  RAW_IMU: 0,
+}
+
+// Temperature is arbitrated separately from motion data: SCALED_IMU/RAW_IMU
+// carry the IMU die temperature (cdegC, 0 = no sensor), while PX4 is known to
+// fill HIGHRES_IMU.temperature with a 15 degC ISA placeholder, so HIGHRES_IMU
+// is the least trusted source for this field.
+const IMU_TEMP_PRIORITY: Record<ImuSource, number> = {
+  SCALED_IMU: 2,
+  RAW_IMU: 1,
+  HIGHRES_IMU: 0,
+}
+
+// If the preferred stream stops for this long, fall back to a lower-priority one.
+const IMU_SOURCE_STALE_MS = 1500
+
 interface SensorState {
   imu: ImuData | null
   imus: Partial<Record<number, ImuData>>
+  // Winning stream per IMU instance; lower-priority streams are dropped while
+  // the winner is fresh (see setImu). Temperature has its own winner because
+  // its trust order differs from the motion fields.
+  imuSources: Partial<Record<number, { source: ImuSource; ts: number }>>
+  imuTempSources: Partial<Record<number, { source: ImuSource; ts: number }>>
   baro: BaroData | null
   opticalFlow: OpticalFlowData | null
   distanceSensor: DistanceSensorData | null
@@ -14,7 +44,7 @@ interface SensorState {
   // Timestamp (Date.now()) of the last update per sensor field. 0 = never
   // received OR marked stale by markAllOffline() on disconnect.
   lastUpdate: Record<SensorField, number>
-  setImu: (data: ImuData, instance?: number) => void
+  setImu: (data: ImuData, instance?: number, source?: ImuSource) => void
   setBaro: (data: BaroData) => void
   setOpticalFlow: (data: OpticalFlowData) => void
   setDistanceSensor: (data: DistanceSensorData) => void
@@ -45,6 +75,8 @@ const SENSOR_STALE_THRESHOLDS: Record<SensorField, number> = {
 export const useSensorStore = create<SensorState>((set, get) => ({
   imu: null,
   imus: {},
+  imuSources: {},
+  imuTempSources: {},
   baro: null,
   opticalFlow: null,
   distanceSensor: null,
@@ -59,18 +91,48 @@ export const useSensorStore = create<SensorState>((set, get) => ({
     battery: 'offline',
   },
   lastUpdate: zeroLastUpdate(),
-  setImu: (data, requestedInstance) => set((state) => {
+  setImu: (data, requestedInstance, source = 'SCALED_IMU') => set((state) => {
     const instance = requestedInstance ?? data.instance ?? 0
-    const normalized = { ...data, instance }
+    const now = Date.now()
+    const previous = state.imus[instance]
+    // Per-field arbitration for temperature: a null reading never claims the
+    // slot, and a fresh higher-trust source keeps lower-trust values out.
+    const tempWinner = state.imuTempSources[instance]
+    const tempAccepted = data.temperature !== null && (!tempWinner
+      || tempWinner.source === source
+      || IMU_TEMP_PRIORITY[source] >= IMU_TEMP_PRIORITY[tempWinner.source]
+      || now - tempWinner.ts >= IMU_SOURCE_STALE_MS)
+    const imuTempSources = tempAccepted
+      ? { ...state.imuTempSources, [instance]: { source, ts: now } }
+      : state.imuTempSources
+    const temperature = tempAccepted ? data.temperature : previous?.temperature ?? null
+    // Arbitrate between concurrent IMU streams for the same instance: drop
+    // motion updates from a lower-priority stream while a higher-priority one
+    // is fresh, but still let them contribute the temperature field.
+    const winner = state.imuSources[instance]
+    if (winner && winner.source !== source
+      && IMU_SOURCE_PRIORITY[winner.source] > IMU_SOURCE_PRIORITY[source]
+      && now - winner.ts < IMU_SOURCE_STALE_MS) {
+      if (!tempAccepted || !previous) return state
+      const merged = { ...previous, temperature }
+      return {
+        imu: instance === 0 || state.imu === null ? merged : state.imu,
+        imus: { ...state.imus, [instance]: merged },
+        imuTempSources,
+      }
+    }
+    const normalized = { ...data, instance, temperature }
     const sensorHealth = state.sensorHealth.imu === 'ok' && state.sensorHealth.mag === 'ok'
       ? state.sensorHealth
       : { ...state.sensorHealth, imu: 'ok' as const, mag: 'ok' as const }
     return {
     imu: instance === 0 || state.imu === null ? normalized : state.imu,
     imus: { ...state.imus, [instance]: normalized },
+    imuSources: { ...state.imuSources, [instance]: { source, ts: now } },
+    imuTempSources,
     magData: instance === 0 || state.magData === null ? { x: data.xmag, y: data.ymag, z: data.zmag } : state.magData,
     sensorHealth,
-    lastUpdate: { ...state.lastUpdate, imu: Date.now() },
+    lastUpdate: { ...state.lastUpdate, imu: now },
   }}),
   setBaro: (data) => set((state) => ({
     baro: data,
@@ -105,6 +167,9 @@ export const useSensorStore = create<SensorState>((set, get) => ({
   markAllOffline: () => set((state) => ({
     sensorHealth: Object.fromEntries(Object.keys(state.sensorHealth).map((k) => [k, 'offline' as const])),
     lastUpdate: zeroLastUpdate(),
+    // Reset stream arbitration so the next connection re-elects a winner.
+    imuSources: {},
+    imuTempSources: {},
   })),
   isStale: (field, thresholdMs) => {
     const ts = get().lastUpdate[field]

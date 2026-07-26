@@ -110,13 +110,12 @@ export default function FlightControlPage() {
             <p className="text-[18px] font-bold" style={{ color: armed ? 'var(--success)' : 'var(--text-primary)' }}>{armed ? '已解锁' : '已上锁'}</p>
             <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? '当前模式：' + (vehicle?.mode ?? '—') : '飞控未连接，所有指令已锁定。'}</p>
           </div>
-          {!armed ? (
+          {!armed && (
             <button type="button" disabled={!connected || !allChecksPassed} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
               {armConfirmation ? '再次点击确认解锁' : '解锁飞行器'}
             </button>
-          ) : (
-            <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" onClick={disarm}>上锁飞行器</button>
           )}
+          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
         </div>
       </section>
 
@@ -176,7 +175,7 @@ export default function FlightControlPage() {
         </div>
       </section>
 
-      <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_0.75fr]">
+      <section className="mt-4 grid grid-cols-1 gap-4">
         <div className="mc-card overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
             <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>飞行前检查</h2>
@@ -198,16 +197,6 @@ export default function FlightControlPage() {
                 飞控最近反馈：{latestArmMessage.text}
               </div>
             )}
-          </div>
-        </div>
-
-        <div className="mc-card overflow-hidden" style={{ borderColor: 'color-mix(in srgb, var(--danger) 35%, var(--border))' }}>
-          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--danger)' }}>紧急操作</h2>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>立即发送普通上锁命令；这不是强制断电 Kill Switch。</p>
-          </div>
-          <div className="p-5">
-            <button type="button" className="mc-btn mc-btn-danger min-h-12 w-full text-[14px]" disabled={!connected || !armed} onClick={disarm}>立即上锁</button>
           </div>
         </div>
       </section>

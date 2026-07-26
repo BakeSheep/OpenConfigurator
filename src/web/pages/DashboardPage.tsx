@@ -2,12 +2,33 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
+import { buildGroups } from '../components/telemetry/StatusVariableBrowser'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import type { RcChannelsData } from '../../shared/types'
 
 const radToDegrees = (radians: number) => radians * 180 / Math.PI
 const AttitudeIndicator = lazy(() => import('../components/telemetry/AttitudeIndicator'))
+
+// Selected variable ids ("GROUP.name") for the custom data board.
+const CUSTOM_VARS_KEY = 'oc-dashboard-custom-vars'
+
+function loadCustomVars(): string[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_VARS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string')
+    }
+  } catch { /* ignore */ }
+  return []
+}
+
+function saveCustomVars(ids: string[]) {
+  try { localStorage.setItem(CUSTOM_VARS_KEY, JSON.stringify(ids)) } catch { /* ignore */ }
+}
+
 
 function readDashboardSnapshot() {
   const telemetry = useTelemetryStore.getState()
@@ -27,6 +48,8 @@ function readDashboardSnapshot() {
     baro: sensors.baro,
     opticalFlow: sensors.opticalFlow,
     distanceSensor: sensors.distanceSensor,
+    rcChannels: telemetry.rcChannels,
+    motorOutputs: telemetry.motorOutputs,
   }
 }
 
@@ -48,7 +71,129 @@ function Horizon({ roll, pitch, yaw, frozen }: { roll: number; pitch: number; ya
 }
 
 function HealthRow({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return <div className="mc-dashboard-health-row"><span className="mc-status-dot" style={{ background: ok ? 'var(--success)' : 'var(--text-disabled)' }} /><span>{label}</span><strong className="mc-mono">{value}</strong></div>
+  return (
+    <div className="mc-dashboard-health-card">
+      <div><span className="mc-status-dot" style={{ background: ok ? 'var(--success)' : 'var(--text-disabled)' }} /><span>{label}</span></div>
+      <strong className="mc-mono">{value}</strong>
+    </div>
+  )
+}
+
+// Vertical fill bars for RC channel inputs / motor PWM outputs. Values are
+// raw microseconds; the fill maps the usual 1000-2000 us servo range.
+function VerticalBarsCard({ title, subtitle, live, bars }: {
+  title: string
+  subtitle: string
+  live: boolean
+  bars: Array<{ label: string; value: number | null }>
+}) {
+  return (
+    <aside className="mc-card mc-dashboard-sensors overflow-hidden">
+      <header><div><h2>{title}</h2><p>{subtitle}</p></div><span data-ready={live}>{live ? 'LIVE' : 'OFFLINE'}</span></header>
+      <div className="mc-dashboard-bars">
+        {bars.map((bar) => {
+          const fresh = live && bar.value !== null
+          const ratio = fresh ? Math.max(0, Math.min(1, (bar.value! - 1000) / 1000)) : 0
+          return (
+            <div key={bar.label} className="mc-dashboard-bars__bar" title={fresh ? `${bar.label}: ${Math.round(bar.value!)} µs` : `${bar.label}: —`}>
+              <span className="mc-dashboard-bars__value">{fresh ? Math.round(bar.value!) : '—'}</span>
+              <div className="mc-dashboard-bars__track">
+                <div className="mc-dashboard-bars__fill" data-stale={!fresh || undefined} style={{ height: `${(ratio * 100).toFixed(1)}%` }} />
+              </div>
+              <span className="mc-dashboard-bars__label">{bar.label}</span>
+            </div>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}
+
+// Custom data board: user picks any variables from the MAVLink status tree
+// (same registry as the status variable browser) for realtime display.
+function CustomDataCard() {
+  const telemetry = useTelemetryStore()
+  const sensors = useSensorStore()
+  const linkStats = useConnectionStore((state) => state.linkStats)
+  const [selected, setSelected] = useState(loadCustomVars)
+  const [editing, setEditing] = useState(false)
+  const [query, setQuery] = useState('')
+
+  const groups = buildGroups(telemetry, sensors, linkStats)
+  const entryById = new Map(groups.flatMap((group) => group.entries.map((entry) => [`${group.name}.${entry.name}`, entry] as [string, typeof entry])))
+
+  const toggleVar = (id: string) => {
+    setSelected((current) => {
+      const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+      saveCustomVars(next)
+      return next
+    })
+  }
+
+  const needle = query.trim().toLowerCase()
+  const pickerGroups = needle
+    ? groups
+        .map((group) => ({
+          ...group,
+          entries: group.name.toLowerCase().includes(needle)
+            ? group.entries
+            : group.entries.filter((entry) => entry.name.toLowerCase().includes(needle)),
+        }))
+        .filter((group) => group.entries.length > 0)
+    : groups
+
+  return (
+    <aside className="mc-card mc-dashboard-sensors overflow-hidden">
+      <header>
+        <div><h2>自定义看板</h2><p>{editing ? '勾选要显示的 MAVLink 状态变量' : `${selected.length} 项实时数据`}</p></div>
+        <button type="button" className="mc-dashboard-custom__edit" data-active={editing} onClick={() => setEditing((v) => !v)}>
+          {editing ? '完成' : '编辑'}
+        </button>
+      </header>
+      {editing ? (
+        <div className="mc-dashboard-custom__picker">
+          <input
+            type="text"
+            className="mc-input"
+            value={query}
+            placeholder="搜索变量名…"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="mc-dashboard-custom__picker-list">
+            {pickerGroups.map((group) => (
+              <div key={group.name}>
+                <p>{group.name}</p>
+                {group.entries.map((entry) => {
+                  const id = `${group.name}.${entry.name}`
+                  return (
+                    <label key={id}>
+                      <input type="checkbox" checked={selected.includes(id)} onChange={() => toggleVar(id)} style={{ accentColor: 'var(--accent)' }} />
+                      <span>{entry.name}</span>
+                      <i className="mc-mono">{entry.value ?? '--'}</i>
+                    </label>
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : selected.length === 0 ? (
+        <div className="mc-dashboard-custom__empty">点击右上角“编辑”，从 MAVLink 状态变量中选取要实时显示的数据。</div>
+      ) : (
+        <div className="mc-dashboard-health-list mc-dashboard-custom__list">
+          {selected.map((id) => {
+            const entry = entryById.get(id)
+            return (
+              <div key={id} className="mc-dashboard-health-card">
+                <div><span className="mc-status-dot" style={{ background: entry?.value != null ? 'var(--success)' : 'var(--text-disabled)' }} /><span>{id}</span></div>
+                <strong className="mc-mono">{entry ? `${entry.value ?? '--'}${entry.value != null && entry.unit ? ` ${entry.unit}` : ''}` : '--'}</strong>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </aside>
+  )
 }
 
 export default function DashboardPage() {
@@ -61,10 +206,25 @@ export default function DashboardPage() {
   const {
     attitude, gps, battery, relativeAlt, heading, mode, armed, isStale,
     sensorHealth, imu, magData, baro, opticalFlow, distanceSensor,
+    rcChannels, motorOutputs,
   } = snapshot
   const roll = radToDegrees(attitude?.roll ?? 0)
   const pitch = radToDegrees(attitude?.pitch ?? 0)
   const yaw = radToDegrees(attitude?.yaw ?? 0)
+
+  // RC bars: ch1-8 are always present in RC_CHANNELS, 9+ only when reported.
+  const rcLive = vehicleReady && rcChannels !== null && !isStale('rcChannels')
+  const rcBars = Array.from({ length: 18 }, (_, index) => {
+    const value = rcChannels?.[`ch${index + 1}` as keyof RcChannelsData] ?? null
+    if (index >= 8 && value == null) return null
+    return { label: String(index + 1), value }
+  }).filter((bar) => bar !== null)
+
+  // Motor bars: null slots mean the output channel is not present.
+  const motorLive = vehicleReady && motorOutputs !== null && !isStale('motorOutputs')
+  const motorBars = (motorOutputs?.outputs ?? Array.from({ length: 8 }, () => null))
+    .map((value, index) => ({ label: `M${index + 1}`, value }))
+    .filter((bar, index) => bar.value !== null || index < 8)
 
   return (
     <div className="mc-workspace mc-workspace--full mc-fade-in">
@@ -95,6 +255,9 @@ export default function DashboardPage() {
             <HealthRow label="电池" value={battery ? `${battery.voltage?.toFixed(1) ?? '—'} V · ${battery.remaining ?? '—'}%` : '—'} ok={Boolean(vehicleReady && battery)} />
           </div>
         </aside>
+        <VerticalBarsCard title="遥控输入" subtitle="RC_CHANNELS · µs" live={rcLive} bars={rcBars} />
+        <VerticalBarsCard title="电机输出" subtitle="SERVO_OUTPUT_RAW · µs" live={motorLive} bars={motorBars} />
+        <CustomDataCard />
       </section>
     </div>
   )

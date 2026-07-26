@@ -4,6 +4,10 @@ OpenConfigurator is a local-first, browser-based ground control station for PX4.
 
 [中文说明](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="Flight overview workspace (demo data)" width="860" />
+</p>
+
 > [!WARNING]
 > OpenConfigurator is pre-release software and is not a certified aviation safety system. Remove all propellers before bench testing, validate changes with real hardware in a controlled environment, and retain a manual takeover path.
 
@@ -19,6 +23,18 @@ OpenConfigurator is a local-first, browser-based ground control station for PX4.
 - Runtime validation, a single-controller lease, and read-only observers
 
 See the [roadmap](docs/ROADMAP.md) for work that is not implemented yet.
+
+## Screenshots
+
+> These screenshots were captured in the dev-only demo mode (`npm run dev:web`, then open `http://localhost:5173/?demo=1`). All telemetry shown is synthetic showcase data, not a real flight-controller link.
+
+| Flight operations | Parameters & diagnostics |
+|---|---|
+| ![Flight operations](docs/screenshots/flight.png) | ![Parameters](docs/screenshots/diagnostics.png) |
+
+| Realtime waveforms | Vehicle setup |
+|---|---|
+| ![Realtime waveforms](docs/screenshots/waveforms.png) | ![Vehicle setup](docs/screenshots/settings.png) |
 
 ## Quick start
 

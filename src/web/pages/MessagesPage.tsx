@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
+import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -8,6 +9,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 const tabs = [
   { id: 'messages', label: '消息' },
   { id: 'status', label: '状态' },
+  { id: 'terminal', label: '终端' },
 ]
 
 const streamRows = [
@@ -97,7 +99,9 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
         </div>
       )}
 
-      {activeTab === 'status' && (
+      {activeTab === 'status' && <StatusVariableBrowser paused={paused} />}
+
+      {activeTab === 'terminal' && (
         <section className="mc-card mc-console-panel">
           {displayLogs.length === 0 ? <p className="mc-console-empty">暂无飞控状态消息</p> : displayLogs.map((log) => (
             <div key={log.id}><time className="mc-mono">{new Date(log.time).toLocaleTimeString()}</time><span data-severity={log.severity}>{log.severity.toUpperCase()}</span><p>{log.text}</p></div>

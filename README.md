@@ -17,6 +17,10 @@
   <a href="SECURITY.md">安全策略</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/dashboard.png" alt="飞行总览工作区（演示数据）" width="860" />
+</p>
+
 > [!WARNING]
 > OpenConfigurator 仍处于早期阶段，不是经过认证的航空安全系统。连接真实飞行器前请先拆除螺旋桨，在受控环境中完成硬件在环测试，并始终保留人工接管能力。使用者须自行承担飞行与设备安全责任。
 
@@ -51,7 +55,17 @@ OpenConfigurator 将功能收敛为四个一级工作区：
 | 飞行器设置 | 机架、传感器、执行器、接收机、手柄和端口设置 |
 | 调参与诊断 | 参数、PID、EKF、实时波形和 MAVLink 消息 |
 
-> 项目暂未提交稳定版界面截图。发布首个公开版本前，请按 [开源发布清单](docs/OPEN_SOURCE_CHECKLIST.md) 补充真实截图或演示视频。
+### 界面截图
+
+> 以下截图使用开发演示模式（`npm run dev:web` 后访问 `http://localhost:5173/?demo=1`）生成，页面中的遥测为合成数据，仅用于展示界面，不代表真实飞控连接。
+
+| 飞行操作 | 调参与诊断·参数 |
+|---|---|
+| ![飞行操作](docs/screenshots/flight.png) | ![参数管理](docs/screenshots/diagnostics.png) |
+
+| 实时波形 | 飞行器设置 |
+|---|---|
+| ![实时波形](docs/screenshots/waveforms.png) | ![飞行器设置](docs/screenshots/settings.png) |
 
 ## 快速开始
 

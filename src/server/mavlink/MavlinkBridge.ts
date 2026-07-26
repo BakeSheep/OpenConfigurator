@@ -738,6 +738,10 @@ export class MavlinkBridge extends EventEmitter {
     const d = decode<common.HighresImu>(105, msg.payload)
     if (!d) return
     const standardGravity = 9.80665
+    // HIGHRES_IMU_UPDATED_FLAGS bit 12 (0x1000) = temperature. PX4 fills the
+    // temperature field with a placeholder (15 degC ISA) when no die
+    // temperature is available, so only trust it when the bit is set.
+    const temperatureUpdated = (Number(d.fieldsUpdated) & 0x1000) !== 0
     const data = {
       instance: d.id,
       units: 'normalized' as const,
@@ -752,7 +756,7 @@ export class MavlinkBridge extends EventEmitter {
       xmag: d.xmag * 1000,
       ymag: d.ymag * 1000,
       zmag: d.zmag * 1000,
-      temperature: Number.isFinite(d.temperature) ? d.temperature : null,
+      temperature: temperatureUpdated && Number.isFinite(d.temperature) ? d.temperature : null,
     }
     this.emit('message', { type: 'sensor', msgType: 'HIGHRES_IMU', data } as ServerMessage)
   }
@@ -954,7 +958,9 @@ export class MavlinkBridge extends EventEmitter {
       integrated_xgyro_rad: d.integratedXgyro,
       integrated_ygyro_rad: d.integratedYgyro,
       integrated_zgyro_rad: d.integratedZgyro,
-      temperature_c: d.temperature / 100,
+      // OPTICAL_FLOW_RAD temperature is cdegC with 0 = no temperature sensor
+      // (same convention as SCALED_IMU), so map 0 to null.
+      temperature_c: d.temperature === 0 ? null : d.temperature / 100,
       time_delta_distance_us: d.timeDeltaDistanceUs,
       distance_m: distance,
       // Deprecated compatibility aliases. These retain their historical

@@ -12,6 +12,15 @@ export interface LinkStats {
   txBps: number
   crcErrors: number
   crcErrorsPerSec: number
+  // Optional counters mirrored from the server's link_stats payload.
+  rxPackets?: number
+  txPackets?: number
+  rxSequenceLost?: number
+  rxDuplicates?: number
+  rxOutOfOrder?: number
+  rejectedPackets?: number
+  garbageBytes?: number
+  protocolVersion?: 1 | 2
 }
 
 interface ConnectionState {

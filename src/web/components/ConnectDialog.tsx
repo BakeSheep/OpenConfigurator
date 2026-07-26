@@ -51,7 +51,7 @@ interface PickedPort {
 }
 
 export default function ConnectDialog() {
-  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, setPorts, setScanning, setStatus, setConnectDialogOpen } = useConnectionStore()
+  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, setPorts, setScanning, setStatus, setConnectDialogOpen } = useConnectionStore()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
   const [connType, setConnType] = useState<'serial' | 'bluetooth'>('serial')
@@ -253,8 +253,6 @@ export default function ConnectDialog() {
 
   if (!connectDialogOpen) return null
 
-  const connected = useConnectionStore((state) => state.transportOpen)
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 mc-animate-fade"
@@ -436,7 +434,7 @@ export default function ConnectDialog() {
           <button onClick={() => setConnectDialogOpen(false)} className="mc-btn mc-btn-ghost flex-1 py-2.5">
             取消
           </button>
-          {connected ? (
+          {transportOpen ? (
             <button onClick={disconnect} className="mc-btn mc-btn-danger flex-1 py-2.5">
               断开连接
             </button>

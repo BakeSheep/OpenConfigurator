@@ -17,10 +17,15 @@ dist-ssr
 coverage
 .nyc_output
 
+# Headless browser profile used by scripts/screenshot-demo.mjs
+.tmp-shot-profile
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
+.qoder
+.zcode
 .DS_Store
 Thumbs.db
 Desktop.ini

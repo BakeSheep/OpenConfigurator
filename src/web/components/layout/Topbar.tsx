@@ -72,6 +72,15 @@ export default function Topbar() {
     savePresets(updated)
   }
 
+  // Close the transport from the topbar dropdown; connection state updates
+  // arrive over the WebSocket, so no local status juggling is needed here.
+  const disconnectTransport = async () => {
+    setConnectDropdown(false)
+    try {
+      await fetch('/api/connections/disconnect', { method: 'POST', headers: getRestControlHeaders() })
+    } catch { /* ignore - WS will report the real state */ }
+  }
+
   // Telemetry data
   const attitude = useTelemetryStore((s) => s.attitude)
   const gps = useTelemetryStore((s) => s.gps)
@@ -309,13 +318,7 @@ export default function Topbar() {
             {!stale && attitude && (
               <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
                 <span className="mc-topbar__status-label">姿态</span>
-                <span className="mc-topbar__status-value">{radToDeg(attitude.roll).toFixed(1)}° / {radToDeg(attitude.pitch).toFixed(1)}°</span>
-              </span>
-            )}
-            {!isStale('vfrHud') && (
-              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
-                <Icon name="altitude" size={13} />
-                <span className="mc-topbar__status-value">{relativeAlt.toFixed(1)}m</span>
+                <span className="mc-topbar__status-value">{radToDeg(attitude.roll).toFixed(1)}° / {radToDeg(attitude.pitch).toFixed(1)}° / {isStale('vfrHud') ? '—' : relativeAlt.toFixed(1)}m</span>
               </span>
             )}
             {!isStale('vfrHud') && (
@@ -353,12 +356,23 @@ export default function Topbar() {
           <button
             type="button"
             className={'mc-topbar__connect' + (vehicleReady ? ' is-connected' : transportOpen ? ' is-waiting' : '')}
-            onClick={() => { setActiveStatusMenu(null); if (transportOpen) setConnectDialogOpen(true); else { setPresets(loadPresets()); setConnectDropdown((v) => !v); } }}
+            onClick={() => { setActiveStatusMenu(null); if (!transportOpen) setPresets(loadPresets()); setConnectDropdown((v) => !v) }}
           >
             <span className="mc-status-dot" style={{ background: vehicleReady ? 'var(--success)' : (transportOpen || reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
             <span>{connectionLabel}</span>
-            {!transportOpen && <Icon name="chevronDown" size={11} />}
+            <Icon name="chevronDown" size={11} />
           </button>
+          {connectDropdown && transportOpen && (
+            <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
+              <p className="mb-1.5 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>当前连接</p>
+              <div className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--bg-tertiary)' }}>
+                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? '蓝牙 SPP' : 'USB 串口'}</span>
+                <span className="ml-1.5 mc-mono text-[10px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
+              </div>
+              <button type="button" className="mc-btn mc-btn-danger w-full py-1.5 text-[11px]" onClick={disconnectTransport}>断开连接</button>
+              <button type="button" className="mc-btn mc-btn-ghost mt-1.5 w-full py-1.5 text-[11px]" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>连接管理…</button>
+            </div>
+          )}
           {connectDropdown && !transportOpen && (
             <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
               <div className="flex items-center justify-between mb-1.5">

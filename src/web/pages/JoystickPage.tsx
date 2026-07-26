@@ -75,30 +75,18 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
 
       {activeTab === 'overview' && (
         <section className="mt-4 space-y-3">
-          {/* Enable control + visualizer in a grid layout */}
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1fr_0.6fr]">
-            {/* Left: Gamepad visualizer */}
-            <div className="mc-card overflow-hidden p-4">
-              <GamepadVisualizer connected={connected} controllerId={id} flightControllerConnected={flightControllerConnected} enabled={enabled} axes={axes} buttons={buttons} mapping={mapping} />
-            </div>
-
-            {/* Right: Enable control at top + safety notice */}
-            <div className="space-y-3">
-              <div className="mc-card p-3">
-                <label className="flex cursor-pointer items-center justify-between rounded-lg border p-3" style={{ borderColor: enabled ? 'var(--accent)' : 'var(--border)', background: enabled ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
-                  <span>
-                    <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span>
-                    <span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
-                  </span>
-                  <input type="checkbox" checked={enabled} disabled={!connected || !flightControllerConnected} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
-                </label>
-                {actionNotice && <p className="mt-2 rounded-lg px-3 py-1.5 text-[11px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{actionNotice}</p>}
-                {!flightControllerConnected && <p className="mt-2 text-[10px]" style={{ color: 'var(--warning)' }}>请先连接飞控。</p>}
-              </div>
-              <div className="mc-card p-3">
-                <p className="text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>手柄不会自动接管飞控；飞控断链后会立刻停止 MAVLink 手动输入。</p>
-              </div>
-            </div>
+          {/* Enable control merged into the visualizer card */}
+          <div className="mc-card overflow-hidden p-4">
+            <label className="mb-4 flex cursor-pointer items-center justify-between rounded-lg border p-3" style={{ borderColor: enabled ? 'var(--accent)' : 'var(--border)', background: enabled ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
+              <span>
+                <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span>
+                <span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
+              </span>
+              <input type="checkbox" checked={enabled} disabled={!connected || !flightControllerConnected} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
+            </label>
+            {actionNotice && <p className="-mt-2 mb-3 rounded-lg px-3 py-1.5 text-[11px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{actionNotice}</p>}
+            {!flightControllerConnected && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>请先连接飞控。</p>}
+            <GamepadVisualizer connected={connected} controllerId={id} flightControllerConnected={flightControllerConnected} enabled={enabled} axes={axes} buttons={buttons} mapping={mapping} />
           </div>
 
           {/* Channel mapping integrated below */}

@@ -45,7 +45,6 @@ export default function GamepadVisualizer({
   const leftY = clampAxis(axes[mapping.throttle])
   const rightX = clampAxis(axes[mapping.roll])
   const rightY = clampAxis(axes[mapping.pitch])
-  const pressed = buttons.flatMap((value, index) => value ? [index] : [])
   const buttonFill = (index: number) => buttons[index] ? 'var(--accent)' : 'var(--bg-hover)'
   const buttonStroke = (index: number) => buttons[index] ? 'var(--accent-hover)' : 'var(--border-strong)'
   const dpadFill = (index: number) => buttons[index] ? 'var(--accent)' : 'var(--bg-hover)'
@@ -136,21 +135,6 @@ export default function GamepadVisualizer({
                 <p className="mc-mono mt-0.5 text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{(value as number).toFixed(3)}</p>
               </div>
             ))}
-          </div>
-        </section>
-
-        <section className="rounded-xl border p-4 sm:col-span-2" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
-          <div className="flex items-center justify-between gap-3">
-            <p className="mc-section-title">按键状态</p>
-            <span className="mc-mono text-[10px]" style={{ color: pressed.length ? 'var(--accent)' : 'var(--text-disabled)' }}>
-              {pressed.length ? `B${pressed.join(' · B')}` : '没有按键按下'}
-            </span>
-          </div>
-          <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[9px]" style={{ color: 'var(--text-secondary)' }}>
-            <span className="rounded-md py-1.5" style={{ background: 'var(--bg-tertiary)' }}>解锁 B{mapping.armButton}</span>
-            <span className="rounded-md py-1.5" style={{ background: 'var(--bg-tertiary)' }}>上锁 B{mapping.disarmButton}</span>
-            <span className="rounded-md py-1.5" style={{ background: 'var(--bg-tertiary)' }}>模式 B{mapping.modeButton}</span>
-            <span className="rounded-md py-1.5" style={{ background: 'var(--bg-tertiary)' }}>返航 B{mapping.rtlButton}</span>
           </div>
         </section>
       </div>
