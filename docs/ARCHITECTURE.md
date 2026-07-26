@@ -1,4 +1,4 @@
-# SkyLab 架构
+# OpenConfigurator 架构
 
 ## 系统边界
 

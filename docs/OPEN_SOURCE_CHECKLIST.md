@@ -14,7 +14,7 @@
 
 - [ ] 检查默认分支完整历史中是否含 token、MAVLink signing key、私钥、个人信息或飞行日志；仅扫描当前文件不够。
 - [ ] 确认 `.env`、日志、构建目录和本机配置已被 `.gitignore` 排除。
-- [ ] 统一 `package.json` 的 `name` 与仓库品牌；当前工作区名称可能仍为 `open-configurator`，公开发布前应确认是否改为 `skylab-gcs` 或其他 npm 合法名称。
+- [x] `package.json` 使用 npm 合法名称 `open-configurator`，公开品牌为 OpenConfigurator。
 - [ ] 删除或改写内部路径、临时计划、过时截图与仅对维护者有意义的说明。
 - [ ] 检查依赖许可证与第三方 NOTICE 要求。
 - [ ] 运行 `git diff --check`，并确认工作区没有误提交的生成文件。

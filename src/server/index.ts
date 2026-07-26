@@ -1257,7 +1257,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Bac
   const address = runtime.server.address()
   const actualPort = typeof address === 'object' && address ? address.port : config.port
   const host = displayHost(config.host)
-  logger.log(`[Server] PX4 Web GCS running at http://${host}:${actualPort}`)
+  logger.log(`[Server] OpenConfigurator running at http://${host}:${actualPort}`)
   logger.log(`[Server] WebSocket at ws://${host}:${actualPort}/ws`)
 
   if (options.installSignalHandlers) {

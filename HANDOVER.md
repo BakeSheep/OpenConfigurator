@@ -1,4 +1,4 @@
-# PX4 Web GCS 项目交接文档
+# OpenConfigurator 项目交接文档
 
 ## 项目概述
 
@@ -34,7 +34,7 @@ PX4 飞控 (USB Serial / Bluetooth SPP)
 ## 启动方式
 
 ```bash
-cd <SkyLab 仓库目录>
+cd <OpenConfigurator 仓库目录>
 
 # Node.js ^20.19.0 或 >=22.12.0
 

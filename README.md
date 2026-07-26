@@ -1,7 +1,7 @@
-# SkyLab
+# OpenConfigurator
 
 <p align="center">
-  <img src="public/favicon.svg" width="88" alt="SkyLab logo" />
+  <img src="public/favicon.svg" width="88" alt="OpenConfigurator logo" />
 </p>
 
 <p align="center">
@@ -17,11 +17,11 @@
 </p>
 
 > [!WARNING]
-> SkyLab 仍处于早期阶段，不是经过认证的航空安全系统。连接真实飞行器前请先拆除螺旋桨，在受控环境中完成硬件在环测试，并始终保留人工接管能力。使用者须自行承担飞行与设备安全责任。
+> OpenConfigurator 仍处于早期阶段，不是经过认证的航空安全系统。连接真实飞行器前请先拆除螺旋桨，在受控环境中完成硬件在环测试，并始终保留人工接管能力。使用者须自行承担飞行与设备安全责任。
 
 ## 项目简介
 
-SkyLab 是一个基于浏览器的 PX4 地面控制站（GCS）。React 单页应用通过 REST 与单一 WebSocket 连接本机 Node.js 服务，服务再通过 USB 串口或 Bluetooth SPP 与飞控交换 MAVLink v1/v2 数据。
+OpenConfigurator 是一个基于浏览器的 PX4 地面控制站（GCS）。React 单页应用通过 REST 与单一 WebSocket 连接本机 Node.js 服务，服务再通过 USB 串口或 Bluetooth SPP 与飞控交换 MAVLink v1/v2 数据。
 
 项目采用本地优先的安全边界：服务默认只监听 `127.0.0.1`；远程访问必须显式启用并配置鉴权。飞行控制、电机测试与手柄控制均保留独立的用户确认或启用步骤。
 
@@ -41,7 +41,7 @@ SkyLab 是一个基于浏览器的 PX4 地面控制站（GCS）。React 单页�
 
 ## 界面与工作区
 
-SkyLab 将功能收敛为四个一级工作区：
+OpenConfigurator 将功能收敛为四个一级工作区：
 
 | 工作区 | 内容 |
 |---|---|
@@ -64,8 +64,8 @@ SkyLab 将功能收敛为四个一级工作区：
 ### 开发模式
 
 ```bash
-git clone https://github.com/BakeSheep/SkyLab.git
-cd SkyLab
+git clone https://github.com/BakeSheep/OpenConfigurator.git
+cd OpenConfigurator
 npm install
 npm run dev
 ```
@@ -139,10 +139,10 @@ PX4 Flight Controller
 
 ## 项目状态与许可
 
-SkyLab 当前处于 **pre-release** 阶段，API、协议和界面可能变化。
+OpenConfigurator 当前处于 **pre-release** 阶段，API、协议和界面可能变化。
 
 本仓库尚未选定开源许可证，因此在许可证文件加入之前，代码默认保留全部权利，不能视为已完成开源发布。维护者应在公开发布前从 MIT、Apache-2.0、GPL-3.0 等方案中明确选择；参见 [开源发布清单](docs/OPEN_SOURCE_CHECKLIST.md)。
 
 ## 致谢
 
-SkyLab 构建于 [PX4](https://px4.io/)、[MAVLink](https://mavlink.io/)、React、three.js、node-mavlink 及其他开源项目之上。SkyLab 与 PX4、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系；相关名称与商标归各自权利人所有。
+OpenConfigurator 构建于 [PX4](https://px4.io/)、[MAVLink](https://mavlink.io/)、React、three.js、node-mavlink 及其他开源项目之上。OpenConfigurator 与 PX4、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系；相关名称与商标归各自权利人所有。

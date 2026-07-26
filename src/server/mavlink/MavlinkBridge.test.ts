@@ -160,7 +160,7 @@ function framePayload(frame: Buffer): Buffer {
   )
   assert.equal(noiseSession.stats.parserRebuilds, rebuildsBefore + 1)
 
-  const signingKey = MavLinkPacketSignature.key('SkyLab protocol test')
+  const signingKey = MavLinkPacketSignature.key('OpenConfigurator protocol test')
   const signedSession = new MavlinkCodecSession({
     signing: { key: signingKey, linkId: 7, requireSigned: true },
   })

@@ -493,7 +493,7 @@ export class MavlinkBridge extends EventEmitter {
     if (!this.isSelectedSource(msg)) return
     // The codec has already validated framing, CRC and (when configured)
     // signatures. Every such frame from the selected autopilot is proof that
-    // the link is alive, even when SkyLab has no handler for that message id.
+    // the link is alive, even when OpenConfigurator has no handler for that message id.
     this.connManager.notifyAutopilotActivity()
     if (!HANDLED_MESSAGE_IDS.has(msg.msgId)) return
 
