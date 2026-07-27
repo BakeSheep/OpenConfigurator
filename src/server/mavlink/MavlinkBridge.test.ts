@@ -134,6 +134,30 @@ function framePayload(frame: Buffer): Buffer {
   assert.equal(burstSession.stats.bufferedBytes, 0)
   assert.equal(burstSession.stats.garbageBytes, 0)
 
+  // A fragmented FTP frame can contain what looks like a complete MAVLink
+  // frame inside its binary file data. The codec must wait for the outer known
+  // frame instead of resynchronizing into its payload.
+  const binarySession = new MavlinkCodecSession({ protocol: 'v2', maxBufferedBytes: 512 })
+  const binaryMessages: MavlinkMessage[] = []
+  binarySession.on('message', (message) => binaryMessages.push(message))
+  const embeddedFrame = new MavLinkProtocolV2(77, 1).serialize(makeHeartbeat(), 55)
+  const ftpPayload = Buffer.alloc(251, 0x41)
+  embeddedFrame.copy(ftpPayload, 40)
+  const ftpMessage = new common.FileTransferProtocol()
+  ftpMessage.targetNetwork = 0
+  ftpMessage.targetSystem = 255
+  ftpMessage.targetComponent = 190
+  ftpMessage.payload = Array.from(ftpPayload) as unknown as typeof ftpMessage.payload
+  const binaryFrame = new MavLinkProtocolV2(42, 1).serialize(ftpMessage, 54)
+  const fragmentEnd = 10 + 40 + embeddedFrame.length
+  assert.ok(fragmentEnd < binaryFrame.length)
+  binarySession.write(binaryFrame.subarray(0, fragmentEnd))
+  assert.equal(binaryMessages.length, 0, 'partial FTP frame must remain buffered')
+  binarySession.write(binaryFrame.subarray(fragmentEnd))
+  assert.equal(binaryMessages.length, 1)
+  assert.equal(binaryMessages[0].msgId, 110)
+  assert.ok(binaryMessages[0].payload.includes(embeddedFrame))
+
   // A false STX claiming a 255-byte payload must not block a valid frame that
   // is already complete later in the same chunk.
   const v2Heartbeat = new MavLinkProtocolV2(42, 1).serialize(makeHeartbeat(), 9)

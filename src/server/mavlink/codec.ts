@@ -161,6 +161,19 @@ function expectedFrameLength(buffer: Buffer, offset = 0): number | null {
   return V2_FRAME_OVERHEAD + payloadLength + (signed ? SIGNATURE_LENGTH : 0)
 }
 
+/** Whether the frame at offset zero advertises a message in our dialect set. */
+function startsWithKnownMessage(buffer: Buffer): boolean {
+  if (buffer[0] === V1_MAGIC) {
+    return buffer.length >= MavLinkProtocolV1.PAYLOAD_OFFSET
+      && REGISTRY[buffer[5]] !== undefined
+  }
+  if (buffer[0] === V2_MAGIC) {
+    return buffer.length >= MavLinkProtocolV2.PAYLOAD_OFFSET
+      && REGISTRY[buffer.readUIntLE(7, 3)] !== undefined
+  }
+  return false
+}
+
 /**
  * A codec instance belongs to exactly one physical transport session.
  * Reconnecting creates/resets this object so parser state and sequence numbers
@@ -325,7 +338,13 @@ export class MavlinkCodecSession extends EventEmitter {
       if (start > 0) this.discardIngress(start)
 
       const expected = expectedFrameLength(this.ingress)
-      if (expected === null || this.ingress.length < expected) {
+      if (expected === null) return
+      if (this.ingress.length < expected) {
+        // A fragmented, known MAVLink frame may contain arbitrary 0xFD/0xFE
+        // bytes in its payload (ULog data does frequently). Never scan inside
+        // that valid partial frame for another apparent STX: doing so corrupts
+        // binary FILE_TRANSFER_PROTOCOL packets at data-dependent offsets.
+        if (startsWithKnownMessage(this.ingress)) return
         // A false STX with a bogus length must not block a valid complete frame
         // already present later in the buffer.
         const recoverable = this.findCompleteFrameAfter(1)

@@ -3,6 +3,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
+import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
@@ -111,6 +112,8 @@ function handleMessage(msg: ServerMessage) {
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
         paramStore.clear()
+        // FC filesystem state is meaningless without a link.
+        useFileExplorerStore.getState().reset()
       }
       break
     case 'telemetry':
@@ -190,6 +193,43 @@ function handleMessage(msg: ServerMessage) {
       console.log(`[FC] ${msg.data.text}`)
       telemetryStore.addStatusLog(msg.data.severity, msg.data.text)
       break
+    case 'fs_list':
+      useFileExplorerStore.getState().setListing(msg.data.path, msg.data.entries)
+      break
+    case 'fs_download_progress':
+      useFileExplorerStore.getState().setDownloadProgress(
+        msg.data.path,
+        msg.data.receivedBytes,
+        msg.data.totalBytes,
+        msg.data.rateBps,
+      )
+      break
+    case 'fs_download_complete':
+      useFileExplorerStore.getState().completeDownload(
+        msg.data.path,
+        msg.data.downloadId,
+        msg.data.fileName,
+        msg.data.sizeBytes,
+      )
+      break
+    case 'fs_delete_progress':
+      useFileExplorerStore.getState().setDeleteProgress(
+        msg.data.done,
+        msg.data.total,
+        msg.data.current,
+      )
+      break
+    case 'fs_delete_done':
+      useFileExplorerStore.getState().completeDeletion()
+      break
+    case 'fs_op_error': {
+      const explorer = useFileExplorerStore.getState()
+      if (msg.data.operation === 'list') explorer.setListError(msg.data.message)
+      else if (msg.data.operation === 'download') explorer.failDownload(msg.data.message)
+      else explorer.failDeletion(msg.data.message)
+      telemetryStore.addStatusLog(3, `文件操作失败：${msg.data.message}`)
+      break
+    }
   }
 }
 

@@ -14,11 +14,15 @@
     "build": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit",
     "test:server": "tsx --test",
-    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts",
+    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts",
+    "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
+    "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "start": "tsx src/server/index.ts",
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
@@ -28,8 +32,6 @@
     "@types/three": "^0.185.1",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
     "concurrently": "^10.0.3",
     "leaflet": "^1.9.4",
     "react": "^19.2.7",
@@ -44,12 +46,14 @@
     "zustand": "^5.0.14"
   },
   "dependencies": {
+    "@foxglove/ulog": "^2.3.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "mavlink-mappings": "^1.0.22-20260311",
     "node-mavlink": "^2.3.0",
     "serialport": "^13.0.0",
     "tsx": "^4.23.1",
+    "uplot": "^1.6.32",
     "ws": "^8.21.1"
   },
   "overrides": {

@@ -2,29 +2,12 @@ import { useState, useEffect } from 'react'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
 import { getRestControlHeaders } from '../hooks/useWebSocket'
-
-// --- Preset storage (shared with Topbar) ---
-interface ConnectionPreset {
-  id: string
-  name: string
-  type: 'serial' | 'bluetooth'
-  port: string
-  baudRate: number
-}
-
-const PRESETS_KEY = 'oc-connection-presets'
-
-function loadPresets(): ConnectionPreset[] {
-  try {
-    const raw = localStorage.getItem(PRESETS_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  return []
-}
-
-function savePresets(presets: ConnectionPreset[]) {
-  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)) } catch { /* ignore */ }
-}
+import {
+  loadConnectionPresets,
+  samePresetDevice,
+  saveConnectionPresets,
+  type ConnectionPreset,
+} from '../utils/connectionPresets'
 
 // Convert decimal vendor/product id from Web Serial to the lowercase hex
 // string format used by serialport's PortInfo (e.g. 1A86, 7523).
@@ -197,7 +180,14 @@ export default function ConnectDialog() {
       return
     }
     if (!selectedPort) { setError('请选择端口'); return }
-    await postConnect({ type: 'serial', port: selectedPort, baudRate })
+    const selected = serialPorts.find((port) => port.path === selectedPort)
+    await postConnect({
+      type: 'serial',
+      port: selectedPort,
+      baudRate,
+      vendorId: selected?.vendorId,
+      productId: selected?.productId,
+    })
   }
 
   const disconnect = async () => {
@@ -233,21 +223,26 @@ export default function ConnectDialog() {
       presetName = portInfo?.manufacturer ? `${selectedPort} (${portInfo.manufacturer})` : selectedPort
     }
 
-    const existing = loadPresets()
-    // Avoid duplicates by port
-    if (existing.some((p) => p.port === presetPort)) {
-      setError('该设备已在预设列表中')
-      return
-    }
+    const selectedSerial = connType === 'serial'
+      ? serialPorts.find((port) => port.path === selectedPort)
+      : undefined
     const preset: ConnectionPreset = {
       id: Date.now().toString(36),
       name: presetName,
       type: presetType,
       port: presetPort,
       baudRate,
+      ...(selectedSerial?.vendorId ? { vendorId: selectedSerial.vendorId } : {}),
+      ...(selectedSerial?.productId ? { productId: selectedSerial.productId } : {}),
     }
-    const updated = [...existing, preset]
-    savePresets(updated)
+    const existing = loadConnectionPresets()
+    const duplicate = existing.find((candidate) => samePresetDevice(candidate, preset))
+    const updated = duplicate
+      ? existing.map((candidate) => candidate.id === duplicate.id
+        ? { ...preset, id: duplicate.id }
+        : candidate)
+      : [...existing, preset]
+    saveConnectionPresets(updated)
     setConnectDialogOpen(false)
   }
 

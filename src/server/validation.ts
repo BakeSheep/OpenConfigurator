@@ -1,5 +1,5 @@
 import { isIP } from 'node:net'
-import { BAUD_RATES, MAVLINK_COMMANDS } from '../shared/constants'
+import { BAUD_RATES, FTP_MAX_PATH_BYTES, MAVLINK_COMMANDS } from '../shared/constants'
 import type { ClientMessage, ConnectionConfig } from '../shared/types'
 
 const MAX_FLOAT32 = 3.4028234663852886e38
@@ -118,6 +118,24 @@ function withRequestId<T extends object>(
   id: string | undefined,
 ): T & { requestId?: string } {
   return id === undefined ? message : { ...message, requestId: id }
+}
+
+/**
+ * A flight-controller filesystem path forwarded over MAVLink FTP. Absolute,
+ * bounded, free of control characters and free of `..` traversal segments -
+ * the FC firmware must never receive a path we could not display verbatim.
+ */
+function devicePath(value: unknown, path: string): string {
+  const parsed = text(value, path, {
+    minBytes: 1,
+    maxBytes: FTP_MAX_PATH_BYTES,
+    pattern: /^\/[^\0-\x1f\x7f]*$/,
+  })
+  const segments = parsed.split('/')
+  if (segments.some((segment) => segment === '..')) {
+    fail('invalid_format', `${path} 不得包含 .. 路径段`, path)
+  }
+  return parsed
 }
 
 export function parseClientMessage(value: unknown): BoundaryClientMessage {
@@ -277,6 +295,54 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
 
     case 'release_control':
       return withRequestId({ type: 'release_control' }, id)
+
+    case 'fs_list': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'fs_list',
+        data: { path: devicePath(data.path, 'data.path') },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'fs_download': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'fs_download',
+        data: { path: devicePath(data.path, 'data.path') },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'fs_download_cancel':
+      return withRequestId({ type: 'fs_download_cancel' }, id) as BoundaryClientMessage
+
+    case 'fs_delete': {
+      const data = record(input.data, 'data')
+      if (input.safetyConfirmation !== 'delete_files') {
+        fail(
+          'safety_confirmation_required',
+          '删除飞控文件必须显式确认 delete_files',
+          'safetyConfirmation',
+        )
+      }
+      if (!Array.isArray(data.entries) || data.entries.length < 1 || data.entries.length > 64) {
+        fail('invalid_params', 'data.entries 必须是 1..64 项的数组', 'data.entries')
+      }
+      const entries = data.entries.map((item, index) => {
+        const entry = record(item, `data.entries[${index}]`)
+        if (entry.kind !== 'file' && entry.kind !== 'dir') {
+          fail('invalid_params', `data.entries[${index}].kind 必须是 file 或 dir`, `data.entries[${index}].kind`)
+        }
+        return {
+          path: devicePath(entry.path, `data.entries[${index}].path`),
+          kind: entry.kind as 'file' | 'dir',
+        }
+      })
+      return withRequestId({
+        type: 'fs_delete',
+        data: { entries },
+        safetyConfirmation: 'delete_files' as const,
+      }, id) as BoundaryClientMessage
+    }
 
     default:
       return fail('unsupported_message', `不支持的消息类型：${type}`, 'type')

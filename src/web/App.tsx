@@ -38,7 +38,8 @@ export default function App() {
                 <Route path="/messages" element={<Navigate to="/diagnostics?section=messages" replace />} />
                 <Route path="/waveforms" element={<Navigate to="/diagnostics?section=waveforms" replace />} />
                 <Route path="/missions" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/logs" element={<Navigate to="/diagnostics?section=messages" replace />} />
+                <Route path="/logs" element={<Navigate to="/diagnostics?section=logs" replace />} />
+                <Route path="/log-analysis" element={<Navigate to="/diagnostics?section=log-analysis" replace />} />
                 <Route path="/hardware" element={<Navigate to="/settings" replace />} />
                 <Route path="/motors" element={<Navigate to="/settings?section=actuators" replace />} />
                 <Route path="/receiver" element={<Navigate to="/settings?section=receiver" replace />} />

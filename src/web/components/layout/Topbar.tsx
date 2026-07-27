@@ -4,31 +4,15 @@ import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
+import {
+  loadConnectionPresets,
+  resolveSerialPreset,
+  saveConnectionPresets,
+  type ConnectionPreset,
+} from '../../utils/connectionPresets'
 import Icon from '../ui/Icon'
 
 const radToDeg = (r: number) => r * 180 / Math.PI
-
-interface ConnectionPreset {
-  id: string
-  name: string
-  type: 'serial' | 'bluetooth'
-  port: string
-  baudRate: number
-}
-
-const PRESETS_KEY = 'oc-connection-presets'
-
-function loadPresets(): ConnectionPreset[] {
-  try {
-    const raw = localStorage.getItem(PRESETS_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  return []
-}
-
-function savePresets(presets: ConnectionPreset[]) {
-  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(presets)) } catch { /* ignore */ }
-}
 
 export default function Topbar() {
   const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus } = useConnectionStore()
@@ -43,7 +27,7 @@ export default function Topbar() {
       : status === 'connecting' ? '连接中' : '未连接'
 
   // Presets for QGC-style connection dropdown
-  const [presets, setPresets] = useState(loadPresets)
+  const [presets, setPresets] = useState(loadConnectionPresets)
   const [connectDropdown, setConnectDropdown] = useState(false)
   const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | null>(null)
   const [armDragProgress, setArmDragProgress] = useState(0)
@@ -56,10 +40,40 @@ export default function Topbar() {
     setConnectDropdown(false)
     setStatus('connecting')
     try {
+      let resolved = preset
+      if (preset.type === 'serial') {
+        const scanResponse = await fetch('/api/connections/scan')
+        const scan = await scanResponse.json()
+        if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
+        const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
+        if (!matched) {
+          setStatus('error')
+          setConnectDialogOpen(true)
+          return
+        }
+        resolved = matched
+        if (
+          resolved.port !== preset.port
+          || resolved.vendorId !== preset.vendorId
+          || resolved.productId !== preset.productId
+        ) {
+          const updated = presets.map((candidate) =>
+            candidate.id === preset.id ? resolved : candidate,
+          )
+          setPresets(updated)
+          saveConnectionPresets(updated)
+        }
+      }
       const res = await fetch('/api/connections/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getRestControlHeaders() },
-        body: JSON.stringify({ type: preset.type, port: preset.port, baudRate: preset.baudRate }),
+        body: JSON.stringify({
+          type: resolved.type,
+          port: resolved.port,
+          baudRate: resolved.baudRate,
+          vendorId: resolved.vendorId,
+          productId: resolved.productId,
+        }),
       })
       const text = await res.text()
       if (!res.ok) setStatus('error')
@@ -69,7 +83,7 @@ export default function Topbar() {
   const removePreset = (id: string) => {
     const updated = presets.filter((p) => p.id !== id)
     setPresets(updated)
-    savePresets(updated)
+    saveConnectionPresets(updated)
   }
 
   // Close the transport from the topbar dropdown; connection state updates
@@ -356,7 +370,7 @@ export default function Topbar() {
           <button
             type="button"
             className={'mc-topbar__connect' + (vehicleReady ? ' is-connected' : transportOpen ? ' is-waiting' : '')}
-            onClick={() => { setActiveStatusMenu(null); if (!transportOpen) setPresets(loadPresets()); setConnectDropdown((v) => !v) }}
+            onClick={() => { setActiveStatusMenu(null); if (!transportOpen) setPresets(loadConnectionPresets()); setConnectDropdown((v) => !v) }}
           >
             <span className="mc-status-dot" style={{ background: vehicleReady ? 'var(--success)' : (transportOpen || reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
             <span>{connectionLabel}</span>

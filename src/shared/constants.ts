@@ -71,3 +71,49 @@ export const HGT_REF_OPTIONS = [
 export const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] as const
 
 export const DEFAULT_BAUD_RATE = 57600
+
+// MAVLink FTP (FILE_TRANSFER_PROTOCOL, msg #110) protocol constants shared by
+// the backend client implementation and its protocol tests.
+export const FTP_MESSAGE_ID = 110
+
+export const FTP_OPCODES = {
+  None: 0,
+  TerminateSession: 1,
+  ResetSessions: 2,
+  ListDirectory: 3,
+  OpenFileRO: 4,
+  ReadFile: 5,
+  CreateFile: 6,
+  WriteFile: 7,
+  RemoveFile: 8,
+  CreateDirectory: 9,
+  RemoveDirectory: 10,
+  OpenFileWO: 11,
+  TruncateFile: 12,
+  Rename: 13,
+  CalcFileCRC32: 14,
+  BurstReadFile: 15,
+  Ack: 128,
+  Nak: 129,
+} as const
+
+export const FTP_NAK_ERRORS = {
+  None: 0,
+  Fail: 1,
+  FailErrno: 2,
+  InvalidDataSize: 3,
+  InvalidSession: 4,
+  NoSessionsAvailable: 5,
+  EOF: 6,
+  UnknownCommand: 7,
+  FileExists: 8,
+  FileProtected: 9,
+  FileNotFound: 10,
+} as const
+
+// PX4 stores ULog flight logs under this SD-card directory.
+export const FTP_DEFAULT_LOG_DIRECTORY = '/fs/microsd/log'
+
+// Longest device path accepted from the frontend. MAVLink FTP payload data is
+// 239 bytes, so paths must leave room for the protocol header fields.
+export const FTP_MAX_PATH_BYTES = 200

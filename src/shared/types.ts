@@ -211,6 +211,16 @@ export interface MotorOutputData {
   outputs: Array<number | null>
 }
 
+/**
+ * One entry of a MAVLink FTP directory listing. The wire protocol reports
+ * only name and size; directories carry no size at all.
+ */
+export interface FsEntry {
+  name: string
+  kind: 'file' | 'dir'
+  sizeBytes: number | null
+}
+
 // WebSocket message types (server -> client)
 export type ServerMessage =
   | {
@@ -365,6 +375,42 @@ export type ServerMessage =
   | { type: 'motor_outputs'; data: MotorOutputData }
   | { type: 'autopilot_version'; data: AutopilotVersionData }
   | {
+      // MAVLink FTP directory listing result for the flight-log explorer.
+      type: 'fs_list'
+      data: { path: string; entries: FsEntry[] }
+    }
+  | {
+      type: 'fs_download_progress'
+      data: {
+        path: string
+        receivedBytes: number
+        totalBytes: number
+        rateBps: number
+      }
+    }
+  | {
+      type: 'fs_download_complete'
+      data: {
+        path: string
+        /** Opaque id used by GET /api/logs/downloads/:downloadId. */
+        downloadId: string
+        sizeBytes: number
+        fileName: string
+      }
+    }
+  | { type: 'fs_delete_progress'; data: { done: number; total: number; current: string } }
+  | { type: 'fs_delete_done'; data: { deleted: number } }
+  | {
+      type: 'fs_op_error'
+      data: {
+        requestId?: string
+        operation: 'list' | 'download' | 'delete'
+        code: string
+        message: string
+        retryable: boolean
+      }
+    }
+  | {
       // Link-quality telemetry surfaced ~1 Hz. Bytes/sec throughput plus CRC
       // error rate stand in for the RSSI that a raw SPP COM port cannot expose.
       type: 'link_stats'
@@ -412,6 +458,15 @@ export type ClientMessage =
       data: { systemId: number; componentId: number }
     }
   | { type: 'release_control'; requestId?: string }
+  | { type: 'fs_list'; requestId?: string; data: { path: string } }
+  | { type: 'fs_download'; requestId?: string; data: { path: string } }
+  | { type: 'fs_download_cancel'; requestId?: string }
+  | {
+      type: 'fs_delete'
+      requestId?: string
+      data: { entries: Array<{ path: string; kind: 'file' | 'dir' }> }
+      safetyConfirmation: 'delete_files'
+    }
 
 export interface PortInfo {
   path: string

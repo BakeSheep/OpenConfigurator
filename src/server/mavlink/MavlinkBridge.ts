@@ -13,7 +13,8 @@ import {
 import type { MavLinkData } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
 import type { SerialWritePriority } from '../connection/SerialConnection'
-import { MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
+import { MavlinkFtp, type FtpDownloadRecord } from './MavlinkFtp'
+import { FTP_MESSAGE_ID, MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
 import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
@@ -55,7 +56,7 @@ const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
 const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
-  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 116, 129,
+  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 129,
   132, 147, 148, 230, 245, 253,
 ])
 type ParamEncoding = 'bytewise' | 'c-cast'
@@ -186,6 +187,7 @@ export class MavlinkBridge extends EventEmitter {
   private readonly pendingParamSets = new Map<string, PendingParamSet>()
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
+  private readonly ftp: MavlinkFtp
   private destroyed = false
 
   private onData = (data: Buffer) => {
@@ -229,6 +231,11 @@ export class MavlinkBridge extends EventEmitter {
     this.codec.on('message', this.onCodecMessage)
     this.codec.on('parserError', (error) => {
       console.error('[MAVLink] parser error; session rebuilt', error)
+    })
+    this.ftp = new MavlinkFtp({
+      sendFtpPayload: (payload) => this.sendFtpPayload(payload),
+      emitMessage: (message) => this.emit('message', message),
+      linkIsBluetooth: () => this.connManager.config?.type === 'bluetooth',
     })
     this.connManager.on('data', this.onData)
     this.connManager.on('statusChange', this.onStatusChange)
@@ -364,6 +371,7 @@ export class MavlinkBridge extends EventEmitter {
 
   private cancelProtocolOperations(restoreTelemetry: boolean, reason: string): void {
     this.cancelParamDownload(restoreTelemetry, reason)
+    this.ftp.cancelAll(reason)
     for (const pending of this.pendingCommands.values()) {
       if (pending.timeout) clearTimeout(pending.timeout)
       this.emitOperationError(
@@ -554,6 +562,9 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 132: // DISTANCE_SENSOR
         this.handleDistanceSensor(msg)
+        break
+      case 110: // FILE_TRANSFER_PROTOCOL
+        this.handleFileTransferProtocol(msg)
         break
       case 147: // BATTERY_STATUS
         this.handleBattery(msg)
@@ -1046,6 +1057,61 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', { type: 'sensor', msgType: 'OPTICAL_FLOW_RAD', data } as ServerMessage)
   }
 
+  private handleFileTransferProtocol(msg: MavlinkMessage) {
+    const d = decode<common.FileTransferProtocol>(FTP_MESSAGE_ID, msg.payload)
+    if (!d) return
+    // Only consume replies addressed to this GCS (or broadcast).
+    if (d.targetSystem !== 0 && d.targetSystem !== 255) return
+    this.ftp.handleFtpPayload(Buffer.from(d.payload as unknown as number[]))
+  }
+
+  private sendFtpPayload(payload: Buffer): boolean {
+    const message = new common.FileTransferProtocol()
+    message.targetNetwork = 0
+    message.targetSystem = this.targetSysId ?? 0
+    message.targetComponent = this.targetCompId ?? 0
+    // The wire field is a fixed 251-byte array; MAVLink v2 zero-trims the
+    // trailing padding on serialization.
+    const padded = Buffer.alloc(251)
+    payload.copy(padded, 0)
+    message.payload = Array.from(padded) as unknown as typeof message.payload
+    return this.writeMessage(message)
+  }
+
+  /** Resolve a completed FTP download for the REST file endpoint. */
+  getFtpDownload(downloadId: string): FtpDownloadRecord | null {
+    return this.ftp.getDownload(downloadId)
+  }
+
+  private emitFsOpError(
+    operation: 'list' | 'download' | 'delete',
+    code: string,
+    message: string,
+    requestId?: string,
+    retryable = false,
+  ): void {
+    this.emit('message', {
+      type: 'fs_op_error',
+      data: { ...(requestId ? { requestId } : {}), operation, code, message, retryable },
+    } as ServerMessage)
+  }
+
+  /** FTP transfers and full parameter sync must not share the link. */
+  private requireFtpAvailable(
+    operation: 'list' | 'download' | 'delete',
+    requestId?: string,
+  ): boolean {
+    if (!this.paramDownloadActive) return true
+    this.emitFsOpError(
+      operation,
+      'param_sync_active',
+      '参数同步进行中，请稍后再执行文件操作',
+      requestId,
+      true,
+    )
+    return false
+  }
+
   private handleDistanceSensor(msg: MavlinkMessage) {
     const d = decode<common.DistanceSensor>(132, msg.payload)
     if (!d) return
@@ -1314,7 +1380,19 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 'param_request_list':
         if (this.requireReadyTarget('param_request_list', msg.requestId)) {
-          this.sendParamRequestList()
+          if (this.ftp.busy) {
+            // A running FTP transfer would be starved by the parameter burst
+            // (and vice versa); reject instead of silently degrading both.
+            this.emitOperationError(
+              'param_request_list',
+              'ftp_busy',
+              '文件传输进行中，无法同时下载参数',
+              msg.requestId,
+              true,
+            )
+          } else {
+            this.sendParamRequestList()
+          }
         }
         break
       case 'manual_control':
@@ -1338,6 +1416,42 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 'release_control':
         // Consumed by the WebSocket controller-lease boundary.
+        break
+      case 'fs_list':
+        if (
+          this.requireReadyTarget('fs_list', msg.requestId)
+          && this.requireFtpAvailable('list', msg.requestId)
+        ) {
+          this.ftp.startList(msg.data.path, msg.requestId)
+        }
+        break
+      case 'fs_download':
+        if (
+          this.requireReadyTarget('fs_download', msg.requestId)
+          && this.requireFtpAvailable('download', msg.requestId)
+        ) {
+          this.ftp.startDownload(msg.data.path, msg.requestId)
+        }
+        break
+      case 'fs_download_cancel':
+        this.ftp.cancelDownload(msg.requestId)
+        break
+      case 'fs_delete':
+        // The type carries the literal confirmation, but this boundary is also
+        // exercised directly in tests - keep the runtime guard.
+        if ((msg as { safetyConfirmation?: string }).safetyConfirmation !== 'delete_files') {
+          this.emitFsOpError(
+            'delete',
+            'safety_confirmation_required',
+            '删除飞控文件需要 delete_files 安全确认',
+            msg.requestId,
+          )
+        } else if (
+          this.requireReadyTarget('fs_delete', msg.requestId)
+          && this.requireFtpAvailable('delete', msg.requestId)
+        ) {
+          this.ftp.startDelete(msg.data.entries, msg.requestId)
+        }
         break
     }
   }
@@ -2202,6 +2316,7 @@ export class MavlinkBridge extends EventEmitter {
     }
     this.pendingManualControl = null
     this.cancelProtocolOperations(false, 'bridge_destroyed')
+    this.ftp.destroy()
     this.stopHeartbeat()
     this.stopLinkStats()
     if (this.versionTimer) clearTimeout(this.versionTimer)

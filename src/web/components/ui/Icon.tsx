@@ -7,6 +7,8 @@ export type IconName =
   | 'shop' | 'sun' | 'moon' | 'external' | 'chevronDown' | 'refresh'
   | 'search' | 'battery' | 'satellite' | 'altitude' | 'check' | 'warning'
   | 'pause' | 'trash' | 'folder' | 'upload' | 'download' | 'grid' | 'list'
+  | 'arrowLeft' | 'arrowRight' | 'arrowUp' | 'file' | 'play' | 'close'
+  | 'copy' | 'maximize'
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'children'> {
   name: IconName
@@ -101,6 +103,22 @@ export default function Icon({ name, size = 20, strokeWidth = 1.8, ...props }: I
       return <svg {...shared}><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></svg>
     case 'list':
       return <svg {...shared}><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" /></svg>
+    case 'arrowLeft':
+      return <svg {...shared}><path d="M19 12H5M11 6l-6 6 6 6" /></svg>
+    case 'arrowRight':
+      return <svg {...shared}><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+    case 'arrowUp':
+      return <svg {...shared}><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+    case 'file':
+      return <svg {...shared}><path d="M7 3.5h7l3 3v14H7z" /><path d="M14 3.5v4h4" /></svg>
+    case 'play':
+      return <svg {...shared}><path d="m7 5 12 7-12 7z" /></svg>
+    case 'close':
+      return <svg {...shared}><path d="m6 6 12 12M18 6 6 18" /></svg>
+    case 'copy':
+      return <svg {...shared}><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
+    case 'maximize':
+      return <svg {...shared}><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
     default:
       return null
   }

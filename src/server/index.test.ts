@@ -81,6 +81,11 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   destroyed = false
   parameterCancellationCalls = 0
   destroyError: Error | null = null
+  readonly ftpDownloads = new Map<string, {
+    filePath: string
+    fileName: string
+    sizeBytes: number
+  }>()
 
   handleClientMessage(message: ClientMessage): void {
     this.messages.push(message)
@@ -88,6 +93,10 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
 
   cancelParameterDownload(): void {
     this.parameterCancellationCalls += 1
+  }
+
+  getFtpDownload(downloadId: string) {
+    return this.ftpDownloads.get(downloadId) ?? null
   }
 
   destroy(): void {
@@ -447,6 +456,17 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
       (message) => message.data?.requestId === 'mode-2',
     )
     assert.equal(conflict.data?.code, 'controller_conflict')
+    assert.equal(started.bridge.messages.length, 1)
+
+    second.ws.send(JSON.stringify({
+      type: 'fs_download_cancel',
+      requestId: 'cancel-not-owner',
+    }))
+    const cancelConflict = await second.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'cancel-not-owner',
+    )
+    assert.equal(cancelConflict.data?.code, 'controller_conflict')
     assert.equal(started.bridge.messages.length, 1)
 
     first.ws.send(JSON.stringify({ type: 'release_control', requestId: 'release-1' }))
@@ -813,4 +833,43 @@ test('shutdown contains a synchronous bridge cleanup failure and still releases 
   assert.deepEqual(result, { timedOut: false })
   assert.equal(started.connManager.disconnectCalls, 1)
   assert.equal(started.runtime.server.listening, false)
+})
+
+test('log download endpoint validates ids and streams registered files', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const started = await startTestServer()
+  const dir = await mkdtemp(join(tmpdir(), 'oc-rest-log-'))
+  try {
+    const filePath = join(dir, 'aabbccddeeff0011.ulg')
+    await writeFile(filePath, Buffer.from('ULogTESTDATA'))
+    started.bridge.ftpDownloads.set('aabbccddeeff0011', {
+      filePath,
+      fileName: '10_30_00.ulg',
+      sizeBytes: 12,
+    })
+
+    // Path metacharacters and wrong lengths never reach the filesystem.
+    for (const bad of ['..%2F..%2Fetc', 'AABBCCDDEEFF0011', 'aabb', 'aabbccddeeff001122']) {
+      const response = await fetch(`${started.httpUrl}/api/logs/downloads/${bad}`)
+      assert.equal(response.status, 404, `expected 404 for ${bad}`)
+      const body = await response.json() as { success: boolean; error: { code: string } }
+      assert.equal(body.success, false)
+    }
+
+    // Valid format but unknown id.
+    const unknown = await fetch(`${started.httpUrl}/api/logs/downloads/0123456789abcdef`)
+    assert.equal(unknown.status, 404)
+
+    // Registered id streams the file with a download disposition.
+    const ok = await fetch(`${started.httpUrl}/api/logs/downloads/aabbccddeeff0011`)
+    assert.equal(ok.status, 200)
+    assert.match(ok.headers.get('content-disposition') ?? '', /attachment/)
+    assert.match(ok.headers.get('content-disposition') ?? '', /10_30_00\.ulg/)
+    assert.equal(Buffer.from(await ok.arrayBuffer()).toString(), 'ULogTESTDATA')
+  } finally {
+    await started.runtime.shutdown('test_complete')
+    await rm(dir, { recursive: true, force: true })
+  }
 })

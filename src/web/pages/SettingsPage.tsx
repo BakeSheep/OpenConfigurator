@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
+import CollapsibleSubnav from '../components/layout/CollapsibleSubnav'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import { useParameterStore } from '../stores/parameterStore'
@@ -40,12 +41,14 @@ export default function SettingsPage() {
     <div className="mc-workspace mc-workspace--wide mc-fade-in">
       <PageHeader title="飞行器设置" description="按硬件配置流程组织机架、传感器、执行器与控制输入。" />
       <div className="mc-subworkspace">
-        <nav className="mc-subnav" aria-label="飞行器设置">
+        <CollapsibleSubnav ariaLabel="飞行器设置" storageKey="oc-settings-subnav-collapsed">
           {sections.map((section) => (
             <button
               key={section.id}
               type="button"
               data-active={section.id === activeSection}
+              aria-label={section.label}
+              title={section.label}
               aria-current={section.id === activeSection ? 'page' : undefined}
               onClick={() => selectSection(section.id)}
             >
@@ -53,7 +56,7 @@ export default function SettingsPage() {
               <span><strong>{section.label}</strong><small>{section.description}</small></span>
             </button>
           ))}
-        </nav>
+        </CollapsibleSubnav>
 
         <section className="mc-subworkspace__content" aria-live="polite">
           {activeSection === 'airframe' && (

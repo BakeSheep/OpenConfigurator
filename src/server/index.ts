@@ -92,6 +92,11 @@ export interface ConnectionManagerBoundary extends EventEmitter {
 export interface MavlinkBridgeBoundary extends EventEmitter {
   handleClientMessage(message: ClientMessage): void
   cancelParameterDownload?(): void
+  getFtpDownload?(downloadId: string): {
+    filePath: string
+    fileName: string
+    sizeBytes: number
+  } | null
   destroy(): void | Promise<void>
 }
 
@@ -199,6 +204,9 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
     || message.type === 'manual_control'
     || message.type === 'motor_test'
     || message.type === 'select_target'
+    || message.type === 'fs_download'
+    || message.type === 'fs_download_cancel'
+    || message.type === 'fs_delete'
 }
 
 function requiresReadyTarget(message: BoundaryClientMessage): boolean {
@@ -818,6 +826,30 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     response.json({
       success: true,
       data: connectionMessage().data,
+    })
+  })
+
+  app.get('/api/logs/downloads/:downloadId', (request, response) => {
+    const { downloadId } = request.params
+    // Download ids are 8 random bytes hex-encoded by the FTP client; anything
+    // else (including path metacharacters) is rejected before touching disk.
+    const download = /^[0-9a-f]{16}$/.test(downloadId)
+      ? mavlinkBridge.getFtpDownload?.(downloadId) ?? null
+      : null
+    if (!download) {
+      response.status(404).json({
+        success: false,
+        error: { code: 'download_not_found', message: '下载文件不存在或已过期' },
+      })
+      return
+    }
+    response.download(download.filePath, download.fileName, (error) => {
+      if (error && !response.headersSent) {
+        response.status(404).json({
+          success: false,
+          error: { code: 'download_not_found', message: '下载文件不存在或已过期' },
+        })
+      }
     })
   })
 
