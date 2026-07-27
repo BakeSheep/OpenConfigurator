@@ -315,7 +315,7 @@ export const failsafeModule: AnalysisModule<FailsafeState, FailsafeResult> = {
     }))
 
     return {
-      chartSeries: [],
+      chartFamilies: [],
       metrics: {
         totalSamples: state.failsafeSamples.length,
         landDetectedSamples: state.landDetectedSamples.length,

@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { ChartSeriesGroup, ChartFamily, ChartView, ChartSeries, DiagnosticFinding } from '../types.js'
+import type { ChartFamily, ChartView, ChartSeries, DiagnosticFinding } from '../types.js'
 import { readArmedState, ARMED_SOURCE_RANK, type ArmedSource } from '../px4/flightState.js'
 import {
   resolveMotorLayout,
@@ -333,7 +333,6 @@ export const actuatorsModule: AnalysisModule<ActuatorState, ActuatorResult> = {
 
   finalize(state: ActuatorState, context: AnalysisContext): ModuleResult<ActuatorState, ActuatorResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
     const metrics: Record<string, unknown> = {}
     const missingReqs: string[] = []
     const warnings: string[] = []
@@ -622,19 +621,6 @@ export const actuatorsModule: AnalysisModule<ActuatorState, ActuatorResult> = {
       })
     }
 
-    // Legacy flat series (removed once the section-level family merge lands)
-    for (const view of views) {
-      chartSeries.push({
-        id: view.id === 'motor-outputs' ? 'motor-commands' : view.id,
-        title: view.title,
-        description: view.description,
-        unit: view.unit,
-        series: view.series.map((s) => ({ label: s.label, times: s.times, values: s.values })),
-        thresholds: view.thresholds,
-        hasGaps: view.hasGaps,
-      })
-    }
-
     // ─── Consumed topics ──────────────────────────────────────────────
 
     const consumedTopics: Array<{ name: string; multiId: number; msgId: number }> = []
@@ -643,7 +629,6 @@ export const actuatorsModule: AnalysisModule<ActuatorState, ActuatorResult> = {
     }
 
     return {
-      chartSeries,
       chartFamilies,
       metrics,
       findings,

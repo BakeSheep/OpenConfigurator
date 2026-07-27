@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { DiagnosticFinding, ChartSeriesGroup, ChartFamily, ChartView, ChartSeries } from '../types.js'
+import type { DiagnosticFinding, ChartFamily, ChartView, ChartSeries } from '../types.js'
 import {
   resolveVectors,
   resolveScalars,
@@ -560,7 +560,6 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
 
   finalize(state: SensorsState, _context: AnalysisContext): ModuleResult<SensorsState, SensorsResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
     const imuViews: ChartView[] = []
     const vibrationViews: ChartView[] = []
     const environmentViews: ChartView[] = []
@@ -973,22 +972,9 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
       })
     }
 
-    // Legacy flat series (removed once the section-level family merge lands)
-    for (const family of chartFamilies) {
-      for (const view of family.views) {
-        chartSeries.push({
-          id: `sensors-${view.id}`,
-          title: view.title,
-          description: view.description,
-          unit: view.unit,
-          series: view.series.map((s) => ({ label: s.label, times: s.times, values: s.values })),
-          hasGaps: view.hasGaps,
-        })
-      }
-    }
+    // Legacy flat series removed — chart families are the only chart output
 
     return {
-      chartSeries,
       chartFamilies,
       metrics: {
         combinedSamples: combined.sampleCount,

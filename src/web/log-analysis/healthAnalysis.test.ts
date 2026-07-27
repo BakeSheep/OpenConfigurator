@@ -27,6 +27,19 @@ async function analyzeBuffer(buf: ArrayBuffer) {
   return { doc, result }
 }
 
+/** Metrics of one module inside a merged section result. */
+function moduleMetrics(
+  section: { moduleResults: Array<{ moduleId: string; metrics: Record<string, unknown> }> },
+  moduleId: string,
+): Record<string, unknown> {
+  return section.moduleResults.find((m) => m.moduleId === moduleId)?.metrics ?? {}
+}
+
+/** All chart views across a section's chart families. */
+function sectionViews(section: { chartFamilies: Array<{ views: Array<{ id: string; unit: string }> }> }) {
+  return section.chartFamilies.flatMap((f) => f.views)
+}
+
 // ─── Periodogram unit tests ─────────────────────────────────────────────────
 
 describe('periodogram', () => {
@@ -204,7 +217,10 @@ describe('estimator module', () => {
     const { result } = await analyzeBuffer(buf)
     const estimatorSection = result.sections['estimator']
     assert.ok(estimatorSection, 'estimator section should exist')
-    assert.equal(estimatorSection.moduleId, 'estimator')
+    assert.ok(
+      estimatorSection.moduleResults.some((m) => m.moduleId === 'estimator'),
+      'estimator module identity is preserved in moduleResults',
+    )
 
     // Should have findings for high test ratio and filter fault
     const highRatioFindings = estimatorSection.findings.filter(f =>
@@ -318,7 +334,7 @@ describe('sensors module', () => {
     const sensorsSection = result.sections['sensors-power']
     assert.ok(sensorsSection, 'sensors-power section should exist')
     assert.ok(
-      sensorsSection.metrics['accelInstanceCount'] === 2,
+      moduleMetrics(sensorsSection, 'sensors')['accelInstanceCount'] === 2,
       'should detect 2 accel instances',
     )
   })
@@ -412,7 +428,7 @@ describe('sensors module', () => {
     const sensorsSection = result.sections['sensors-power']
     assert.ok(sensorsSection, 'sensors-power section should exist')
     assert.ok(
-      (sensorsSection.metrics['combinedSamples'] as number) > 0,
+      (moduleMetrics(sensorsSection, 'sensors')['combinedSamples'] as number) > 0,
       'should have combined samples',
     )
   })
@@ -608,9 +624,9 @@ describe('system health module', () => {
     assert.ok(cpuFindings.length > 0, 'should detect sustained high CPU load')
     assert.equal(cpuFindings[0]!.severity, 'warning')
 
-    // Check chart series
-    const cpuChart = eventsSection.chartSeries.find(s => s.id.includes('cpu-load'))
-    assert.ok(cpuChart, 'should have CPU load chart series')
+    // Check chart views
+    const cpuChart = sectionViews(eventsSection).find(v => v.id.includes('cpu-load'))
+    assert.ok(cpuChart, 'should have CPU load chart view')
     assert.equal(cpuChart.unit, '%')
   })
 
@@ -664,8 +680,8 @@ describe('system health module', () => {
     const eventsSection = result.sections['events-raw']
     assert.ok(eventsSection, 'events-raw section should exist')
 
-    const ramChart = eventsSection.chartSeries.find(s => s.id.includes('ram-usage'))
-    assert.ok(ramChart, 'should have RAM usage chart series')
+    const ramChart = sectionViews(eventsSection).find(v => v.id.includes('ram-usage'))
+    assert.ok(ramChart, 'should have RAM usage chart view')
   })
 })
 

@@ -30,7 +30,7 @@ function makeModule(
     consume(state: Record<string, number>): void { state.count++ },
     finalize(state: Record<string, number>, _ctx: AnalysisContext): ModuleResult {
       return {
-        chartSeries: [],
+        chartFamilies: [],
         metrics: { count: state.count },
         findings: [],
         consumedTopics: [],
@@ -215,7 +215,7 @@ describe('Module consumed topics accounting', () => {
           consumedTopics.push({ name: topic.name, multiId: topic.multiId, msgId: topic.msgId })
         }
         return {
-          chartSeries: [],
+          chartFamilies: [],
           metrics: { count: state.count },
           findings: [],
           consumedTopics,
@@ -280,19 +280,34 @@ describe('Module consumed topics accounting', () => {
 })
 
 describe('Section result aggregation', () => {
-  function sectionResult(overrides: Partial<SectionResult>): SectionResult {
+  function sectionResult(overrides: {
+    moduleId?: string
+    available?: boolean
+    missingRequirements?: string[]
+    warnings?: string[]
+    metrics?: Record<string, unknown>
+    chartFamilies?: SectionResult['chartFamilies']
+    findings?: SectionResult['findings']
+  }): SectionResult {
     return {
-      moduleId: 'module',
       section: 'control',
-      available: true,
-      missingRequirements: [],
-      warnings: [],
-      consumedTopics: [],
-      metrics: {},
-      chartSeries: [],
-      findings: [],
-      ...overrides,
+      available: overrides.available ?? true,
+      moduleResults: [{
+        moduleId: overrides.moduleId ?? 'module',
+        available: overrides.available ?? true,
+        missingRequirements: overrides.missingRequirements ?? [],
+        warnings: overrides.warnings ?? [],
+        consumedTopics: [] as TopicInstanceKey[],
+        metrics: overrides.metrics ?? {},
+      }],
+      chartFamilies: overrides.chartFamilies ?? [],
+      findings: overrides.findings ?? [],
+      warnings: overrides.warnings ?? [],
     }
+  }
+
+  function metricsOf(section: SectionResult, moduleId: string): Record<string, unknown> {
+    return section.moduleResults.find(m => m.moduleId === moduleId)?.metrics ?? {}
   }
 
   it('keeps a section available when any module can provide results', () => {
@@ -309,12 +324,16 @@ describe('Section result aggregation', () => {
 
     const merged = mergeSectionResult(unavailable, actuators)
     assert.equal(merged.available, true)
-    assert.equal(merged.metrics.motorCount, 4)
-    assert.deepEqual(merged.missingRequirements, ['attitude'])
+    // Metrics stay owned by their source module
+    assert.equal(metricsOf(merged, 'actuators').motorCount, 4)
+    const tracking = merged.moduleResults.find(m => m.moduleId === 'tracking')!
+    assert.deepEqual(tracking.missingRequirements, ['attitude'])
+    assert.equal(tracking.available, false)
   })
 
   it('preserves existing output when a later module fails', () => {
     const successful = sectionResult({
+      moduleId: 'ok-module',
       metrics: { sampleCount: 42 },
       warnings: ['已有警告'],
     })
@@ -326,7 +345,26 @@ describe('Section result aggregation', () => {
 
     const merged = mergeSectionResult(successful, failed)
     assert.equal(merged.available, true)
-    assert.equal(merged.metrics.sampleCount, 42)
+    assert.equal(metricsOf(merged, 'ok-module').sampleCount, 42)
     assert.deepEqual(merged.warnings, ['已有警告', '模块处理失败'])
+  })
+
+  it('concatenates chart families in module order (sorted by order key)', () => {
+    const family = (id: string, moduleId: string, order: number): SectionResult['chartFamilies'][number] => ({
+      id,
+      moduleId,
+      title: id,
+      description: '',
+      views: [],
+      defaultViewId: '',
+      order,
+    })
+    const a = sectionResult({ moduleId: 'actuators', chartFamilies: [family('actuators', 'actuators', 20)] })
+    const b = sectionResult({ moduleId: 'control-tracking', chartFamilies: [family('control-tracking', 'control-tracking', 10)] })
+
+    const merged = mergeSectionResult(a, b)
+    assert.deepEqual(merged.chartFamilies.map(f => f.id), ['control-tracking', 'actuators'])
+    // Module identity is preserved on each family
+    assert.deepEqual(merged.chartFamilies.map(f => f.moduleId), ['control-tracking', 'actuators'])
   })
 })

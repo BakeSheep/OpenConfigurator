@@ -137,16 +137,23 @@ export interface TimelineSummary {
   dropoutMeanMs: number
 }
 
-export interface SectionResult {
+/** Per-module output preserved inside a section (module identity is kept). */
+export interface SectionModuleResult {
   moduleId: string
-  section: AnalysisSectionId
   available: boolean
   missingRequirements: string[]
   warnings: string[]
   consumedTopics: TopicInstanceKey[]
   metrics: Record<string, unknown>
-  chartSeries: ChartSeriesGroup[]
+}
+
+export interface SectionResult {
+  section: AnalysisSectionId
+  available: boolean
+  moduleResults: SectionModuleResult[]
+  chartFamilies: ChartFamily[]
   findings: DiagnosticFinding[]
+  warnings: string[]
 }
 
 export interface ChartSeriesGroup {

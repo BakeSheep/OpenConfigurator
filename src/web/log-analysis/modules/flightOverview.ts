@@ -266,7 +266,7 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
     }
 
     return {
-      chartSeries: [],
+      chartFamilies: [],
       metrics,
       findings,
       consumedTopics,

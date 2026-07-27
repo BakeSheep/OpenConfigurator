@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { DiagnosticFinding, ChartSeriesGroup, FindingSeverity } from '../types.js'
+import type { DiagnosticFinding, ChartFamily, ChartView, ChartSeries, FindingSeverity } from '../types.js'
 
 // ── State types ──────────────────────────────────────────────────────────────
 
@@ -211,7 +211,8 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
 
   finalize(state: EstimatorState, context: AnalysisContext): ModuleResult<EstimatorState, EstimatorResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
+    const innovationViews: ChartView[] = []
+    const stateViews: ChartView[] = []
     const instanceResults: EstimatorInstanceResult[] = []
 
     for (const [instanceId, inst] of state.instances) {
@@ -367,42 +368,84 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
       const ratioFields = Object.keys(inst.maxTestRatios)
       if (ratioFields.length > 0 && inst.samples.length > 0) {
         const times = inst.samples.map(s => s.timeSec)
+        const ratioSeries: ChartSeries[] = []
         for (const field of ratioFields.slice(0, 6)) {
-          const values = inst.samples.map(s => (s.values[field] as number) ?? 0)
+          const values = inst.samples.map(s => (s.values[field] as number) ?? NaN)
           const ds = downsample(times, values, MAX_CHART_POINTS)
-          chartSeries.push({
-            id: `estimator-${instanceId}-ratio-${field}`,
-            title: `新息检验比：${field}（实例 ${instanceId}）`,
-            description: `估计器实例 ${instanceId} 的新息检验比随时间的变化`,
-            unit: 'ratio',
-            series: [{ label: field, times: ds.times, values: ds.values }],
-            thresholds: [{ value: 1.0, label: '警告阈值', severity: 'warning' }],
-            hasGaps: false,
+          ratioSeries.push({
+            id: `est-${instanceId}-ratio-${field}`,
+            label: field,
+            times: ds.times,
+            values: ds.values,
           })
         }
+        innovationViews.push({
+          id: `est-${instanceId}-innovation-ratios`,
+          title: `新息检验比（实例 ${instanceId}）`,
+          description: `估计器实例 ${instanceId} 的新息检验比随时间的变化`,
+          unit: 'ratio',
+          series: ratioSeries,
+          defaultVisibleSeriesIds: ratioSeries.map(s => s.id),
+          thresholds: [{ value: 1.0, label: '警告阈值', severity: 'warning' }],
+          xAxis: 'time',
+          hasGaps: false,
+        })
       }
 
       // ── Chart series: covariance traces ─────────────────────────────────
       const covFields = Object.keys(inst.maxCovariance)
       if (covFields.length > 0 && inst.samples.length > 0) {
         const times = inst.samples.map(s => s.timeSec)
+        const covSeries: ChartSeries[] = []
         for (const field of covFields.slice(0, 4)) {
-          const values = inst.samples.map(s => Math.abs((s.values[field] as number) ?? 0))
+          const values = inst.samples.map(s => Math.abs((s.values[field] as number) ?? NaN))
           const ds = downsample(times, values, MAX_CHART_POINTS)
-          chartSeries.push({
-            id: `estimator-${instanceId}-cov-${field}`,
-            title: `协方差：${field}（实例 ${instanceId}）`,
-            description: `估计器实例 ${instanceId} 的协方差随时间的变化`,
-            unit: 'value',
-            series: [{ label: field, times: ds.times, values: ds.values }],
-            hasGaps: false,
+          covSeries.push({
+            id: `est-${instanceId}-cov-${field}`,
+            label: field,
+            times: ds.times,
+            values: ds.values,
           })
         }
+        stateViews.push({
+          id: `est-${instanceId}-covariances`,
+          title: `协方差（实例 ${instanceId}）`,
+          description: `估计器实例 ${instanceId} 的协方差随时间的变化`,
+          unit: 'value',
+          series: covSeries,
+          defaultVisibleSeriesIds: covSeries.map(s => s.id),
+          xAxis: 'time',
+          hasGaps: false,
+        })
       }
     }
 
+    const chartFamilies: ChartFamily[] = []
+    if (innovationViews.length > 0) {
+      chartFamilies.push({
+        id: 'estimator-innovation',
+        moduleId: 'estimator',
+        title: '新息检验',
+        description: '各估计器实例的新息检验比',
+        views: innovationViews,
+        defaultViewId: innovationViews[0]!.id,
+        order: 10,
+      })
+    }
+    if (stateViews.length > 0) {
+      chartFamilies.push({
+        id: 'estimator-state',
+        moduleId: 'estimator',
+        title: '状态与协方差',
+        description: '各估计器实例的状态协方差',
+        views: stateViews,
+        defaultViewId: stateViews[0]!.id,
+        order: 11,
+      })
+    }
+
     return {
-      chartSeries,
+      chartFamilies,
       metrics: {
         totalInstances: state.instances.size,
         instanceIds: [...state.instances.keys()],

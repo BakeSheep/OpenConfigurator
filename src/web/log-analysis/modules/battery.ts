@@ -42,7 +42,7 @@ export const batteryModule: AnalysisModule<BatteryState, BatteryResult> = {
   finalize(state: BatteryState, _context: AnalysisContext): ModuleResult<BatteryState, BatteryResult> {
     const hasData = state.sampleCount > 0
     return {
-      chartSeries: [],
+      chartFamilies: [],
       metrics: {
         minVoltage: hasData ? state.minVoltage : null,
         maxVoltage: hasData ? state.maxVoltage : null,

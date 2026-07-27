@@ -44,7 +44,7 @@ export const gpsModule: AnalysisModule<GpsState, GpsResult> = {
 
   finalize(state: GpsState, _context: AnalysisContext): ModuleResult<GpsState, GpsResult> {
     return {
-      chartSeries: [],
+      chartFamilies: [],
       metrics: {
         gpsSamples: state.sampleCount,
         maxSatellites: state.maxSatellites,

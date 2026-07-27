@@ -1,4 +1,4 @@
-import type { AnalysisSectionId, TopicInstanceKey, DiagnosticFinding, ChartSeriesGroup, ChartFamily } from '../types.js'
+import type { AnalysisSectionId, TopicInstanceKey, DiagnosticFinding, ChartFamily } from '../types.js'
 
 /** A resolved topic instance with its subscription info */
 export interface ResolvedTopic {
@@ -54,10 +54,8 @@ export interface TopicRequirement {
 
 /** Result from an analysis module */
 export interface ModuleResult<TState = unknown, TResult = unknown> {
-  /** Bounded chart series */
-  chartSeries: ChartSeriesGroup[]
-  /** Selector-driven chart families (replaces the flat chartSeries wall) */
-  chartFamilies?: ChartFamily[]
+  /** Selector-driven chart families (bounded series, grouped by views) */
+  chartFamilies: ChartFamily[]
   /** Key metrics */
   metrics: Record<string, unknown>
   /** Diagnostic findings */

@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { ChartSeriesGroup, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
+import type { ChartFamily, ChartSeries, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -136,7 +136,6 @@ export const propulsionModule: AnalysisModule<PropulsionState, PropulsionResult>
 
   finalize(state: PropulsionState, _context: AnalysisContext): ModuleResult<PropulsionState, PropulsionResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
     const escMetrics: EscMetrics[] = []
 
     for (const [instanceId, esc] of state.escInstances) {
@@ -213,49 +212,46 @@ export const propulsionModule: AnalysisModule<PropulsionState, PropulsionResult>
       }
     }
 
-    // ── Chart series ──
+    // ── Chart family ──
 
-    // RPM chart: one series per ESC instance
-    const rpmSeries = []
+    // RPM view: one series per ESC instance. The mean-RPM imbalance summary
+    // stays in metrics — a categorical comparison is not a time series.
+    const rpmSeries: ChartSeries[] = []
     for (const [instanceId, esc] of state.escInstances) {
       if (esc.rpms.length === 0) continue
       const downsampled = downsample(esc.rpms, MAX_CHART_POINTS)
       rpmSeries.push({
+        id: `esc-${instanceId}-rpm`,
         label: `电调 ${instanceId}`,
         times: downsampled.map(s => s.time),
         values: downsampled.map(s => s.value),
       })
     }
-    if (rpmSeries.length > 0) {
-      chartSeries.push({
-        id: 'esc_rpm',
-        title: '电调转速',
-        description: '各电机转速随时间的变化',
-        unit: 'RPM',
-        series: rpmSeries,
-        hasGaps: false,
-      })
-    }
 
-    // Motor imbalance bar chart data
-    if (escMetrics.length >= 2) {
-      const imbalanceSeries = escMetrics.map(m => ({
-        label: `电调 ${m.instanceId}`,
-        times: [m.instanceId],
-        values: [m.meanRpm],
-      }))
-      chartSeries.push({
-        id: 'motor_imbalance',
-        title: '电机平衡',
-        description: '各电机平均转速的不均衡对比',
-        unit: 'RPM',
-        series: imbalanceSeries,
-        hasGaps: false,
+    const chartFamilies: ChartFamily[] = []
+    if (rpmSeries.length > 0) {
+      chartFamilies.push({
+        id: 'propulsion',
+        moduleId: 'propulsion',
+        title: '电调与推进',
+        description: '电调转速与状态',
+        views: [{
+          id: 'esc-rpm',
+          title: '电调转速',
+          description: '各电机转速随时间的变化',
+          unit: 'RPM',
+          series: rpmSeries,
+          defaultVisibleSeriesIds: rpmSeries.slice(0, 6).map(s => s.id),
+          xAxis: 'time',
+          hasGaps: false,
+        }],
+        defaultViewId: 'esc-rpm',
+        order: 31,
       })
     }
 
     return {
-      chartSeries,
+      chartFamilies,
       metrics: { escInstances: escMetrics, motorImbalance },
       findings,
       consumedTopics: [],

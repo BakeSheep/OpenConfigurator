@@ -87,18 +87,28 @@ function makeDataset(overrides: Partial<UlogAnalysisDataset> = {}): UlogAnalysis
   }
 }
 
-function makeSectionResult(overrides: Partial<SectionResult> = {}): SectionResult {
+function makeSectionResult(overrides: {
+  section?: SectionResult['section']
+  moduleId?: string
+  available?: boolean
+  missingRequirements?: string[]
+  findings?: SectionResult['findings']
+  chartFamilies?: SectionResult['chartFamilies']
+} = {}): SectionResult {
   return {
-    moduleId: 'test',
-    section: 'overview',
-    available: true,
-    missingRequirements: [],
+    section: overrides.section ?? 'overview',
+    available: overrides.available ?? true,
+    moduleResults: [{
+      moduleId: overrides.moduleId ?? 'test',
+      available: overrides.available ?? true,
+      missingRequirements: overrides.missingRequirements ?? [],
+      warnings: [],
+      consumedTopics: [],
+      metrics: {},
+    }],
+    chartFamilies: overrides.chartFamilies ?? [],
+    findings: overrides.findings ?? [],
     warnings: [],
-    consumedTopics: [],
-    metrics: {},
-    chartSeries: [],
-    findings: [],
-    ...overrides,
   }
 }
 

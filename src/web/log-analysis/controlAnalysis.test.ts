@@ -75,8 +75,17 @@ describe('controlTracking – quaternion attitude', () => {
     // Pitch / yaw should be ~0
     assert.ok((result.metrics.pitchRmsError as number) < 0.01)
     assert.ok((result.metrics.yawRmsError as number) < 0.01)
-    // Chart series present
-    assert.ok(result.chartSeries.length > 0)
+    // Chart family present with one axis-pair view per axis
+    assert.ok(result.chartFamilies.length > 0)
+    const trackingFamily = result.chartFamilies.find(f => f.id === 'control-tracking')
+    assert.ok(trackingFamily, 'control-tracking family exists')
+    const rollView = trackingFamily!.views.find(v => v.id === 'att-roll')
+    assert.ok(rollView, 'roll attitude view exists')
+    assert.deepEqual(
+      rollView!.defaultVisibleSeriesIds,
+      ['att-roll-actual', 'att-roll-setpoint'],
+      'roll view defaults to the actual + setpoint pair',
+    )
   })
 })
 
@@ -282,7 +291,7 @@ describe('actuators – motor statistics', () => {
     assert.ok(stats[2]!.invalidSamples > 0)
     // …but without armed intervals it must NOT become a finding
     assert.equal(result.findings.filter(f => f.id.includes('nan-gap')).length, 0)
-    assert.ok(result.chartSeries.length > 0)
+    assert.ok(result.chartFamilies.length > 0)
   })
 
   it('reports a sustained armed invalid gap as warning, never critical without corroboration', () => {

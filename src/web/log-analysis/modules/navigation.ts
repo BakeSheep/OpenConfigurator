@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { ChartSeriesGroup, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
+import type { ChartFamily, ChartView, ChartSeries, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ interface NavState {
   globalPosition: { sampleCount: number; lat: number; lon: number; alt: number } | null
   localPosition: { sampleCount: number; x: number; y: number; z: number } | null
   airData: { sampleCount: number; indicatedAirspeed: number | null; trueAirspeed: number | null; baroAlt: number | null } | null
-  wind: { sampleCount: number; speed: number[]; direction: number[] } | null
+  wind: { sampleCount: number; samples: Array<{ timeSec: number; speed: number }> } | null
   opticalFlow: { sampleCount: number; qualitySum: number; qualityCount: number } | null
   distanceSensor: { sampleCount: number; distances: number[]; qualitySum: number; qualityCount: number } | null
 }
@@ -225,15 +225,17 @@ export const navigationModule: AnalysisModule<NavState, NavigationResult> = {
 
       case 'wind': {
         if (!state.wind) {
-          state.wind = { sampleCount: 0, speed: [], direction: [] }
+          state.wind = { sampleCount: 0, samples: [] }
         }
         state.wind.sampleCount++
-        const ws = sample.values['windspeed']
-        if (typeof ws === 'number') state.wind.speed.push(ws)
-        const wn = sample.values['wind_from_north']
-        const we = sample.values['wind_from_east']
-        if (typeof wn === 'number' && typeof we === 'number') {
-          state.wind.direction.push(Math.atan2(we, wn) * 180 / Math.PI)
+        // Official Wind.msg fields: windspeed_north / windspeed_east (m/s)
+        const wn = sample.values['windspeed_north']
+        const we = sample.values['windspeed_east']
+        if (
+          typeof wn === 'number' && typeof we === 'number' &&
+          Number.isFinite(wn) && Number.isFinite(we)
+        ) {
+          state.wind.samples.push({ timeSec: sample.timeSec, speed: Math.hypot(wn, we) })
         }
         break
       }
@@ -270,7 +272,6 @@ export const navigationModule: AnalysisModule<NavState, NavigationResult> = {
 
   finalize(state: NavState, _context: AnalysisContext): ModuleResult<NavState, NavigationResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
 
     // ── GPS metrics ──
     const gpsMetrics: GpsInstanceMetrics[] = []
@@ -370,70 +371,112 @@ export const navigationModule: AnalysisModule<NavState, NavigationResult> = {
       distSensorResult = { sampleCount: state.distanceSensor.sampleCount, meanQuality }
     }
 
-    // ── Chart series ──
+    // ── Chart families ──
 
-    // GPS fix quality over time
+    // GPS quality: fix type + accuracy, one series per instance
+    const fixTypeSeries: ChartSeries[] = []
     for (const [instanceId, gps] of state.gpsInstances) {
       if (gps.fixTypes.length === 0) continue
       const downsampled = downsample(gps.fixTypes, MAX_CHART_POINTS)
-      chartSeries.push({
-        id: `gps_${instanceId}_fix_type`,
-        title: `GPS ${instanceId} 定位类型`,
-        description: `GPS 定位类型随时间的变化（3=3D，4=DGPS，5=RTK 浮点解，6=RTK 固定解）`,
+      fixTypeSeries.push({
+        id: `gps-${instanceId}-fix-type`,
+        label: `GPS ${instanceId}`,
+        times: downsampled.map(s => s.time),
+        values: downsampled.map(s => s.value),
+      })
+    }
+
+    const ephSeries: ChartSeries[] = []
+    for (const [instanceId, gps] of state.gpsInstances) {
+      if (gps.ephs.length === 0) continue
+      const downsampled = downsample(gps.ephs, MAX_CHART_POINTS)
+      ephSeries.push({
+        id: `gps-${instanceId}-eph`,
+        label: `GPS ${instanceId}`,
+        times: downsampled.map(s => s.time),
+        values: downsampled.map(s => s.value),
+      })
+    }
+
+    const gpsViews: ChartView[] = []
+    if (fixTypeSeries.length > 0) {
+      gpsViews.push({
+        id: 'gps-fix-type',
+        title: '定位类型',
+        description: 'GPS 定位类型随时间的变化（3=3D，4=DGPS，5=RTK 浮点解，6=RTK 固定解）',
         unit: 'fix type',
-        series: [{
-          label: `GPS ${instanceId}`,
-          times: downsampled.map(s => s.time),
-          values: downsampled.map(s => s.value),
-        }],
+        series: fixTypeSeries,
+        defaultVisibleSeriesIds: fixTypeSeries.slice(0, 6).map(s => s.id),
         thresholds: [
           { value: 1, label: '无定位', severity: 'critical' },
           { value: 3, label: '3D 定位', severity: 'healthy' },
         ],
+        xAxis: 'time',
         hasGaps: false,
       })
     }
-
-    // GPS position accuracy (eph) over time
-    for (const [instanceId, gps] of state.gpsInstances) {
-      if (gps.ephs.length === 0) continue
-      const downsampled = downsample(gps.ephs, MAX_CHART_POINTS)
-      chartSeries.push({
-        id: `gps_${instanceId}_eph`,
-        title: `GPS ${instanceId} 定位精度`,
-        description: `水平位置精度估计随时间的变化`,
+    if (ephSeries.length > 0) {
+      gpsViews.push({
+        id: 'gps-eph',
+        title: '水平定位精度',
+        description: '水平位置精度估计（eph）随时间的变化',
         unit: 'm',
-        series: [{
-          label: `GPS ${instanceId} eph`,
-          times: downsampled.map(s => s.time),
-          values: downsampled.map(s => s.value),
-        }],
+        series: ephSeries,
+        defaultVisibleSeriesIds: ephSeries.slice(0, 6).map(s => s.id),
         thresholds: [
           { value: HDOP_WARNING, label: '警告阈值', severity: 'warning' },
         ],
+        xAxis: 'time',
         hasGaps: false,
       })
     }
 
-    // Wind over time
-    if (state.wind && state.wind.speed.length > 0) {
-      const windTimes = state.wind.speed.map((_, i) => i) // approximate time index
-      chartSeries.push({
-        id: 'wind_speed',
-        title: '风速',
-        description: '估算风速随时间的变化',
-        unit: 'm/s',
-        series: [{
-          label: '风速',
-          times: windTimes,
-          values: [...state.wind.speed],
+    const chartFamilies: ChartFamily[] = []
+    if (gpsViews.length > 0) {
+      chartFamilies.push({
+        id: 'gps-quality',
+        moduleId: 'navigation',
+        title: 'GPS 质量',
+        description: '定位类型与精度',
+        views: gpsViews,
+        defaultViewId: gpsViews[0]!.id,
+        order: 10,
+      })
+    }
+
+    // Wind (real timestamps from the wind topic)
+    if (state.wind && state.wind.samples.length > 0) {
+      const windDs = downsample(
+        state.wind.samples.map(s => ({ time: s.timeSec, value: s.speed })),
+        MAX_CHART_POINTS,
+      )
+      chartFamilies.push({
+        id: 'air-wind',
+        moduleId: 'navigation',
+        title: '风速估计',
+        description: '风速估计（windspeed_north/east 合成）',
+        views: [{
+          id: 'wind-speed',
+          title: '风速',
+          description: '估算风速随时间的变化',
+          unit: 'm/s',
+          series: [{
+            id: 'wind-speed-magnitude',
+            label: '风速',
+            times: windDs.map(s => s.time),
+            values: windDs.map(s => s.value),
+          }],
+          defaultVisibleSeriesIds: ['wind-speed-magnitude'],
+          xAxis: 'time',
+          hasGaps: false,
         }],
-        hasGaps: false,
+        defaultViewId: 'wind-speed',
+        order: 20,
       })
     }
 
     return {
-      chartSeries,
+      chartFamilies,
       metrics: {
         gpsInstances: gpsMetrics,
         globalPosition: state.globalPosition ? { sampleCount: state.globalPosition.sampleCount } : null,

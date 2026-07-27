@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { ChartSeriesGroup, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
+import type { ChartFamily, ChartSeries, ThresholdSpec, DiagnosticFinding, DiagnosticEvidence } from '../types.js'
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
@@ -160,8 +160,11 @@ export const powerModule: AnalysisModule<PowerState, PowerResult> = {
 
   finalize(state: PowerState, context: AnalysisContext): ModuleResult<PowerState, PowerResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
     const batteryMetrics: BatteryMetrics[] = []
+    const voltageSeries: ChartSeries[] = []
+    const currentSeries: ChartSeries[] = []
+    const remainingSeries: ChartSeries[] = []
+    let voltageThresholds: ThresholdSpec[] | undefined
 
     for (const [instanceId, batt] of state.batteries) {
       if (batt.sampleCount === 0) continue
@@ -254,44 +257,89 @@ export const powerModule: AnalysisModule<PowerState, PowerResult> = {
         })
       }
 
-      // ── Chart series ──
+      // ── Chart series (one per instance, merged into unit-consistent views) ──
 
       const vDownsampled = downsample(batt.voltages, MAX_CHART_POINTS)
       const cDownsampled = downsample(batt.currents, MAX_CHART_POINTS)
 
-      chartSeries.push({
-        id: `battery_${instanceId}_voltage`,
-        title: `电池 ${instanceId} 电压`,
-        description: `电池 ${instanceId} 电压随时间的变化`,
-        unit: 'V',
-        series: [{
-          label: `电池 ${instanceId}`,
-          times: vDownsampled.map(s => s.time),
-          values: vDownsampled.map(s => s.value),
-        }],
-        thresholds: [
+      voltageSeries.push({
+        id: `battery-${instanceId}-voltage`,
+        label: `电池 ${instanceId}`,
+        times: vDownsampled.map(s => s.time),
+        values: vDownsampled.map(s => s.value),
+      })
+      // Thresholds depend on cell count — use the first configured instance
+      if (!voltageThresholds && batt.cellCount > 0) {
+        voltageThresholds = [
           { value: warningThreshold, label: '警告阈值', severity: 'warning' },
           { value: criticalThreshold, label: '严重阈值', severity: 'critical' },
-        ],
-        hasGaps: false,
-      })
+        ]
+      }
 
-      chartSeries.push({
-        id: `battery_${instanceId}_current`,
-        title: `电池 ${instanceId} 电流`,
-        description: `电池 ${instanceId} 放电电流随时间的变化`,
-        unit: 'A',
-        series: [{
+      if (cDownsampled.length > 0) {
+        currentSeries.push({
+          id: `battery-${instanceId}-current`,
           label: `电池 ${instanceId}`,
           times: cDownsampled.map(s => s.time),
           values: cDownsampled.map(s => s.value),
-        }],
+        })
+      }
+    }
+
+    const batteryViews = []
+    if (voltageSeries.length > 0) {
+      batteryViews.push({
+        id: 'battery-voltage',
+        title: '电压',
+        description: '各电池实例电压随时间的变化',
+        unit: 'V',
+        series: voltageSeries,
+        defaultVisibleSeriesIds: voltageSeries.slice(0, 6).map(s => s.id),
+        thresholds: voltageThresholds,
+        xAxis: 'time' as const,
+        hasGaps: false,
+      })
+    }
+    if (currentSeries.length > 0) {
+      batteryViews.push({
+        id: 'battery-current',
+        title: '电流',
+        description: '各电池实例放电电流随时间的变化',
+        unit: 'A',
+        series: currentSeries,
+        defaultVisibleSeriesIds: currentSeries.slice(0, 6).map(s => s.id),
+        xAxis: 'time' as const,
+        hasGaps: false,
+      })
+    }
+    if (remainingSeries.length > 0) {
+      batteryViews.push({
+        id: 'battery-remaining',
+        title: '剩余电量',
+        description: '各电池实例剩余电量随时间的变化',
+        unit: '%',
+        series: remainingSeries,
+        defaultVisibleSeriesIds: remainingSeries.slice(0, 6).map(s => s.id),
+        xAxis: 'time' as const,
         hasGaps: false,
       })
     }
 
+    const chartFamilies: ChartFamily[] = []
+    if (batteryViews.length > 0) {
+      chartFamilies.push({
+        id: 'battery',
+        moduleId: 'power',
+        title: '电池',
+        description: '电压、电流与电量',
+        views: batteryViews,
+        defaultViewId: batteryViews[0]!.id,
+        order: 30,
+      })
+    }
+
     return {
-      chartSeries,
+      chartFamilies,
       metrics: { batteries: batteryMetrics },
       findings,
       consumedTopics: [],

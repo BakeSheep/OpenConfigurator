@@ -22,17 +22,17 @@ export function mergeSectionResult(
 ): SectionResult {
   if (!existing) return next
 
+  // Concatenate ordered chart families across modules, keeping each module's
+  // identity and metrics in moduleResults[] rather than flattening.
+  const chartFamilies = [...existing.chartFamilies, ...next.chartFamilies]
+    .sort((a, b) => a.order - b.order)
+
   return {
-    ...existing,
+    section: existing.section,
     available: existing.available || next.available,
-    missingRequirements: [...new Set([
-      ...existing.missingRequirements,
-      ...next.missingRequirements,
-    ])],
-    metrics: { ...existing.metrics, ...next.metrics },
-    chartSeries: [...existing.chartSeries, ...next.chartSeries],
+    moduleResults: [...existing.moduleResults, ...next.moduleResults],
+    chartFamilies,
     findings: [...existing.findings, ...next.findings],
-    consumedTopics: [...existing.consumedTopics, ...next.consumedTopics],
     warnings: [...existing.warnings, ...next.warnings],
   }
 }
@@ -216,15 +216,19 @@ export async function runAnalysis(
       )
 
       const sectionResult: SectionResult = {
-        moduleId: mod.id,
         section: mod.section,
         available: !hasMissingRequired,
-        missingRequirements: resolution.missing,
-        warnings: result.warnings,
-        consumedTopics,
-        metrics: result.metrics,
-        chartSeries: result.chartSeries,
+        moduleResults: [{
+          moduleId: mod.id,
+          available: !hasMissingRequired,
+          missingRequirements: resolution.missing,
+          warnings: result.warnings,
+          consumedTopics,
+          metrics: result.metrics,
+        }],
+        chartFamilies: [...result.chartFamilies].sort((a, b) => a.order - b.order),
         findings: result.findings,
+        warnings: result.warnings,
       }
 
       // If multiple modules target same section, merge
@@ -234,15 +238,19 @@ export async function runAnalysis(
     } catch (err) {
       // Module failed — report as warning but don't crash the whole analysis
       const sectionResult: SectionResult = {
-        moduleId: mod.id,
         section: mod.section,
         available: false,
-        missingRequirements: resolution.missing,
-        warnings: [`分析模块 "${mod.id}" 处理失败，已跳过`],
-        consumedTopics: [],
-        metrics: {},
-        chartSeries: [],
+        moduleResults: [{
+          moduleId: mod.id,
+          available: false,
+          missingRequirements: resolution.missing,
+          warnings: [`分析模块 "${mod.id}" 处理失败，已跳过`],
+          consumedTopics: [],
+          metrics: {},
+        }],
+        chartFamilies: [],
         findings: [],
+        warnings: [`分析模块 "${mod.id}" 处理失败，已跳过`],
       }
       sections[mod.section] = mergeSectionResult(sections[mod.section], sectionResult)
     }
@@ -253,8 +261,10 @@ export async function runAnalysis(
   const consumedSet = new Set<string>()
   for (const [, section] of Object.entries(sections)) {
     if (section) {
-      for (const t of section.consumedTopics) {
-        consumedSet.add(`${t.name}:${t.multiId}`)
+      for (const modResult of section.moduleResults) {
+        for (const t of modResult.consumedTopics) {
+          consumedSet.add(`${t.name}:${t.multiId}`)
+        }
       }
     }
   }

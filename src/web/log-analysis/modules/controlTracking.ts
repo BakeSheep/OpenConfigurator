@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { ChartSeriesGroup, DiagnosticFinding } from '../types.js'
+import type { ChartFamily, ChartView, DiagnosticFinding } from '../types.js'
 import { readArmedState, ARMED_SOURCE_RANK, type ArmedSource } from '../px4/flightState.js'
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -244,7 +244,8 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
 
   finalize(state: ControlTrackingState, context: AnalysisContext): ModuleResult<ControlTrackingState, ControlTrackingResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
+    const attitudeViews: ChartView[] = []
+    const rateViews: ChartView[] = []
     const metrics: Record<string, unknown> = {}
     const missingReqs: string[] = []
 
@@ -411,7 +412,7 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
           })
         }
 
-        // Chart series (bounded)
+        // Chart views (bounded): one axis pair (actual + setpoint) per view
         const rA = downsample(rollActualT, rollActualV, MAX_CHART_POINTS)
         const rS = downsample(rollSpT, rollSpV, MAX_CHART_POINTS)
         const pA = downsample(pitchActualT, pitchActualV, MAX_CHART_POINTS)
@@ -419,21 +420,26 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
         const yA = downsample(yawActualT, yawActualV, MAX_CHART_POINTS)
         const yS = downsample(yawSpT, yawSpV, MAX_CHART_POINTS)
 
-        chartSeries.push({
-          id: 'attitude-tracking',
-          title: '姿态跟踪',
-          description: '解锁飞行期间横滚、俯仰和偏航的实际值与设定值',
-          unit: 'rad',
-          series: [
-            { label: '横滚实际值', times: rA.times, values: rA.values, color: '#e74c3c' },
-            { label: '横滚设定值', times: rS.times, values: rS.values, color: '#c0392b' },
-            { label: '俯仰实际值', times: pA.times, values: pA.values, color: '#2ecc71' },
-            { label: '俯仰设定值', times: pS.times, values: pS.values, color: '#27ae60' },
-            { label: '偏航实际值', times: yA.times, values: yA.values, color: '#3498db' },
-            { label: '偏航设定值', times: yS.times, values: yS.values, color: '#2980b9' },
-          ],
-          hasGaps: false,
-        })
+        const attitudeSpecs = [
+          { id: 'att-roll', title: '横滚姿态', actual: rA, sp: rS },
+          { id: 'att-pitch', title: '俯仰姿态', actual: pA, sp: pS },
+          { id: 'att-yaw', title: '偏航姿态', actual: yA, sp: yS },
+        ]
+        for (const spec of attitudeSpecs) {
+          attitudeViews.push({
+            id: spec.id,
+            title: spec.title,
+            description: `解锁飞行期间${spec.title}的实际值与设定值`,
+            unit: 'rad',
+            series: [
+              { id: `${spec.id}-actual`, label: '实际值', times: spec.actual.times, values: spec.actual.values },
+              { id: `${spec.id}-setpoint`, label: '设定值', times: spec.sp.times, values: spec.sp.values },
+            ],
+            defaultVisibleSeriesIds: [`${spec.id}-actual`, `${spec.id}-setpoint`],
+            xAxis: 'time',
+            hasGaps: false,
+          })
+        }
       }
     }
 
@@ -503,21 +509,26 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
         const ya = downsample(yActT, yActV, MAX_CHART_POINTS)
         const ys = downsample(ySpT, ySpV, MAX_CHART_POINTS)
 
-        chartSeries.push({
-          id: 'rate-tracking',
-          title: '角速度跟踪',
-          description: '解锁飞行期间角速度实际值与设定值',
-          unit: 'rad/s',
-          series: [
-            { label: '横滚角速度实际值', times: ra.times, values: ra.values, color: '#e74c3c' },
-            { label: '横滚角速度设定值', times: rs.times, values: rs.values, color: '#c0392b' },
-            { label: '俯仰角速度实际值', times: pa.times, values: pa.values, color: '#2ecc71' },
-            { label: '俯仰角速度设定值', times: ps.times, values: ps.values, color: '#27ae60' },
-            { label: '偏航角速度实际值', times: ya.times, values: ya.values, color: '#3498db' },
-            { label: '偏航角速度设定值', times: ys.times, values: ys.values, color: '#2980b9' },
-          ],
-          hasGaps: false,
-        })
+        const rateSpecs = [
+          { id: 'rate-roll', title: '横滚角速度', actual: ra, sp: rs },
+          { id: 'rate-pitch', title: '俯仰角速度', actual: pa, sp: ps },
+          { id: 'rate-yaw', title: '偏航角速度', actual: ya, sp: ys },
+        ]
+        for (const spec of rateSpecs) {
+          rateViews.push({
+            id: spec.id,
+            title: spec.title,
+            description: `解锁飞行期间${spec.title}的实际值与设定值`,
+            unit: 'rad/s',
+            series: [
+              { id: `${spec.id}-actual`, label: '实际值', times: spec.actual.times, values: spec.actual.values },
+              { id: `${spec.id}-setpoint`, label: '设定值', times: spec.sp.times, values: spec.sp.values },
+            ],
+            defaultVisibleSeriesIds: [`${spec.id}-actual`, `${spec.id}-setpoint`],
+            xAxis: 'time',
+            hasGaps: false,
+          })
+        }
       }
     }
 
@@ -532,8 +543,24 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
       consumedTopics.push({ name: topic.name, multiId: topic.multiId, msgId: topic.msgId })
     }
 
+    // ─── Chart family: one axis pair per selectable view ─────────────────
+
+    const chartFamilies: ChartFamily[] = []
+    const trackingViews = [...attitudeViews, ...rateViews]
+    if (trackingViews.length > 0) {
+      chartFamilies.push({
+        id: 'control-tracking',
+        moduleId: 'control-tracking',
+        title: '控制跟踪',
+        description: '姿态与角速度跟踪（实际值 vs 设定值）',
+        views: trackingViews,
+        defaultViewId: trackingViews[0]!.id,
+        order: 10,
+      })
+    }
+
     return {
-      chartSeries,
+      chartFamilies,
       metrics,
       findings,
       consumedTopics,

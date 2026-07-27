@@ -1,5 +1,5 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { DiagnosticFinding, ChartSeriesGroup } from '../types.js'
+import type { DiagnosticFinding, ChartFamily, ChartView } from '../types.js'
 
 // ── State types ──────────────────────────────────────────────────────────────
 
@@ -139,7 +139,6 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
 
   finalize(state: SystemHealthState, context: AnalysisContext): ModuleResult<SystemHealthState, SystemHealthResult> {
     const findings: DiagnosticFinding[] = []
-    const chartSeries: ChartSeriesGroup[] = []
 
     // Close any open high CPU window
     if (state.highCpuStart !== null && state.cpuLoadSamples.length > 0) {
@@ -202,42 +201,60 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
       : 0
 
     // ── Chart series: CPU load ──────────────────────────────────────────────
+    const resourceViews: ChartView[] = []
     if (state.cpuLoadSamples.length > 0) {
       const times = state.cpuLoadSamples.map(s => s.timeSec)
       const loads = state.cpuLoadSamples.map(s => s.load)
       const ds = downsample(times, loads, MAX_CHART_POINTS)
-      chartSeries.push({
-        id: 'system-health-cpu-load',
-          title: 'CPU 负载',
-          description: 'CPU 负载百分比随时间的变化',
+      resourceViews.push({
+        id: 'cpu-load',
+        title: 'CPU 负载',
+        description: 'CPU 负载百分比随时间的变化',
         unit: '%',
-        series: [{ label: 'CPU 负载', times: ds.times, values: ds.values }],
+        series: [{ id: 'cpu-load', label: 'CPU 负载', times: ds.times, values: ds.values }],
+        defaultVisibleSeriesIds: ['cpu-load'],
         thresholds: [
           { value: CPU_WARNING_THRESHOLD, label: '警告阈值', severity: 'warning' },
         ],
+        xAxis: 'time',
         hasGaps: false,
       })
 
-      // RAM usage chart
+      // RAM usage view
       const ramValues = state.cpuLoadSamples.map(s => s.ramUsage)
       if (ramValues.some(v => v > 0)) {
         const dsRam = downsample(times, ramValues, MAX_CHART_POINTS)
-        chartSeries.push({
-          id: 'system-health-ram-usage',
+        resourceViews.push({
+          id: 'ram-usage',
           title: '内存占用',
           description: '内存占用百分比随时间的变化',
           unit: '%',
-          series: [{ label: '内存占用', times: dsRam.times, values: dsRam.values }],
+          series: [{ id: 'ram-usage', label: '内存占用', times: dsRam.times, values: dsRam.values }],
+          defaultVisibleSeriesIds: ['ram-usage'],
           thresholds: [
             { value: RAM_CRITICAL_THRESHOLD, label: '严重阈值', severity: 'critical' },
           ],
+          xAxis: 'time',
           hasGaps: false,
         })
       }
     }
 
+    const chartFamilies: ChartFamily[] = []
+    if (resourceViews.length > 0) {
+      chartFamilies.push({
+        id: 'system-resources',
+        moduleId: 'system-health',
+        title: '系统资源',
+        description: 'CPU 与内存占用',
+        views: resourceViews,
+        defaultViewId: resourceViews[0]!.id,
+        order: 40,
+      })
+    }
+
     return {
-      chartSeries,
+      chartFamilies,
       metrics: {
         maxCpuLoad: state.maxCpuLoad,
         maxRamUsage: state.maxRamUsage,

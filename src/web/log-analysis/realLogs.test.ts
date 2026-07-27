@@ -79,9 +79,11 @@ function assertDocInvariants(
   // 4. Finite metric ranges (no NaN/Infinity in outputs)
   for (const [, section] of Object.entries(sections)) {
     if (!section) continue
-    for (const [key, val] of Object.entries(section.metrics)) {
-      if (typeof val === 'number') {
-        assert.ok(Number.isFinite(val), `Metric ${section.moduleId}.${key} is not finite: ${val}`)
+    for (const modResult of section.moduleResults) {
+      for (const [key, val] of Object.entries(modResult.metrics)) {
+        if (typeof val === 'number') {
+          assert.ok(Number.isFinite(val), `Metric ${modResult.moduleId}.${key} is not finite: ${val}`)
+        }
       }
     }
   }
@@ -841,8 +843,8 @@ describe('PX4 ULog compatibility matrix', () => {
       const section2 = result2.sections[sectionId as keyof typeof result2.sections]
       if (section1 && section2) {
         assert.deepEqual(
-          section1.metrics,
-          section2.metrics,
+          section1.moduleResults.map((m) => m.metrics),
+          section2.moduleResults.map((m) => m.metrics),
           `Metrics for section ${sectionId} should be deterministic`,
         )
       }

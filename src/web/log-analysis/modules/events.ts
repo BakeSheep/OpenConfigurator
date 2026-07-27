@@ -55,7 +55,7 @@ export const eventsModule: AnalysisModule<EventsState, EventsResult> = {
 
   finalize(state: EventsState, _context: AnalysisContext): ModuleResult<EventsState, EventsResult> {
     return {
-      chartSeries: [],
+      chartFamilies: [],
       metrics: {
         structuredEventCount: state.structuredEventCount,
         eventPageSize: PAGE_SIZE,
