@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "policy": "See README.md for fixture policy",
+  "fixtures": [
+    {
+      "id": "synthetic-multicopter-basic",
+      "description": "Synthetic basic multicopter log with core topics",
+      "vehicle": "multicopter",
+      "px4Version": "1.14+",
+      "features": ["basic topics", "multi-instance"],
+      "expectedWarnings": [],
+      "source": "synthetic",
+      "size": "small",
+      "committed": true
+    },
+    {
+      "id": "synthetic-appended-crash",
+      "description": "Synthetic log with appended crash section",
+      "vehicle": "multicopter",
+      "px4Version": "1.14+",
+      "features": ["appended data", "v2 format"],
+      "expectedWarnings": ["hadAppendedData"],
+      "source": "synthetic",
+      "size": "small",
+      "committed": true
+    }
+  ],
+  "optionalExtendedDir": "ULOG_FIXTURE_DIR environment variable for local extended fixtures"
+}

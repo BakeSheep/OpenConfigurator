@@ -93,10 +93,44 @@ UI 确认不是唯一安全边界。服务端还会验证消息类型、范围�
 5. 将 WS 驱动的持久状态放入 Zustand store，而不是页面局部 state。
 6. 增加协议或服务边界回归测试。
 
+## 日志分析子系统
+
+`src/web/log-analysis/` 实现了浏览器内的 PX4 ULog 结构化分析，独立于实时遥测链路。
+
+### 目录结构
+
+| 路径 | 职责 |
+|---|---|
+| `src/web/log-analysis/parser/` | `normalizeUlogBuffer`（buffer 归一化、v2 追加段修复）、`UlogDocument`（完整 catalog、元信息、参数、事件、时间线）、`fieldPaths`（字段展开与可绘图判断） |
+| `src/web/log-analysis/engine/` | `AnalysisModule` 接口、`topicResolver`（别名 + multi_id 解析）、`moduleRegistry`（注册表）、`runAnalysis`（单次流式遍历） |
+| `src/web/log-analysis/modules/` | 13 个分析模块：`flightOverview`、`controlTracking`、`actuators`、`estimator`、`sensors`、`power`、`propulsion`、`navigation`、`failsafe`、`systemHealth`、`events`、`battery`、`gps` |
+| `src/web/log-analysis/UlogAnalysisClient.ts` | 主线程侧 Worker 代理，类型化协议、AbortSignal 取消、进度回调 |
+| `src/web/log-analysis/workerProtocol.ts` | Worker 请求/响应类型（`load` / `get_series` / `cancel` / `dispose`） |
+| `src/web/log-analysis/seriesCache.ts` | 有界 LRU 缓存（24 查询 / 32MB） |
+| `src/web/log-analysis/uiModel.ts` | 将 `UlogAnalysisDataset` 转换为 UI 消费的视图模型 |
+| `src/web/workers/ulogAnalysisWorker.ts` | Worker 入口，持有 `UlogDocument` + `ModuleRegistry` + `SeriesCache` |
+
+### UI 组件
+
+| 组件 | 职责 |
+|---|---|
+| `AnalysisSectionNav` | 六分区标签页（概览 / 控制 / 估计器 / 传感器与动力 / 导航 / 事件与原始数据） |
+| `AnalysisGroup` | 可折叠的图表 + 发现容器 |
+| `HealthSummary` | 日志质量条（dropout、覆盖率） |
+| `FindingsList` | 诊断发现列表（按严重度着色） |
+| `LogTimeline` | 飞行时间线（模式变更、解锁区间、事件标记） |
+| `MetricChartGroup` | 指标图表组 |
+| `RawTopicExplorer` | 通用原始 topic 浏览器（前向兼容） |
+| `CoverageSummary` | 覆盖率统计（已分析 / 仅原始 / 不支持） |
+| `TrackMap` | GPS 轨迹地图（懒加载 Leaflet） |
+
+详细设计见 [LOG_ANALYSIS.md](LOG_ANALYSIS.md)。
+
 ## 测试分层
 
 - `*.test.ts`：连接状态机、蓝牙识别、串口边界和 HTTP/WS 生命周期
 - `MavlinkBridge.test.ts`：framing、签名、目标选择、命令、参数和遥测语义
+- `src/web/log-analysis/*.test.ts`：ULog 解析、catalog、模块注册、topic 解析、分析引擎、UI 模型、序列缓存、兼容性矩阵
 - `npm run typecheck`：共享 union、前后端 dispatch 与严格 TypeScript 约束
 - `npm run build`：前端生产构建和静态资源集成
 - HIL：真实 PX4、USB/Bluetooth、签名互通及所有安全关键操作

@@ -17,6 +17,8 @@
     "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
+    "test:log-analysis": "tsx --test src/web/log-analysis/*.test.ts && tsx src/web/utils/ulogAnalysis.test.ts",
+    "test:log-analysis:real": "tsx --test src/web/log-analysis/realLogs.test.ts",
     "start": "tsx src/server/index.ts",
     "preview": "vite preview"
   },

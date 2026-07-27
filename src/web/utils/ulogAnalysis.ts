@@ -81,11 +81,6 @@ export interface UlogAnalysisDataset {
   track: TrackData | null
 }
 
-export interface UlogWorkerResult {
-  dataset?: UlogAnalysisDataset
-  error?: string
-}
-
 /** PX4 nav_state values (vehicle_status.nav_state) to display names. */
 export const NAV_STATE_NAMES: Record<number, string> = {
   0: 'Manual',

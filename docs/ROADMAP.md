@@ -1,5 +1,9 @@
 # OpenConfigurator 路线图
 
+## 已完成
+
+- ✅ 结构化 ULog 分析与原始数据检查：浏览器内解析 PX4 v1/v2 日志，13 个分析模块覆盖概览、控制、估计器、传感器与动力、导航、事件六个分区，支持多 IMU 实例、v2 追加崩溃数据、旧版 topic 别名解析、通用原始 topic 浏览器。详见 [LOG_ANALYSIS.md](LOG_ANALYSIS.md)
+
 ## 中期：可用性与连接能力
 
 - UDP 连接与 PX4 SITL 支持
