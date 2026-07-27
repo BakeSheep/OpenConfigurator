@@ -1,5 +1,6 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
 import type { ChartSeriesGroup, DiagnosticFinding } from '../types.js'
+import { readArmedState, ARMED_SOURCE_RANK, type ArmedSource } from '../px4/flightState.js'
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -23,6 +24,8 @@ interface ControlTrackingState {
   currentArmedStart: number | null
   isArmed: boolean
   hasExplicitArmedState: boolean
+  /** Rank of the armed-state source currently in charge (see ARMED_SOURCE_RANK) */
+  armedSourceRank: number
   attitudeHasQuat: boolean
   attitudeHasEuler: boolean
   setpointHasQuat: boolean
@@ -106,6 +109,43 @@ function downsample(times: number[], values: number[], maxPoints: number): { tim
 
 // ─── Module ─────────────────────────────────────────────────────────────────
 
+/**
+ * Apply an explicit armed reading from a state topic. Higher-priority
+ * sources (vehicle_status > actuator_armed) own the armed intervals.
+ * Null readings (missing/unknown fields) cause no transition.
+ */
+function applyArmedReading(
+  state: ControlTrackingState,
+  timeSec: number,
+  armed: boolean | null,
+  source: ArmedSource,
+): void {
+  if (armed === null) return
+  const rank = ARMED_SOURCE_RANK[source]
+  if (rank < state.armedSourceRank) return
+  state.armedSourceRank = rank
+
+  // First explicit reading takes over from the setpoint-presence heuristic:
+  // discard heuristic intervals so disarmed setpoint noise is not scored.
+  if (!state.hasExplicitArmedState) {
+    state.hasExplicitArmedState = true
+    state.armedRanges = []
+    state.currentArmedStart = null
+    state.isArmed = false
+  }
+
+  if (armed && !state.isArmed) {
+    state.isArmed = true
+    state.currentArmedStart = timeSec
+  } else if (!armed && state.isArmed) {
+    state.isArmed = false
+    if (state.currentArmedStart !== null) {
+      state.armedRanges.push({ start: state.currentArmedStart, end: timeSec })
+      state.currentArmedStart = null
+    }
+  }
+}
+
 export const controlTrackingModule: AnalysisModule<ControlTrackingState, ControlTrackingResult> = {
   id: 'control-tracking',
   section: 'control',
@@ -140,6 +180,11 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
       required: false,
       bindAs: 'vehicleStatus',
     },
+    {
+      aliases: ['actuator_armed'],
+      required: false,
+      bindAs: 'actuatorArmed',
+    },
   ],
 
   create(_context: AnalysisContext): ControlTrackingState {
@@ -152,6 +197,7 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
       currentArmedStart: null,
       isArmed: false,
       hasExplicitArmedState: false,
+      armedSourceRank: 0,
       attitudeHasQuat: false,
       attitudeHasEuler: false,
       setpointHasQuat: false,
@@ -161,12 +207,6 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
 
   consume(state: ControlTrackingState, sample: ResolvedSample, bindName: string): void {
     const buf: BufferedSample = { timeSec: sample.timeSec, values: { ...sample.values }, topicName: sample.topic.name }
-
-    // Track armed state from setpoint (heuristic: if setpoint exists, assume armed)
-    // Better: use vehicle_status if available — but we don't have it as a requirement.
-    // We'll detect armed from the presence of meaningful setpoint data.
-    // Actually, we need a better signal. Let's check if attitude setpoint has non-zero values.
-    // For now, we buffer everything and determine armed state in finalize from the data.
 
     switch (bindName) {
       case 'attitude':
@@ -178,7 +218,8 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
         state.attitudeSetpointSamples.push(buf)
         if ('q_d[0]' in sample.values) state.setpointHasQuat = true
         if ('roll_body' in sample.values) state.setpointHasEuler = true
-        // Heuristic: presence of setpoint data implies armed (only if no explicit armed state)
+        // Heuristic: presence of setpoint data implies armed — used only
+        // when no explicit state topic ever provides an armed reading.
         if (!state.hasExplicitArmedState) {
           if (!state.isArmed) {
             state.isArmed = true
@@ -192,21 +233,12 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
       case 'angularVelocity':
         state.angularVelocitySamples.push(buf)
         break
-      case 'vehicleStatus': {
-        const armed = Number(sample.values['armed'] ?? 0) !== 0
-        state.hasExplicitArmedState = true
-        if (armed && !state.isArmed) {
-          state.isArmed = true
-          state.currentArmedStart = sample.timeSec
-        } else if (!armed && state.isArmed) {
-          state.isArmed = false
-          if (state.currentArmedStart !== null) {
-            state.armedRanges.push({ start: state.currentArmedStart, end: sample.timeSec })
-            state.currentArmedStart = null
-          }
-        }
+      case 'vehicleStatus':
+        applyArmedReading(state, sample.timeSec, readArmedState(sample.topic.name, sample.values), 'vehicle_status')
         break
-      }
+      case 'actuatorArmed':
+        applyArmedReading(state, sample.timeSec, readArmedState('actuator_armed', sample.values), 'actuator_armed')
+        break
     }
   },
 

@@ -1,5 +1,6 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
 import type { DiagnosticFinding } from '../types.js'
+import { readArmedState, readLandedState, ARMED_SOURCE_RANK, type ArmedSource } from '../px4/flightState.js'
 
 // ─── PX4 nav_state → mode name mapping ──────────────────────────────────────
 
@@ -26,7 +27,11 @@ interface FlightOverviewState {
   isArmed: boolean
   armedStartTime: number | null
   armedEndTime: number | null
+  /** Time of the first armed transition (survives interval closure) */
+  firstArmedTime: number | null
   totalArmedSec: number
+  /** Rank of the armed-state source currently in charge (see ARMED_SOURCE_RANK) */
+  armedSourceRank: number
 
   // Landing state tracking
   isLanded: boolean
@@ -86,6 +91,11 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
       bindAs: 'vehicleStatus',
     },
     {
+      aliases: ['actuator_armed'],
+      required: false,
+      bindAs: 'actuatorArmed',
+    },
+    {
       aliases: ['vehicle_land_detected'],
       required: false,
       bindAs: 'landDetected',
@@ -102,7 +112,9 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
       isArmed: false,
       armedStartTime: null,
       armedEndTime: null,
+      firstArmedTime: null,
       totalArmedSec: 0,
+      armedSourceRank: 0,
       isLanded: true,
       wasEverNotLanded: false,
       takeoffTime: null,
@@ -125,23 +137,35 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
     state.lastSampleTime = sample.timeSec
 
     if (bindName === 'vehicleStatus') {
-      // vehicle_status topic: armed + (optionally) nav_state
-      const armed = Number(sample.values['armed'] ?? 0) !== 0
-      processArmed(state, sample.timeSec, armed)
+      // vehicle_status: arming_state (1=disarmed, 2=armed) + nav_state
+      const armed = readArmedState(sample.topic.name, sample.values)
+      if (armed !== null) {
+        applyArmedReading(state, sample.timeSec, armed, 'vehicle_status')
+      }
 
       // nav_state from vehicle_status (if present)
       const navState = sample.values['nav_state']
       if (typeof navState === 'number') {
         processMode(state, sample.timeSec, navState)
       }
+    } else if (bindName === 'actuatorArmed') {
+      // actuator_armed: boolean armed fallback
+      const armed = readArmedState('actuator_armed', sample.values)
+      if (armed !== null) {
+        applyArmedReading(state, sample.timeSec, armed, 'actuator_armed')
+      }
     } else if (bindName === 'landDetected') {
-      // vehicle_land_detected topic: landed flag
-      const landed = Number(sample.values['landed'] ?? 1) !== 0
-      processLanding(state, sample.timeSec, landed)
+      // vehicle_land_detected: landed flag — unknown samples cause no transition
+      const landed = readLandedState(sample.topic.name, sample.values)
+      if (landed !== null) {
+        processLanding(state, sample.timeSec, landed)
+      }
     } else if (bindName === 'commanderState') {
-      // commander_state topic: armed + nav_state
-      const armed = Number(sample.values['armed'] ?? 0) !== 0
-      processArmed(state, sample.timeSec, armed)
+      // commander_state: legacy armed fallback only when the field exists
+      const armed = readArmedState(sample.topic.name, sample.values)
+      if (armed !== null) {
+        applyArmedReading(state, sample.timeSec, armed, 'other')
+      }
 
       const navState = sample.values['nav_state']
       if (typeof navState === 'number') {
@@ -213,7 +237,7 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
       firmwareVersion: context.metadata.firmwareVersion,
       hardwareVersion: null,
       modeTimeline: state.modeTimeline,
-      armingTimeSec: state.armedStartTime,
+      armingTimeSec: state.firstArmedTime,
       takeoffTimeSec: state.takeoffTime,
       landTimeSec: state.landTime,
       logQuality,
@@ -255,11 +279,25 @@ export const flightOverviewModule: AnalysisModule<FlightOverviewState, FlightOve
 
 // ─── Internal state mutators ────────────────────────────────────────────────
 
+/** Apply an armed reading, letting higher-priority sources own the state. */
+function applyArmedReading(
+  state: FlightOverviewState,
+  timeSec: number,
+  armed: boolean,
+  source: ArmedSource,
+): void {
+  const rank = ARMED_SOURCE_RANK[source]
+  if (rank < state.armedSourceRank) return
+  state.armedSourceRank = rank
+  processArmed(state, timeSec, armed)
+}
+
 function processArmed(state: FlightOverviewState, timeSec: number, armed: boolean): void {
   if (armed && !state.isArmed) {
     // Armed transition
     state.isArmed = true
     state.armedStartTime = timeSec
+    if (state.firstArmedTime === null) state.firstArmedTime = timeSec
   } else if (!armed && state.isArmed) {
     // Disarm transition
     state.isArmed = false

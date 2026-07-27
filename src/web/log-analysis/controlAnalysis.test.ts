@@ -128,7 +128,7 @@ describe('controlTracking – armed-only filtering', () => {
     const spTopic = makeTopic('vehicle_attitude_setpoint', 0, 11, [
       'timestamp', 'roll_body', 'pitch_body', 'yaw_body',
     ])
-    const vsTopic = makeTopic('vehicle_status', 0, 14, ['timestamp', 'armed'])
+    const vsTopic = makeTopic('vehicle_status', 0, 14, ['timestamp', 'arming_state'])
 
     const ctx = makeCtx({ logEndSec: 10, logDuration: 10 })
     ctx.resolvedTopics.set('attitude', attTopic)
@@ -150,7 +150,7 @@ describe('controlTracking – armed-only filtering', () => {
         bindName: 'attitudeSetpoint',
       })
       samples.push({
-        sample: { topic: vsTopic, timeSec: t, values: { armed: 0 } },
+        sample: { topic: vsTopic, timeSec: t, values: { arming_state: 1 } },
         bindName: 'vehicleStatus',
       })
     }
@@ -166,7 +166,7 @@ describe('controlTracking – armed-only filtering', () => {
         bindName: 'attitudeSetpoint',
       })
       samples.push({
-        sample: { topic: vsTopic, timeSec: t, values: { armed: 1 } },
+        sample: { topic: vsTopic, timeSec: t, values: { arming_state: 2 } },
         bindName: 'vehicleStatus',
       })
     }
@@ -206,7 +206,7 @@ describe('controlTracking – rate tracking', () => {
   it('computes rate tracking metrics', () => {
     const ratesTopic = makeTopic('vehicle_rates_setpoint', 0, 12, ['timestamp', 'roll', 'pitch', 'yaw'])
     const angVelTopic = makeTopic('vehicle_angular_velocity', 0, 13, ['timestamp', 'xyz[0]', 'xyz[1]', 'xyz[2]'])
-    const vsTopic = makeTopic('vehicle_status', 0, 14, ['timestamp', 'armed'])
+    const vsTopic = makeTopic('vehicle_status', 0, 14, ['timestamp', 'arming_state'])
 
     const ctx = makeCtx({ logEndSec: 10, logDuration: 10 })
     ctx.resolvedTopics.set('ratesSetpoint', ratesTopic)
@@ -226,7 +226,7 @@ describe('controlTracking – rate tracking', () => {
         bindName: 'angularVelocity',
       })
       samples.push({
-        sample: { topic: vsTopic, timeSec: t, values: { armed: 1 } },
+        sample: { topic: vsTopic, timeSec: t, values: { arming_state: 2 } },
         bindName: 'vehicleStatus',
       })
     }
@@ -371,7 +371,7 @@ describe('actuators – missing requirements', () => {
 
 describe('flightOverview – basic metrics', () => {
   it('computes armed and flight duration', () => {
-    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'armed', 'nav_state'])
+    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'arming_state', 'nav_state'])
     const ldTopic = makeTopic('vehicle_land_detected', 0, 31, ['timestamp', 'landed'])
 
     const ctx = makeCtx({ logDuration: 100, logEndSec: 100 })
@@ -386,7 +386,7 @@ describe('flightOverview – basic metrics', () => {
       samples.push({
         sample: {
           topic: vsTopic, timeSec: t,
-          values: { armed: t >= 10 && t <= 90 ? 1 : 0, nav_state: t < 30 ? 0 : 1 },
+          values: { arming_state: t >= 10 && t <= 90 ? 2 : 1, nav_state: t < 30 ? 0 : 1 },
         },
         bindName: 'vehicleStatus',
       })
@@ -417,7 +417,7 @@ describe('flightOverview – basic metrics', () => {
 
 describe('flightOverview – mode timeline', () => {
   it('detects mode transitions', () => {
-    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'armed', 'nav_state'])
+    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'arming_state', 'nav_state'])
     const ctx = makeCtx()
     ctx.resolvedTopics.set('vehicleStatus', vsTopic)
 
@@ -427,7 +427,7 @@ describe('flightOverview – mode timeline', () => {
     for (let t = 0; t <= 100; t += 1) {
       const mode = t <= 30 ? 0 : t <= 60 ? 1 : 3
       samples.push({
-        sample: { topic: vsTopic, timeSec: t, values: { armed: 0, nav_state: mode } },
+        sample: { topic: vsTopic, timeSec: t, values: { arming_state: 1, nav_state: mode } },
         bindName: 'vehicleStatus',
       })
     }
@@ -449,14 +449,14 @@ describe('flightOverview – mode timeline', () => {
 
 describe('flightOverview – findings', () => {
   it('reports very short log', () => {
-    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'armed', 'nav_state'])
+    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'arming_state', 'nav_state'])
     const ctx = makeCtx({ logDuration: 10, logEndSec: 10 })
     ctx.resolvedTopics.set('vehicleStatus', vsTopic)
 
     const state = flightOverviewModule.create(ctx)
     for (let t = 0; t <= 10; t += 1) {
       flightOverviewModule.consume(state, {
-        topic: vsTopic, timeSec: t, values: { armed: 0, nav_state: 0 },
+        topic: vsTopic, timeSec: t, values: { arming_state: 1, nav_state: 0 },
       }, 'vehicleStatus')
     }
 
@@ -467,14 +467,14 @@ describe('flightOverview – findings', () => {
   })
 
   it('reports no armed period', () => {
-    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'armed', 'nav_state'])
+    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'arming_state', 'nav_state'])
     const ctx = makeCtx({ logDuration: 60, logEndSec: 60 })
     ctx.resolvedTopics.set('vehicleStatus', vsTopic)
 
     const state = flightOverviewModule.create(ctx)
     for (let t = 0; t <= 60; t += 1) {
       flightOverviewModule.consume(state, {
-        topic: vsTopic, timeSec: t, values: { armed: 0, nav_state: 0 },
+        topic: vsTopic, timeSec: t, values: { arming_state: 1, nav_state: 0 },
       }, 'vehicleStatus')
     }
 
@@ -489,7 +489,7 @@ describe('flightOverview – findings', () => {
 
 describe('flightOverview – takeoff and landing', () => {
   it('detects takeoff and landing times', () => {
-    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'armed', 'nav_state'])
+    const vsTopic = makeTopic('vehicle_status', 0, 30, ['timestamp', 'arming_state', 'nav_state'])
     const ldTopic = makeTopic('vehicle_land_detected', 0, 31, ['timestamp', 'landed'])
 
     const ctx = makeCtx({ logDuration: 100, logEndSec: 100 })
@@ -501,7 +501,7 @@ describe('flightOverview – takeoff and landing', () => {
     for (let t = 0; t <= 100; t += 1) {
       flightOverviewModule.consume(state, {
         topic: vsTopic, timeSec: t,
-        values: { armed: t >= 10 ? 1 : 0, nav_state: 0 },
+        values: { arming_state: t >= 10 ? 2 : 1, nav_state: 0 },
       }, 'vehicleStatus')
       flightOverviewModule.consume(state, {
         topic: ldTopic, timeSec: t,
