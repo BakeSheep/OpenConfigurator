@@ -243,7 +243,7 @@ describe('controlTracking – rate tracking', () => {
 // ─── Actuators: Motor statistics ────────────────────────────────────────────
 
 describe('actuators – motor statistics', () => {
-  it('computes per-motor statistics and detects NaN gaps', () => {
+  it('computes per-motor statistics and records invalid samples without false alarms', () => {
     const motorsTopic = makeTopic('actuator_motors', 0, 20, [
       'timestamp', 'control[0]', 'control[1]', 'control[2]', 'control[3]',
     ])
@@ -274,10 +274,51 @@ describe('actuators – motor statistics', () => {
 
     const result = actuatorsModule.finalize(state, ctx)
 
+    // All four channels produced finite data → inferred as 4 motors
     assert.equal(result.metrics.motorCount, 4)
-    const stats = (result.metrics.motorStats as Array<{ min: number; max: number; nanGapCount: number }>)[2]!
-    assert.ok(stats.nanGapCount > 0)
+    const stats = (result.metrics.motorStats as Array<{ channelIndex: number; min: number; max: number; invalidSamples: number }>)
+    assert.deepEqual(stats.map(s => s.channelIndex), [0, 1, 2, 3])
+    // The NaN stretch on motor 3 (index 2) is recorded as evidence…
+    assert.ok(stats[2]!.invalidSamples > 0)
+    // …but without armed intervals it must NOT become a finding
+    assert.equal(result.findings.filter(f => f.id.includes('nan-gap')).length, 0)
     assert.ok(result.chartSeries.length > 0)
+  })
+
+  it('reports a sustained armed invalid gap as warning, never critical without corroboration', () => {
+    const motorsTopic = makeTopic('actuator_motors', 0, 20, [
+      'timestamp', 'control[0]', 'control[1]',
+    ])
+    const vsTopic = makeTopic('vehicle_status', 0, 21, ['timestamp', 'arming_state'])
+
+    const ctx = makeCtx({ logEndSec: 20, logDuration: 20 })
+    ctx.resolvedTopics.set('motors', motorsTopic)
+    ctx.resolvedTopics.set('vehicleStatus', vsTopic)
+
+    const state = actuatorsModule.create(ctx)
+    // Armed 0–20s
+    for (let t = 0; t <= 20; t++) {
+      actuatorsModule.consume(state, {
+        topic: vsTopic, timeSec: t, values: { arming_state: t < 19 ? 2 : 1 },
+      }, 'vehicleStatus')
+    }
+    // Motor 2 (index 1) produces data 0–5s, then NaN 5–15s (sustained, armed), then recovers
+    for (let i = 0; i <= 200; i++) {
+      const t = i * 0.1
+      actuatorsModule.consume(state, {
+        topic: motorsTopic, timeSec: t,
+        values: {
+          'control[0]': 0.5,
+          'control[1]': t < 5 || t > 15 ? 0.5 : NaN,
+        },
+      }, 'motors')
+    }
+
+    const result = actuatorsModule.finalize(state, ctx)
+    const gapFindings = result.findings.filter(f => f.id.includes('nan-gap'))
+    assert.equal(gapFindings.length, 1, 'exactly one sustained gap finding')
+    assert.equal(gapFindings[0]!.severity, 'warning', 'sustained gap without ESC evidence is warning, not critical')
+    assert.ok(gapFindings[0]!.title.includes('电机 2'), 'labels are 1-based')
   })
 })
 

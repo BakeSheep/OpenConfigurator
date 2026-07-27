@@ -164,6 +164,45 @@ export interface ChartSeriesGroup {
   hasGaps: boolean
 }
 
+// ─── Chart families (selector-driven presentation contract) ───────────────
+
+export interface ThresholdSpec {
+  value: number
+  label: string
+  severity: FindingSeverity
+}
+
+export interface ChartSeries {
+  /** Stable series identity — labels alone are not identity */
+  id: string
+  label: string
+  times: number[]
+  values: number[]
+  color?: string
+}
+
+export interface ChartView {
+  id: string
+  title: string
+  description: string
+  unit: string
+  series: ChartSeries[]
+  defaultVisibleSeriesIds: string[]
+  thresholds?: ThresholdSpec[]
+  xAxis: 'time' | 'frequency' | 'category'
+  hasGaps: boolean
+}
+
+export interface ChartFamily {
+  id: string
+  moduleId: string
+  title: string
+  description: string
+  views: ChartView[]
+  defaultViewId: string
+  order: number
+}
+
 export interface UlogAnalysisDataset {
   metadata: UlogMetadata
   catalog: UlogTopicCatalogEntry[]
