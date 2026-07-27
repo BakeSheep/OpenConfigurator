@@ -197,6 +197,159 @@ export function downsampleMinMax(
   return { times: outTimes, values: outValues }
 }
 
+// ─── Streaming bounded series collection ──────────────────────────────────
+
+interface EnvelopeBucket {
+  firstT: number
+  firstV: number
+  lastT: number
+  lastV: number
+  minT: number
+  minV: number
+  maxT: number
+  maxV: number
+  finiteCount: number
+  invalidCount: number
+}
+
+/**
+ * Bounded streaming series collector covering the COMPLETE time range.
+ * Uses adaptive-stride min/max envelope buckets: when the bucket budget is
+ * exceeded, adjacent buckets merge and the stride doubles. Preserves first/
+ * last points and per-bucket extrema. Never retains only the first N
+ * samples. NaN samples mark gaps: fully-invalid buckets emit a NaN point so
+ * charts break the line.
+ */
+export class StreamingSeriesCollector {
+  private readonly maxBuckets: number
+  private stride = 1
+  private fill = 0
+  private buckets: EnvelopeBucket[] = []
+  private totalSamples = 0
+  private anyInvalid = false
+
+  constructor(maxPoints = 2000) {
+    this.maxBuckets = Math.max(8, Math.ceil(maxPoints / 2))
+  }
+
+  get sampleCount(): number {
+    return this.totalSamples
+  }
+
+  get isEmpty(): boolean {
+    return this.totalSamples === 0
+  }
+
+  push(timeSec: number, value: number): void {
+    this.totalSamples++
+    const finite = Number.isFinite(value)
+    if (!finite) this.anyInvalid = true
+
+    const bucket = this.buckets[this.buckets.length - 1]
+    if (!bucket || this.fill >= this.stride) {
+      if (this.buckets.length >= this.maxBuckets) {
+        this.compact()
+      }
+      this.buckets.push({
+        firstT: timeSec,
+        firstV: value,
+        lastT: timeSec,
+        lastV: value,
+        minT: timeSec,
+        minV: finite ? value : Infinity,
+        maxT: timeSec,
+        maxV: finite ? value : -Infinity,
+        finiteCount: finite ? 1 : 0,
+        invalidCount: finite ? 0 : 1,
+      })
+      this.fill = 1
+      return
+    }
+
+    bucket.lastT = timeSec
+    bucket.lastV = value
+    if (finite) {
+      if (bucket.finiteCount === 0 || value < bucket.minV) {
+        bucket.minV = value
+        bucket.minT = timeSec
+      }
+      if (bucket.finiteCount === 0 || value > bucket.maxV) {
+        bucket.maxV = value
+        bucket.maxT = timeSec
+      }
+      bucket.finiteCount++
+    } else {
+      bucket.invalidCount++
+    }
+    this.fill++
+  }
+
+  /** Merge adjacent bucket pairs and double the stride. */
+  private compact(): void {
+    const merged: EnvelopeBucket[] = []
+    for (let i = 0; i < this.buckets.length; i += 2) {
+      const a = this.buckets[i]!
+      const b = this.buckets[i + 1]
+      if (!b) {
+        merged.push(a)
+        continue
+      }
+      const useAMin = a.finiteCount > 0 && (b.finiteCount === 0 || a.minV <= b.minV)
+      const useAMax = a.finiteCount > 0 && (b.finiteCount === 0 || a.maxV >= b.maxV)
+      merged.push({
+        firstT: a.firstT,
+        firstV: a.firstV,
+        lastT: b.lastT,
+        lastV: b.lastV,
+        minT: useAMin ? a.minT : b.minT,
+        minV: useAMin ? a.minV : b.minV,
+        maxT: useAMax ? a.maxT : b.maxT,
+        maxV: useAMax ? a.maxV : b.maxV,
+        finiteCount: a.finiteCount + b.finiteCount,
+        invalidCount: a.invalidCount + b.invalidCount,
+      })
+    }
+    this.buckets = merged
+    this.stride *= 2
+    this.fill = this.stride // force a fresh bucket on the next push
+  }
+
+  toSeries(): { times: number[]; values: number[]; hasGaps: boolean } {
+    const times: number[] = []
+    const values: number[] = []
+    const pushPoint = (t: number, v: number): void => {
+      if (times.length > 0 && times[times.length - 1] === t && values[values.length - 1] === v) return
+      times.push(t)
+      values.push(v)
+    }
+
+    for (let i = 0; i < this.buckets.length; i++) {
+      const b = this.buckets[i]!
+      if (b.finiteCount === 0) {
+        // Fully invalid bucket → explicit gap marker breaks the line
+        pushPoint(b.firstT, NaN)
+        continue
+      }
+      if (i === 0 && Number.isFinite(b.firstV)) pushPoint(b.firstT, b.firstV)
+      if (b.minT <= b.maxT) {
+        pushPoint(b.minT, b.minV)
+        if (b.maxT !== b.minT) pushPoint(b.maxT, b.maxV)
+      } else {
+        pushPoint(b.maxT, b.maxV)
+        pushPoint(b.minT, b.minV)
+      }
+      if (
+        i === this.buckets.length - 1 &&
+        Number.isFinite(b.lastV) &&
+        b.lastT >= Math.max(b.minT, b.maxT)
+      ) {
+        pushPoint(b.lastT, b.lastV)
+      }
+    }
+    return { times, values, hasGaps: this.anyInvalid }
+  }
+}
+
 /** In-place iterative radix-2 FFT. Lengths must be a power of two. */
 export function fftRadix2(re: Float64Array, im: Float64Array): void {
   const n = re.length

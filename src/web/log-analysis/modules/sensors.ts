@@ -1,25 +1,72 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
-import type { DiagnosticFinding, ChartSeriesGroup } from '../types.js'
+import type { DiagnosticFinding, ChartSeriesGroup, ChartFamily, ChartView, ChartSeries } from '../types.js'
+import {
+  resolveVectors,
+  resolveScalars,
+  decodeClippingBits,
+  AXIS_LABELS,
+  VECTOR_KIND_LABELS,
+  SCALAR_KIND_LABELS,
+  type ResolvedVector,
+  type ResolvedScalar,
+  type SensorVectorKind,
+  type SensorScalarKind,
+} from '../px4/sensorProfiles.js'
+import { StreamingSeriesCollector } from '../../utils/ulogAnalysis.js'
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const MAX_CHART_POINTS = 2000
+const MAX_VIBRATION_POINTS = 500
+/** Minimum contiguous samples needed for vibration analysis */
+const MIN_VIBRATION_SAMPLES = 32
+/** Gap threshold in seconds — samples farther apart than this are split */
+const GAP_THRESHOLD_SEC = 0.05
+/** Bounded raw buffer for spectral analysis (not chart retention) */
+const MAX_VIBRATION_INPUT_SAMPLES = 10000
 
 // ── State types ──────────────────────────────────────────────────────────────
+
+interface VectorCollectorState {
+  spec: ResolvedVector
+  axes: [StreamingSeriesCollector, StreamingSeriesCollector, StreamingSeriesCollector]
+}
+
+interface ScalarCollectorState {
+  spec: ResolvedScalar
+  collector: StreamingSeriesCollector
+}
 
 interface SensorInstanceState {
   instanceId: number
   topicName: string
-  /** Per-axis raw samples for vibration analysis */
+  resolved: boolean
+  vectors: Map<SensorVectorKind, VectorCollectorState>
+  scalars: Map<SensorScalarKind, ScalarCollectorState>
+  /** Per-axis raw samples for vibration analysis (bounded spectral input) */
   axisSamples: Map<string, Array<{ timeSec: number; value: number }>>
-  /** All samples for charting (bounded) */
-  chartSamples: Array<{ timeSec: number; values: Record<string, number> }>
-  /** Clipping counter values */
+  /** Clipping counter values (dedicated topics: clip_counter fields) */
   clipCounts: Record<string, number>
-  /** Temperature samples */
-  temperatureSamples: Array<{ timeSec: number; value: number }>
-  /** Sample times for gap detection */
-  sampleTimes: number[]
+  /** Streaming mean accumulation per semantic axis for consistency checks */
+  meanAccum: Record<string, { sum: number; count: number }>
+  sampleCount: number
+  gapCount: number
+  prevTimeSec: number | null
+}
+
+interface CombinedState {
+  sampleCount: number
+  resolved: boolean
+  vectors: Map<SensorVectorKind, VectorCollectorState>
+  /** Samples where the SensorCombined clipping bitfields flag each axis */
+  accelClipSamples: [number, number, number]
+  gyroClipSamples: [number, number, number]
+  /** Raw accel samples for vibration when no dedicated topic exists */
+  axisSamples: Map<string, Array<{ timeSec: number; value: number }>>
 }
 
 interface SensorsState {
-  sensorCombined: Array<{ timeSec: number; values: Record<string, number> }>
+  combined: CombinedState
   accelInstances: Map<number, SensorInstanceState>
   gyroInstances: Map<number, SensorInstanceState>
   magInstances: Map<number, SensorInstanceState>
@@ -54,15 +101,6 @@ interface SensorsResult {
   baroInstances: SensorInstanceResult[]
   combinedSampleCount: number
 }
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const MAX_CHART_POINTS = 2000
-const MAX_VIBRATION_POINTS = 500
-/** Minimum contiguous samples needed for vibration analysis */
-const MIN_VIBRATION_SAMPLES = 32
-/** Gap threshold in seconds — samples farther apart than this are split */
-const GAP_THRESHOLD_SEC = 0.05
 
 // ── Vibration processing ─────────────────────────────────────────────────────
 
@@ -263,24 +301,72 @@ export function analyzeVibration(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function downsample(times: number[], values: number[], maxPoints: number): { times: number[]; values: number[] } {
-  if (times.length <= maxPoints) return { times, values }
-  const step = Math.ceil(times.length / maxPoints)
-  const outT: number[] = []
-  const outV: number[] = []
-  for (let i = 0; i < times.length; i += step) {
-    outT.push(times[i]!)
-    outV.push(values[i]!)
+const AXIS_KEYS = ['x', 'y', 'z'] as const
+
+function makeVectorCollector(spec: ResolvedVector): VectorCollectorState {
+  return {
+    spec,
+    axes: [
+      new StreamingSeriesCollector(MAX_CHART_POINTS),
+      new StreamingSeriesCollector(MAX_CHART_POINTS),
+      new StreamingSeriesCollector(MAX_CHART_POINTS),
+    ],
   }
-  return { times: outT, values: outV }
 }
 
-function detectGaps(sampleTimes: number[], threshold: number): number {
-  let gaps = 0
-  for (let i = 1; i < sampleTimes.length; i++) {
-    if (sampleTimes[i]! - sampleTimes[i - 1]! > threshold) gaps++
+function makeInstanceState(instanceId: number, topicName: string): SensorInstanceState {
+  return {
+    instanceId,
+    topicName,
+    resolved: false,
+    vectors: new Map(),
+    scalars: new Map(),
+    axisSamples: new Map(),
+    clipCounts: {},
+    meanAccum: {},
+    sampleCount: 0,
+    gapCount: 0,
+    prevTimeSec: null,
   }
-  return gaps
+}
+
+/** Feed one vector sample: finite values recorded, missing/invalid → NaN gap. */
+function feedVector(
+  state: VectorCollectorState,
+  timeSec: number,
+  values: Record<string, number | string | boolean>,
+): [number, number, number] | null {
+  const out: [number, number, number] = [NaN, NaN, NaN]
+  let anyPresent = false
+  for (let axis = 0; axis < 3; axis++) {
+    const raw = values[state.spec.fields[axis]!]
+    if (typeof raw === 'number') {
+      anyPresent = true
+      // Preserve invalid values as gaps — never substitute zero
+      out[axis] = Number.isFinite(raw) ? raw : NaN
+    }
+  }
+  if (!anyPresent) return null
+  for (let axis = 0; axis < 3; axis++) {
+    state.axes[axis]!.push(timeSec, out[axis]!)
+  }
+  return out
+}
+
+function vectorViewSeries(idPrefix: string, collector: VectorCollectorState): ChartSeries[] {
+  return collector.axes.map((axisCollector, axis) => {
+    const { times, values } = axisCollector.toSeries()
+    return {
+      id: `${idPrefix}-${AXIS_KEYS[axis]}`,
+      label: AXIS_LABELS[axis]!,
+      times,
+      values,
+    }
+  })
+}
+
+function vectorHasGaps(collector: VectorCollectorState): boolean {
+  return collector.axes.some((axis) => axis.toSeries().hasGaps)
 }
 
 // ── Module ───────────────────────────────────────────────────────────────────
@@ -314,7 +400,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
       multiInstance: true,
     },
     {
-      aliases: ['sensor_baro'],
+      aliases: ['sensor_baro', 'vehicle_air_data'],
       required: false,
       bindAs: 'baro',
       multiInstance: true,
@@ -323,7 +409,14 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
 
   create(_context: AnalysisContext): SensorsState {
     return {
-      sensorCombined: [],
+      combined: {
+        sampleCount: 0,
+        resolved: false,
+        vectors: new Map(),
+        accelClipSamples: [0, 0, 0],
+        gyroClipSamples: [0, 0, 0],
+        axisSamples: new Map(),
+      },
       accelInstances: new Map(),
       gyroInstances: new Map(),
       magInstances: new Map(),
@@ -332,20 +425,51 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
   },
 
   consume(state: SensorsState, sample: ResolvedSample, bindName: string): void {
-    const instanceId = sample.topic.multiId
-
     if (bindName === 'sensorCombined') {
-      if (state.sensorCombined.length < MAX_CHART_POINTS) {
-        const numericValues: Record<string, number> = {}
-        for (const [k, v] of Object.entries(sample.values)) {
-          if (typeof v === 'number') numericValues[k] = v
+      const combined = state.combined
+      combined.sampleCount++
+
+      if (!combined.resolved) {
+        combined.resolved = true
+        const available = new Set(Object.keys(sample.values))
+        for (const vector of resolveVectors('sensor_combined', available)) {
+          combined.vectors.set(vector.kind, makeVectorCollector(vector))
         }
-        state.sensorCombined.push({ timeSec: sample.timeSec, values: numericValues })
       }
-      // Check for clipping counters
-      for (const [key, val] of Object.entries(sample.values)) {
-        if (key.includes('clipping') && typeof val === 'number' && val > 0) {
-          // Track in combined context
+
+      for (const [, collector] of combined.vectors) {
+        const axisValues = feedVector(collector, sample.timeSec, sample.values)
+        // Buffer accel axes for vibration when no dedicated topic exists
+        if (axisValues && collector.spec.kind === 'acceleration') {
+          for (let axis = 0; axis < 3; axis++) {
+            const v = axisValues[axis]!
+            if (!Number.isFinite(v)) continue
+            const key = `acceleration_${AXIS_KEYS[axis]}`
+            let arr = combined.axisSamples.get(key)
+            if (!arr) {
+              arr = []
+              combined.axisSamples.set(key, arr)
+            }
+            if (arr.length < MAX_VIBRATION_INPUT_SAMPLES) {
+              arr.push({ timeSec: sample.timeSec, value: v })
+            }
+          }
+        }
+      }
+
+      // Official clipping bitfields (bit0=X bit1=Y bit2=Z)
+      const accelClip = sample.values['accelerometer_clipping']
+      if (typeof accelClip === 'number' && accelClip > 0) {
+        const bits = decodeClippingBits(accelClip)
+        for (let axis = 0; axis < 3; axis++) {
+          if (bits[axis]) combined.accelClipSamples[axis]!++
+        }
+      }
+      const gyroClip = sample.values['gyro_clipping']
+      if (typeof gyroClip === 'number' && gyroClip > 0) {
+        const bits = decodeClippingBits(gyroClip)
+        for (let axis = 0; axis < 3; axis++) {
+          if (bits[axis]) combined.gyroClipSamples[axis]!++
         }
       }
       return
@@ -359,75 +483,190 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
     else if (bindName === 'baro') instanceMap = state.baroInstances
     else return
 
+    const instanceId = sample.topic.multiId
     let inst = instanceMap.get(instanceId)
     if (!inst) {
-      inst = {
-        instanceId,
-        topicName: sample.topic.name,
-        axisSamples: new Map(),
-        chartSamples: [],
-        clipCounts: {},
-        temperatureSamples: [],
-        sampleTimes: [],
-      }
+      inst = makeInstanceState(instanceId, sample.topic.name)
       instanceMap.set(instanceId, inst)
     }
 
-    // Track sample times for gap detection
-    inst.sampleTimes.push(sample.timeSec)
+    inst.sampleCount++
 
-    // Store chart samples (bounded)
-    if (inst.chartSamples.length < MAX_CHART_POINTS) {
-      const numericValues: Record<string, number> = {}
-      for (const [k, v] of Object.entries(sample.values)) {
-        if (typeof v === 'number') numericValues[k] = v
+    // Streaming gap detection
+    if (inst.prevTimeSec !== null && sample.timeSec - inst.prevTimeSec > GAP_THRESHOLD_SEC) {
+      inst.gapCount++
+    }
+    inst.prevTimeSec = sample.timeSec
+
+    // Resolve semantic fields once from the actually-present fields
+    if (!inst.resolved) {
+      inst.resolved = true
+      const available = new Set(Object.keys(sample.values))
+      for (const vector of resolveVectors(inst.topicName, available)) {
+        inst.vectors.set(vector.kind, makeVectorCollector(vector))
       }
-      inst.chartSamples.push({ timeSec: sample.timeSec, values: numericValues })
+      for (const scalar of resolveScalars(inst.topicName, available)) {
+        inst.scalars.set(scalar.kind, {
+          spec: scalar,
+          collector: new StreamingSeriesCollector(MAX_CHART_POINTS),
+        })
+      }
     }
 
-    // Extract per-axis samples for vibration analysis
-    for (const [key, val] of Object.entries(sample.values)) {
-      if (typeof val !== 'number') continue
+    // Vector measurements
+    for (const [, collector] of inst.vectors) {
+      const axisValues = feedVector(collector, sample.timeSec, sample.values)
+      if (!axisValues) continue
+      for (let axis = 0; axis < 3; axis++) {
+        const v = axisValues[axis]!
+        if (!Number.isFinite(v)) continue
 
-      // Detect axis fields (e.g., x, y, z or [0], [1], [2])
-      let axisName: string | null = null
-      if (key.endsWith('[0]') || key === 'x' || key.endsWith('_x')) axisName = 'x'
-      else if (key.endsWith('[1]') || key === 'y' || key.endsWith('_y')) axisName = 'y'
-      else if (key.endsWith('[2]') || key === 'z' || key.endsWith('_z')) axisName = 'z'
+        // Consistency accumulation per semantic axis
+        const meanKey = `${collector.spec.kind}.${AXIS_KEYS[axis]}`
+        const acc = inst.meanAccum[meanKey] ?? { sum: 0, count: 0 }
+        acc.sum += v
+        acc.count++
+        inst.meanAccum[meanKey] = acc
 
-      if (axisName) {
-        // Use the base field name (without axis suffix) as the group
-        const baseName = key.replace(/\[\d+\]$/, '').replace(/_[xyz]$/, '')
-        const mapKey = `${baseName}_${axisName}`
-        let arr = inst.axisSamples.get(mapKey)
+        // Vibration input buffer (bounded spectral window)
+        const key = `${collector.spec.kind}_${AXIS_KEYS[axis]}`
+        let arr = inst.axisSamples.get(key)
         if (!arr) {
           arr = []
-          inst.axisSamples.set(mapKey, arr)
+          inst.axisSamples.set(key, arr)
         }
-        if (arr.length < 10000) {
-          arr.push({ timeSec: sample.timeSec, value: val })
+        if (arr.length < MAX_VIBRATION_INPUT_SAMPLES) {
+          arr.push({ timeSec: sample.timeSec, value: v })
         }
       }
+    }
 
-      // Track clipping counters
+    // Scalar measurements
+    for (const [, scalar] of inst.scalars) {
+      const raw = sample.values[scalar.spec.field]
+      if (typeof raw === 'number') {
+        scalar.collector.push(sample.timeSec, Number.isFinite(raw) ? raw : NaN)
+      }
+    }
+
+    // Clipping counters (dedicated topics: clip_counter / clip_counter[n])
+    for (const [key, val] of Object.entries(sample.values)) {
       if (key.includes('clip') && typeof val === 'number') {
         const prev = inst.clipCounts[key] ?? 0
         if (val > prev) inst.clipCounts[key] = val
       }
-
-      // Track temperature
-      if (key.includes('temperature') && typeof val === 'number') {
-        if (inst.temperatureSamples.length < MAX_CHART_POINTS) {
-          inst.temperatureSamples.push({ timeSec: sample.timeSec, value: val })
-        }
-      }
     }
   },
 
-  finalize(state: SensorsState, context: AnalysisContext): ModuleResult<SensorsState, SensorsResult> {
+  finalize(state: SensorsState, _context: AnalysisContext): ModuleResult<SensorsState, SensorsResult> {
     const findings: DiagnosticFinding[] = []
     const chartSeries: ChartSeriesGroup[] = []
+    const imuViews: ChartView[] = []
+    const vibrationViews: ChartView[] = []
+    const environmentViews: ChartView[] = []
 
+    // ── sensor_combined: calibrated primary IMU summary ──────────────────
+    const combined = state.combined
+    const combinedAccel = combined.vectors.get('acceleration')
+    const combinedGyro = combined.vectors.get('angularRate')
+    const firstAccelInstance = [...state.accelInstances.values()].find((i) => i.vectors.has('acceleration'))
+    const firstGyroInstance = [...state.gyroInstances.values()].find((i) => i.vectors.has('angularRate'))
+
+    const primaryAccel = combinedAccel ?? firstAccelInstance?.vectors.get('acceleration') ?? null
+    const primaryGyro = combinedGyro ?? firstGyroInstance?.vectors.get('angularRate') ?? null
+
+    if (primaryAccel && !primaryAccel.axes[0]!.isEmpty) {
+      imuViews.push({
+        id: 'imu-acceleration',
+        title: '加速度',
+        description: combinedAccel
+          ? 'sensor_combined 校准后加速度（机体系 XYZ）'
+          : `sensor_accel #${firstAccelInstance!.instanceId} 加速度（机体系 XYZ）`,
+        unit: primaryAccel.spec.unit,
+        series: vectorViewSeries('imu-accel', primaryAccel),
+        defaultVisibleSeriesIds: ['imu-accel-x', 'imu-accel-y', 'imu-accel-z'],
+        xAxis: 'time',
+        hasGaps: vectorHasGaps(primaryAccel),
+      })
+    }
+    if (primaryGyro && !primaryGyro.axes[0]!.isEmpty) {
+      imuViews.push({
+        id: 'imu-angular-rate',
+        title: '角速度',
+        description: combinedGyro
+          ? 'sensor_combined 校准后角速度（机体系 XYZ）'
+          : `sensor_gyro #${firstGyroInstance!.instanceId} 角速度（机体系 XYZ）`,
+        unit: primaryGyro.spec.unit,
+        series: vectorViewSeries('imu-rate', primaryGyro),
+        defaultVisibleSeriesIds: ['imu-rate-x', 'imu-rate-y', 'imu-rate-z'],
+        xAxis: 'time',
+        hasGaps: vectorHasGaps(primaryGyro),
+      })
+    }
+
+    // Combined clipping findings from the official bitfields
+    const combinedClips: Array<{ kind: string; field: string; counts: [number, number, number] }> = [
+      { kind: 'accel', field: 'accelerometer_clipping', counts: combined.accelClipSamples },
+      { kind: 'gyro', field: 'gyro_clipping', counts: combined.gyroClipSamples },
+    ]
+    for (const clip of combinedClips) {
+      for (let axis = 0; axis < 3; axis++) {
+        const count = clip.counts[axis]!
+        if (count > 0) {
+          findings.push({
+            id: `sensors-combined-clip-${clip.kind}-${AXIS_KEYS[axis]}`,
+            moduleId: 'sensors',
+            section: 'sensors-power',
+            severity: 'warning',
+            confidence: 'measured',
+            title: `检测到传感器削波：sensor_combined ${clip.kind} ${AXIS_LABELS[axis]} 轴`,
+            summary: `sensor_combined 的 ${clip.field} 在 ${count} 个采样中标记了 ${AXIS_LABELS[axis]} 轴削波。`,
+            recommendation: '请检查传感器安装并降低振动。',
+            evidence: [{
+              topic: 'sensor_combined',
+              multiId: 0,
+              fields: [clip.field],
+              startSec: null,
+              endSec: null,
+              observed: `${count} 个削波采样`,
+              threshold: '0',
+            }],
+          })
+        }
+      }
+    }
+
+    // Vibration from combined accel only when no dedicated accel exists
+    if (state.accelInstances.size === 0 && combined.axisSamples.size > 0) {
+      const series: ChartSeries[] = []
+      let peakInfo: VibrationResult | null = null
+      for (const [axisKey, samples] of combined.axisSamples) {
+        const vib = analyzeVibration(samples)
+        if (!vib) continue
+        vib.axis = axisKey
+        if (!peakInfo || vib.peakAmplitude > peakInfo.peakAmplitude) peakInfo = vib
+        series.push({
+          id: `vib-combined-${axisKey}`,
+          label: axisKey.replace('acceleration_', '').toUpperCase(),
+          times: vib.frequencies,
+          values: vib.amplitudes,
+        })
+      }
+      if (series.length > 0) {
+        vibrationViews.push({
+          id: 'vib-combined',
+          title: '振动频谱（sensor_combined）',
+          description: 'sensor_combined 加速度的幅度频谱',
+          unit: 'm/s²',
+          series,
+          defaultVisibleSeriesIds: series.map((s) => s.id),
+          xAxis: 'frequency',
+          hasGaps: false,
+        })
+      }
+    }
+
+    // ── Dedicated sensor instances ────────────────────────────────────────
     const processInstanceMap = (
       instanceMap: Map<number, SensorInstanceState>,
       sensorType: string,
@@ -435,26 +674,13 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
       const results: SensorInstanceResult[] = []
 
       for (const [instanceId, inst] of instanceMap) {
-        // Compute mean values
+        // Mean values per semantic axis
         const meanValues: Record<string, number> = {}
-        if (inst.chartSamples.length > 0) {
-          const sums: Record<string, number> = {}
-          for (const s of inst.chartSamples) {
-            for (const [k, v] of Object.entries(s.values)) {
-              if (typeof v === 'number') {
-                sums[k] = (sums[k] ?? 0) + v
-              }
-            }
-          }
-          for (const [k, v] of Object.entries(sums)) {
-            meanValues[k] = v / inst.chartSamples.length
-          }
+        for (const [key, acc] of Object.entries(inst.meanAccum)) {
+          if (acc.count > 0) meanValues[key] = acc.sum / acc.count
         }
 
-        // Gap detection
-        const gapCount = detectGaps(inst.sampleTimes, GAP_THRESHOLD_SEC)
-
-        // Vibration analysis on each axis
+        // Vibration analysis on each buffered axis
         const vibrationResults: VibrationResult[] = []
         for (const [axisKey, samples] of inst.axisSamples) {
           const vib = analyzeVibration(samples)
@@ -467,15 +693,14 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
         results.push({
           instanceId,
           topicName: inst.topicName,
-          sampleCount: inst.chartSamples.length,
+          sampleCount: inst.sampleCount,
           clipCounts: { ...inst.clipCounts },
           meanValues,
           vibration: vibrationResults,
-          gapCount,
+          gapCount: inst.gapCount,
         })
 
         // ── Findings ──────────────────────────────────────────────────────
-        // Clipping
         for (const [key, count] of Object.entries(inst.clipCounts)) {
           if (count > 0) {
             findings.push({
@@ -500,7 +725,6 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
           }
         }
 
-        // High vibration
         for (const vib of vibrationResults) {
           if (vib.peakAmplitude > 5.0) {
             findings.push({
@@ -525,8 +749,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
           }
         }
 
-        // Sample gaps
-        if (gapCount > 5) {
+        if (inst.gapCount > 5) {
           findings.push({
             id: `sensors-${sensorType}-${instanceId}-gaps`,
             moduleId: 'sensors',
@@ -534,7 +757,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
             severity: 'notice',
             confidence: 'measured',
             title: `${sensorType}[${instanceId}] 存在采样缺口`,
-            summary: `${sensorType} 实例 ${instanceId} 检测到 ${gapCount} 个采样缺口。`,
+            summary: `${sensorType} 实例 ${instanceId} 检测到 ${inst.gapCount} 个采样缺口。`,
             recommendation: null,
             evidence: [{
               topic: inst.topicName,
@@ -542,72 +765,148 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
               fields: [],
               startSec: null,
               endSec: null,
-              observed: `${gapCount} 个缺口`,
+              observed: `${inst.gapCount} 个缺口`,
               threshold: '5',
             }],
           })
         }
 
-        // ── Chart series: vibration spectrum ──────────────────────────────
-        for (const vib of vibrationResults) {
-          if (vib.frequencies.length > 0) {
-            chartSeries.push({
-              id: `sensors-${sensorType}-${instanceId}-vib-${vib.axis}`,
-              title: `振动频谱：${sensorType}[${instanceId}] ${vib.axis} 轴`,
-              description: `${sensorType} 实例 ${instanceId} 的 ${vib.axis} 轴振动幅度频谱`,
-              unit: 'm/s²',
-              series: [{
-                label: `${vib.axis} 轴幅度`,
-                times: vib.frequencies,
-                values: vib.amplitudes,
-              }],
-              hasGaps: false,
-            })
-          }
-        }
-
-        // ── Chart series: sensor values over time ─────────────────────────
-        if (inst.chartSamples.length > 0) {
-          const times = inst.chartSamples.map(s => s.timeSec)
-          // Pick up to 3 numeric fields for charting
-          const numericFields = Object.keys(inst.chartSamples[0]!.values).filter(k =>
-            typeof inst.chartSamples[0]!.values[k] === 'number'
-          ).slice(0, 3)
-
-          for (const field of numericFields) {
-            const values = inst.chartSamples.map(s => (s.values[field] as number) ?? 0)
-            const ds = downsample(times, values, MAX_CHART_POINTS)
-            chartSeries.push({
-              id: `sensors-${sensorType}-${instanceId}-ts-${field}`,
-              title: `${sensorType}[${instanceId}] ${field}`,
-              description: `${sensorType} 实例 ${instanceId} 的 ${field} 随时间的变化`,
-              unit: '',
-              series: [{ label: field, times: ds.times, values: ds.values }],
-              hasGaps: gapCount > 0,
-            })
-          }
+        // ── Vibration spectrum views (per instance, axes as series) ───────
+        if (vibrationResults.length > 0 && vibrationResults.some((v) => v.frequencies.length > 0)) {
+          const series: ChartSeries[] = vibrationResults
+            .filter((v) => v.frequencies.length > 0)
+            .map((vib) => ({
+              id: `vib-${sensorType}-${instanceId}-${vib.axis}`,
+              label: vib.axis.replace(/^(acceleration|angularRate|magneticField)_/, '').toUpperCase(),
+              times: vib.frequencies,
+              values: vib.amplitudes,
+            }))
+          vibrationViews.push({
+            id: `vib-${sensorType}-${instanceId}`,
+            title: `振动频谱（${sensorType} #${instanceId}）`,
+            description: `${sensorType} 实例 ${instanceId} 的幅度频谱`,
+            unit: sensorType === 'gyro' ? 'rad/s' : 'm/s²',
+            series,
+            defaultVisibleSeriesIds: series.map((s) => s.id),
+            xAxis: 'frequency',
+            hasGaps: false,
+          })
         }
       }
 
       return results
     }
 
-    // Process all sensor types
     const accelResults = processInstanceMap(state.accelInstances, 'accel')
     const gyroResults = processInstanceMap(state.gyroInstances, 'gyro')
     const magResults = processInstanceMap(state.magInstances, 'mag')
     const baroResults = processInstanceMap(state.baroInstances, 'baro')
 
-    // ── Cross-instance inconsistency check ────────────────────────────────
+    // ── Instance-selectable IMU views for dedicated sensors ──────────────
+    for (const [instanceId, inst] of state.accelInstances) {
+      const vec = inst.vectors.get('acceleration')
+      if (!vec || vec.axes[0]!.isEmpty) continue
+      // sensor_combined already provides the primary summary; dedicated
+      // instances become selectable views instead of duplicate cards.
+      if (!combinedAccel && inst === firstAccelInstance) continue
+      imuViews.push({
+        id: `accel-${instanceId}`,
+        title: `加速度（sensor_accel #${instanceId}）`,
+        description: `sensor_accel 实例 ${instanceId} 的加速度`,
+        unit: vec.spec.unit,
+        series: vectorViewSeries(`accel-${instanceId}`, vec),
+        defaultVisibleSeriesIds: AXIS_KEYS.map((k) => `accel-${instanceId}-${k}`),
+        xAxis: 'time',
+        hasGaps: vectorHasGaps(vec),
+      })
+    }
+    for (const [instanceId, inst] of state.gyroInstances) {
+      const vec = inst.vectors.get('angularRate')
+      if (!vec || vec.axes[0]!.isEmpty) continue
+      if (!combinedGyro && inst === firstGyroInstance) continue
+      imuViews.push({
+        id: `gyro-${instanceId}`,
+        title: `角速度（sensor_gyro #${instanceId}）`,
+        description: `sensor_gyro 实例 ${instanceId} 的角速度`,
+        unit: vec.spec.unit,
+        series: vectorViewSeries(`gyro-${instanceId}`, vec),
+        defaultVisibleSeriesIds: AXIS_KEYS.map((k) => `gyro-${instanceId}-${k}`),
+        xAxis: 'time',
+        hasGaps: vectorHasGaps(vec),
+      })
+    }
+
+    // ── Environment views: magnetic field, pressure, altitude, temperature ─
+    for (const [instanceId, inst] of state.magInstances) {
+      const vec = inst.vectors.get('magneticField')
+      if (!vec || vec.axes[0]!.isEmpty) continue
+      environmentViews.push({
+        id: `mag-${instanceId}`,
+        title: `磁场（#${instanceId}）`,
+        description: `${inst.topicName} 实例 ${instanceId} 的磁场强度`,
+        unit: vec.spec.unit,
+        series: vectorViewSeries(`mag-${instanceId}`, vec),
+        defaultVisibleSeriesIds: AXIS_KEYS.map((k) => `mag-${instanceId}-${k}`),
+        xAxis: 'time',
+        hasGaps: vectorHasGaps(vec),
+      })
+    }
+
+    const scalarViewSpecs: Array<{ kind: SensorScalarKind; viewId: string }> = [
+      { kind: 'pressure', viewId: 'baro-pressure' },
+      { kind: 'altitude', viewId: 'baro-altitude' },
+      { kind: 'temperature', viewId: 'sensor-temperature' },
+    ]
+    for (const { kind, viewId } of scalarViewSpecs) {
+      const series: ChartSeries[] = []
+      let unit = ''
+      const scalarSources: Array<[string, Map<number, SensorInstanceState>]> = [
+        ['baro', state.baroInstances],
+        ['accel', state.accelInstances],
+        ['gyro', state.gyroInstances],
+        ['mag', state.magInstances],
+      ]
+      for (const [type, map] of scalarSources) {
+        // Temperature exists on many sensors; pressure/altitude only on baro
+        if (kind !== 'temperature' && type !== 'baro') continue
+        for (const [instanceId, inst] of map) {
+          const scalar = inst.scalars.get(kind)
+          if (!scalar || scalar.collector.isEmpty) continue
+          const { times, values } = scalar.collector.toSeries()
+          unit = scalar.spec.unit
+          series.push({
+            id: `${viewId}-${type}-${instanceId}`,
+            label: `${inst.topicName} #${instanceId}`,
+            times,
+            values,
+          })
+        }
+      }
+      if (series.length > 0) {
+        environmentViews.push({
+          id: viewId,
+          title: SCALAR_KIND_LABELS[kind],
+          description: `${SCALAR_KIND_LABELS[kind]}随时间的变化`,
+          unit,
+          series,
+          defaultVisibleSeriesIds: series.slice(0, 6).map((s) => s.id),
+          xAxis: 'time',
+          hasGaps: false,
+        })
+      }
+    }
+
+    // ── Cross-instance inconsistency check (semantic axes only) ──────────
     const checkInconsistency = (results: SensorInstanceResult[], sensorType: string) => {
       if (results.length < 2) return
-      // Compare mean values across instances
       const allFields = new Set<string>()
       for (const r of results) {
         for (const k of Object.keys(r.meanValues)) allFields.add(k)
       }
       for (const field of allFields) {
-        const means = results.map(r => r.meanValues[field] ?? 0).filter(v => isFinite(v))
+        const means = results
+          .map(r => r.meanValues[field])
+          .filter((v): v is number => typeof v === 'number' && isFinite(v))
         if (means.length < 2) continue
         const maxDiff = Math.max(...means) - Math.min(...means)
         if (maxDiff > 1.0) {
@@ -620,13 +919,13 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
             title: `传感器实例不一致：${sensorType} ${field}`,
             summary: `${sensorType} 各实例的 ${field} 最大差值为 ${maxDiff.toFixed(3)}。`,
             recommendation: '请检查传感器校准和安装。',
-            evidence: results.map((r, i) => ({
+            evidence: results.map((r) => ({
               topic: r.topicName,
               multiId: r.instanceId,
               fields: [field],
               startSec: null,
               endSec: null,
-              observed: `平均值=${(r.meanValues[field] ?? 0).toFixed(3)}`,
+              observed: `平均值=${(r.meanValues[field] ?? NaN).toFixed(3)}`,
               threshold: `max_diff=${maxDiff.toFixed(3)}`,
             })),
           })
@@ -638,10 +937,61 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
     checkInconsistency(gyroResults, 'gyro')
     checkInconsistency(magResults, 'mag')
 
+    // ── Chart families ────────────────────────────────────────────────────
+    const chartFamilies: ChartFamily[] = []
+    if (imuViews.length > 0) {
+      chartFamilies.push({
+        id: 'imu',
+        moduleId: 'sensors',
+        title: '惯性传感器',
+        description: '加速度与角速度',
+        views: imuViews,
+        defaultViewId: imuViews[0]!.id,
+        order: 10,
+      })
+    }
+    if (vibrationViews.length > 0) {
+      chartFamilies.push({
+        id: 'vibration',
+        moduleId: 'sensors',
+        title: '振动频谱',
+        description: '按传感器实例的幅度频谱',
+        views: vibrationViews,
+        defaultViewId: vibrationViews[0]!.id,
+        order: 11,
+      })
+    }
+    if (environmentViews.length > 0) {
+      chartFamilies.push({
+        id: 'environment-sensors',
+        moduleId: 'sensors',
+        title: '磁场与气压',
+        description: '磁场、气压、高度与温度',
+        views: environmentViews,
+        defaultViewId: environmentViews[0]!.id,
+        order: 12,
+      })
+    }
+
+    // Legacy flat series (removed once the section-level family merge lands)
+    for (const family of chartFamilies) {
+      for (const view of family.views) {
+        chartSeries.push({
+          id: `sensors-${view.id}`,
+          title: view.title,
+          description: view.description,
+          unit: view.unit,
+          series: view.series.map((s) => ({ label: s.label, times: s.times, values: s.values })),
+          hasGaps: view.hasGaps,
+        })
+      }
+    }
+
     return {
       chartSeries,
+      chartFamilies,
       metrics: {
-        combinedSamples: state.sensorCombined.length,
+        combinedSamples: combined.sampleCount,
         accelInstanceCount: state.accelInstances.size,
         gyroInstanceCount: state.gyroInstances.size,
         magInstanceCount: state.magInstances.size,
@@ -656,7 +1006,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
         gyroInstances: gyroResults,
         magInstances: magResults,
         baroInstances: baroResults,
-        combinedSampleCount: state.sensorCombined.length,
+        combinedSampleCount: combined.sampleCount,
       },
     }
   },
