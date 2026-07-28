@@ -105,7 +105,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   const battery = {
     voltage: makeRaw('电压 (V)'),
     current: makeRaw('电流 (A)'),
-    discharged: makeRaw('已耗电量 (mAh)'),
+    power: makeRaw('功率 (W)'),
   }
   const gpsQuality = {
     satellites: makeRaw('卫星数'),
@@ -276,9 +276,11 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     battery_status: (value, timeSec) => {
       const voltage = num(value.voltage_v)
       if (voltage > 0) pushRaw(battery.voltage, timeSec, voltage)
-      pushRaw(battery.current, timeSec, num(value.current_a))
-      const discharged = num(value.discharged_mah)
-      if (discharged >= 0) pushRaw(battery.discharged, timeSec, discharged)
+      const current = num(value.current_a)
+      pushRaw(battery.current, timeSec, current)
+      if (voltage > 0 && Number.isFinite(current)) {
+        pushRaw(battery.power, timeSec, voltage * current)
+      }
     },
     vehicle_gps_position: handleGpsFix,
     sensor_gps: handleGpsFix,
@@ -427,7 +429,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
         motorCount: motorSeries.length,
       }
       : null,
-    battery: [battery.voltage, battery.current, battery.discharged]
+    battery: [battery.voltage, battery.current, battery.power]
       .map(finishRaw).filter((series) => series.times.length > 0),
     gpsQuality: [gpsQuality.satellites, gpsQuality.eph, gpsQuality.epv, gpsQuality.fix]
       .map(finishRaw).filter((series) => series.times.length > 0),

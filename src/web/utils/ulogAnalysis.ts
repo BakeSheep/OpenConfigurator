@@ -8,6 +8,8 @@ export interface SeriesData {
   /** Seconds since log start. */
   times: number[]
   values: number[]
+  /** Stable palette slot used when a UI filters sibling series. */
+  colorIndex?: number
 }
 
 export interface SegmentInfo {

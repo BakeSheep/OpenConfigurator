@@ -8,7 +8,7 @@ export type IconName =
   | 'search' | 'battery' | 'satellite' | 'altitude' | 'check' | 'warning'
   | 'pause' | 'trash' | 'folder' | 'upload' | 'download' | 'grid' | 'list'
   | 'arrowLeft' | 'arrowRight' | 'arrowUp' | 'file' | 'play' | 'close'
-  | 'copy' | 'maximize'
+  | 'copy' | 'maximize' | 'stretch'
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'children'> {
   name: IconName
@@ -119,6 +119,8 @@ export default function Icon({ name, size = 20, strokeWidth = 1.8, ...props }: I
       return <svg {...shared}><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
     case 'maximize':
       return <svg {...shared}><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /></svg>
+    case 'stretch':
+      return <svg {...shared}><path d="M8 7 3 12l5 5M16 7l5 5-5 5M3 12h18" /></svg>
     default:
       return null
   }

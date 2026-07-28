@@ -32,6 +32,26 @@ import type { FsEntry } from '../../shared/types'
 
 // Leaflet is only pulled in when the log actually contains a GPS track.
 const TrackMap = lazy(() => import('../components/logs/TrackMap'))
+const LogAttitudeVisualizer = lazy(() => import('../components/logs/LogAttitudeVisualizer'))
+
+interface SeriesSelectionGroup {
+  id: string
+  label: string
+  labels: string[]
+}
+
+const ATTITUDE_GROUPS: SeriesSelectionGroup[] = [
+  { id: 'roll', label: 'Roll', labels: ['横滚', '横滚设定'] },
+  { id: 'pitch', label: 'Pitch', labels: ['俯仰', '俯仰设定'] },
+  { id: 'yaw', label: 'Yaw', labels: ['偏航', '偏航设定'] },
+]
+const RATE_GROUPS: SeriesSelectionGroup[] = [
+  { id: 'roll', label: 'Roll', labels: ['横滚速率', '横滚速率设定'] },
+  { id: 'pitch', label: 'Pitch', labels: ['俯仰速率', '俯仰速率设定'] },
+  { id: 'yaw', label: 'Yaw', labels: ['偏航速率', '偏航速率设定'] },
+]
+const BATTERY_SECONDARY_SCALE = ['功率 (W)']
+const ALTITUDE_SECONDARY_SCALE = ['气压高度 (m)', 'GPS 海拔 (m)']
 
 const LOG_LEVEL_LABELS: Record<number, { label: string; color: string }> = {
   0: { label: 'EMERG', color: 'var(--danger)' },
@@ -134,6 +154,9 @@ function ChartPanel({
   bands,
   height,
   wide = false,
+  secondaryScaleLabels,
+  selectionGroups,
+  headerAside,
   children,
 }: {
   title: string
@@ -142,10 +165,30 @@ function ChartPanel({
   bands?: UlogAnalysisDataset['armedSegments']
   height?: number
   wide?: boolean
+  secondaryScaleLabels?: string[]
+  selectionGroups?: SeriesSelectionGroup[]
+  headerAside?: React.ReactNode
   children?: React.ReactNode
 }) {
   const [expanded, setExpanded] = useState(false)
-  const hasChart = Boolean(series && series.length > 0)
+  const [stretched, setStretched] = useState(false)
+  const [selectedGroups, setSelectedGroups] = useState<Set<string>>(
+    () => new Set(selectionGroups?.map((group) => group.id) ?? []),
+  )
+  const visibleSeries = useMemo(() => {
+    const indexed = series?.map((entry, index) => ({
+      ...entry,
+      colorIndex: entry.colorIndex ?? index,
+    })) ?? []
+    if (!selectionGroups) return indexed
+    const selectedLabels = new Set(
+      selectionGroups
+        .filter((group) => selectedGroups.has(group.id))
+        .flatMap((group) => group.labels),
+    )
+    return indexed.filter((entry) => selectedLabels.has(entry.label))
+  }, [series, selectionGroups, selectedGroups])
+  const hasChart = visibleSeries.length > 0
   const expandedHeight = typeof window === 'undefined'
     ? 520
     : Math.max(360, Math.min(640, window.innerHeight - 250))
@@ -166,9 +209,9 @@ function ChartPanel({
 
   const legend = hasChart && (
     <div className="mc-analysis-legend">
-      {series!.map((entry, index) => (
+      {visibleSeries.map((entry, index) => (
         <span key={entry.label}>
-          <i style={{ background: seriesColor(index) }} />
+          <i style={{ background: seriesColor(entry.colorIndex ?? index) }} />
           {entry.label}
         </span>
       ))}
@@ -177,26 +220,70 @@ function ChartPanel({
 
   return (
     <Fragment>
-      <section className={`mc-card mc-analysis-panel${wide ? ' mc-analysis-panel--wide' : ''}`}>
+      <section className={`mc-card mc-analysis-panel${wide || stretched ? ' mc-analysis-panel--wide' : ''}`}>
         <header className="mc-analysis-panel__header">
-          <h3 className="mc-section-title">{title}</h3>
-          {hasChart && (
-            <button
-              type="button"
-              className="mc-icon-btn mc-icon-btn--bordered mc-analysis-expand-btn"
-              aria-label={`放大查看${title}`}
-              title="放大查看"
-              onClick={() => setExpanded(true)}
-            >
-              <Icon name="maximize" size={14} />
-            </button>
-          )}
+          <div className="mc-analysis-panel__title">
+            <h3 className="mc-section-title">{title}</h3>
+            {headerAside}
+          </div>
+          <div className="mc-analysis-panel__actions">
+            {selectionGroups && (
+              <div className="mc-analysis-series-toggles" aria-label={`${title}曲线选择`}>
+                {selectionGroups.map((group) => (
+                  <button
+                    key={group.id}
+                    type="button"
+                    aria-pressed={selectedGroups.has(group.id)}
+                    onClick={() => setSelectedGroups((current) => {
+                      const next = new Set(current)
+                      if (next.has(group.id)) next.delete(group.id)
+                      else next.add(group.id)
+                      return next
+                    })}
+                  >
+                    {group.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {series && (
+              <button
+                type="button"
+                className="mc-icon-btn mc-icon-btn--bordered"
+                aria-label={stretched ? `恢复${title}宽度` : `拓宽${title}`}
+                title={stretched ? '恢复宽度' : '横向铺满'}
+                aria-pressed={stretched}
+                onClick={() => setStretched((current) => !current)}
+              >
+                <Icon name="stretch" size={14} />
+              </button>
+            )}
+            {hasChart && (
+              <button
+                type="button"
+                className="mc-icon-btn mc-icon-btn--bordered mc-analysis-expand-btn"
+                aria-label={`放大查看${title}`}
+                title="全屏放大"
+                onClick={() => setExpanded(true)}
+              >
+                <Icon name="maximize" size={14} />
+              </button>
+            )}
+          </div>
         </header>
         {legend}
-        {series && <UPlotChart series={series} unit={unit} bands={bands} height={height} />}
+        {series && (
+          <UPlotChart
+            series={visibleSeries}
+            unit={unit}
+            bands={bands}
+            height={height}
+            secondaryScaleLabels={secondaryScaleLabels}
+          />
+        )}
         {children}
       </section>
-      {expanded && series && createPortal(
+      {expanded && visibleSeries.length > 0 && createPortal(
         <div
           className="mc-analysis-chart-backdrop"
           role="dialog"
@@ -226,10 +313,11 @@ function ChartPanel({
             {legend}
             <div className="mc-analysis-chart-dialog__plot">
               <UPlotChart
-                series={series}
+                series={visibleSeries}
                 unit={unit}
                 bands={bands}
                 height={expandedHeight}
+                secondaryScaleLabels={secondaryScaleLabels}
               />
             </div>
           </section>
@@ -657,22 +745,6 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
                   {dataset.overview.droppedMessages}
                 </strong>
               </div>
-              {dataset.actuatorSaturation && (
-                <div>
-                  <span>执行器饱和占比</span>
-                  <strong
-                    style={{
-                      color: dataset.actuatorSaturation.saturationPct > 5
-                        ? 'var(--danger)'
-                        : dataset.actuatorSaturation.saturationPct > 1
-                          ? 'var(--warning)'
-                          : 'var(--success)',
-                    }}
-                  >
-                    {dataset.actuatorSaturation.saturationPct.toFixed(1)}%
-                  </strong>
-                </div>
-              )}
             </div>
             {modeTimeline.length > 0 && (
               <>
@@ -715,18 +787,33 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             )}
           </section>
 
-          {/* 2-3. Attitude & rate tracking */}
+          <section className="mc-card mc-analysis-panel">
+            <header className="mc-analysis-panel__header">
+              <h3 className="mc-section-title">日志姿态回放</h3>
+              <span className="mc-analysis-panel__hint">拖动时间轴或播放日志姿态</span>
+            </header>
+            <Suspense fallback={<p className="mc-explorer__notice">正在加载三维姿态…</p>}>
+              <LogAttitudeVisualizer
+                series={dataset.attitude}
+                durationSec={dataset.overview.durationSec}
+              />
+            </Suspense>
+          </section>
+
+          {/* Attitude & rate tracking */}
           <ChartPanel
             title="姿态跟踪（实际 vs 设定，°）"
             series={dataset.attitude}
             unit="°"
             bands={dataset.armedSegments}
+            selectionGroups={ATTITUDE_GROUPS}
           />
           <ChartPanel
             title="角速率跟踪（实际 vs 设定，°/s）"
             series={dataset.rates}
             unit="°/s"
             bands={dataset.armedSegments}
+            selectionGroups={RATE_GROUPS}
           />
 
           {/* 4. Actuators */}
@@ -734,6 +821,18 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             title="执行器输出"
             series={dataset.actuators}
             bands={dataset.armedSegments}
+            headerAside={dataset.actuatorSaturation && (
+              <span
+                className="mc-analysis-saturation"
+                data-level={dataset.actuatorSaturation.saturationPct > 5
+                  ? 'danger'
+                  : dataset.actuatorSaturation.saturationPct > 1
+                    ? 'warning'
+                    : 'success'}
+              >
+                饱和 {dataset.actuatorSaturation.saturationPct.toFixed(1)}%
+              </span>
+            )}
           >
             {dataset.actuatorSaturation && dataset.actuatorSaturation.saturationPct > 1 && (
               <p style={{ margin: 0, fontSize: 12, color: 'var(--warning)' }}>
@@ -745,9 +844,10 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
           {/* 5. Battery */}
           <ChartPanel
-            title="电池"
+            title="电池（电压 / 电流 / 功率）"
             series={dataset.battery}
             bands={dataset.armedSegments}
+            secondaryScaleLabels={BATTERY_SECONDARY_SCALE}
           />
 
           {/* 6. GPS quality */}
@@ -763,6 +863,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             series={dataset.altitude}
             unit="m"
             bands={dataset.armedSegments}
+            secondaryScaleLabels={ALTITUDE_SECONDARY_SCALE}
           />
           <ChartPanel
             title="速度（m/s）"

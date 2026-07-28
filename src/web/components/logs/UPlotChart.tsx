@@ -20,6 +20,8 @@ interface UPlotChartProps {
   frequencyAxis?: boolean
   /** Disable the page-wide cursor sync (frequency-domain charts). */
   noSync?: boolean
+  /** Series labels plotted against an independent right-hand Y axis. */
+  secondaryScaleLabels?: string[]
 }
 
 function cssVar(name: string, fallback: string): string {
@@ -64,6 +66,7 @@ export default function UPlotChart({
   bands,
   frequencyAxis = false,
   noSync = false,
+  secondaryScaleLabels,
 }: UPlotChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -88,6 +91,8 @@ export default function UPlotChart({
     const gridColor = cssVar('--chart-grid', '#edf0f4')
     const textColor = cssVar('--text-secondary', '#5f6773')
     const accentDim = cssVar('--accent-dim', 'rgba(13,148,136,0.1)')
+    const secondaryLabels = new Set(secondaryScaleLabels)
+    const hasSecondaryScale = usable.some((entry) => secondaryLabels.has(entry.label))
 
     const options: uPlot.Options = {
       width: Math.max(280, container.clientWidth),
@@ -97,7 +102,11 @@ export default function UPlotChart({
         drag: { x: true, y: false, uni: 24 },
         ...(noSync ? {} : { sync: { key: SYNC_KEY } }),
       },
-      scales: { x: { time: false } },
+      scales: {
+        x: { time: false },
+        y: { auto: true },
+        ...(hasSecondaryScale ? { y2: { auto: true } } : {}),
+      },
       legend: { live: true },
       axes: [
         {
@@ -111,12 +120,22 @@ export default function UPlotChart({
           size: 32,
         },
         {
+          scale: 'y',
           stroke: axisColor,
           grid: { stroke: gridColor, width: 1 },
           ticks: { stroke: gridColor },
           font: '11px "JetBrains Mono", monospace',
           size: 52,
         },
+        ...(hasSecondaryScale ? [{
+          scale: 'y2',
+          side: 1 as const,
+          stroke: axisColor,
+          grid: { show: false },
+          ticks: { stroke: gridColor },
+          font: '11px "JetBrains Mono", monospace',
+          size: 52,
+        }] : []),
       ],
       series: [
         {
@@ -127,7 +146,8 @@ export default function UPlotChart({
         },
         ...usable.map((entry, index) => ({
           label: entry.label,
-          stroke: colors[index % colors.length],
+          scale: secondaryLabels.has(entry.label) ? 'y2' : 'y',
+          stroke: colors[(entry.colorIndex ?? index) % colors.length],
           width: 1.4,
           spanGaps: true,
           points: { show: false },
@@ -175,7 +195,7 @@ export default function UPlotChart({
       plotRef.current = null
     }
     // Recreate on theme switch so colors are re-read from CSS variables.
-  }, [data, series, height, unit, bands, frequencyAxis, noSync, theme])
+  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleLabels, theme])
 
   if (!data) {
     return <p className="mc-explorer__notice">此日志不包含该板块的数据</p>
