@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { UlogFixtureBuilder } from './testing/ulogFixtureBuilder.js'
 import { UlogDocument } from './parser/UlogDocument.js'
 import { ModuleRegistry } from './engine/moduleRegistry.js'
@@ -854,15 +856,121 @@ describe('PX4 ULog compatibility matrix', () => {
 
 // ─── Extended local fixtures (ULOG_FIXTURE_DIR) ─────────────────────────────
 
+// Corrective-refactor invariants for REAL user logs. Point ULOG_FIXTURE_DIR
+// at a directory of .ulg files (kept out of git); every log is checked
+// without snapshotting any private values (no GPS paths, no UUIDs).
+
 describe('Extended local fixtures (ULOG_FIXTURE_DIR)', () => {
-  it('reports skipped when ULOG_FIXTURE_DIR is not set', () => {
-    const fixtureDir = process.env.ULOG_FIXTURE_DIR
-    if (!fixtureDir) {
+  const fixtureDir = process.env.ULOG_FIXTURE_DIR
+
+  if (!fixtureDir) {
+    it('reports skipped when ULOG_FIXTURE_DIR is not set', () => {
       // This is expected — extended fixtures are optional
       assert.ok(true, 'ULOG_FIXTURE_DIR not set, extended fixtures skipped')
-    } else {
-      // If set, we would scan the directory for .ulog files and run them
-      assert.ok(typeof fixtureDir === 'string', 'ULOG_FIXTURE_DIR should be a string path')
-    }
+    })
+    return
+  }
+
+  const files = readdirSync(fixtureDir).filter(
+    (f) => f.endsWith('.ulg') || f.endsWith('.ulog'),
+  )
+
+  it('finds at least one .ulg in ULOG_FIXTURE_DIR', () => {
+    assert.ok(files.length > 0, `no .ulg files in ${fixtureDir}`)
   })
+
+  for (const file of files) {
+    it(`real log ${file} satisfies the corrective invariants`, async () => {
+      const raw = readFileSync(join(fixtureDir, file))
+      const buffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)
+      const doc = await UlogDocument.open(buffer as ArrayBuffer)
+      const result = await runAnalysis(doc, createFullRegistry())
+      const logStart = doc.timeline.logStartSec
+      const duration = doc.metadata.logDuration
+
+      // ── Motor semantics ──
+      const control = result.sections['control']
+      const actuators = control?.moduleResults.find((m) => m.moduleId === 'actuators')
+      const motorCount = actuators?.metrics.motorCount as number | undefined
+      if (typeof motorCount === 'number' && motorCount > 0) {
+        assert.ok(motorCount >= 1 && motorCount <= 12, `motorCount in 1..12, got ${motorCount}`)
+
+        // No invalid-gap finding may reference a channel beyond the
+        // configured motor count (unused slots are not faults).
+        for (const finding of control!.findings.filter((f) => f.id.includes('nan-gap'))) {
+          const match = /control\[(\d+)\]/.exec(finding.evidence[0]?.fields[0] ?? '')
+          if (match) {
+            assert.ok(
+              parseInt(match[1]!) < motorCount,
+              `gap finding on unused channel: ${finding.id}`,
+            )
+          }
+          assert.notEqual(
+            finding.severity, 'critical',
+            'NaN gaps without corroborating evidence are never critical',
+          )
+        }
+
+        // 1-based user-facing labels, at most motorCount series
+        const motorView = control!.chartFamilies
+          .flatMap((f) => f.views)
+          .find((v) => v.id === 'motor-outputs')
+        if (motorView) {
+          assert.equal(motorView.series.length, motorCount)
+          assert.ok(
+            motorView.series.every((s) => /^电机 [1-9]\d*$/.test(s.label)),
+            `motor labels must be 1-based: ${motorView.series.map((s) => s.label).join(', ')}`,
+          )
+        }
+      }
+
+      // ── Armed interval sanity ──
+      const overview = result.sections['overview']
+      const flightMetrics = overview?.moduleResults.find((m) => m.moduleId === 'flight-overview')?.metrics
+      if (flightMetrics) {
+        const armedSec = flightMetrics.armedDurationSec as number
+        assert.ok(Number.isFinite(armedSec) && armedSec >= 0, `armed duration finite, got ${armedSec}`)
+        assert.ok(armedSec <= duration * 1.05 + 1, 'armed duration cannot exceed log duration')
+      }
+
+      // ── sensor_combined views cover ≥95% of the topic's logged range ──
+      const combinedEntry = doc.catalog.find((t) => t.name === 'sensor_combined')
+      if (combinedEntry?.lastTimeSec != null && combinedEntry.sampleCount > 100) {
+        const relLast = combinedEntry.lastTimeSec - logStart
+        const relFirst = (combinedEntry.firstTimeSec ?? logStart) - logStart
+        const topicSpan = relLast - relFirst
+        const sensorsSection = result.sections['sensors-power']
+        for (const viewId of ['imu-acceleration', 'imu-angular-rate']) {
+          const view = sensorsSection?.chartFamilies
+            .flatMap((f) => f.views)
+            .find((v) => v.id === viewId)
+          assert.ok(view, `${viewId} exists when sensor_combined is present`)
+          const lastT = Math.max(
+            ...view!.series.map((s) => s.times[s.times.length - 1] ?? -Infinity),
+          )
+          assert.ok(
+            lastT >= relFirst + topicSpan * 0.95,
+            `${viewId} covers ≥95% of the sensor_combined range (last=${lastT.toFixed(1)}, topic end=${relLast.toFixed(1)})`,
+          )
+        }
+      }
+
+      // ── Bounded chart output everywhere ──
+      for (const section of Object.values(result.sections)) {
+        if (!section) continue
+        for (const family of section.chartFamilies) {
+          for (const view of family.views) {
+            for (const series of view.series) {
+              assert.ok(
+                series.times.length <= 4200,
+                `${family.id}/${view.id}/${series.id} bounded (${series.times.length} pts)`,
+              )
+              assert.equal(series.times.length, series.values.length)
+            }
+            assert.ok(view.defaultVisibleSeriesIds.length >= 1)
+          }
+        }
+      }
+    })
+  }
 })

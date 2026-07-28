@@ -102,8 +102,9 @@ UI 确认不是唯一安全边界。服务端还会验证消息类型、范围�
 | 路径 | 职责 |
 |---|---|
 | `src/web/log-analysis/parser/` | `normalizeUlogBuffer`（buffer 归一化、v2 追加段修复）、`UlogDocument`（完整 catalog、元信息、参数、事件、时间线）、`fieldPaths`（字段展开与可绘图判断） |
-| `src/web/log-analysis/engine/` | `AnalysisModule` 接口、`topicResolver`（别名 + multi_id 解析）、`moduleRegistry`（注册表）、`runAnalysis`（单次流式遍历） |
-| `src/web/log-analysis/modules/` | 13 个分析模块：`flightOverview`、`controlTracking`、`actuators`、`estimator`、`sensors`、`power`、`propulsion`、`navigation`、`failsafe`、`systemHealth`、`events`、`battery`、`gps` |
+| `src/web/log-analysis/px4/` | PX4 语义适配层：`flightState`（arming_state/actuator_armed 解锁状态仲裁）、`actuatorLayout`（已配置电机发现与 NaN 缺口分级）、`sensorProfiles`（传感器字段语义档案） |
+| `src/web/log-analysis/engine/` | `AnalysisModule` 接口、`topicResolver`（别名 + multi_id 解析）、`moduleRegistry`（注册表）、`runAnalysis`（单次流式遍历，按模块保留 moduleResults 并合并有序 chartFamilies） |
+| `src/web/log-analysis/modules/` | 11 个已注册分析模块：`flightOverview`、`controlTracking`、`actuators`、`estimator`、`sensors`、`power`、`propulsion`、`navigation`、`failsafe`、`systemHealth`、`events` |
 | `src/web/log-analysis/UlogAnalysisClient.ts` | 主线程侧 Worker 代理，类型化协议、AbortSignal 取消、进度回调 |
 | `src/web/log-analysis/workerProtocol.ts` | Worker 请求/响应类型（`load` / `get_series` / `cancel` / `dispose`） |
 | `src/web/log-analysis/seriesCache.ts` | 有界 LRU 缓存（24 查询 / 32MB） |
@@ -119,7 +120,7 @@ UI 确认不是唯一安全边界。服务端还会验证消息类型、范围�
 | `HealthSummary` | 日志质量条（dropout、覆盖率） |
 | `FindingsList` | 诊断发现列表（按严重度着色） |
 | `LogTimeline` | 飞行时间线（模式变更、解锁区间、事件标记） |
-| `MetricChartGroup` | 指标图表组 |
+| `SectionChartWorkspace` | 每个活动分区挂载单一图表工作区：图表族/视图文字选择器 + 单个 uPlot 图表，不再渲染图表墙 |
 | `RawTopicExplorer` | 通用原始 topic 浏览器（前向兼容） |
 | `CoverageSummary` | 覆盖率统计（已分析 / 仅原始 / 不支持） |
 | `TrackMap` | GPS 轨迹地图（懒加载 Leaflet） |
