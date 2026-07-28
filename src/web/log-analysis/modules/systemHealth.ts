@@ -1,12 +1,17 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
 import type { DiagnosticFinding, ChartFamily, ChartView } from '../types.js'
+import { StreamingSeriesCollector } from '../../utils/ulogAnalysis.js'
 
 // ── State types ──────────────────────────────────────────────────────────────
 
 interface SystemHealthState {
-  cpuLoadSamples: Array<{ timeSec: number; load: number; ramUsage: number }>
-  systemPowerSamples: Array<{ timeSec: number; values: Record<string, number> }>
-  magnetometerSamples: Array<{ timeSec: number; values: Record<string, number> }>
+  /** Full-log bounded CPU/RAM chart collectors */
+  loadCollector: StreamingSeriesCollector
+  ramCollector: StreamingSeriesCollector
+  cpuSampleCount: number
+  lastCpuTimeSec: number | null
+  systemPowerSampleCount: number
+  magnetometerSampleCount: number
   /** Track max CPU load for quick check */
   maxCpuLoad: number
   /** Track sustained high CPU periods */
@@ -39,18 +44,6 @@ const RAM_CRITICAL_THRESHOLD = 90
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function downsample(times: number[], values: number[], maxPoints: number): { times: number[]; values: number[] } {
-  if (times.length <= maxPoints) return { times, values }
-  const step = Math.ceil(times.length / maxPoints)
-  const outT: number[] = []
-  const outV: number[] = []
-  for (let i = 0; i < times.length; i += step) {
-    outT.push(times[i]!)
-    outV.push(values[i]!)
-  }
-  return { times: outT, values: outV }
-}
-
 // ── Module ───────────────────────────────────────────────────────────────────
 
 export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthResult> = {
@@ -77,9 +70,12 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
 
   create(_context: AnalysisContext): SystemHealthState {
     return {
-      cpuLoadSamples: [],
-      systemPowerSamples: [],
-      magnetometerSamples: [],
+      loadCollector: new StreamingSeriesCollector(MAX_CHART_POINTS),
+      ramCollector: new StreamingSeriesCollector(MAX_CHART_POINTS),
+      cpuSampleCount: 0,
+      lastCpuTimeSec: null,
+      systemPowerSampleCount: 0,
+      magnetometerSampleCount: 0,
       maxCpuLoad: 0,
       highCpuStart: null,
       highCpuTotalSec: 0,
@@ -89,23 +85,29 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
 
   consume(state: SystemHealthState, sample: ResolvedSample, bindName: string): void {
     if (bindName === 'cpuLoad') {
-      // Extract CPU load (could be 'load' or 'cpu_load' field, typically 0-100 or 0-1 as fraction)
-      let load = typeof sample.values['load'] === 'number' ? sample.values['load'] as number : 0
-      // If load is 0-1 fraction, convert to percentage
+      // cpuload.load — a missing/invalid value means unknown, never zero
+      const rawLoad = sample.values['load']
+      if (typeof rawLoad !== 'number' || !Number.isFinite(rawLoad)) return
+      // PX4 logs load as a 0–1 fraction; convert to percentage
+      let load = rawLoad
       if (load > 0 && load <= 1.0) load *= 100
 
-      // Extract RAM usage (could be 'ram_usage' field, typically bytes or percentage)
-      let ramUsage = typeof sample.values['ram_usage'] === 'number' ? sample.values['ram_usage'] as number : 0
-      // If ram_usage is in bytes, we need total RAM to compute percentage — for now keep raw
-      // If it's already percentage (0-100), keep it
-      const ramPercent = ramUsage > 100 ? 0 : ramUsage // crude heuristic: if > 100, it's bytes not %
-
-      if (state.cpuLoadSamples.length < MAX_CHART_POINTS) {
-        state.cpuLoadSamples.push({ timeSec: sample.timeSec, load, ramUsage: ramPercent })
-      }
-
+      state.cpuSampleCount++
+      state.lastCpuTimeSec = sample.timeSec
+      state.loadCollector.push(sample.timeSec, load)
       if (load > state.maxCpuLoad) state.maxCpuLoad = load
-      if (ramPercent > state.maxRamUsage) state.maxRamUsage = ramPercent
+
+      // cpuload.ram_usage — 0–1 fraction in PX4; values outside 0–100 after
+      // conversion have an unknown scale and are treated as unknown
+      const rawRam = sample.values['ram_usage']
+      if (typeof rawRam === 'number' && Number.isFinite(rawRam)) {
+        let ram = rawRam
+        if (ram > 0 && ram <= 1.0) ram *= 100
+        if (ram >= 0 && ram <= 100) {
+          state.ramCollector.push(sample.timeSec, ram)
+          if (ram > state.maxRamUsage) state.maxRamUsage = ram
+        }
+      }
 
       // Track sustained high CPU
       if (load > CPU_CRITICAL_THRESHOLD) {
@@ -119,21 +121,9 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
         }
       }
     } else if (bindName === 'systemPower') {
-      const numericValues: Record<string, number> = {}
-      for (const [k, v] of Object.entries(sample.values)) {
-        if (typeof v === 'number') numericValues[k] = v
-      }
-      if (state.systemPowerSamples.length < MAX_CHART_POINTS) {
-        state.systemPowerSamples.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      state.systemPowerSampleCount++
     } else if (bindName === 'magnetometer') {
-      const numericValues: Record<string, number> = {}
-      for (const [k, v] of Object.entries(sample.values)) {
-        if (typeof v === 'number') numericValues[k] = v
-      }
-      if (state.magnetometerSamples.length < MAX_CHART_POINTS) {
-        state.magnetometerSamples.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      state.magnetometerSampleCount++
     }
   },
 
@@ -141,11 +131,8 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
     const findings: DiagnosticFinding[] = []
 
     // Close any open high CPU window
-    if (state.highCpuStart !== null && state.cpuLoadSamples.length > 0) {
-      const last = state.cpuLoadSamples[state.cpuLoadSamples.length - 1]
-      if (last) {
-        state.highCpuTotalSec += last.timeSec - state.highCpuStart
-      }
+    if (state.highCpuStart !== null && state.lastCpuTimeSec !== null) {
+      state.highCpuTotalSec += state.lastCpuTimeSec - state.highCpuStart
     }
 
     // ── Findings ────────────────────────────────────────────────────────────
@@ -202,16 +189,14 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
 
     // ── Chart series: CPU load ──────────────────────────────────────────────
     const resourceViews: ChartView[] = []
-    if (state.cpuLoadSamples.length > 0) {
-      const times = state.cpuLoadSamples.map(s => s.timeSec)
-      const loads = state.cpuLoadSamples.map(s => s.load)
-      const ds = downsample(times, loads, MAX_CHART_POINTS)
+    if (!state.loadCollector.isEmpty) {
+      const load = state.loadCollector.toSeries()
       resourceViews.push({
         id: 'cpu-load',
         title: 'CPU 负载',
         description: 'CPU 负载百分比随时间的变化',
         unit: '%',
-        series: [{ id: 'cpu-load', label: 'CPU 负载', times: ds.times, values: ds.values }],
+        series: [{ id: 'cpu-load', label: 'CPU 负载', times: load.times, values: load.values }],
         defaultVisibleSeriesIds: ['cpu-load'],
         thresholds: [
           { value: CPU_WARNING_THRESHOLD, label: '警告阈值', severity: 'warning' },
@@ -221,15 +206,14 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
       })
 
       // RAM usage view
-      const ramValues = state.cpuLoadSamples.map(s => s.ramUsage)
-      if (ramValues.some(v => v > 0)) {
-        const dsRam = downsample(times, ramValues, MAX_CHART_POINTS)
+      if (!state.ramCollector.isEmpty && state.maxRamUsage > 0) {
+        const ram = state.ramCollector.toSeries()
         resourceViews.push({
           id: 'ram-usage',
           title: '内存占用',
           description: '内存占用百分比随时间的变化',
           unit: '%',
-          series: [{ id: 'ram-usage', label: '内存占用', times: dsRam.times, values: dsRam.values }],
+          series: [{ id: 'ram-usage', label: '内存占用', times: ram.times, values: ram.values }],
           defaultVisibleSeriesIds: ['ram-usage'],
           thresholds: [
             { value: RAM_CRITICAL_THRESHOLD, label: '严重阈值', severity: 'critical' },
@@ -265,9 +249,9 @@ export const systemHealthModule: AnalysisModule<SystemHealthState, SystemHealthR
       missingRequirements: [],
       warnings: [],
       result: {
-        cpuLoadSamples: state.cpuLoadSamples.length,
-        systemPowerSamples: state.systemPowerSamples.length,
-        magnetometerSamples: state.magnetometerSamples.length,
+        cpuLoadSamples: state.cpuSampleCount,
+        systemPowerSamples: state.systemPowerSampleCount,
+        magnetometerSamples: state.magnetometerSampleCount,
         maxCpuLoad: state.maxCpuLoad,
         maxRamUsage: state.maxRamUsage,
         sustainedHighCpuSec: state.highCpuTotalSec,

@@ -302,32 +302,37 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
         let aRoll: number, aPitch: number, aYaw: number
         let sRoll: number, sPitch: number, sYaw: number
 
+        // Missing fields mean the sample is unusable — skip it, never zero-fill
         if (useQuatAttitude) {
-          const q0 = Number(att.values['q[0]'] ?? 1)
-          const q1 = Number(att.values['q[1]'] ?? 0)
-          const q2 = Number(att.values['q[2]'] ?? 0)
-          const q3 = Number(att.values['q[3]'] ?? 0)
+          const q0 = att.values['q[0]'], q1 = att.values['q[1]']
+          const q2 = att.values['q[2]'], q3 = att.values['q[3]']
+          if (typeof q0 !== 'number' || typeof q1 !== 'number' ||
+              typeof q2 !== 'number' || typeof q3 !== 'number') continue
           aRoll = quatToRoll(q0, q1, q2, q3)
           aPitch = quatToPitch(q0, q1, q2, q3)
           aYaw = quatToYaw(q0, q1, q2, q3)
         } else {
-          aRoll = Number(att.values['roll'] ?? 0)
-          aPitch = Number(att.values['pitch'] ?? 0)
-          aYaw = Number(att.values['yaw'] ?? 0)
+          const roll = att.values['roll'], pitch = att.values['pitch'], yaw = att.values['yaw']
+          if (typeof roll !== 'number' || typeof pitch !== 'number' || typeof yaw !== 'number') continue
+          aRoll = roll
+          aPitch = pitch
+          aYaw = yaw
         }
 
         if (useQuatSetpoint) {
-          const qd0 = Number(sp.values['q_d[0]'] ?? 1)
-          const qd1 = Number(sp.values['q_d[1]'] ?? 0)
-          const qd2 = Number(sp.values['q_d[2]'] ?? 0)
-          const qd3 = Number(sp.values['q_d[3]'] ?? 0)
+          const qd0 = sp.values['q_d[0]'], qd1 = sp.values['q_d[1]']
+          const qd2 = sp.values['q_d[2]'], qd3 = sp.values['q_d[3]']
+          if (typeof qd0 !== 'number' || typeof qd1 !== 'number' ||
+              typeof qd2 !== 'number' || typeof qd3 !== 'number') continue
           sRoll = quatToRoll(qd0, qd1, qd2, qd3)
           sPitch = quatToPitch(qd0, qd1, qd2, qd3)
           sYaw = quatToYaw(qd0, qd1, qd2, qd3)
         } else {
-          sRoll = Number(sp.values['roll_body'] ?? 0)
-          sPitch = Number(sp.values['pitch_body'] ?? 0)
-          sYaw = Number(sp.values['yaw_body'] ?? 0)
+          const rollB = sp.values['roll_body'], pitchB = sp.values['pitch_body'], yawB = sp.values['yaw_body']
+          if (typeof rollB !== 'number' || typeof pitchB !== 'number' || typeof yawB !== 'number') continue
+          sRoll = rollB
+          sPitch = pitchB
+          sYaw = yawB
         }
 
         rollErrors.push(aRoll - sRoll)
@@ -471,12 +476,11 @@ export const controlTrackingModule: AnalysisModule<ControlTrackingState, Control
         const inArmed = state.armedRanges.some(r => av.timeSec >= r.start && av.timeSec <= r.end)
         if (!inArmed) continue
 
-        const actualP = Number(av.values['xyz[0]'] ?? 0)
-        const actualQ = Number(av.values['xyz[1]'] ?? 0)
-        const actualR = Number(av.values['xyz[2]'] ?? 0)
-        const spP = Number(rsp.values['roll'] ?? 0)
-        const spQ = Number(rsp.values['pitch'] ?? 0)
-        const spR_ = Number(rsp.values['yaw'] ?? 0)
+        // Missing fields mean the sample is unusable — skip it, never zero-fill
+        const actualP = av.values['xyz[0]'], actualQ = av.values['xyz[1]'], actualR = av.values['xyz[2]']
+        const spP = rsp.values['roll'], spQ = rsp.values['pitch'], spR_ = rsp.values['yaw']
+        if (typeof actualP !== 'number' || typeof actualQ !== 'number' || typeof actualR !== 'number') continue
+        if (typeof spP !== 'number' || typeof spQ !== 'number' || typeof spR_ !== 'number') continue
 
         rErrors.push(actualP - spP)
         pErrors.push(actualQ - spQ)

@@ -685,6 +685,74 @@ describe('system health module', () => {
   })
 })
 
+// ─── Full-log chart coverage regressions (no first-N retention) ───────────
+
+describe('full-log chart coverage', () => {
+  it('estimator innovation view spans the whole log, not the first 2000 samples', async () => {
+    const builder = new UlogFixtureBuilder()
+      .addFormat(200, 'estimator_status', [
+        { type: 'uint64_t', fieldName: 'timestamp' },
+        { type: 'float', fieldName: 'pos_test_ratio' },
+      ])
+      .addSubscription(200, 0)
+    // 3000 samples over 60s — more than the 2000-point budget; the
+    // recognizable rise happens in the final quarter of the log.
+    const n = 3000
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * 60
+      builder.addData(200, BigInt(Math.round(t * 1_000_000)), {
+        timestamp: Math.round(t * 1_000_000),
+        pos_test_ratio: t > 45 ? 0.9 : 0.2,
+      })
+    }
+
+    const { result } = await analyzeBuffer(builder.build())
+    const estimatorSection = result.sections['estimator']!
+    const view = sectionViews(estimatorSection).find(v => v.id.includes('innovation-ratios')) as
+      | { series: Array<{ times: number[]; values: number[] }> }
+      | undefined
+    assert.ok(view, 'innovation view exists')
+    const times = view!.series[0]!.times
+    assert.ok(times.length <= 2100, `bounded output, got ${times.length}`)
+    assert.ok(
+      times[times.length - 1]! > 57,
+      `view must cover the log end, last=${times[times.length - 1]}`,
+    )
+    // The late rise must be visible in the downsampled series
+    assert.ok(view!.series[0]!.values.some(v => v > 0.8), 'late signal preserved')
+  })
+
+  it('CPU load view spans the whole log and skips samples without a load field', async () => {
+    const builder = new UlogFixtureBuilder()
+      .addFormat(500, 'cpuload', [
+        { type: 'uint64_t', fieldName: 'timestamp' },
+        { type: 'float', fieldName: 'load' },
+        { type: 'float', fieldName: 'ram_usage' },
+      ])
+      .addSubscription(500, 0)
+    const n = 3000
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * 60
+      builder.addData(500, BigInt(Math.round(t * 1_000_000)), {
+        timestamp: Math.round(t * 1_000_000),
+        load: 0.3 + (t > 50 ? 0.5 : 0), // fraction → %
+        ram_usage: 0.4,
+      })
+    }
+
+    const { result } = await analyzeBuffer(builder.build())
+    const eventsSection = result.sections['events-raw']!
+    const cpuView = sectionViews(eventsSection).find(v => v.id === 'cpu-load') as
+      | { series: Array<{ times: number[]; values: number[] }> }
+      | undefined
+    assert.ok(cpuView, 'cpu view exists')
+    const times = cpuView!.series[0]!.times
+    assert.ok(times[times.length - 1]! > 57, `cpu view covers log end, last=${times[times.length - 1]}`)
+    // Late 80% spike preserved by envelope downsampling
+    assert.ok(cpuView!.series[0]!.values.some(v => v > 75), 'late CPU spike preserved')
+  })
+})
+
 // ─── Integration: partial topics ────────────────────────────────────────────
 
 describe('integration: partial topic availability', () => {

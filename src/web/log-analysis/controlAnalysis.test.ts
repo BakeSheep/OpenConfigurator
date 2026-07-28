@@ -193,7 +193,40 @@ describe('controlTracking – armed-only filtering', () => {
   })
 })
 
-// ─── Control Tracking: Missing setpoints ────────────────────────────────────
+// ─── Control Tracking: Missing setpoints ────────────────────────────────
+
+describe('controlTracking – missing fields are skipped, not zero-filled', () => {
+  it('does not score samples whose attitude fields are absent', () => {
+    const attTopic = makeTopic('vehicle_attitude', 0, 10, ['timestamp', 'roll', 'pitch', 'yaw'])
+    const spTopic = makeTopic('vehicle_attitude_setpoint', 0, 11, [
+      'timestamp', 'roll_body', 'pitch_body', 'yaw_body',
+    ])
+
+    const ctx = makeCtx({ logEndSec: 10, logDuration: 10 })
+    ctx.resolvedTopics.set('attitude', attTopic)
+    ctx.resolvedTopics.set('attitudeSetpoint', spTopic)
+
+    const state = controlTrackingModule.create(ctx)
+    for (let i = 0; i <= 50; i++) {
+      const t = i * 0.2
+      // Attitude sample carries roll but NO pitch/yaw — a zero-fill
+      // implementation would score pitch error as |0 - 0.4| = 0.4
+      controlTrackingModule.consume(state, {
+        topic: attTopic, timeSec: t, values: { roll: 0.1 },
+      }, 'attitude')
+      controlTrackingModule.consume(state, {
+        topic: spTopic, timeSec: t, values: { roll_body: 0.1, pitch_body: 0.4, yaw_body: 0 },
+      }, 'attitudeSetpoint')
+    }
+
+    const result = controlTrackingModule.finalize(state, ctx)
+    // No usable pairs → metrics stay null; zero-filling would yield numbers
+    assert.equal(result.metrics.rollRmsError, null)
+    assert.equal(result.metrics.pitchRmsError, null)
+  })
+})
+
+// ─── Control Tracking: Missing setpoints (topic absent) ────────────────────────
 
 describe('controlTracking – missing setpoints', () => {
   it('reports missing requirements when setpoint topics absent', () => {

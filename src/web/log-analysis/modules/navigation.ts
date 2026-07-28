@@ -81,7 +81,7 @@ export const navigationModule: AnalysisModule<NavState, NavigationResult> = {
   section: 'navigation',
   requirements: [
     {
-      aliases: ['vehicle_gps_position', 'gps'],
+      aliases: ['vehicle_gps_position', 'sensor_gps'],
       required: false,
       bindAs: 'gps',
       multiInstance: true,

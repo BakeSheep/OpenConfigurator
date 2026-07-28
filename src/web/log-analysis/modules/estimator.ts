@@ -1,12 +1,18 @@
 import type { AnalysisModule, AnalysisContext, ResolvedSample, ModuleResult } from '../engine/AnalysisModule.js'
 import type { DiagnosticFinding, ChartFamily, ChartView, ChartSeries, FindingSeverity } from '../types.js'
+import { StreamingSeriesCollector } from '../../utils/ulogAnalysis.js'
 
 // ── State types ──────────────────────────────────────────────────────────────
 
 interface EstimatorInstanceState {
   instanceId: number
   topicName: string
-  samples: Array<{ timeSec: number; values: Record<string, number> }>
+  sampleCount: number
+  lastTimeSec: number | null
+  /** Full-log bounded collectors for innovation-ratio chart fields */
+  ratioCollectors: Map<string, StreamingSeriesCollector>
+  /** Full-log bounded collectors for covariance chart fields */
+  covCollectors: Map<string, StreamingSeriesCollector>
   /** Track max innovation test ratios */
   maxTestRatios: Record<string, number>
   /** Reset counters */
@@ -25,9 +31,9 @@ interface EstimatorInstanceState {
 
 interface EstimatorState {
   instances: Map<number, EstimatorInstanceState>
-  innovations: Map<number, Array<{ timeSec: number; values: Record<string, number> }>>
-  visualInnovation: Array<{ timeSec: number; values: Record<string, number> }>
-  preflow: Array<{ timeSec: number; values: Record<string, number> }>
+  innovationSampleCounts: Map<number, number>
+  visualInnovationSampleCount: number
+  preflowSampleCount: number
 }
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -52,18 +58,23 @@ interface EstimatorResult {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const MAX_CHART_POINTS = 2000
+/** Chart at most this many distinct ratio fields per instance */
+const MAX_RATIO_FIELDS = 6
+/** Chart at most this many distinct covariance fields per instance */
+const MAX_COV_FIELDS = 4
 
-/** Downsample series to fit within point budget */
-function downsample(times: number[], values: number[], maxPoints: number): { times: number[]; values: number[] } {
-  if (times.length <= maxPoints) return { times, values }
-  const step = Math.ceil(times.length / maxPoints)
-  const outT: number[] = []
-  const outV: number[] = []
-  for (let i = 0; i < times.length; i += step) {
-    outT.push(times[i]!)
-    outV.push(values[i]!)
+function getCollector(
+  map: Map<string, StreamingSeriesCollector>,
+  key: string,
+  maxFields: number,
+): StreamingSeriesCollector | null {
+  let collector = map.get(key)
+  if (!collector) {
+    if (map.size >= maxFields) return null
+    collector = new StreamingSeriesCollector(MAX_CHART_POINTS)
+    map.set(key, collector)
   }
-  return { times: outT, values: outV }
+  return collector
 }
 
 // ── Module ───────────────────────────────────────────────────────────────────
@@ -100,9 +111,9 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
   create(_context: AnalysisContext): EstimatorState {
     return {
       instances: new Map(),
-      innovations: new Map(),
-      visualInnovation: [],
-      preflow: [],
+      innovationSampleCounts: new Map(),
+      visualInnovationSampleCount: 0,
+      preflowSampleCount: 0,
     }
   },
 
@@ -115,7 +126,10 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
         inst = {
           instanceId,
           topicName: sample.topic.name,
-          samples: [],
+          sampleCount: 0,
+          lastTimeSec: null,
+          ratioCollectors: new Map(),
+          covCollectors: new Map(),
           maxTestRatios: {},
           resetCounts: {},
           faultFlags: [],
@@ -128,14 +142,8 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
         state.instances.set(instanceId, inst)
       }
 
-      // Keep bounded sample buffer
-      if (inst.samples.length < MAX_CHART_POINTS) {
-        const numericValues: Record<string, number> = {}
-        for (const [k, v] of Object.entries(sample.values)) {
-          if (typeof v === 'number') numericValues[k] = v
-        }
-        inst.samples.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      inst.sampleCount++
+      inst.lastTimeSec = sample.timeSec
 
       // Track innovation test ratios (fields ending in _test_ratio or containing test ratio patterns)
       for (const [key, val] of Object.entries(sample.values)) {
@@ -143,6 +151,9 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
         if (key.includes('test_ratio') || key.includes('innovation_ratio')) {
           const prev = inst.maxTestRatios[key] ?? 0
           if (val > prev) inst.maxTestRatios[key] = val
+          // Full-log bounded chart series (never first-N retention)
+          getCollector(inst.ratioCollectors, key, MAX_RATIO_FIELDS)
+            ?.push(sample.timeSec, Number.isFinite(val) ? val : NaN)
         }
         // Track bias fields
         if (key.includes('bias') && (key.includes('accel') || key.includes('gyro') || key.includes('mag'))) {
@@ -153,6 +164,8 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
         if (key.includes('covariance') || key.includes('cov_')) {
           const prev = inst.maxCovariance[key] ?? 0
           if (Math.abs(val) > prev) inst.maxCovariance[key] = Math.abs(val)
+          getCollector(inst.covCollectors, key, MAX_COV_FIELDS)
+            ?.push(sample.timeSec, Number.isFinite(val) ? Math.abs(val) : NaN)
         }
         // Track reset counters
         if (key.includes('reset') && key.includes('count')) {
@@ -178,34 +191,14 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
         }
       }
     } else if (bindName === 'innovations') {
-      let arr = state.innovations.get(instanceId)
-      if (!arr) {
-        arr = []
-        state.innovations.set(instanceId, arr)
-      }
-      if (arr.length < MAX_CHART_POINTS) {
-        const numericValues: Record<string, number> = {}
-        for (const [k, v] of Object.entries(sample.values)) {
-          if (typeof v === 'number') numericValues[k] = v
-        }
-        arr.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      state.innovationSampleCounts.set(
+        instanceId,
+        (state.innovationSampleCounts.get(instanceId) ?? 0) + 1,
+      )
     } else if (bindName === 'visualInnovation') {
-      if (state.visualInnovation.length < MAX_CHART_POINTS) {
-        const numericValues: Record<string, number> = {}
-        for (const [k, v] of Object.entries(sample.values)) {
-          if (typeof v === 'number') numericValues[k] = v
-        }
-        state.visualInnovation.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      state.visualInnovationSampleCount++
     } else if (bindName === 'preflow') {
-      if (state.preflow.length < MAX_CHART_POINTS) {
-        const numericValues: Record<string, number> = {}
-        for (const [k, v] of Object.entries(sample.values)) {
-          if (typeof v === 'number') numericValues[k] = v
-        }
-        state.preflow.push({ timeSec: sample.timeSec, values: numericValues })
-      }
+      state.preflowSampleCount++
     }
   },
 
@@ -217,11 +210,8 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
 
     for (const [instanceId, inst] of state.instances) {
       // Close any open dead reckoning window
-      if (inst.deadReckoningStart !== null && state.instances.size > 0) {
-        const lastSample = inst.samples[inst.samples.length - 1]
-        if (lastSample) {
-          inst.deadReckoningTotalSec += lastSample.timeSec - inst.deadReckoningStart
-        }
+      if (inst.deadReckoningStart !== null && inst.lastTimeSec !== null) {
+        inst.deadReckoningTotalSec += inst.lastTimeSec - inst.deadReckoningStart
       }
 
       // Compute max bias
@@ -233,7 +223,7 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
       instanceResults.push({
         instanceId,
         topicName: inst.topicName,
-        sampleCount: inst.samples.length,
+        sampleCount: inst.sampleCount,
         maxTestRatios: { ...inst.maxTestRatios },
         resetCounts: { ...inst.resetCounts },
         faultCount: inst.faultFlags.length,
@@ -365,21 +355,19 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
       }
 
       // ── Chart series: innovation test ratios ────────────────────────────
-      const ratioFields = Object.keys(inst.maxTestRatios)
-      if (ratioFields.length > 0 && inst.samples.length > 0) {
-        const times = inst.samples.map(s => s.timeSec)
+      if (inst.ratioCollectors.size > 0) {
         const ratioSeries: ChartSeries[] = []
-        for (const field of ratioFields.slice(0, 6)) {
-          const values = inst.samples.map(s => (s.values[field] as number) ?? NaN)
-          const ds = downsample(times, values, MAX_CHART_POINTS)
+        for (const [field, collector] of inst.ratioCollectors) {
+          const { times, values } = collector.toSeries()
+          if (times.length === 0) continue
           ratioSeries.push({
             id: `est-${instanceId}-ratio-${field}`,
             label: field,
-            times: ds.times,
-            values: ds.values,
+            times,
+            values,
           })
         }
-        innovationViews.push({
+        if (ratioSeries.length > 0) innovationViews.push({
           id: `est-${instanceId}-innovation-ratios`,
           title: `新息检验比（实例 ${instanceId}）`,
           description: `估计器实例 ${instanceId} 的新息检验比随时间的变化`,
@@ -393,21 +381,19 @@ export const estimatorModule: AnalysisModule<EstimatorState, EstimatorResult> = 
       }
 
       // ── Chart series: covariance traces ─────────────────────────────────
-      const covFields = Object.keys(inst.maxCovariance)
-      if (covFields.length > 0 && inst.samples.length > 0) {
-        const times = inst.samples.map(s => s.timeSec)
+      if (inst.covCollectors.size > 0) {
         const covSeries: ChartSeries[] = []
-        for (const field of covFields.slice(0, 4)) {
-          const values = inst.samples.map(s => Math.abs((s.values[field] as number) ?? NaN))
-          const ds = downsample(times, values, MAX_CHART_POINTS)
+        for (const [field, collector] of inst.covCollectors) {
+          const { times, values } = collector.toSeries()
+          if (times.length === 0) continue
           covSeries.push({
             id: `est-${instanceId}-cov-${field}`,
             label: field,
-            times: ds.times,
-            values: ds.values,
+            times,
+            values,
           })
         }
-        stateViews.push({
+        if (covSeries.length > 0) stateViews.push({
           id: `est-${instanceId}-covariances`,
           title: `协方差（实例 ${instanceId}）`,
           description: `估计器实例 ${instanceId} 的协方差随时间的变化`,

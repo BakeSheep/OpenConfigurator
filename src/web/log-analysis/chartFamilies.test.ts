@@ -26,6 +26,7 @@ import { failsafeModule } from './modules/failsafe.js'
 import { systemHealthModule } from './modules/systemHealth.js'
 import { eventsModule } from './modules/events.js'
 import type { SectionResult } from './types.js'
+import type { AnalysisModule } from './engine/AnalysisModule.js'
 
 const SEC = 1_000_000
 
@@ -195,6 +196,131 @@ function buildRichFixture(): ArrayBuffer {
 function familyIds(section: SectionResult | undefined): string[] {
   return (section?.chartFamilies ?? []).map((f) => f.id)
 }
+
+// ─── Field audit ──────────────────────────────────────────────────────
+//
+// Executable audit of every purpose-built metric source. Each entry records
+// the topic aliases actually requested by the module, the exact PX4 fields
+// consumed, units, multi-instance behavior, what happens when data is
+// missing, and the confidence class of derived findings. Aliases are
+// asserted against the module requirements so drift fails the build.
+
+interface FieldAuditEntry {
+  module: AnalysisModule
+  bindAs: string
+  aliases: string[]
+  multiInstance: boolean
+  fields: string
+  units: string
+  missingData: string
+  confidence: string
+}
+
+const FIELD_AUDIT: FieldAuditEntry[] = [
+  {
+    module: flightOverviewModule as AnalysisModule, bindAs: 'vehicleStatus',
+    aliases: ['vehicle_status'], multiInstance: false,
+    fields: 'arming_state (1=DISARMED, 2=ARMED), nav_state', units: 'enum',
+    missingData: 'null armed reading → no transition (never coerced to disarmed)',
+    confidence: 'measured',
+  },
+  {
+    module: flightOverviewModule as AnalysisModule, bindAs: 'actuatorArmed',
+    aliases: ['actuator_armed'], multiInstance: false,
+    fields: 'armed (bool)', units: 'bool',
+    missingData: 'fallback only; vehicle_status takes precedence',
+    confidence: 'measured',
+  },
+  {
+    module: actuatorsModule as AnalysisModule, bindAs: 'motors',
+    aliases: ['actuator_motors'], multiInstance: false,
+    fields: 'control[0..11] (NaN = unused slot per spec)', units: 'normalized -1..1',
+    missingData: 'all-NaN slots are unused, produce no metrics/series/findings',
+    confidence: 'measured (gaps), heuristic (saturation without PWM limits)',
+  },
+  {
+    module: controlTrackingModule as AnalysisModule, bindAs: 'attitude',
+    aliases: ['vehicle_attitude'], multiInstance: false,
+    fields: 'q[0..3] (preferred) or roll/pitch/yaw', units: 'rad',
+    missingData: 'samples with missing fields are skipped, never zero-filled',
+    confidence: 'heuristic (tracking-error findings)',
+  },
+  {
+    module: sensorsModule as AnalysisModule, bindAs: 'sensorCombined',
+    aliases: ['sensor_combined'], multiInstance: false,
+    fields: 'accelerometer_m_s2[0..2], gyro_rad[0..2], accelerometer_clipping/gyro_clipping bitfields',
+    units: 'm/s², rad/s',
+    missingData: 'invalid values become NaN gaps; incomplete triplets resolve to no view',
+    confidence: 'measured (clipping), derived (vibration)',
+  },
+  {
+    module: sensorsModule as AnalysisModule, bindAs: 'baro',
+    aliases: ['sensor_baro', 'vehicle_air_data'], multiInstance: true,
+    fields: 'pressure/temperature or baro_pressure_pa/baro_alt_meter/baro_temp_celcius',
+    units: 'Pa, m, °C (separate views per unit)',
+    missingData: 'missing scalars resolve to fewer views, never zero-filled',
+    confidence: 'measured',
+  },
+  {
+    module: powerModule as AnalysisModule, bindAs: 'battery',
+    aliases: ['battery_status', 'battery_status_old'], multiInstance: true,
+    fields: 'voltage_v, current_a, cell_count, voltage_cell_v[0..13], remaining, discharged_mah',
+    units: 'V, A, %, mAh',
+    missingData: 'non-finite samples skipped; thresholds need cell_count',
+    confidence: 'measured (voltage), heuristic (sag)',
+  },
+  {
+    module: propulsionModule as AnalysisModule, bindAs: 'escStatus',
+    aliases: ['esc_status'], multiInstance: true,
+    fields: 'esc[n].esc_rpm / esc_voltage / esc_current / esc_temperature / esc_errorflags',
+    units: 'RPM, V, A, °C',
+    missingData: 'imbalance summary lives in metrics (categorical, not a time series)',
+    confidence: 'derived (imbalance), heuristic (overtemp)',
+  },
+  {
+    module: navigationModule as AnalysisModule, bindAs: 'gps',
+    aliases: ['vehicle_gps_position', 'sensor_gps'], multiInstance: true,
+    fields: 'fix_type, satellites_used, eph, epv', units: 'enum, count, m',
+    missingData: 'series per instance; empty instances produce no series',
+    confidence: 'measured',
+  },
+  {
+    module: navigationModule as AnalysisModule, bindAs: 'wind',
+    aliases: ['wind'], multiInstance: false,
+    fields: 'windspeed_north, windspeed_east (magnitude derived)', units: 'm/s',
+    missingData: 'real timestamps only — no index-as-time axis',
+    confidence: 'derived',
+  },
+  {
+    module: estimatorModule as AnalysisModule, bindAs: 'estimatorStatus',
+    aliases: ['estimator_status', 'ekf2_innovations'], multiInstance: true,
+    fields: '*_test_ratio, filter_fault_flags, dead_reckoning, *bias*, *covariance*/cov_*, reset counters',
+    units: 'ratio (dimensionless), enum flags',
+    missingData: 'full-log bounded collectors; missing values are gaps',
+    confidence: 'measured (ratios/faults), heuristic (bias)',
+  },
+  {
+    module: systemHealthModule as AnalysisModule, bindAs: 'cpuLoad',
+    aliases: ['cpuload'], multiInstance: false,
+    fields: 'load, ram_usage (0–1 fractions scaled to %)', units: '%',
+    missingData: 'missing load → sample skipped; unknown RAM scale treated as unknown, not 0',
+    confidence: 'measured',
+  },
+]
+
+describe('field audit — module requirements match documented PX4 sources', () => {
+  for (const entry of FIELD_AUDIT) {
+    it(`${entry.module.id}.${entry.bindAs} consumes ${entry.aliases.join('/')}`, () => {
+      const requirement = entry.module.requirements.find((r) => r.bindAs === entry.bindAs)
+      assert.ok(requirement, `requirement ${entry.bindAs} exists on ${entry.module.id}`)
+      assert.deepEqual(requirement!.aliases, entry.aliases)
+      assert.equal(requirement!.multiInstance ?? false, entry.multiInstance)
+      // Documentation fields must be filled in — the audit is not decorative
+      assert.ok(entry.fields.length > 0 && entry.units.length > 0)
+      assert.ok(entry.missingData.length > 0 && entry.confidence.length > 0)
+    })
+  }
+})
 
 describe('chart family aggregation', () => {
   it('keeps per-section family counts within the selector budget', async () => {

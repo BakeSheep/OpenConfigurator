@@ -73,11 +73,6 @@ export const propulsionModule: AnalysisModule<PropulsionState, PropulsionResult>
       bindAs: 'escStatus',
       multiInstance: true,
     },
-    {
-      aliases: ['esc_0'],
-      required: false,
-      bindAs: 'esc',
-    },
   ],
 
   create(_context: AnalysisContext): PropulsionState {
@@ -85,7 +80,7 @@ export const propulsionModule: AnalysisModule<PropulsionState, PropulsionResult>
   },
 
   consume(state: PropulsionState, sample: ResolvedSample, bindName: string): void {
-    if (bindName !== 'escStatus' && bindName !== 'esc') return
+    if (bindName !== 'escStatus') return
 
     const instanceId = sample.topic.multiId
     let esc = state.escInstances.get(instanceId)
