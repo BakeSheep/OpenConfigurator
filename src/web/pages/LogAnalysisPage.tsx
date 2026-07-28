@@ -39,7 +39,7 @@ import RawTopicExplorer from '../components/logs/RawTopicExplorer'
 import AnalysisProgress from '../components/logs/AnalysisProgress'
 import RawFieldPicker from '../components/logs/RawFieldPicker'
 import RawDataTable from '../components/logs/RawDataTable'
-import MetricChartGroup from '../components/logs/MetricChartGroup'
+import SectionChartWorkspace from '../components/logs/SectionChartWorkspace'
 
 function formatAnalysisError(error: Error, fallback: string): string {
   if (error instanceof UlogAnalysisError) {
@@ -451,65 +451,63 @@ function SectionBody({
   }
 
   if (!section.available) {
+    const missing = section.moduleResults.flatMap((m) => m.missingRequirements)
     return (
       <div className="analysis-section-body">
         <div className="analysis-empty">
-          <p>缺少必需数据：{section.missingRequirements.join('、') || '未知'}</p>
+          <p>缺少必需数据：{[...new Set(missing)].join('、') || '未知'}</p>
         </div>
       </div>
     )
   }
 
-  // Render chart series groups and findings
-  const hasCharts = section.chartSeries.length > 0
+  // Merge module metrics (each stays attributed to its source module) into a
+  // compact strip. Charts become one workspace; findings render below.
+  const hasCharts = section.chartFamilies.length > 0
   const hasFindings = section.findings.length > 0
-  const hasMetrics = Object.keys(section.metrics).length > 0
-
-  const metrics = hasMetrics
-    ? Object.entries(section.metrics).slice(0, 8).map(([key, val]) => ({
-        label: key,
-        value: typeof val === 'number'
-          ? (Number.isInteger(val) ? val : (val as number).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''))
-          : String(val),
-      }))
-    : undefined
+  const mergedMetrics: Record<string, unknown> = {}
+  for (const modResult of section.moduleResults) {
+    for (const [k, v] of Object.entries(modResult.metrics)) {
+      // Skip nested/array metrics — the compact strip shows scalars only
+      if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') {
+        mergedMetrics[k] = v
+      }
+    }
+  }
+  const metrics = Object.entries(mergedMetrics).slice(0, 10).map(([key, val]) => ({
+    label: key,
+    value: typeof val === 'number'
+      ? (Number.isInteger(val) ? val : (val as number).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''))
+      : String(val),
+  }))
+  const sectionWarnings = [...new Set(section.warnings)]
 
   return (
     <div className="analysis-section-body">
-      {/* Chart series groups */}
-      {hasCharts && (
-        <div className="analysis-groups-grid">
-          {section.chartSeries.map((group) => (
-            <MetricChartGroup
-              key={group.id}
-              title={group.title}
-              description={group.description}
-              seriesGroups={[group]}
-            />
+      {/* 1. Compact section metrics — always visible when present */}
+      {metrics.length > 0 && (
+        <div className="analysis-metric-strip">
+          {metrics.map((m) => (
+            <div key={m.label} className="analysis-metric-strip__item">
+              <span className="analysis-metric-strip__label">{m.label}</span>
+              <span className="analysis-metric-strip__value mc-mono">{m.value}</span>
+            </div>
           ))}
         </div>
       )}
 
-      {/* Findings */}
+      {/* 2. One focused chart workspace when families exist */}
+      {hasCharts && <SectionChartWorkspace families={section.chartFamilies} />}
+
+      {/* 3. Findings — always visible when present */}
       {hasFindings && (
-        <AnalysisGroup
-          title="诊断发现"
-          findings={section.findings}
-        />
+        <AnalysisGroup title="诊断发现" findings={section.findings} />
       )}
 
-      {/* Metrics only (no charts, no findings) */}
-      {!hasCharts && !hasFindings && hasMetrics && (
-        <AnalysisGroup
-          title="指标"
-          metrics={metrics}
-        />
-      )}
-
-      {/* Warnings */}
-      {section.warnings.length > 0 && (
+      {/* 4. Warnings */}
+      {sectionWarnings.length > 0 && (
         <div className="analysis-warnings">
-          {section.warnings.map((w, i) => (
+          {sectionWarnings.map((w, i) => (
             <p key={i} style={{ margin: 0, fontSize: 12, color: 'var(--warning)' }}>
               {w}
             </p>
@@ -518,7 +516,7 @@ function SectionBody({
       )}
 
       {/* Empty state */}
-      {!hasCharts && !hasFindings && !hasMetrics && (
+      {!hasCharts && !hasFindings && metrics.length === 0 && (
         <p className="analysis-empty">此分区暂无分析结果</p>
       )}
     </div>

@@ -7,6 +7,8 @@ import {
   sectionWorstSeverity,
   getSectionResult,
 } from './uiModel.js'
+import { buildChartWorkspaceModel } from './chartModel.js'
+import type { ChartFamily } from './types.js'
 import type {
   UlogAnalysisDataset,
   DiagnosticFinding,
@@ -359,5 +361,59 @@ describe('getSectionResult', () => {
   it('returns null when section not present', () => {
     const ds = makeDataset({ sections: {} })
     assert.equal(getSectionResult(ds, 'control'), null)
+  })
+})
+
+// ─── Render contract: one chart workspace per active section ─────────────
+
+describe('section workspace render contract', () => {
+  function familyWithViews(id: string, moduleId: string, viewIds: string[], order: number): ChartFamily {
+    return {
+      id,
+      moduleId,
+      title: id,
+      description: '',
+      views: viewIds.map((vid) => ({
+        id: vid,
+        title: vid,
+        description: '',
+        unit: 'rad',
+        series: [{ id: `${vid}-a`, label: 'A', times: [0, 1], values: [0, 1] }],
+        defaultVisibleSeriesIds: [`${vid}-a`],
+        xAxis: 'time' as const,
+        hasGaps: false,
+      })),
+      defaultViewId: viewIds[0]!,
+      order,
+    }
+  }
+
+  it('mounts exactly one view for a section with multiple families and views', () => {
+    // control section: control-tracking (6 views) + actuators (1 view)
+    const families: ChartFamily[] = [
+      familyWithViews('control-tracking', 'control-tracking',
+        ['att-roll', 'att-pitch', 'att-yaw', 'rate-roll', 'rate-pitch', 'rate-yaw'], 10),
+      familyWithViews('actuators', 'actuators', ['motor-outputs'], 20),
+    ]
+    const totalViews = families.reduce((n, f) => n + f.views.length, 0)
+    assert.equal(totalViews, 7, 'fixture has 7 candidate views')
+
+    const model = buildChartWorkspaceModel(families)
+    // Despite 7 views across 2 families, exactly ONE view is active/mounted.
+    assert.ok(model.activeView && !Array.isArray(model.activeView))
+    assert.equal(model.activeFamilyId, 'control-tracking')
+    assert.equal(model.activeViewId, 'att-roll')
+  })
+
+  it('a text selector changes the mounted view without creating another card', () => {
+    const families: ChartFamily[] = [
+      familyWithViews('imu', 'sensors', ['imu-acceleration', 'imu-angular-rate'], 10),
+      familyWithViews('environment-sensors', 'sensors', ['mag-0', 'baro-pressure'], 12),
+    ]
+    // Selecting the second family switches to its default view only.
+    const switched = buildChartWorkspaceModel(families, 'environment-sensors')
+    assert.equal(switched.activeFamilyId, 'environment-sensors')
+    assert.equal(switched.activeViewId, 'mag-0')
+    assert.ok(switched.activeView && !Array.isArray(switched.activeView))
   })
 })

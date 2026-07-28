@@ -6,9 +6,12 @@ import {
   unitsCompatible,
   retainSelection,
   assignColors,
+  buildChartWorkspaceModel,
+  resolveViewVisibleSeries,
   MAX_VISIBLE_SERIES,
 } from './chartModel.js'
 import type { ChartSeriesConfig, SeriesDescriptor } from './chartModel.js'
+import type { ChartFamily, ChartView } from './types.js'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -84,14 +87,24 @@ describe('selectVisibleSeries', () => {
     assert.equal(result.length, MAX_VISIBLE_SERIES)
   })
 
-  it('returns first series when no selection', () => {
+  it('shows all available series when neither selection nor default is given', () => {
     const config = makeConfig({
       availableSeries: makeSeries(3),
       selectedSeriesIds: [],
     })
     const result = selectVisibleSeries(config)
-    assert.equal(result.length, 1)
-    assert.equal(result[0], 'series-0')
+    // No semantic default → show all (not collapse to just the first)
+    assert.deepEqual(result, ['series-0', 'series-1', 'series-2'])
+  })
+
+  it('uses defaultVisibleSeriesIds when selection is empty', () => {
+    const config = makeConfig({
+      availableSeries: makeSeries(4),
+      selectedSeriesIds: [],
+      defaultVisibleSeriesIds: ['series-1', 'series-2'],
+    })
+    const result = selectVisibleSeries(config)
+    assert.deepEqual(result, ['series-1', 'series-2'])
   })
 
   it('returns empty array when no available series', () => {
@@ -197,5 +210,90 @@ describe('assignColors', () => {
     const result = assignColors(series)
     assert.equal(result[0].color, '#ff0000')
     assert.equal(result[1].color, getSeriesColor(1))
+  })
+})
+
+// ─── buildChartWorkspaceModel ────────────────────────────────────
+
+function makeView(id: string, unit = 'rad', labels = ['实际', '设定']): ChartView {
+  return {
+    id,
+    title: id,
+    description: '',
+    unit,
+    series: labels.map((label, i) => ({ id: `${id}-${i}`, label, times: [0, 1], values: [0, 1] })),
+    defaultVisibleSeriesIds: labels.map((_, i) => `${id}-${i}`),
+    xAxis: 'time',
+    hasGaps: false,
+  }
+}
+
+function makeFamilies(): ChartFamily[] {
+  return [
+    {
+      id: 'control-tracking',
+      moduleId: 'control-tracking',
+      title: '控制跟踪',
+      description: '',
+      views: [makeView('att-roll'), makeView('att-pitch')],
+      defaultViewId: 'att-roll',
+      order: 10,
+    },
+    {
+      id: 'actuators',
+      moduleId: 'actuators',
+      title: '执行器',
+      description: '',
+      views: [makeView('motor-outputs', 'normalized', ['电机 1', '电机 2'])],
+      defaultViewId: 'motor-outputs',
+      order: 20,
+    },
+  ]
+}
+
+describe('buildChartWorkspaceModel', () => {
+  it('returns one active view using the first family default', () => {
+    const model = buildChartWorkspaceModel(makeFamilies())
+    assert.equal(model.families.length, 2)
+    assert.equal(model.activeFamilyId, 'control-tracking')
+    assert.equal(model.activeViewId, 'att-roll')
+    assert.ok(model.activeView && !Array.isArray(model.activeView))
+    assert.equal(model.activeView!.id, 'att-roll')
+  })
+
+  it('uses the selected family\'s explicit default view', () => {
+    const model = buildChartWorkspaceModel(makeFamilies(), 'actuators')
+    assert.equal(model.activeFamilyId, 'actuators')
+    assert.equal(model.activeViewId, 'motor-outputs')
+  })
+
+  it('retains a valid requested view', () => {
+    const model = buildChartWorkspaceModel(makeFamilies(), 'control-tracking', 'att-pitch')
+    assert.equal(model.activeViewId, 'att-pitch')
+  })
+
+  it('falls back to the family default for an invalid view', () => {
+    const model = buildChartWorkspaceModel(makeFamilies(), 'control-tracking', 'nonexistent')
+    assert.equal(model.activeViewId, 'att-roll')
+  })
+
+  it('handles the empty-family case', () => {
+    const model = buildChartWorkspaceModel([])
+    assert.equal(model.activeView, null)
+    assert.equal(model.activeFamilyId, '')
+  })
+})
+
+describe('resolveViewVisibleSeries', () => {
+  it('defaults to the view\'s semantic default selection', () => {
+    const view = makeView('att-roll')
+    const visible = resolveViewVisibleSeries(view, [])
+    assert.deepEqual(visible, ['att-roll-0', 'att-roll-1'])
+  })
+
+  it('honors an explicit user selection', () => {
+    const view = makeView('att-roll')
+    const visible = resolveViewVisibleSeries(view, ['att-roll-1'])
+    assert.deepEqual(visible, ['att-roll-1'])
   })
 })

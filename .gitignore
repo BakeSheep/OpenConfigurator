@@ -34,3 +34,6 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Local UI verification artifacts
+.tmp-verify/
