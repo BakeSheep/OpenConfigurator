@@ -3,6 +3,7 @@
 // points per series; SVG charting collapses at that volume.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import uPlot from 'uplot'
+import { formatChartValue } from '../../log-analysis/chartFormatting'
 import 'uplot/dist/uPlot.min.css'
 import { useThemeStore } from '../../stores/themeStore'
 import type { SegmentInfo, SeriesData } from '../../utils/ulogAnalysis'
@@ -265,8 +266,7 @@ export default function UPlotChart({
           spanGaps: false,
           points: { show: false },
           show: !effectiveHidden.has(index),
-          value: (_u: uPlot, value: number | null) =>
-            value == null ? '—' : `${value.toFixed(2)}${unit ? ` ${unit}` : ''}`,
+          value: (_u: uPlot, value: number | null) => formatChartValue(value, unit),
         })),
       ],
       hooks: {
@@ -415,7 +415,7 @@ export default function UPlotChart({
               {item.unit ? <span className="chart-legend-unit"> ({item.unit})</span> : null}
             </span>
             <span className="chart-legend-value mc-mono">
-              {item.lastValue != null ? item.lastValue.toFixed(2) : '—'}
+              {formatChartValue(item.lastValue)}
             </span>
             <span className="chart-legend-state">
               {item.hidden ? '已隐藏' : '显示中'}

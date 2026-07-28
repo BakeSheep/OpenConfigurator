@@ -27,6 +27,7 @@ import type {
   LogSource,
 } from '../log-analysis/types'
 import { buildViewModel, getPrimaryFindings } from '../log-analysis/uiModel'
+import { buildSectionMetrics } from '../log-analysis/metricPresentation'
 import { parsePx4LogPathDate } from '../utils/ulogAnalysis'
 import type { FsEntry } from '../../shared/types'
 import AnalysisSectionNav from '../components/logs/AnalysisSectionNav'
@@ -465,21 +466,8 @@ function SectionBody({
   // compact strip. Charts become one workspace; findings render below.
   const hasCharts = section.chartFamilies.length > 0
   const hasFindings = section.findings.length > 0
-  const mergedMetrics: Record<string, unknown> = {}
-  for (const modResult of section.moduleResults) {
-    for (const [k, v] of Object.entries(modResult.metrics)) {
-      // Skip nested/array metrics — the compact strip shows scalars only
-      if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') {
-        mergedMetrics[k] = v
-      }
-    }
-  }
-  const metrics = Object.entries(mergedMetrics).slice(0, 10).map(([key, val]) => ({
-    label: key,
-    value: typeof val === 'number'
-      ? (Number.isInteger(val) ? val : (val as number).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''))
-      : String(val),
-  }))
+  const metrics = buildSectionMetrics(section.moduleResults)
+
   const sectionWarnings = [...new Set(section.warnings)]
 
   return (
@@ -488,7 +476,7 @@ function SectionBody({
       {metrics.length > 0 && (
         <div className="analysis-metric-strip">
           {metrics.map((m) => (
-            <div key={m.label} className="analysis-metric-strip__item">
+            <div key={m.id} className="analysis-metric-strip__item">
               <span className="analysis-metric-strip__label">{m.label}</span>
               <span className="analysis-metric-strip__value mc-mono">{m.value}</span>
             </div>

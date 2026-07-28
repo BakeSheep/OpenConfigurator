@@ -5,7 +5,13 @@ import { UlogDocument } from './parser/UlogDocument.js'
 import { ModuleRegistry } from './engine/moduleRegistry.js'
 import { runAnalysis } from './engine/runAnalysis.js'
 import { estimatorModule } from './modules/estimator.js'
-import { sensorsModule, periodogram, analyzeVibration } from './modules/sensors.js'
+import {
+  sensorsModule,
+  periodogram,
+  analyzeVibration,
+  AdaptiveGapDetector,
+  FullLogVibrationCollector,
+} from './modules/sensors.js'
 import { failsafeModule } from './modules/failsafe.js'
 import { systemHealthModule } from './modules/systemHealth.js'
 
@@ -171,6 +177,46 @@ describe('analyzeVibration', () => {
   })
 })
 
+// ─── Adaptive sensor cadence and full-log vibration regressions ─────────────
+
+describe('AdaptiveGapDetector', () => {
+  it('does not flag a stable 10 Hz magnetometer or barometer as gaps', () => {
+    const detector = new AdaptiveGapDetector()
+    let gaps = 0
+    for (let i = 0; i < 200; i++) {
+      if (detector.push(i * 0.1)) gaps++
+    }
+    assert.equal(gaps, 0)
+    assert.ok(Math.abs(detector.medianIntervalSec! - 0.1) < 1e-9)
+  })
+
+  it('flags intervals far beyond the learned cadence without poisoning it', () => {
+    const detector = new AdaptiveGapDetector()
+    let time = 0
+    for (let i = 0; i < 20; i++) {
+      detector.push(time)
+      time += 0.01
+    }
+    assert.equal(detector.push(time + 0.2), true)
+    assert.ok(Math.abs(detector.medianIntervalSec! - 0.01) < 1e-9)
+  })
+})
+
+describe('FullLogVibrationCollector', () => {
+  it('detects vibration that begins after the former 10000-sample cutoff', () => {
+    const sampleRate = 200
+    const collector = new FullLogVibrationCollector(1024)
+    for (let i = 0; i < 12_000; i++) collector.push(i / sampleRate, 0)
+    for (let i = 12_000; i < 16_096; i++) {
+      collector.push(i / sampleRate, 8 * Math.sin(2 * Math.PI * 42 * i / sampleRate))
+    }
+    const result = collector.finish()
+    assert.ok(result)
+    assert.ok(Math.abs(result.peakFrequencyHz - 42) < 3, `peak=${result.peakFrequencyHz}`)
+    assert.ok(result.peakAmplitude > 3, `amplitude=${result.peakAmplitude}`)
+    assert.equal(collector.sampleCount, 16_096)
+  })
+})
 // ─── Estimator module tests ─────────────────────────────────────────────────
 
 describe('estimator module', () => {
@@ -337,6 +383,33 @@ describe('sensors module', () => {
       moduleMetrics(sensorsSection, 'sensors')['accelInstanceCount'] === 2,
       'should detect 2 accel instances',
     )
+    const imuFamily = sensorsSection.chartFamilies.find((family) => family.id === 'imu')
+    assert.ok(imuFamily)
+    assert.ok(imuFamily.views.some((view) => view.id === 'accel-0'), 'instance 0 remains selectable')
+    assert.ok(imuFamily.views.some((view) => view.id === 'accel-1'), 'instance 1 remains selectable')
+  })
+
+  it('does not report stable 10 Hz barometer samples as gaps', async () => {
+    const builder = new UlogFixtureBuilder()
+      .addFormat(302, 'sensor_baro', [
+        { type: 'uint64_t', fieldName: 'timestamp' },
+        { type: 'float', fieldName: 'pressure' },
+        { type: 'float', fieldName: 'temperature' },
+      ])
+      .addSubscription(302, 0)
+
+    for (let i = 0; i < 200; i++) {
+      const timestamp = 1_000_000 + i * 100_000
+      builder.addData(302, BigInt(timestamp), {
+        timestamp,
+        pressure: 101_325,
+        temperature: 25,
+      })
+    }
+
+    const { result } = await analyzeBuffer(builder.build())
+    const findings = result.sections['sensors-power']?.findings ?? []
+    assert.equal(findings.filter((finding) => finding.id.endsWith('-gaps')).length, 0)
   })
 
   it('detects clipping events', async () => {

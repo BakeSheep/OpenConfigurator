@@ -864,10 +864,7 @@ describe('Extended local fixtures (ULOG_FIXTURE_DIR)', () => {
   const fixtureDir = process.env.ULOG_FIXTURE_DIR
 
   if (!fixtureDir) {
-    it('reports skipped when ULOG_FIXTURE_DIR is not set', () => {
-      // This is expected — extended fixtures are optional
-      assert.ok(true, 'ULOG_FIXTURE_DIR not set, extended fixtures skipped')
-    })
+    it.skip('requires ULOG_FIXTURE_DIR with at least one real .ulg file', () => {})
     return
   }
 

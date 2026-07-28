@@ -20,10 +20,12 @@ const MAX_CHART_POINTS = 2000
 const MAX_VIBRATION_POINTS = 500
 /** Minimum contiguous samples needed for vibration analysis */
 const MIN_VIBRATION_SAMPLES = 32
-/** Gap threshold in seconds — samples farther apart than this are split */
-const GAP_THRESHOLD_SEC = 0.05
-/** Bounded raw buffer for spectral analysis (not chart retention) */
-const MAX_VIBRATION_INPUT_SAMPLES = 10000
+const MIN_GAP_THRESHOLD_SEC = 0.05
+const SPECTRAL_GAP_THRESHOLD_SEC = 0.05
+const GAP_INTERVAL_MULTIPLIER = 3
+const GAP_LEARNING_INTERVALS = 5
+const GAP_INTERVAL_HISTORY = 63
+const VIBRATION_WINDOW_SAMPLES = 2048
 
 // ── State types ──────────────────────────────────────────────────────────────
 
@@ -43,15 +45,15 @@ interface SensorInstanceState {
   resolved: boolean
   vectors: Map<SensorVectorKind, VectorCollectorState>
   scalars: Map<SensorScalarKind, ScalarCollectorState>
-  /** Per-axis raw samples for vibration analysis (bounded spectral input) */
-  axisSamples: Map<string, Array<{ timeSec: number; value: number }>>
+  /** Per-axis full-log spectral accumulators with bounded working memory. */
+  vibrationCollectors: Map<string, FullLogVibrationCollector>
   /** Clipping counter values (dedicated topics: clip_counter fields) */
   clipCounts: Record<string, number>
   /** Streaming mean accumulation per semantic axis for consistency checks */
   meanAccum: Record<string, { sum: number; count: number }>
   sampleCount: number
   gapCount: number
-  prevTimeSec: number | null
+  gapDetector: AdaptiveGapDetector
 }
 
 interface CombinedState {
@@ -61,8 +63,8 @@ interface CombinedState {
   /** Samples where the SensorCombined clipping bitfields flag each axis */
   accelClipSamples: [number, number, number]
   gyroClipSamples: [number, number, number]
-  /** Raw accel samples for vibration when no dedicated topic exists */
-  axisSamples: Map<string, Array<{ timeSec: number; value: number }>>
+  /** Full-log accel spectral accumulators when no dedicated topic exists. */
+  vibrationCollectors: Map<string, FullLogVibrationCollector>
 }
 
 interface SensorsState {
@@ -113,28 +115,62 @@ export function periodogram(
   signal: number[],
   sampleRate: number,
 ): { frequencies: number[]; power: number[] } {
-  const N = signal.length
-  if (N < 2) return { frequencies: [], power: [] }
+  if (signal.length < 2 || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return { frequencies: [], power: [] }
+  }
 
-  // Apply Hann window
-  const windowed = signal.map((x, i) => x * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1))))
-  // Hann coherent gain compensation
-  const hannGain = 0.5
+  // Radix-2 FFT keeps repeated whole-log spectral windows practical. Trim to
+  // the largest power of two instead of zero-padding a partial Hann window.
+  const size = 2 ** Math.floor(Math.log2(signal.length))
+  if (size < 2) return { frequencies: [], power: [] }
+  const re = new Array<number>(size)
+  const im = new Array<number>(size).fill(0)
+  for (let i = 0; i < size; i++) {
+    const hann = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (size - 1))
+    re[i] = signal[i]! * hann
+  }
 
-  // Compute DFT magnitude for positive frequencies
-  const nFreq = Math.floor(N / 2)
+  // Bit-reversal permutation.
+  for (let i = 1, j = 0; i < size; i++) {
+    let bit = size >> 1
+    for (; j & bit; bit >>= 1) j ^= bit
+    j ^= bit
+    if (i < j) {
+      ;[re[i], re[j]] = [re[j]!, re[i]!]
+      ;[im[i], im[j]] = [im[j]!, im[i]!]
+    }
+  }
+
+  for (let length = 2; length <= size; length <<= 1) {
+    const angle = -2 * Math.PI / length
+    const stepRe = Math.cos(angle)
+    const stepIm = Math.sin(angle)
+    for (let offset = 0; offset < size; offset += length) {
+      let wRe = 1
+      let wIm = 0
+      for (let i = 0; i < length / 2; i++) {
+        const even = offset + i
+        const odd = even + length / 2
+        const oddRe = re[odd]! * wRe - im[odd]! * wIm
+        const oddIm = re[odd]! * wIm + im[odd]! * wRe
+        re[odd] = re[even]! - oddRe
+        im[odd] = im[even]! - oddIm
+        re[even] = re[even]! + oddRe
+        im[even] = im[even]! + oddIm
+        const nextWRe = wRe * stepRe - wIm * stepIm
+        wIm = wRe * stepIm + wIm * stepRe
+        wRe = nextWRe
+      }
+    }
+  }
+
   const frequencies: number[] = []
   const power: number[] = []
-  for (let k = 1; k < nFreq; k++) {
-    let re = 0, im = 0
-    for (let n = 0; n < N; n++) {
-      const angle = -2 * Math.PI * k * n / N
-      re += windowed[n] * Math.cos(angle)
-      im += windowed[n] * Math.sin(angle)
-    }
-    const mag = Math.sqrt(re * re + im * im) / (N * hannGain)
-    frequencies.push(k * sampleRate / N)
-    power.push(mag * mag)
+  const hannGain = 0.5
+  for (let k = 1; k < size / 2; k++) {
+    const magnitude = Math.hypot(re[k]!, im[k]!) / (size * hannGain)
+    frequencies.push(k * sampleRate / size)
+    power.push(magnitude * magnitude)
   }
   return { frequencies, power }
 }
@@ -229,7 +265,7 @@ export function analyzeVibration(
   const values = sorted.map(s => s.value)
 
   // Split at gaps
-  const windows = splitAtGaps(times, values, GAP_THRESHOLD_SEC)
+  const windows = splitAtGaps(times, values, SPECTRAL_GAP_THRESHOLD_SEC)
 
   // Process each window
   let avgPower: number[] | null = null
@@ -299,6 +335,81 @@ export function analyzeVibration(
   }
 }
 
+/**
+ * Learns the normal period of one topic instance and rejects isolated long
+ * intervals from that baseline. Low-rate barometer/magnetometer streams are
+ * therefore not judged by an IMU-rate constant.
+ */
+export class AdaptiveGapDetector {
+  private previousTimeSec: number | null = null
+  private readonly recentIntervals: number[] = []
+
+  push(timeSec: number): boolean {
+    if (!Number.isFinite(timeSec)) return false
+    if (this.previousTimeSec === null) {
+      this.previousTimeSec = timeSec
+      return false
+    }
+
+    const interval = timeSec - this.previousTimeSec
+    this.previousTimeSec = timeSec
+    if (!Number.isFinite(interval) || interval <= 0) return false
+
+    const baseline = this.medianIntervalSec
+    const isGap = baseline !== null
+      && interval > Math.max(MIN_GAP_THRESHOLD_SEC, baseline * GAP_INTERVAL_MULTIPLIER)
+
+    // A real gap must not distort the learned normal sample period.
+    if (!isGap) {
+      this.recentIntervals.push(interval)
+      if (this.recentIntervals.length > GAP_INTERVAL_HISTORY) this.recentIntervals.shift()
+    }
+    return isGap
+  }
+
+  get medianIntervalSec(): number | null {
+    if (this.recentIntervals.length < GAP_LEARNING_INTERVALS) return null
+    const sorted = [...this.recentIntervals].sort((a, b) => a - b)
+    return sorted[Math.floor(sorted.length / 2)]!
+  }
+}
+
+/**
+ * Examines overlapping spectral windows across the complete log while keeping
+ * only one bounded working window and the strongest spectrum.
+ */
+export class FullLogVibrationCollector {
+  private samples: Array<{ timeSec: number; value: number }> = []
+  private best: VibrationResult | null = null
+  readonly windowSize: number
+  readonly hopSize: number
+  sampleCount = 0
+
+  constructor(windowSize = VIBRATION_WINDOW_SAMPLES) {
+    this.windowSize = Math.max(MIN_VIBRATION_SAMPLES, windowSize)
+    this.hopSize = Math.max(1, Math.floor(this.windowSize / 2))
+  }
+
+  push(timeSec: number, value: number): void {
+    if (!Number.isFinite(timeSec) || !Number.isFinite(value)) return
+    this.sampleCount++
+    this.samples.push({ timeSec, value })
+    if (this.samples.length >= this.windowSize) {
+      this.process(this.samples.slice(0, this.windowSize))
+      this.samples = this.samples.slice(this.hopSize)
+    }
+  }
+
+  finish(): VibrationResult | null {
+    if (this.samples.length >= MIN_VIBRATION_SAMPLES) this.process(this.samples)
+    return this.best ? { ...this.best, frequencies: [...this.best.frequencies], amplitudes: [...this.best.amplitudes] } : null
+  }
+
+  private process(samples: Array<{ timeSec: number; value: number }>): void {
+    const result = analyzeVibration(samples)
+    if (result && (!this.best || result.rmsAmplitude > this.best.rmsAmplitude)) this.best = result
+  }
+}
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const AXIS_KEYS = ['x', 'y', 'z'] as const
@@ -321,12 +432,12 @@ function makeInstanceState(instanceId: number, topicName: string): SensorInstanc
     resolved: false,
     vectors: new Map(),
     scalars: new Map(),
-    axisSamples: new Map(),
+    vibrationCollectors: new Map(),
     clipCounts: {},
     meanAccum: {},
     sampleCount: 0,
     gapCount: 0,
-    prevTimeSec: null,
+    gapDetector: new AdaptiveGapDetector(),
   }
 }
 
@@ -415,7 +526,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
         vectors: new Map(),
         accelClipSamples: [0, 0, 0],
         gyroClipSamples: [0, 0, 0],
-        axisSamples: new Map(),
+        vibrationCollectors: new Map(),
       },
       accelInstances: new Map(),
       gyroInstances: new Map(),
@@ -445,14 +556,12 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
             const v = axisValues[axis]!
             if (!Number.isFinite(v)) continue
             const key = `acceleration_${AXIS_KEYS[axis]}`
-            let arr = combined.axisSamples.get(key)
-            if (!arr) {
-              arr = []
-              combined.axisSamples.set(key, arr)
+            let vibration = combined.vibrationCollectors.get(key)
+            if (!vibration) {
+              vibration = new FullLogVibrationCollector()
+              combined.vibrationCollectors.set(key, vibration)
             }
-            if (arr.length < MAX_VIBRATION_INPUT_SAMPLES) {
-              arr.push({ timeSec: sample.timeSec, value: v })
-            }
+            vibration.push(sample.timeSec, v)
           }
         }
       }
@@ -492,11 +601,8 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
 
     inst.sampleCount++
 
-    // Streaming gap detection
-    if (inst.prevTimeSec !== null && sample.timeSec - inst.prevTimeSec > GAP_THRESHOLD_SEC) {
-      inst.gapCount++
-    }
-    inst.prevTimeSec = sample.timeSec
+    // Adaptive per-instance gap detection; low-rate sensors learn their own cadence.
+    if (inst.gapDetector.push(sample.timeSec)) inst.gapCount++
 
     // Resolve semantic fields once from the actually-present fields
     if (!inst.resolved) {
@@ -528,16 +634,14 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
         acc.count++
         inst.meanAccum[meanKey] = acc
 
-        // Vibration input buffer (bounded spectral window)
+        // Bounded overlapping windows cover the complete log.
         const key = `${collector.spec.kind}_${AXIS_KEYS[axis]}`
-        let arr = inst.axisSamples.get(key)
-        if (!arr) {
-          arr = []
-          inst.axisSamples.set(key, arr)
+        let vibration = inst.vibrationCollectors.get(key)
+        if (!vibration) {
+          vibration = new FullLogVibrationCollector()
+          inst.vibrationCollectors.set(key, vibration)
         }
-        if (arr.length < MAX_VIBRATION_INPUT_SAMPLES) {
-          arr.push({ timeSec: sample.timeSec, value: v })
-        }
+        vibration.push(sample.timeSec, v)
       }
     }
 
@@ -636,11 +740,11 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
     }
 
     // Vibration from combined accel only when no dedicated accel exists
-    if (state.accelInstances.size === 0 && combined.axisSamples.size > 0) {
+    if (state.accelInstances.size === 0 && combined.vibrationCollectors.size > 0) {
       const series: ChartSeries[] = []
       let peakInfo: VibrationResult | null = null
-      for (const [axisKey, samples] of combined.axisSamples) {
-        const vib = analyzeVibration(samples)
+      for (const [axisKey, collector] of combined.vibrationCollectors) {
+        const vib = collector.finish()
         if (!vib) continue
         vib.axis = axisKey
         if (!peakInfo || vib.peakAmplitude > peakInfo.peakAmplitude) peakInfo = vib
@@ -679,10 +783,10 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
           if (acc.count > 0) meanValues[key] = acc.sum / acc.count
         }
 
-        // Vibration analysis on each buffered axis
+        // Vibration analysis across every bounded window in the complete log
         const vibrationResults: VibrationResult[] = []
-        for (const [axisKey, samples] of inst.axisSamples) {
-          const vib = analyzeVibration(samples)
+        for (const [axisKey, collector] of inst.vibrationCollectors) {
+          const vib = collector.finish()
           if (vib) {
             vib.axis = axisKey
             vibrationResults.push(vib)
@@ -805,9 +909,7 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
     for (const [instanceId, inst] of state.accelInstances) {
       const vec = inst.vectors.get('acceleration')
       if (!vec || vec.axes[0]!.isEmpty) continue
-      // sensor_combined already provides the primary summary; dedicated
-      // instances become selectable views instead of duplicate cards.
-      if (!combinedAccel && inst === firstAccelInstance) continue
+      // Keep every dedicated instance selectable for multi-IMU comparison.
       imuViews.push({
         id: `accel-${instanceId}`,
         title: `加速度（sensor_accel #${instanceId}）`,
@@ -822,7 +924,6 @@ export const sensorsModule: AnalysisModule<SensorsState, SensorsResult> = {
     for (const [instanceId, inst] of state.gyroInstances) {
       const vec = inst.vectors.get('angularRate')
       if (!vec || vec.axes[0]!.isEmpty) continue
-      if (!combinedGyro && inst === firstGyroInstance) continue
       imuViews.push({
         id: `gyro-${instanceId}`,
         title: `角速度（sensor_gyro #${instanceId}）`,
