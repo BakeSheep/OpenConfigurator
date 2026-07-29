@@ -346,7 +346,9 @@ function handleTelemetry(msgType: string, data: any) {
       break
     case 'BATTERY_STATUS':
       telemetryStore.setBattery(data)
-      sensorStore.setSensorHealth('battery', 'ok')
+      // Do not claim battery health without a valid voltage source: ArduPilot
+      // without a battery monitor sends all-unknown voltages.
+      sensorStore.setSensorHealth('battery', data.voltage == null ? 'offline' : 'ok')
       break
     case 'SYS_STATUS':
       telemetryStore.setSysStatus(data)

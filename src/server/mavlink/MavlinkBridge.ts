@@ -744,11 +744,20 @@ export class MavlinkBridge extends EventEmitter {
     const sensorsPresent: number = d.onboardControlSensorsPresent
     const sensorsEnabled: number = d.onboardControlSensorsEnabled
     const sensorsHealth: number = d.onboardControlSensorsHealth
-    const voltageBattery = d.voltageBattery === 0xffff ? null : d.voltageBattery / 1000
+    // 0xffff is the documented "unknown" sentinel. ArduPilot without a battery
+    // monitor reports exactly 0 mV instead, which must not render as a healthy
+    // 0.0 V. Treat both as "no valid voltage source".
+    const voltageBattery = (d.voltageBattery === 0xffff || d.voltageBattery === 0)
+      ? null
+      : d.voltageBattery / 1000
     const currentBattery = d.currentBattery === -1 ? null : d.currentBattery / 100
     // battery_remaining is at wire offset 30. The previous hand-rolled parser
     // read offset 18 (drop_rate_comm) - a latent bug fixed by this migration.
-    const batteryRemaining = d.batteryRemaining === -1 ? null : d.batteryRemaining
+    // Without a valid voltage source the remaining percentage is not
+    // trustworthy, so suppress it rather than imply a healthy pack.
+    const batteryRemaining = (d.batteryRemaining === -1 || voltageBattery === null)
+      ? null
+      : d.batteryRemaining
     const prearmCheckMask = 0x10000000
     const supportsPreflightCheck = (sensorsPresent & prearmCheckMask) !== 0
     const unhealthySensorMask = (sensorsEnabled & ~sensorsHealth) >>> 0

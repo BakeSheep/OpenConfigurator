@@ -1476,6 +1476,49 @@ bridge.destroy()
   assert.equal(apVersionData.vendorId, 4660)
   assert.equal(apVersionData.productId, 22136)
 
+  // ArduPilot telemetry edge cases (synthetic minimal fixtures):
+  // SYS_STATUS with a PreArm-check bit present but unhealthy must surface
+  // preflightCheck=false and remain blocking.
+  const sysStatusPayload = Buffer.alloc(31)
+  const PREARM_BIT = 0x10000000
+  const GYRO_BIT = 0x00000001
+  sysStatusPayload.writeUInt32LE(PREARM_BIT | GYRO_BIT, 0)  // present
+  sysStatusPayload.writeUInt32LE(PREARM_BIT | GYRO_BIT, 4)  // enabled
+  sysStatusPayload.writeUInt32LE(GYRO_BIT, 8)               // health: prearm NOT healthy
+  sysStatusPayload.writeUInt16LE(0, 14)                     // voltage 0 = no monitor
+  sysStatusPayload.writeInt16LE(-1, 16)                     // current unknown
+  sysStatusPayload.writeInt8(97, 30)                        // battery_remaining 97%
+  inject(apBridge, 1, sysStatusPayload, 55, 1)
+  const apSysStatus = findLast(apMessages, (message) =>
+    message.type === 'telemetry' && message.msgType === 'SYS_STATUS')?.data
+  assert.equal(apSysStatus.preflightCheck, false)
+  // A monitor-less 0 mV must not become a healthy 0.0 V / 97%.
+  assert.equal(apSysStatus.voltageBattery, null)
+  assert.equal(apSysStatus.batteryRemaining, null)
+
+  // BATTERY_STATUS with all-unknown voltages reports voltage null (no pack).
+  const apBatteryPayload = Buffer.alloc(36)
+  apBatteryPayload.writeInt32LE(-1, 0)                      // current unknown
+  for (let cell = 0; cell < 10; cell += 1) apBatteryPayload.writeUInt16LE(0xffff, 10 + cell * 2)
+  apBatteryPayload.writeInt16LE(-1, 30)                     // temperature unknown
+  apBatteryPayload[32] = 0                                  // id 0
+  apBatteryPayload.writeInt8(-1, 35)                        // remaining unknown
+  inject(apBridge, 147, apBatteryPayload, 55, 1)
+  const apBattery = findLast(apMessages, (message) =>
+    message.type === 'telemetry' && message.msgType === 'BATTERY_STATUS')?.data
+  assert.equal(apBattery.voltage, null)
+  assert.equal(apBattery.remaining, null)
+
+  // ESTIMATOR_STATUS (#230) surfaces an EKF status report for the panel.
+  // MAVLink v2 reorders fields by type size: uint64 time_usec, then the eight
+  // float ratios, then the uint16 flags at the end (offset 40).
+  const estimatorPayload = Buffer.alloc(42)
+  estimatorPayload.writeFloatLE(0.3, 8)     // vel_ratio
+  estimatorPayload.writeUInt16LE(0x1f, 40)  // flags (health bits set)
+  inject(apBridge, 230, estimatorPayload, 55, 1)
+  const apEkf = findLast(apMessages, (message) => message.type === 'ekf_status')?.data
+  assert.equal(apEkf.health_flags, 0x1f)
+
   // A connection status change resets the target; the identity must be
   // cleared so a different vehicle on reconnect cannot inherit the profile.
   ;(apBridge as unknown as { onStatusChange: (status: string) => void }).onStatusChange('disconnected')

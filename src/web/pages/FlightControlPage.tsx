@@ -69,6 +69,12 @@ export default function FlightControlPage() {
     send({ type: 'set_flight_mode', data: { modeId } })
 
   const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
+  // ArduPilot broadcasts PreArm failures via STATUSTEXT ("PreArm: ..."). Treat
+  // a recent, unresolved PreArm failure as authoritative and blocking - a
+  // UI-only readiness heuristic must never claim the FC is ready when the FC
+  // itself reports a PreArm failure.
+  const recentPrearmFailure = statusLogs.find((entry) => /pre-?arm/i.test(entry.text)
+    && !/pre-?arm (?:good|checks (?:passed|ok)|ok)/i.test(entry.text))
   const hasValidOpticalFlow = sensorHealth.opticalFlow === 'ok'
     && !isSensorStale('opticalFlow')
     && (opticalFlow?.quality ?? 0) > 0
@@ -85,7 +91,8 @@ export default function FlightControlPage() {
     : '飞控系统健康'
   const checks = [
     { label: '位置源（GPS 或光流+测距）', ok: hasGpsPosition || hasFlowPosition },
-    { label: '电池电量 > 20%', ok: (battery?.remaining ?? 0) > 20 },
+    // Battery gate keys off a valid voltage source, not a stale/absent percent.
+    { label: '电池电量 > 20%', ok: battery?.voltage != null && (battery?.remaining ?? 0) > 20 },
     { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' && !isSensorStale('imu') },
     { label: '气压计正常', ok: sensorHealth.baro === 'ok' && !isSensorStale('baro') },
     { label: 'EKF 正常', ok: ekfStatus !== null && !isTelemetryStale('ekfStatus') && ekfStatus.health_flags !== 0 },
@@ -93,6 +100,9 @@ export default function FlightControlPage() {
     ...(preflightCheck === null
       ? []
       : [{ label: '飞控预检', ok: sysStatusFresh && preflightCheck === true }]),
+    ...(recentPrearmFailure
+      ? [{ label: `飞控 PreArm：${recentPrearmFailure.text}`, ok: false }]
+      : []),
   ]
   const allChecksPassed = checks.every((check) => check.ok)
   const latestArmMessage = statusLogs.find((entry) =>

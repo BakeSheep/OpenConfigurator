@@ -173,17 +173,26 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     // BATTERY_STATUS stamp, so fallback data keeps refreshing every cycle.
     const batteryStatusFresh = state.batterySource === 'battery_status'
       && now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
-    const fallbackBattery: BatteryData | null = batteryStatusFresh ? state.battery : {
-      id: 0,
-      voltage: data.voltageBattery,
-      cell_voltages: [],
-      current: data.currentBattery,
-      remaining: data.batteryRemaining,
-      consumed_mah: null,
-    }
+    // Only synthesize a fallback battery when SYS_STATUS carries a valid
+    // voltage; otherwise a monitor-less ArduPilot would show 0.0 V · 99%.
+    const sysStatusHasVoltage = data.voltageBattery != null
+    const fallbackBattery: BatteryData | null = batteryStatusFresh
+      ? state.battery
+      : sysStatusHasVoltage
+        ? {
+            id: 0,
+            voltage: data.voltageBattery,
+            cell_voltages: [],
+            current: data.currentBattery,
+            remaining: data.batteryRemaining,
+            consumed_mah: null,
+          }
+        : null
     return {
       battery: fallbackBattery,
-      batterySource: batteryStatusFresh ? state.batterySource : 'sys_status',
+      batterySource: batteryStatusFresh
+        ? state.batterySource
+        : sysStatusHasVoltage ? 'sys_status' : state.batterySource,
       preflightCheck: data.preflightCheck,
       sensorsHealthy: data.sensorsHealthy,
       unhealthySensorMask: data.unhealthySensorMask,
@@ -194,7 +203,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
         // The fallback is fresh data: stamp the battery timestamp too so
         // consumers that only check it (e.g. RealtimeChart) do not grey out
         // live fallback values.
-        ...(batteryStatusFresh ? {} : { battery: now }),
+        ...(batteryStatusFresh || !sysStatusHasVoltage ? {} : { battery: now }),
       },
     }
   }),
