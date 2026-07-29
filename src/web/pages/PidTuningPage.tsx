@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { EmptyState } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -144,12 +145,16 @@ export default function PidTuningPage() {
   const { params, loading, lastWriteResult } = useParameterStore()
   const connectedAndControllable = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const armed = useTelemetryStore((state) => state.status?.armed ?? false)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const pidWritable = vehicleCapabilities(vehicleIdentity).pidConfig
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [pending, setPending] = useState<{ requestId: string; id: string; value: number } | null>(null)
   const [feedback, setFeedback] = useState<{ id: string; kind: 'success' | 'error' } | null>(null)
   const timeoutRef = useRef<number | null>(null)
   const feedbackTimerRef = useRef<number | null>(null)
-  const canWrite = connectedAndControllable && !armed
+  // PID writes are capability-gated: an unadapted profile keeps the page
+  // read-only instead of writing PX4 gains to a different stack.
+  const canWrite = connectedAndControllable && !armed && pidWritable
 
   // Card-corner result badge: success/error only, auto-dismissed shortly after.
   const flashFeedback = (id: string, kind: 'success' | 'error') => {

@@ -1,7 +1,9 @@
 import { NavLink } from 'react-router-dom'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
 
 const PORT_OPTIONS = [
   [0, 'Disabled'],
@@ -40,9 +42,9 @@ const BAUD_PARAMS: Record<number, string> = {
 
 const baudParamForPort = (portValue: number | undefined) => BAUD_PARAMS[portValue ?? -1]
 
-function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<readonly [number, string]> }) {
+function ParamSelect({ id, options, writable = true }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable?: boolean }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
@@ -65,9 +67,9 @@ function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<reado
   )
 }
 
-function RateInput({ id }: { id: string }) {
+function RateInput({ id, writable = true }: { id: string; writable?: boolean }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
   return (
     <input
@@ -101,6 +103,8 @@ function RateInput({ id }: { id: string }) {
 
 export default function PortSettingsPage() {
   const params = useParameterStore((state) => state.params)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const serialWritable = vehicleCapabilities(vehicleIdentity).serialConfig
   const rows = [0, 1, 2].map((instance) => {
     const prefix = `MAV_${instance}`
     const portValue = params.get(`${prefix}_CONFIG`)?.value
@@ -119,6 +123,12 @@ export default function PortSettingsPage() {
         <span>{params.size ? '参数已同步' : '连接飞控后读取配置'}</span>
       </header>
 
+      {vehicleIdentity && !serialWritable && (
+        <p className="mc-capability-note" data-state="waiting">
+          当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配串口配置写入，控件仅供查看。
+        </p>
+      )}
+
       <div className="mc-port-table-scroll">
         <div className="mc-port-table">
           <div className="mc-port-row mc-port-row--head">
@@ -128,14 +138,14 @@ export default function PortSettingsPage() {
           {rows.map(({ instance, prefix, baudValue }) => (
             <div className="mc-port-row" key={instance}>
               <strong className="mc-port-instance">MAV{instance}</strong>
-              <ParamSelect id={`${prefix}_CONFIG`} options={PORT_OPTIONS} />
+              <ParamSelect id={`${prefix}_CONFIG`} options={PORT_OPTIONS} writable={serialWritable} />
               <div className="mc-port-baud mc-mono">
                 {baudValue ? `${Math.round(baudValue)} 8N1` : instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? '无波特率参数' : '—'}
               </div>
-              <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} />
-              <RateInput id={`${prefix}_RATE`} />
-              <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} />
-              <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} />
+              <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} writable={serialWritable} />
+              <RateInput id={`${prefix}_RATE`} writable={serialWritable} />
+              <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} writable={serialWritable} />
+              <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} writable={serialWritable} />
               <NavLink to="/diagnostics" className="mc-btn mc-btn-ghost">高级</NavLink>
             </div>
           ))}

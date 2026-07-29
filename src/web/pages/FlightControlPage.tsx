@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { availableModes } from '../../shared/vehicleProfiles'
+import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -64,6 +64,7 @@ export default function FlightControlPage() {
   })
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
   const modeOptions = availableModes(vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
   const setMode = (modeId: number) =>
     send({ type: 'set_flight_mode', data: { modeId } })
 
@@ -109,6 +110,13 @@ export default function FlightControlPage() {
         </div>
       )}
 
+      {connected && !caps.arm && (
+        <div className="mc-capability-note" data-state="waiting">
+          <Icon name="warning" size={15} />
+          <span>当前飞控类型（{vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : '未识别'}）尚未适配飞行控制写操作，本页仅供查看。目前仅支持 PX4 与 ArduCopter。</span>
+        </div>
+      )}
+
       <section className="mc-card overflow-hidden mt-4">
         <div className="flex flex-col gap-5 p-5 md:flex-row md:items-center">
           <span className="grid h-12 w-12 place-items-center rounded-xl" style={{ background: armed ? 'var(--success-dim)' : 'var(--bg-tertiary)', color: armed ? 'var(--success)' : 'var(--text-disabled)' }}>
@@ -119,11 +127,11 @@ export default function FlightControlPage() {
             <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? '当前模式：' + (vehicle?.mode ?? '—') : '飞控未连接，所有指令已锁定。'}</p>
           </div>
           {!armed && (
-            <button type="button" disabled={!connected || !allChecksPassed} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
-              {armConfirmation ? '再次点击确认解锁' : '解锁飞行器'}
+            <button type="button" disabled={!connected || !allChecksPassed || !caps.arm} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
+              {armConfirmation ? '再次点击确认解锁' : caps.arm ? '解锁飞行器' : '解锁未适配'}
             </button>
           )}
-          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
+          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed || !caps.arm} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
         </div>
       </section>
 
@@ -145,7 +153,7 @@ export default function FlightControlPage() {
               <button
                 type="button"
                 className="mc-btn mc-btn-primary min-h-10"
-                disabled={!connected || !armed || !allChecksPassed}
+                disabled={!connected || !armed || !allChecksPassed || !caps.guidedTakeoff}
                 onClick={() => send({
                   type: 'command',
                   cmd: 'MAV_CMD_NAV_TAKEOFF',
@@ -155,8 +163,8 @@ export default function FlightControlPage() {
               >
                 起飞
               </button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
             </div>
           </div>
         </div>

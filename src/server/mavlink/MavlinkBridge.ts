@@ -20,6 +20,7 @@ import {
   decodeFlightMode,
   encodeModeCommand,
   formatFirmwareLabel,
+  vehicleCapabilities,
   type VehicleIdentity,
 } from '../../shared/vehicleProfiles'
 import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
@@ -338,6 +339,29 @@ export class MavlinkBridge extends EventEmitter {
       true,
     )
     return false
+  }
+
+  /**
+   * Capability gate for client-issued MAVLink commands. Returns the blocking
+   * explanation, or null when the selected profile supports the command.
+   * Computed from HEARTBEAT identity only - never from parameters.
+   */
+  private commandCapabilityError(cmd: string): string | null {
+    const caps = vehicleCapabilities(this.selectedIdentity)
+    switch (cmd) {
+      case 'MAV_CMD_COMPONENT_ARM_DISARM':
+        return caps.arm ? null : '当前飞控类型尚未适配解锁/上锁操作'
+      case 'MAV_CMD_NAV_TAKEOFF':
+        return caps.guidedTakeoff ? null : '当前飞控类型尚未适配引导起飞'
+      case 'MAV_CMD_NAV_LAND':
+      case 'MAV_CMD_NAV_RETURN_TO_LAUNCH':
+      case 'MAV_CMD_DO_SET_MODE':
+        return caps.setMode ? null : '当前飞控类型尚未适配模式/导航命令'
+      case 'MAV_CMD_PREFLIGHT_CALIBRATION':
+        return caps.calibrate ? null : '当前飞控类型尚未适配校准流程'
+      default:
+        return null
+    }
   }
 
   private writeMessage(
@@ -1404,8 +1428,20 @@ export class MavlinkBridge extends EventEmitter {
   // Send commands from frontend
   handleClientMessage(msg: ClientMessage) {
     switch (msg.type) {
-      case 'command':
+      case 'command': {
         if (this.requireReadyTarget('command', msg.requestId)) {
+          // Capability gate: safety-critical commands are rejected before
+          // serialization when the selected profile does not support them.
+          const capabilityError = this.commandCapabilityError(msg.cmd)
+          if (capabilityError) {
+            this.emitOperationError(
+              'command',
+              'unsupported_vehicle_profile',
+              capabilityError,
+              msg.requestId,
+            )
+            break
+          }
           this.sendCommand(
             msg.cmd,
             msg.params,
@@ -1414,8 +1450,18 @@ export class MavlinkBridge extends EventEmitter {
           )
         }
         break
+      }
       case 'set_flight_mode': {
         if (this.requireReadyTarget('set_flight_mode', msg.requestId)) {
+          if (!vehicleCapabilities(this.selectedIdentity).setMode) {
+            this.emitOperationError(
+              'set_flight_mode',
+              'unsupported_vehicle_profile',
+              '当前飞控类型尚未适配模式切换',
+              msg.requestId,
+            )
+            break
+          }
           // Stack-specific encoding happens here, after the vehicle profile is
           // known; unknown/unimplemented profiles are rejected before any
           // bytes are written to the serial link.
@@ -2282,6 +2328,28 @@ export class MavlinkBridge extends EventEmitter {
     requestId?: string,
     propsRemoved?: boolean,
   ) {
+    // Capability gate before anything else: unknown or unimplemented profiles
+    // must never receive a motor-test command (not even a stop frame).
+    const motorTestKind = vehicleCapabilities(this.selectedIdentity).motorTest
+    if (motorTestKind === 'none') {
+      this.emitOperationError(
+        'motor_test',
+        'unsupported_motor_test',
+        '当前飞控类型尚未适配电机测试',
+        requestId,
+      )
+      return
+    }
+    if (motorTestKind === 'motor-test') {
+      // ArduPilot uses MAV_CMD_DO_MOTOR_TEST (209); enabled in a later task.
+      this.emitOperationError(
+        'motor_test',
+        'unsupported_motor_test',
+        'ArduPilot 电机测试将在后续版本启用',
+        requestId,
+      )
+      return
+    }
     // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
     // Values >= 1000 in param5 are PX4-internal actuator functions with the
     // 1000 transport offset. Motors 1..12 are functions 101..112, so an

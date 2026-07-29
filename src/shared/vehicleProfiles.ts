@@ -229,3 +229,78 @@ export function encodeModeCommand(
     message: '当前机型的模式切换尚未适配（仅支持 ArduCopter）',
   }
 }
+
+/**
+ * Per-profile operation capabilities. Computed exclusively from the
+ * HEARTBEAT-classified family and vehicle class - the presence of a
+ * parameter must never authorize a safety-critical command, because
+ * parameters may be stale or shared across stacks.
+ */
+export interface VehicleCapabilities {
+  setMode: boolean
+  arm: boolean
+  guidedTakeoff: boolean
+  calibrate: boolean
+  motorTest: 'actuator-test' | 'motor-test' | 'none'
+  frameConfig: boolean
+  actuatorConfig: boolean
+  pidConfig: boolean
+  ekfConfig: boolean
+  serialConfig: boolean
+  logFormat: 'ulog' | 'dataflash' | 'unknown'
+}
+
+const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
+  setMode: false,
+  arm: false,
+  guidedTakeoff: false,
+  calibrate: false,
+  motorTest: 'none',
+  frameConfig: false,
+  actuatorConfig: false,
+  pidConfig: false,
+  ekfConfig: false,
+  serialConfig: false,
+  logFormat: 'unknown',
+}
+
+export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCapabilities {
+  if (!identity) return { ...READ_ONLY_CAPABILITIES }
+  if (identity.family === 'px4') {
+    // Existing, regression-covered PX4 behavior across all vehicle types.
+    return {
+      setMode: true,
+      arm: true,
+      guidedTakeoff: true,
+      calibrate: true,
+      motorTest: 'actuator-test',
+      frameConfig: true,
+      actuatorConfig: true,
+      pidConfig: true,
+      ekfConfig: true,
+      serialConfig: true,
+      logFormat: 'ulog',
+    }
+  }
+  if (identity.family === 'ardupilot') {
+    if (identity.vehicleClass === 'copter') {
+      return {
+        setMode: true,
+        arm: true,
+        guidedTakeoff: true,
+        calibrate: true,
+        motorTest: 'motor-test',
+        frameConfig: true,
+        actuatorConfig: true,
+        pidConfig: true,
+        ekfConfig: true,
+        serialConfig: true,
+        logFormat: 'dataflash',
+      }
+    }
+    // Plane/Rover/Sub/Tracker: explicitly read-only until tested; the log
+    // format is still a fact of the ArduPilot stack.
+    return { ...READ_ONLY_CAPABILITIES, logFormat: 'dataflash' }
+  }
+  return { ...READ_ONLY_CAPABILITIES }
+}

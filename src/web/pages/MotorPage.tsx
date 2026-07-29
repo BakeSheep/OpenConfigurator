@@ -6,6 +6,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { ParamData } from '../../shared/types'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { getPx4AirframeInfo } from '../utils/px4Airframes'
 
 const MAX_MOTORS = 12
@@ -82,6 +83,13 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const connected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const { params, loading, receivedCount, totalCount } = useParameterStore()
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
+  // Motor testing / actuator writes are capability-gated by the selected
+  // vehicle profile; unsupported profiles keep the controls visible but
+  // disabled with an explanation.
+  const motorTestSupported = caps.motorTest !== 'none'
+  const actuatorWritesSupported = caps.actuatorConfig
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
   const [activePanel, setActivePanel] = useState<'mapping' | 'test'>('mapping')
   const [levels, setLevels] = useState<number[]>([])
@@ -159,7 +167,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [send])
 
   const sendMotorLevel = (index: number, level: number) => {
-    if (!connected || !safetyConfirmed) return
+    if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
     setLevels((current) => current.map((value, motorIndex) => motorIndex === index ? throttle : value))
     send({
@@ -174,7 +182,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }
 
   const sendAllLevel = (level: number) => {
-    if (!connected || !safetyConfirmed) return
+    if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
     setLevels(Array.from({ length: motorCount }, () => throttle))
     for (let index = 0; index < motorCount; index += 1) {
@@ -199,7 +207,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }
 
   const updateOutputFunction = (output: OutputChannel, value: number) => {
-    if (!output.param) return
+    if (!output.param || !actuatorWritesSupported) return
     send({
       type: 'param_set',
       data: { id: output.paramId, value, paramType: output.param.type },
@@ -231,6 +239,13 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         <p>输出功能来自飞控参数；修改下拉框会直接写入对应的 <span className="mc-mono">*_FUNCx</span> 参数。</p>
       </div>
 
+      {vehicleIdentity && !motorTestSupported && (
+        <div className="mc-capability-note" data-state="waiting">
+          <Icon name="warning" size={15} />
+          <span>当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配电机测试与输出写入，控件已禁用，仅供查看。</span>
+        </div>
+      )}
+
       <PageTabs tabs={[{ id: 'mapping', label: '输出映射' }, { id: 'test', label: '电机测试' }]} active={activePanel} onChange={changePanel} />
 
       <section className="mc-motor-workspace">
@@ -261,7 +276,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                   <select
                     className="mc-select"
                     value={functionValue}
-                    disabled={!connected || !output.param}
+                    disabled={!connected || !output.param || !actuatorWritesSupported}
                     onChange={(event) => updateOutputFunction(output, Number(event.target.value))}
                     aria-label={`${output.busLabel} ${output.channel} 输出功能`}
                   >
@@ -287,7 +302,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
             <input
               type="checkbox"
               checked={safetyConfirmed}
-              disabled={!connected}
+              disabled={!connected || !motorTestSupported}
               onChange={(event) => setSafety(event.target.checked)}
             />
             <span>

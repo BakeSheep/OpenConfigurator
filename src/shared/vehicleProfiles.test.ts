@@ -7,6 +7,7 @@ import {
   formatFirmwareLabel,
   availableModes,
   encodeModeCommand,
+  vehicleCapabilities,
 } from './vehicleProfiles'
 
 // ---------------------------------------------------------------------------
@@ -158,5 +159,67 @@ if (!apUnknownMode.ok) assert.equal(apUnknownMode.code, 'unknown_mode')
 const px4UnknownMode = encodeModeCommand(px4Copter, 99)
 assert.equal(px4UnknownMode.ok, false)
 if (!px4UnknownMode.ok) assert.equal(px4UnknownMode.code, 'unknown_mode')
+
+// ---------------------------------------------------------------------------
+// Capability matrix: computed from family + vehicle class only. Parameters
+// must never authorize a safety-critical command.
+// ---------------------------------------------------------------------------
+const px4Caps = vehicleCapabilities(px4Copter)
+assert.equal(px4Caps.setMode, true)
+assert.equal(px4Caps.arm, true)
+assert.equal(px4Caps.guidedTakeoff, true)
+assert.equal(px4Caps.calibrate, true)
+assert.equal(px4Caps.motorTest, 'actuator-test')
+assert.equal(px4Caps.frameConfig, true)
+assert.equal(px4Caps.actuatorConfig, true)
+assert.equal(px4Caps.pidConfig, true)
+assert.equal(px4Caps.ekfConfig, true)
+assert.equal(px4Caps.serialConfig, true)
+assert.equal(px4Caps.logFormat, 'ulog')
+
+const apCopterCaps = vehicleCapabilities(arducopter)
+assert.equal(apCopterCaps.setMode, true)
+assert.equal(apCopterCaps.arm, true)
+assert.equal(apCopterCaps.guidedTakeoff, true)
+assert.equal(apCopterCaps.calibrate, true)
+assert.equal(apCopterCaps.motorTest, 'motor-test')
+assert.equal(apCopterCaps.frameConfig, true)
+assert.equal(apCopterCaps.actuatorConfig, true)
+assert.equal(apCopterCaps.pidConfig, true)
+assert.equal(apCopterCaps.ekfConfig, true)
+assert.equal(apCopterCaps.serialConfig, true)
+assert.equal(apCopterCaps.logFormat, 'dataflash')
+
+// ArduPlane/Rover/Sub/Tracker are explicit read-only profiles until tested.
+for (const typeId of [1, 10, 12, 5]) {
+  const caps = vehicleCapabilities(buildVehicleIdentity(3, typeId))
+  assert.equal(caps.setMode, false)
+  assert.equal(caps.arm, false)
+  assert.equal(caps.guidedTakeoff, false)
+  assert.equal(caps.calibrate, false)
+  assert.equal(caps.motorTest, 'none')
+  assert.equal(caps.frameConfig, false)
+  assert.equal(caps.actuatorConfig, false)
+  assert.equal(caps.pidConfig, false)
+  assert.equal(caps.ekfConfig, false)
+  assert.equal(caps.serialConfig, false)
+  assert.equal(caps.logFormat, 'dataflash')
+}
+
+// Unknown family / missing identity: every write capability defaults false.
+for (const identity of [unknownIdentity, null]) {
+  const caps = vehicleCapabilities(identity)
+  assert.equal(caps.setMode, false)
+  assert.equal(caps.arm, false)
+  assert.equal(caps.guidedTakeoff, false)
+  assert.equal(caps.calibrate, false)
+  assert.equal(caps.motorTest, 'none')
+  assert.equal(caps.frameConfig, false)
+  assert.equal(caps.actuatorConfig, false)
+  assert.equal(caps.pidConfig, false)
+  assert.equal(caps.ekfConfig, false)
+  assert.equal(caps.serialConfig, false)
+  assert.equal(caps.logFormat, 'unknown')
+}
 
 console.log('vehicleProfiles classification and mode decoding checks passed')

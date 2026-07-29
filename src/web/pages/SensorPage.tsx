@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -153,7 +154,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const armed = useTelemetryStore((state) => state.status?.armed ?? false)
   const lastCommandAck = useTelemetryStore((state) => state.lastCommandAck)
-  const canCalibrate = hasCalibrationControl && !armed
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
+  // Calibration is capability-gated: unknown or untested vehicle profiles
+  // must never receive MAV_CMD_PREFLIGHT_CALIBRATION.
+  const canCalibrate = hasCalibrationControl && !armed && caps.calibrate
   const selectedImuInstance = imuIndex === 'imu2' ? 1 : 0
   const imu = imus[selectedImuInstance] ?? null
 
@@ -240,7 +245,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       {!canCalibrate && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
-          <span>{armed ? '飞行器已解锁，必须先安全上锁才能校准。' : '连接飞控并取得控制权后才可执行校准；实时监控仍保持只读。'}</span>
+          <span>{armed
+            ? '飞行器已解锁，必须先安全上锁才能校准。'
+            : hasCalibrationControl && !caps.calibrate
+              ? '当前飞控类型尚未适配校准流程（仅支持 PX4 与 ArduCopter），校准按钮已禁用。'
+              : '连接飞控并取得控制权后才可执行校准；实时监控仍保持只读。'}</span>
         </div>
       )}
 

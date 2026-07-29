@@ -1391,6 +1391,45 @@ bridge.destroy()
   )
   assert.equal(genericError.data.operation, 'set_flight_mode')
   assert.equal(genericError.data.code, 'unsupported_vehicle_profile')
+
+  // Every capability-gated write surface refuses before serialization: arm,
+  // calibration and motor test produce no COMMAND_LONG frames at all.
+  const commandFramesBeforeGated = genericConnection.frames.filter(
+    (frame) => frameMessageId(frame) === 76,
+  ).length
+  genericBridge.handleClientMessage({
+    type: 'command',
+    requestId: 'generic-arm',
+    cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+    params: [1, 0, 0, 0, 0, 0, 0],
+    safetyConfirmation: 'arm',
+  })
+  genericBridge.handleClientMessage({
+    type: 'command',
+    requestId: 'generic-cal',
+    cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION',
+    params: [1, 0, 0, 0, 0, 0, 0],
+  })
+  genericBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'generic-motor',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(
+    genericConnection.frames.filter((frame) => frameMessageId(frame) === 76).length,
+    commandFramesBeforeGated,
+  )
+  for (const [requestId, code] of [
+    ['generic-arm', 'unsupported_vehicle_profile'],
+    ['generic-cal', 'unsupported_vehicle_profile'],
+    ['generic-motor', 'unsupported_motor_test'],
+  ] as const) {
+    const error = findLast(
+      genericMessages,
+      (message) => message.type === 'operation_error' && message.data.requestId === requestId,
+    )
+    assert.equal(error?.data.code, code, `expected ${code} for ${requestId}`)
+  }
   genericBridge.destroy()
 }
 

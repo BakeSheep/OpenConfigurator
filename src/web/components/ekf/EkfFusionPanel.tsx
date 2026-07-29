@@ -3,7 +3,9 @@ import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
 import type { ParamData } from '../../../shared/types'
+import { vehicleCapabilities } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
+import { useTelemetryStore } from '../../stores/telemetryStore'
 
 function Toggle({
   label,
@@ -56,7 +58,11 @@ function Toggle({
 export default function EkfFusionPanel() {
   const send = sendClientMessage
   const { params } = useParameterStore()
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  // EKF configuration writes are capability-gated by the vehicle profile so
+  // PX4 EKF2 parameters are never written to a different stack.
+  const ekfWritable = vehicleCapabilities(vehicleIdentity).ekfConfig
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && ekfWritable
   const previousEnabledValues = useRef(new Map<string, number>())
   const hgtRefParam = params.get(EKF2_PARAMS.EKF2_HGT_REF)
 
