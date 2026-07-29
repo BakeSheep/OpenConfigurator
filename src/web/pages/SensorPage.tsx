@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { boardOrientationField } from '../utils/parameterProfiles'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useParameterStore } from '../stores/parameterStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
@@ -156,6 +158,12 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const lastCommandAck = useTelemetryStore((state) => state.lastCommandAck)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const caps = vehicleCapabilities(vehicleIdentity)
+  // Board orientation binds to the profile parameter: PX4 SENS_BOARD_ROT or
+  // ArduPilot AHRS_ORIENTATION. A wrong orientation is flight-critical.
+  const orientationField = boardOrientationField(vehicleIdentity)
+  const orientationParam = useParameterStore(
+    (state) => orientationField ? state.params.get(orientationField.id) : undefined,
+  )
   // Calibration is capability-gated: unknown or untested vehicle profiles
   // must never receive MAV_CMD_PREFLIGHT_CALIBRATION.
   const canCalibrate = hasCalibrationControl && !armed && caps.calibrate
@@ -197,6 +205,12 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       completedSteps: [],
       message: sent ? '校准指令已发送，正在等待飞控确认。' : 'WebSocket 未连接，校准指令未发送。',
     })
+  }
+
+  const setBoardOrientation = (value: number) => {
+    if (!orientationField || !orientationParam || !canCalibrate) return
+    if (!window.confirm('确认修改飞控安装方向？错误的安装方向会直接导致起飞后失控（飞行关键）。')) return
+    send({ type: 'param_set', data: { id: orientationField.id, value, paramType: orientationParam.type } })
   }
 
   const calibrationWizard = calibration && (() => {
@@ -259,7 +273,19 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
             <button type="button" data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1 {imus[0] ? '●' : '○'}</button>
             <button type="button" data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2 {imus[1] ? '●' : '○'}</button>
             <span>IMU安装方向</span>
-            <select className="mc-select" aria-label="SENS_BOARD_ROT" defaultValue="none" disabled><option value="none">No rotation</option></select>
+            <select
+              className="mc-select"
+              aria-label={orientationField?.id ?? 'IMU安装方向'}
+              value={orientationParam ? Math.round(orientationParam.value) : ''}
+              disabled={!orientationField || !orientationParam || !canCalibrate}
+              title={orientationField ? orientationField.hint : '当前飞控类型尚未适配安装方向参数'}
+              onChange={(event) => setBoardOrientation(Number(event.target.value))}
+            >
+              {!orientationParam && <option value="">{orientationField ? '等待参数' : '不适用'}</option>}
+              {orientationField?.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
 
           <div className="mc-sensor-chart-grid">

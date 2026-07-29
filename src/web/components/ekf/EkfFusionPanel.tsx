@@ -4,6 +4,7 @@ import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
 import type { ParamData } from '../../../shared/types'
 import { vehicleCapabilities } from '../../../shared/vehicleProfiles'
+import { ekfSourceFields } from '../../utils/parameterProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 
@@ -118,6 +119,52 @@ export default function EkfFusionPanel() {
       type: 'param_set',
       data: { id: hgtRefParam.id, value, paramType: hgtRefParam.type },
     })
+  }
+
+  // ArduPilot exposes EKF3 source sets instead of PX4's EKF2 toggles. Swap
+  // only the configuration controls by profile; AHRS_EKF_TYPE / EK3_ENABLE
+  // are never auto-written.
+  const ekfSources = ekfSourceFields(vehicleIdentity)
+  const setSourceParam = (id: string, value: number) => {
+    const param = params.get(id)
+    if (!param || !canWrite) return
+    if (
+      !window.confirm(`确认修改 ${id}？错误的融合源会导致位置/姿态估计失效（重启飞控后生效）。`)
+    ) return
+    send({ type: 'param_set', data: { id, value, paramType: param.type } })
+  }
+
+  if (ekfSources.length > 0) {
+    return (
+      <div className="mc-card p-5">
+        <h3 className="mc-section-title mb-4">EKF3 源配置</h3>
+        <div className="space-y-3">
+          {ekfSources.map((field) => {
+            const param = params.get(field.id)
+            const value = param ? Math.round(param.value) : ''
+            const known = field.options.some((option) => option.value === value)
+            return (
+              <div key={field.id}>
+                <label className="mc-section-title block mb-1.5">{field.label}<small className="mc-mono ml-2" style={{ color: 'var(--text-disabled)' }}>{field.id}</small></label>
+                <select
+                  className="mc-select"
+                  value={value}
+                  disabled={!param || !canWrite}
+                  title={param ? undefined : '当前固件未提供此参数'}
+                  onChange={(event) => setSourceParam(field.id, Number(event.target.value))}
+                >
+                  {!param && <option value="">参数不可用</option>}
+                  {/* Preserve an unknown protocol value instead of dropping it. */}
+                  {param && !known && <option value={value}>值 {value}</option>}
+                  {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+            )
+          })}
+        </div>
+        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>修改后需重启飞控生效；未提供的参数保持只读。本面板不会自动修改 AHRS_EKF_TYPE / EK3_ENABLE。</p>
+      </div>
+    )
   }
 
   return (
