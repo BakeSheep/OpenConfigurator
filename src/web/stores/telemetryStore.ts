@@ -43,6 +43,9 @@ interface TelemetryState {
   attitude: AttitudeData | null
   gps: GpsData | null
   battery: BatteryData | null
+  // Which message currently feeds `battery`: BATTERY_STATUS is authoritative,
+  // SYS_STATUS is only a fallback while BATTERY_STATUS is absent/stale.
+  batterySource: 'battery_status' | 'sys_status' | null
   status: VehicleStatus | null
   ekfStatus: EkfStatusData | null
   rcChannels: RcChannelsData | null
@@ -99,6 +102,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   attitude: null,
   gps: null,
   battery: null,
+  batterySource: null,
   status: null,
   ekfStatus: null,
   rcChannels: null,
@@ -126,6 +130,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   // IDs may be interleaved on the same MAVLink link.
   setBattery: (data) => set((state) => ({
     battery: data,
+    batterySource: 'battery_status',
     lastUpdate: { ...state.lastUpdate, battery: Date.now() },
   })),
   setStatus: (data) => set((state) => ({ status: data, lastUpdate: { ...state.lastUpdate, status: Date.now() } })),
@@ -151,7 +156,10 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     const now = Date.now()
     // MAVLink recommends BATTERY_STATUS over the ambiguous SYS_STATUS fields.
     // Only use SYS_STATUS as a fallback when no recent BATTERY_STATUS exists.
-    const batteryStatusFresh = now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
+    // The source flag distinguishes a fresh fallback stamp from a real
+    // BATTERY_STATUS stamp, so fallback data keeps refreshing every cycle.
+    const batteryStatusFresh = state.batterySource === 'battery_status'
+      && now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
     const fallbackBattery: BatteryData | null = batteryStatusFresh ? state.battery : {
       id: 0,
       voltage: data.voltageBattery,
@@ -162,11 +170,19 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     }
     return {
       battery: fallbackBattery,
+      batterySource: batteryStatusFresh ? state.batterySource : 'sys_status',
       preflightCheck: data.preflightCheck,
       sensorsHealthy: data.sensorsHealthy,
       unhealthySensorMask: data.unhealthySensorMask,
       unhealthySensors: data.unhealthySensors,
-      lastUpdate: { ...state.lastUpdate, sysStatus: now },
+      lastUpdate: {
+        ...state.lastUpdate,
+        sysStatus: now,
+        // The fallback is fresh data: stamp the battery timestamp too so
+        // consumers that only check it (e.g. RealtimeChart) do not grey out
+        // live fallback values.
+        ...(batteryStatusFresh ? {} : { battery: now }),
+      },
     }
   }),
   addStatusLog: (severity, text) => set((state) => {

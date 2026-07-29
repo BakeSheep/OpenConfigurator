@@ -10,6 +10,15 @@ export interface ButtonAssignment {
   repeat: boolean
 }
 
+// Arm/disarm must fire exactly once per deliberate press. A repeating arm
+// command would defeat the single-press arming contract, so these actions can
+// never carry the repeat flag (enforced on write and on settings load).
+export const NON_REPEATABLE_ACTIONS: ReadonlySet<GamepadActionId> = new Set([
+  'arm',
+  'disarm',
+  'toggle_arm',
+])
+
 export interface GamepadMapping {
   throttle: number
   yaw: number
@@ -77,6 +86,26 @@ const defaultAdvanced: GamepadAdvancedSettings = {
 const STORAGE_KEY = 'skylab-gamepad-settings-v1'
 type StoredGamepadSettings = Pick<GamepadState, 'mapping' | 'buttonAssignments' | 'deadzone' | 'expo' | 'advanced'>
 
+// Deadzone feeds the divisor (1 - deadzone) in the axis shaping curve; clamp
+// well below 1 so corrupted storage or callers cannot inject a near-singular
+// value. The UI slider stays within 0-0.3.
+const clampDeadzone = (value: number): number =>
+  Number.isFinite(value) ? Math.min(0.3, Math.max(0, value)) : 0.1
+
+function sanitizeAssignments(value: unknown): Record<number, ButtonAssignment> {
+  const next: Record<number, ButtonAssignment> = {}
+  if (typeof value !== 'object' || value === null) return next
+  for (const [key, entry] of Object.entries(value as Record<string, Partial<ButtonAssignment>>)) {
+    if (!entry || typeof entry.action !== 'string') continue
+    const action = entry.action as GamepadActionId
+    next[Number(key)] = {
+      action,
+      repeat: entry.repeat === true && !NON_REPEATABLE_ACTIONS.has(action),
+    }
+  }
+  return next
+}
+
 function readStoredSettings(): StoredGamepadSettings {
   const fallback = { mapping: defaultMapping, buttonAssignments: {}, deadzone: 0.1, expo: 0.3, advanced: defaultAdvanced }
   if (typeof window === 'undefined') return fallback
@@ -84,8 +113,8 @@ function readStoredSettings(): StoredGamepadSettings {
     const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}')
     return {
       mapping: { ...defaultMapping, ...stored.mapping },
-      buttonAssignments: stored.buttonAssignments ?? {},
-      deadzone: stored.deadzone ?? fallback.deadzone,
+      buttonAssignments: sanitizeAssignments(stored.buttonAssignments),
+      deadzone: clampDeadzone(stored.deadzone ?? fallback.deadzone),
       expo: stored.expo ?? fallback.expo,
       advanced: { ...defaultAdvanced, ...stored.advanced },
     }
@@ -141,20 +170,23 @@ export const useGamepadStore = create<GamepadState>((set) => ({
     return { mapping: next }
   }),
   setButtonAssignment: (button, assignment) => set((state) => {
-    const next = {
-      ...state.buttonAssignments,
-      [button]: {
-        action: state.buttonAssignments[button]?.action ?? 'none',
-        repeat: state.buttonAssignments[button]?.repeat ?? false,
-        ...assignment,
-      },
+    const merged: ButtonAssignment = {
+      action: state.buttonAssignments[button]?.action ?? 'none',
+      repeat: state.buttonAssignments[button]?.repeat ?? false,
+      ...assignment,
     }
+    // Switching a button to an arm-class action must clear any pre-existing
+    // repeat flag, otherwise holding the button would re-fire arm/disarm at
+    // the configured button frequency.
+    if (NON_REPEATABLE_ACTIONS.has(merged.action)) merged.repeat = false
+    const next = { ...state.buttonAssignments, [button]: merged }
     writeStoredSettings({ ...pickStoredSettings(state), buttonAssignments: next })
     return { buttonAssignments: next }
   }),
   setDeadzone: (deadzone) => set((state) => {
-    writeStoredSettings({ ...pickStoredSettings(state), deadzone })
-    return { deadzone }
+    const clamped = clampDeadzone(deadzone)
+    writeStoredSettings({ ...pickStoredSettings(state), deadzone: clamped })
+    return { deadzone: clamped }
   }),
   setExpo: (expo) => set((state) => {
     writeStoredSettings({ ...pickStoredSettings(state), expo })

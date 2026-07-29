@@ -113,6 +113,25 @@ test('late native open error after timeout is absorbed by the provisional listen
   assert.ok(diagnostics.includes('latePortError'))
 })
 
+test('an abandoned native open still absorbs an eventual error', async () => {
+  const port = new FakeSerialPort()
+  const connection = new SerialConnection({
+    portFactory: () => port,
+    closeTimeoutMs: 2,
+  })
+  const diagnostics: string[] = []
+  connection.on('diagnostic', ({ kind }) => diagnostics.push(kind))
+
+  await assert.rejects(connection.connect('COM_TEST', 57600, 2), /超时/)
+  await delay(20)
+  assert.equal(connection.lifecycleState, 'idle')
+  assert.equal(port.listenerCount('error'), 1, 'released binding must retain a one-shot error absorber')
+
+  assert.doesNotThrow(() => port.failOpen(new Error('driver finally failed')))
+  assert.ok(diagnostics.includes('nativeOpenNeverSettled'))
+  assert.ok(diagnostics.includes('lateNativeOpenErrorAfterRelease'))
+  assert.equal(port.listenerCount('error'), 0)
+})
 test('native close while opening rejects the connect promise', async () => {
   const port = new FakeSerialPort()
   const connection = new SerialConnection({ portFactory: () => port })

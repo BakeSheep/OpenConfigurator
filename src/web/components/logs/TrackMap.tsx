@@ -17,11 +17,25 @@ interface ColoredSegment {
   color: string
 }
 
+// Long tracks can hold 100k+ points; Math.min(...array) would blow the
+// engine's argument limit, so extremes are scanned with a plain loop.
+function minOf(values: number[]): number {
+  let result = Infinity
+  for (const value of values) if (value < result) result = value
+  return result
+}
+
+function maxOf(values: number[]): number {
+  let result = -Infinity
+  for (const value of values) if (value > result) result = value
+  return result
+}
+
 /** Split the track into consecutive runs colored by altitude bucket. */
 function buildSegments(track: TrackData): ColoredSegment[] {
   const altitudes = track.altM.filter((value): value is number => value !== null)
-  const min = altitudes.length > 0 ? Math.min(...altitudes) : 0
-  const max = altitudes.length > 0 ? Math.max(...altitudes) : 1
+  const min = altitudes.length > 0 ? minOf(altitudes) : 0
+  const max = altitudes.length > 0 ? maxOf(altitudes) : 1
   const range = Math.max(1e-6, max - min)
   const bucketOf = (index: number): number => {
     const alt = track.altM[index]
@@ -60,8 +74,8 @@ function FitBounds({ track }: { track: TrackData }) {
     if (lats.length === 0) return
     map.fitBounds(
       [
-        [Math.min(...lats), Math.min(...lons)],
-        [Math.max(...lats), Math.max(...lons)],
+        [minOf(lats), minOf(lons)],
+        [maxOf(lats), maxOf(lons)],
       ],
       { padding: [24, 24] },
     )
@@ -93,10 +107,10 @@ function TrackCanvas({ track }: { track: TrackData }) {
     const cosLat = Math.cos((lat0 * Math.PI) / 180)
     const east = track.lon.map((lon) => (lon - lon0) * cosLat * 111_320)
     const north = track.lat.map((lat) => (lat - lat0) * 110_540)
-    const minX = Math.min(...east)
-    const maxX = Math.max(...east)
-    const minY = Math.min(...north)
-    const maxY = Math.max(...north)
+    const minX = minOf(east)
+    const maxX = maxOf(east)
+    const minY = minOf(north)
+    const maxY = maxOf(north)
     const spanX = Math.max(1, maxX - minX)
     const spanY = Math.max(1, maxY - minY)
     const scale = Math.min((width - 48) / spanX, (height - 48) / spanY)

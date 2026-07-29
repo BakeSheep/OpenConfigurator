@@ -3,6 +3,7 @@ import { PX4_MODES } from '../../shared/constants'
 import type { ClientMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
+  NON_REPEATABLE_ACTIONS,
   useGamepadStore,
   type GamepadActionId,
   type GamepadMapping,
@@ -97,7 +98,13 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
           rawButtons.forEach((pressed, index) => {
             const assignment = current.buttonAssignments[index]
             const downTransition = pressed && !previousButtonsRef.current[index]
-            const repeatDue = pressed && assignment?.repeat && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
+            // Arm-class actions fire on the press edge only, regardless of any
+            // (legacy/corrupted) repeat flag: holding a button must never
+            // re-send arm/disarm at the button frequency.
+            const repeatDue = pressed
+              && assignment?.repeat
+              && !NON_REPEATABLE_ACTIONS.has(assignment.action)
+              && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
             if (assignment && (downTransition || repeatDue)) {
               lastButtonFireRef.current[index] = now
               fireAction(assignment.action, index)

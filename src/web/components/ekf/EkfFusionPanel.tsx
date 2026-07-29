@@ -61,6 +61,7 @@ export default function EkfFusionPanel() {
   const hgtRefParam = params.get(EKF2_PARAMS.EKF2_HGT_REF)
 
   const toggleParam = (
+    label: string,
     id: string,
     isEnabled: (value: number) => boolean,
     offValue: number,
@@ -69,6 +70,12 @@ export default function EkfFusionPanel() {
     const param = params.get(id)
     if (!param || !canWrite) return
     const enabled = isEnabled(param.value)
+    // Disabling a fusion source removes safety-critical EKF inputs; require an
+    // explicit confirmation so a stray click cannot drop e.g. GPS fusion.
+    if (
+      enabled
+      && !window.confirm(`确认关闭 ${label} 融合？EKF 将失去该数据源（重启飞控后生效）。`)
+    ) return
     if (enabled) previousEnabledValues.current.set(id, param.value)
     const value = enabled
       ? offValue
@@ -90,13 +97,17 @@ export default function EkfFusionPanel() {
         param={param}
         enabled={param ? isEnabled(param.value) : false}
         canWrite={canWrite}
-        onToggle={() => toggleParam(id, isEnabled, offValue, defaultOnValue)}
+        onToggle={() => toggleParam(label, id, isEnabled, offValue, defaultOnValue)}
       />
     )
   }
 
   const setHgtRefParam = (value: number) => {
     if (!hgtRefParam || !canWrite) return
+    const option = HGT_REF_OPTIONS.find((candidate) => candidate.value === value)
+    if (
+      !window.confirm(`确认将高度参考源切换为“${option?.label ?? value}”？重启飞控后生效。`)
+    ) return
     send({
       type: 'param_set',
       data: { id: hgtRefParam.id, value, paramType: hgtRefParam.type },

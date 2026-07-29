@@ -162,6 +162,9 @@ export class MavlinkBridge extends EventEmitter {
   private paramExpectedCount = 0
   private paramIndices = new Set<number>()
   private paramDownloadActive = false
+  // Monotonic id for each parameter download run. Stamped onto param lifecycle
+  // events so the server can drop late events from a superseded/cancelled run.
+  private paramRunId = 0
   private paramDownloadDeadlineAt = 0
   private paramReadRequests = 0
   // True once we stop waiting for PX4's initial stream and begin actively
@@ -301,9 +304,12 @@ export class MavlinkBridge extends EventEmitter {
     requestId?: string,
     retryable = false,
   ): void {
+    const belongsToParamRun = this.paramDownloadActive
+      && (operation === 'param_request_list' || operation === 'parameter_download' || operation === 'param_sync')
     this.emit('message', {
       type: 'operation_error',
       data: { requestId, operation, code, message, retryable },
+      ...(belongsToParamRun ? { paramRunId: this.paramRunId } : {}),
     } as ServerMessage)
   }
 
@@ -940,16 +946,17 @@ export class MavlinkBridge extends EventEmitter {
     // MAVLink v2 zero-trims trailing payload bytes: a short v2 frame means
     // the remaining extension bytes are zero (decode() already padded them),
     // not absent. Only v1 frames genuinely lack the extension fields, so
-    // length-gating applies to them alone.
+    // length-gating applies to them alone. Filter by the configured GCS
+    // identity (not literal 255/190) so custom gcs ids keep receiving ACKs.
     const hasExtensions = msg.version !== 1
     if (
       (hasExtensions || msg.payload.length >= 9)
       && (
-        (d.targetSystem !== 0 && d.targetSystem !== 255)
+        (d.targetSystem !== 0 && d.targetSystem !== this.codec.gcsSystemId)
         || (
           (hasExtensions || msg.payload.length >= 10)
           && d.targetComponent !== 0
-          && d.targetComponent !== 190
+          && d.targetComponent !== this.codec.gcsComponentId
         )
       )
     ) return
@@ -1061,7 +1068,7 @@ export class MavlinkBridge extends EventEmitter {
     const d = decode<common.FileTransferProtocol>(FTP_MESSAGE_ID, msg.payload)
     if (!d) return
     // Only consume replies addressed to this GCS (or broadcast).
-    if (d.targetSystem !== 0 && d.targetSystem !== 255) return
+    if (d.targetSystem !== 0 && d.targetSystem !== this.codec.gcsSystemId) return
     this.ftp.handleFtpPayload(Buffer.from(d.payload as unknown as number[]))
   }
 
@@ -1132,8 +1139,10 @@ export class MavlinkBridge extends EventEmitter {
   private handleBattery(msg: MavlinkMessage) {
     const d = decode<common.BatteryStatus>(147, msg.payload)
     if (!d) return
+    // 0xffff = unknown/not populated; 0xfffe = cell present but the voltage
+    // exceeds the field range (would otherwise read as a bogus 65.534 V).
     const baseCellVoltages = (d.voltages ?? []).map((voltage) =>
-      voltage === 0xffff ? null : voltage / 1000
+      voltage >= 0xfffe ? null : voltage / 1000
     )
     const extendedCellVoltages = (d.voltagesExt ?? []).map((voltage, index) => {
       // MAVLink 2 trims trailing zero bytes, including the high byte of a
@@ -1211,6 +1220,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param',
       data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
+      ...(this.paramDownloadActive ? { paramRunId: this.paramRunId } : {}),
     } as ServerMessage)
 
     const pendingSet = this.pendingParamSets.get(id)
@@ -1358,6 +1368,11 @@ export class MavlinkBridge extends EventEmitter {
   cancelParameterDownload(): void {
     if (this.destroyed) return
     this.cancelParamDownload(true)
+  }
+
+  /** Current parameter download run id, read by the server to tag generations. */
+  get currentParamRunId(): number {
+    return this.paramRunId
   }
 
   // Send commands from frontend
@@ -1817,6 +1832,7 @@ export class MavlinkBridge extends EventEmitter {
     // download. Keep this local reset silent so the cancellation cannot be
     // misattributed to the newly-created generation.
     this.cancelParamDownload(false)
+    this.paramRunId += 1
     this.paramExpectedCount = 0
     this.paramIndices.clear()
     this.paramDownloadActive = true
@@ -2013,6 +2029,7 @@ export class MavlinkBridge extends EventEmitter {
       this.emit('message', {
         type: 'param_retry',
         data: { attempt: this.paramRetryAttempt, missing: 0, total: 0 },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     } else {
       const missing: number[] = []
@@ -2047,6 +2064,7 @@ export class MavlinkBridge extends EventEmitter {
           missing: missing.length,
           total: this.paramExpectedCount,
         },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     }
     this.scheduleParamRetry()
@@ -2064,6 +2082,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param_complete',
       data: { count: this.paramExpectedCount },
+      paramRunId: this.paramRunId,
     } as ServerMessage)
     this.applyTelemetryProfile('normal')
   }
@@ -2080,6 +2099,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param_failed',
       data: { received: this.paramIndices.size, total: this.paramExpectedCount, reason },
+      paramRunId: this.paramRunId,
     } as ServerMessage)
     this.applyTelemetryProfile('normal')
   }
@@ -2102,6 +2122,7 @@ export class MavlinkBridge extends EventEmitter {
           total: this.paramExpectedCount,
           reason,
         },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     }
     if (restoreTelemetry) this.applyTelemetryProfile('normal')

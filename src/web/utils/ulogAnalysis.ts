@@ -336,10 +336,13 @@ export class VibrationAnalyzer {
  * Streaming min/max envelope collector bucketed by time. Bounds memory for
  * high-rate topics while preserving spikes for the time-series panels.
  */
+const ENVELOPE_COMPACT_TRIGGER = 32_000
+const ENVELOPE_COMPACT_TARGET = 8_000
+
 export class EnvelopeCollector {
   private readonly bucketSec: number
-  readonly times: number[] = []
-  readonly values: number[] = []
+  times: number[] = []
+  values: number[] = []
   private bucketStart = Number.NaN
   private minValue = 0
   private maxValue = 0
@@ -383,6 +386,11 @@ export class EnvelopeCollector {
     } else {
       this.times.push(this.maxTime, this.minTime)
       this.values.push(this.maxValue, this.minValue)
+    }
+    if (this.times.length >= ENVELOPE_COMPACT_TRIGGER) {
+      const compacted = downsampleMinMax(this.times, this.values, ENVELOPE_COMPACT_TARGET)
+      this.times = compacted.times
+      this.values = compacted.values
     }
   }
 

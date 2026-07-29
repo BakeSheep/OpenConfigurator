@@ -78,6 +78,7 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
 
 class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   readonly messages: ClientMessage[] = []
+  currentParamRunId = 0
   destroyed = false
   parameterCancellationCalls = 0
   destroyError: Error | null = null
@@ -89,6 +90,7 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
 
   handleClientMessage(message: ClientMessage): void {
     this.messages.push(message)
+    if (message.type === 'param_request_list') this.currentParamRunId += 1
   }
 
   cancelParameterDownload(): void {
@@ -523,8 +525,51 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
       (message) => message.data?.status === 'started' && message.data?.generation === 2,
     )
     assert.equal(generationTwo.data?.generation, 2)
-    started.bridge.emit('message', { type: 'param_complete', data: { count: 0 } })
-    await first.waitFor('param_sync', (message) => message.data?.status === 'complete')
+    assert.equal(started.bridge.currentParamRunId, 2)
+
+    const beforeStaleRun = first.messages.length
+    started.bridge.emit('message', {
+      type: 'param',
+      data: { id: 'STALE_RUN', value: 1, type: 9, param_count: 1, param_index: 0 },
+      paramRunId: 1,
+    })
+    started.bridge.emit('message', {
+      type: 'param_complete',
+      data: { count: 1 },
+      paramRunId: 1,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(
+      first.messages.slice(beforeStaleRun).some((message) =>
+        message.type === 'param_batch'
+        || (message.type === 'param_sync' && message.data?.status === 'complete')),
+      false,
+      'late events from the cancelled run must not contaminate the new generation',
+    )
+
+    started.bridge.emit('message', {
+      type: 'param',
+      data: { id: 'CURRENT_RUN', value: 2, type: 9, param_count: 1, param_index: 0 },
+      paramRunId: 2,
+    })
+    started.bridge.emit('message', {
+      type: 'param_complete',
+      data: { count: 1 },
+      paramRunId: 2,
+    })
+    const currentBatch = await first.waitFor(
+      'param_batch',
+      (message) => message.generation === 2,
+      1_000,
+      beforeStaleRun,
+    )
+    assert.equal((currentBatch.data as unknown as Array<{ id: string }>)[0]?.id, 'CURRENT_RUN')
+    await first.waitFor(
+      'param_sync',
+      (message) => message.data?.status === 'complete' && message.data?.generation === 2,
+      1_000,
+      beforeStaleRun,
+    )
 
     // The compatibility flag must track the physical transport even while a
     // lifecycle status is briefly stale during bounded teardown.

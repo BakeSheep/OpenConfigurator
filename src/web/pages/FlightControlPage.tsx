@@ -46,6 +46,12 @@ export default function FlightControlPage() {
       params: [1, 0, 0, 0, 0, 0, 0],
       safetyConfirmation: 'arm',
     })
+    // Clear the pending 3 s reset timer so it cannot fire after a successful
+    // confirmation and needlessly toggle state later.
+    if (confirmationTimer.current !== null) {
+      window.clearTimeout(confirmationTimer.current)
+      confirmationTimer.current = null
+    }
     setArmConfirmation(false)
   }
 

@@ -15,7 +15,7 @@ import Icon from '../ui/Icon'
 const radToDeg = (r: number) => r * 180 / Math.PI
 
 export default function Topbar() {
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus } = useConnectionStore()
+  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
@@ -38,6 +38,7 @@ export default function Topbar() {
 
   const connectPreset = async (preset: ConnectionPreset) => {
     setConnectDropdown(false)
+    setConnectionError(null)
     setStatus('connecting')
     try {
       let resolved = preset
@@ -47,6 +48,7 @@ export default function Topbar() {
         if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
         const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
         if (!matched) {
+          setConnectionError('未找到与该预设匹配的串口，请重新选择设备。')
           setStatus('error')
           setConnectDialogOpen(true)
           return
@@ -76,8 +78,24 @@ export default function Topbar() {
         }),
       })
       const text = await res.text()
-      if (!res.ok) setStatus('error')
-    } catch { setStatus('error') }
+      let json: { success?: boolean; error?: { message?: string } } | null = null
+      if (text) {
+        try { json = JSON.parse(text) } catch { /* not JSON */ }
+      }
+      // A 200 with success=false is still a failure; never report it silently.
+      if (!res.ok || !json?.success) {
+        const reason = json?.error?.message ?? (text || `HTTP ${res.status}`)
+        console.error('[Connect] preset connect failed:', reason)
+        setConnectionError(`预设连接失败：${reason}`)
+        setStatus('error')
+        setConnectDialogOpen(true)
+      }
+    } catch (error) {
+      console.error('[Connect] preset connect failed:', error)
+      setConnectionError(`预设连接失败：${error instanceof Error ? error.message : String(error)}`)
+      setStatus('error')
+      setConnectDialogOpen(true)
+    }
   }
 
   const removePreset = (id: string) => {

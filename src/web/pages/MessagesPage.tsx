@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
@@ -37,12 +37,21 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
 
+  // The live flag compares against wall-clock time; a 1 s tick keeps it
+  // re-evaluated after the link stops and store updates no longer arrive
+  // (otherwise frozen rows would show “接收中” forever).
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const rows = useMemo(() => streamRows.map((row) => {
     const telemetryTime = lastUpdate[row.source as keyof typeof lastUpdate]
     const sensorTime = sensorUpdate[row.source as keyof typeof sensorUpdate]
     const time = telemetryTime ?? sensorTime ?? (row.source === 'statusText' ? statusLogs[0]?.time : 0) ?? 0
-    return { ...row, live: connected && time > 0 && Date.now() - time < 4000 }
-  }), [connected, lastUpdate, sensorUpdate, statusLogs])
+    return { ...row, live: connected && time > 0 && nowTick - time < 4000 }
+  }), [connected, lastUpdate, sensorUpdate, statusLogs, nowTick])
 
   const [pausedRows, setPausedRows] = useState<typeof rows | null>(null)
   const [pausedLogs, setPausedLogs] = useState<typeof statusLogs | null>(null)

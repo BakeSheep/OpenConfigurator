@@ -216,19 +216,48 @@ function framePayload(frame: Buffer): Buffer {
   )
   assert.equal(signedSession.stats.rejectedPackets, 1)
 
+  // A no-RTC flight controller signs with a timestamp far in the past. First
+  // contact must accept the cryptographically valid frame and establish the
+  // replay watermark; an equal-or-older follow-up is then rejected as replay.
   const staleSigningSession = new MavlinkCodecSession({
-    signing: { key: signingKey, linkId: 7, requireSigned: true },
+    signing: { key: signingKey, linkId: 7, requireSigned: true, allowStaleFirstPacket: true },
   })
   let staleSigningMessages = 0
   staleSigningSession.on('message', () => { staleSigningMessages++ })
+  const staleTimestampMs = Date.now() - 24 * 60 * 60 * 1000
   staleSigningSession.write(signingProtocol.sign(
     signingProtocol.serialize(makeHeartbeat(), 12),
     7,
     signingKey,
-    Date.now() - 24 * 60 * 60 * 1000,
+    staleTimestampMs,
   ))
-  assert.equal(staleSigningMessages, 0)
+  assert.equal(staleSigningMessages, 1, 'first contact from a no-RTC source must be accepted')
+  assert.equal(staleSigningSession.stats.rejectedPackets, 0)
+  staleSigningSession.write(signingProtocol.sign(
+    signingProtocol.serialize(makeHeartbeat(), 13),
+    7,
+    signingKey,
+    staleTimestampMs,
+  ))
+  assert.equal(
+    staleSigningMessages,
+    1,
+    'a same-timestamp frame is a replay once the watermark exists',
+  )
   assert.equal(staleSigningSession.stats.rejectedPackets, 1)
+  const secureFirstContact = new MavlinkCodecSession({
+    signing: { key: signingKey, linkId: 7, requireSigned: true },
+  })
+  let secureFirstContactMessages = 0
+  secureFirstContact.on('message', () => { secureFirstContactMessages++ })
+  secureFirstContact.write(signingProtocol.sign(
+    signingProtocol.serialize(makeHeartbeat(), 11),
+    7,
+    signingKey,
+    staleTimestampMs,
+  ))
+  assert.equal(secureFirstContactMessages, 0, 'secure default must reject a stale first packet')
+  assert.equal(secureFirstContact.stats.rejectedPackets, 1)
   for (let index = 0; index < 300; index++) {
     const systemId = (index % 250) + 1
     const componentId = Math.floor(index / 250) + 1

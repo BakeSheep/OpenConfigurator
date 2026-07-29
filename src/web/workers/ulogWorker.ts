@@ -12,7 +12,6 @@ import {
   RAD_TO_DEG,
   VibrationAnalyzer,
   buildSegments,
-  computeSaturationPct,
   downsampleMinMax,
   quaternionToEuler,
   type SeriesData,
@@ -44,6 +43,14 @@ interface RawSeries {
   values: number[]
 }
 
+// A raw series compacts itself once it grows past the trigger, keeping worker
+// memory bounded on multi-hour 200 Hz+ topics (attitude/rates) instead of
+// accumulating millions of samples until finishRaw(). Min/max downsampling
+// preserves spikes; the target stays well above the final render resolution
+// so repeated compaction barely affects the output.
+const RAW_COMPACT_TRIGGER = MAX_SERIES_POINTS * 8
+const RAW_COMPACT_TARGET = MAX_SERIES_POINTS * 2
+
 function makeRaw(label: string): RawSeries {
   return { label, times: [], values: [] }
 }
@@ -52,6 +59,11 @@ function pushRaw(series: RawSeries, timeSec: number, value: number): void {
   if (!Number.isFinite(value)) return
   series.times.push(timeSec)
   series.values.push(value)
+  if (series.times.length >= RAW_COMPACT_TRIGGER) {
+    const compacted = downsampleMinMax(series.times, series.values, RAW_COMPACT_TARGET)
+    series.times = compacted.times
+    series.values = compacted.values
+  }
 }
 
 function finishRaw(series: RawSeries): SeriesData {
@@ -126,7 +138,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   }
   let motorEnvelopes: EnvelopeCollector[] = []
   let motorLabelsFromPwm = true
-  const motorSampleMax: number[] = []
+  let motorSampleCount = 0
+  let motorSaturatedCount = 0
   const vibration = new VibrationAnalyzer()
   const rawAcc: [EnvelopeCollector, EnvelopeCollector, EnvelopeCollector] = [
     new EnvelopeCollector(ENVELOPE_BUCKET_SEC),
@@ -207,7 +220,10 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       sampleMax = Math.max(sampleMax, value)
       any = true
     }
-    if (any) motorSampleMax.push(sampleMax)
+    if (any) {
+      motorSampleCount++
+      if (sampleMax >= (isPwm ? 1950 : 0.98)) motorSaturatedCount++
+    }
   }
 
   let haveActuatorMotors = false
@@ -253,7 +269,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
         // Normalized controls supersede the PWM mirror once observed.
         haveActuatorMotors = true
         motorEnvelopes = []
-        motorSampleMax.length = 0
+        motorSampleCount = 0
+        motorSaturatedCount = 0
       }
       handleActuatorSample(
         controls.filter((entry) => Number.isFinite(entry)),
@@ -330,14 +347,17 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     vehicle_status: (value, timeSec) => {
       const navState = num(value.nav_state)
       if (Number.isFinite(navState)) {
-        modeSamples.push({
-          timeSec,
-          label: NAV_STATE_NAMES[navState] ?? `模式 ${navState}`,
-        })
+        const label = NAV_STATE_NAMES[navState] ?? `模式 ${navState}`
+        if (modeSamples[modeSamples.length - 1]?.label !== label) {
+          modeSamples.push({ timeSec, label })
+        }
       }
       const armingState = num(value.arming_state)
       if (Number.isFinite(armingState)) {
-        armedSamples.push({ timeSec, label: armingState === 2 ? 'armed' : 'disarmed' })
+        const label = armingState === 2 ? 'armed' : 'disarmed'
+        if (armedSamples[armedSamples.length - 1]?.label !== label) {
+          armedSamples.push({ timeSec, label })
+        }
       }
     },
   }
@@ -425,7 +445,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     actuators: motorSeries,
     actuatorSaturation: motorSeries.length > 0
       ? {
-        saturationPct: computeSaturationPct(motorSampleMax),
+        saturationPct: motorSampleCount > 0 ? motorSaturatedCount / motorSampleCount * 100 : 0,
         motorCount: motorSeries.length,
       }
       : null,

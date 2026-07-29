@@ -72,7 +72,7 @@ export default function StatusBar() {
     : connectionStatus === 'reconnecting' || connectionStatus === 'connecting' ? 'var(--warning)'
     : 'var(--text-disabled)'
   const linkText = linkStats && transportOpen
-    ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${(linkStats.crcErrorsPerSec / 1024).toFixed(1)}KB/s` : ''}`
+    ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${linkStats.crcErrorsPerSec.toFixed(1)}/s` : ''}`
     : null
   const linkQuality = transportOpen ? getLinkQuality(linkStats) : { percent: 0, color: 'var(--text-disabled)' }
 

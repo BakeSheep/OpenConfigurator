@@ -92,6 +92,7 @@ export interface ConnectionManagerBoundary extends EventEmitter {
 export interface MavlinkBridgeBoundary extends EventEmitter {
   handleClientMessage(message: ClientMessage): void
   cancelParameterDownload?(): void
+  readonly currentParamRunId?: number
   getFtpDownload?(downloadId: string): {
     filePath: string
     fileName: string
@@ -144,6 +145,9 @@ type ParamSyncState = {
   generation: number
   ownerClientId: string
   startedAt: number
+  // Bridge-side download run id captured when the request was accepted; late
+  // lifecycle events from an older cancelled run are dropped by comparing it.
+  runId?: number
 }
 
 class HttpBoundaryError extends Error {
@@ -622,10 +626,32 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       type: string
       data?: unknown
       generation?: number
+      paramRunId?: number
+    }
+
+    const runId = message.paramRunId
+    const belongsToParameterRun = message.type === 'param'
+      || message.type === 'param_complete'
+      || message.type === 'param_failed'
+      || message.type === 'param_retry'
+      || isParameterOperationError(message)
+    if (belongsToParameterRun && runId !== undefined) {
+      if (!parameterSync) {
+        logger.warn(`[MAVLink] Dropping parameter event after sync ended (run ${runId})`)
+        return
+      }
+      if (parameterSync.runId !== undefined && runId !== parameterSync.runId) {
+        logger.warn(`[MAVLink] Dropping stale parameter event (run ${runId})`)
+        return
+      }
     }
 
     if (message.type === 'param') {
       const data = message.data as ParamData
+      if (runId === undefined) {
+        broadcast({ type: 'param', data })
+        return
+      }
       pendingParams.push(data)
       if (pendingParams.length >= MAX_PARAM_BATCH_ITEMS) {
         flushParamBatch()
@@ -651,8 +677,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     const generation = carriesParameterGeneration
       ? parameterSync?.generation
       : undefined
+    const { paramRunId: _strippedRunId, ...messageFields } =
+      message as unknown as Record<string, unknown>
     const wireMessage = {
-      ...(message as unknown as Record<string, unknown>),
+      ...messageFields,
       ...(generation === undefined ? {} : { generation }),
     } as ServerMessage
     broadcast(wireMessage)
@@ -720,6 +748,20 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     next()
   })
 
+  // Non-browser clients (curl, scripts) do not send an Origin header. A remote
+  // request that carries a valid access token is therefore trusted even
+  // without an Origin, so token-authenticated automation is not locked out by
+  // the browser-oriented Origin guard below.
+  const hasValidRemoteToken = (request: Request | IncomingMessage): boolean => {
+    if (!config.remoteEnabled) return false
+    const headers = 'headers' in request ? request.headers : undefined
+    const candidate = bearerToken(headers?.authorization)
+      ?? (typeof headers?.['x-skylab-token'] === 'string'
+        ? headers['x-skylab-token'] as string
+        : undefined)
+    return tokenMatches(candidate, config.authToken)
+  }
+
   app.use((request, _response, next) => {
     const origin = request.get('origin')
     if (origin) {
@@ -727,8 +769,8 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         next(new HttpBoundaryError(403, 'origin_forbidden', '请求 Origin 不在允许列表中'))
         return
       }
-    } else if (!isLoopbackAddress(request.socket.remoteAddress)) {
-      next(new HttpBoundaryError(403, 'origin_required', '非本机请求必须提供允许的 Origin'))
+    } else if (!isLoopbackAddress(request.socket.remoteAddress) && !hasValidRemoteToken(request)) {
+      next(new HttpBoundaryError(403, 'origin_required', '非本机请求必须提供允许的 Origin 或有效访问令牌'))
       return
     }
     next()
@@ -1023,6 +1065,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
 
     try {
       mavlinkBridge.handleClientMessage(message as ClientMessage)
+      // Record which bridge download run belongs to this generation. If the
+      // bridge rejected the request synchronously the sync is already
+      // finished (parameterSync === null) and nothing is recorded.
+      if (message.type === 'param_request_list' && parameterSync) {
+        parameterSync.runId = mavlinkBridge.currentParamRunId
+      }
     } catch (error) {
       if (message.type === 'param_request_list') {
         clearParamBatch()
@@ -1130,8 +1178,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         return
       }
     } else if (!isLoopbackAddress(request.socket.remoteAddress)) {
-      upgradeResponse(socket, 403, '非本机 WebSocket 请求必须提供 Origin')
-      return
+      // Mirror the HTTP boundary: non-browser WS clients carry no Origin but
+      // may authenticate with the remote token (verified again right below).
+      if (!(config.remoteEnabled && tokenMatches(wsToken(request), config.authToken))) {
+        upgradeResponse(socket, 403, '非本机 WebSocket 请求必须提供 Origin 或有效访问令牌')
+        return
+      }
     }
 
     if (config.remoteEnabled && !tokenMatches(wsToken(request), config.authToken)) {

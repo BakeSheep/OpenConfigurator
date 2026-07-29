@@ -41,7 +41,9 @@ interface ConnectionState {
   bluetoothPorts: PortInfo[]
   scanning: boolean
   connectDialogOpen: boolean
+  connectionError: string | null
   setStatus: (status: ConnectionStatus) => void
+  setConnectionError: (error: string | null) => void
   setConnectionSnapshot: (snapshot: {
     status: ConnectionStatus
     transportOpen: boolean
@@ -75,7 +77,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   bluetoothPorts: [],
   scanning: false,
   connectDialogOpen: false,
+  connectionError: null,
   setStatus: (status) => set({ status }),
+  setConnectionError: (connectionError) => set({ connectionError }),
   setConnectionSnapshot: (snapshot) => set((state) => ({
     status: snapshot.status,
     transportOpen: snapshot.transportOpen,
@@ -84,6 +88,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     type: snapshot.type ?? (snapshot.transportOpen ? state.type : null),
     reconnect: snapshot.status === 'reconnecting' ? state.reconnect : null,
     connectDialogOpen: snapshot.transportOpen ? false : state.connectDialogOpen,
+    connectionError: snapshot.transportOpen ? null : state.connectionError,
   })),
   setClientId: (clientId) => set((state) => ({
     clientId,

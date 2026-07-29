@@ -158,6 +158,7 @@ function ChartPanel({
   selectionGroups,
   headerAside,
   children,
+  onCursorTimeChange,
 }: {
   title: string
   series?: SeriesData[]
@@ -168,6 +169,7 @@ function ChartPanel({
   secondaryScaleLabels?: string[]
   selectionGroups?: SeriesSelectionGroup[]
   headerAside?: React.ReactNode
+  onCursorTimeChange?: (timeSec: number) => void
   children?: React.ReactNode
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -279,6 +281,7 @@ function ChartPanel({
             bands={bands}
             height={height}
             secondaryScaleLabels={secondaryScaleLabels}
+            onCursorTimeChange={onCursorTimeChange}
           />
         )}
         {children}
@@ -318,6 +321,7 @@ function ChartPanel({
                 bands={bands}
                 height={expandedHeight}
                 secondaryScaleLabels={secondaryScaleLabels}
+                onCursorTimeChange={onCursorTimeChange}
               />
             </div>
           </section>
@@ -472,10 +476,27 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const [dragOver, setDragOver] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [paramFilter, setParamFilter] = useState('')
+  const [chartCursorTimeSec, setChartCursorTimeSec] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
   const analysisAbortRef = useRef<AbortController | null>(null)
   const unmountAbortTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const replayStartSec = useMemo(() => {
+    if (!dataset) return 0
+    const takeoffSegment = dataset.modeSegments.find(
+      (segment) => segment.label === 'Takeoff' || segment.label === 'VTOL Takeoff',
+    )
+    return takeoffSegment?.startSec ?? dataset.armedSegments[0]?.startSec ?? 0
+  }, [dataset])
+
+  const handleChartCursorTimeChange = useCallback((timeSec: number) => {
+    setChartCursorTimeSec(timeSec)
+  }, [])
+
+  useEffect(() => {
+    setChartCursorTimeSec(null)
+  }, [dataset])
 
   const analyzeBuffer = useCallback((
     name: string,
@@ -796,6 +817,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               <LogAttitudeVisualizer
                 series={dataset.attitude}
                 durationSec={dataset.overview.durationSec}
+                startSec={replayStartSec}
+                syncTimeSec={chartCursorTimeSec}
               />
             </Suspense>
           </section>
@@ -805,6 +828,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             title="姿态跟踪（实际 vs 设定，°）"
             series={dataset.attitude}
             unit="°"
+            onCursorTimeChange={handleChartCursorTimeChange}
             bands={dataset.armedSegments}
             selectionGroups={ATTITUDE_GROUPS}
           />

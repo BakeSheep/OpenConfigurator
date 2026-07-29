@@ -33,6 +33,10 @@ const BLUETOOTH_BURST_QUIET_MS = 3200
 // The tested PX4 FTP worker becomes unreliable with multiple ReadFile requests
 // in flight. Keep one request outstanding and recover throughput by using the
 // full USB chunk size plus a reduced telemetry profile during the transfer.
+// INVARIANT: these MUST stay 1 while transact() tracks a single `pending`
+// slot. A window > 1 would make later transact() calls overwrite the slot and
+// time out every earlier request; switch `pending` to a Map keyed by
+// expectedSeq before widening (gapFillPass() enforces this at runtime).
 const SERIAL_READ_WINDOW = 1
 const BLUETOOTH_READ_WINDOW = 1
 // A download pass (burst or gap fill) that recovers zero new bytes counts as
@@ -49,6 +53,44 @@ const MAX_RETAINED_DOWNLOADS = 5
 const PROGRESS_INTERVAL_MS = 500
 const DOWNLOAD_ID_BYTES = 8
 
+const CRC32_TABLE = new Uint32Array(256)
+for (let index = 0; index < CRC32_TABLE.length; index++) {
+  let value = index
+  for (let bit = 0; bit < 8; bit++) {
+    value = (value & 1) !== 0 ? (value >>> 1) ^ 0xedb88320 : value >>> 1
+  }
+  CRC32_TABLE[index] = value >>> 0
+}
+
+function updateCrc32(state: number, data: Buffer): number {
+  let crc = state
+  for (const byte of data) crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8)
+  return crc >>> 0
+}
+
+export function crc32Buffer(data: Buffer): number {
+  // PX4's CalcFileCRC32 uses crc32part() with an initial value of zero and
+  // returns the accumulator directly (no initial/final XOR).
+  return updateCrc32(0, data)
+}
+
+async function crc32File(filePath: string): Promise<number> {
+  const handle = await fsp.open(filePath, 'r')
+  const buffer = Buffer.allocUnsafe(64 * 1024)
+  let crc = 0
+  let position = 0
+  try {
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position)
+      if (bytesRead === 0) break
+      crc = updateCrc32(crc, buffer.subarray(0, bytesRead))
+      position += bytesRead
+    }
+  } finally {
+    await handle.close()
+  }
+  return crc >>> 0
+}
 const NAK_ERROR_NAMES: Record<number, string> = Object.fromEntries(
   Object.entries(FTP_NAK_ERRORS).map(([name, value]) => [value, name]),
 )
@@ -502,6 +544,12 @@ export class MavlinkFtp {
   private async runDownload(filePath: string, requestId?: string): Promise<void> {
     let session: number | null = null
     let handle: FileHandle | null = null
+    let completedDownload: {
+      path: string
+      downloadId: string
+      sizeBytes: number
+      fileName: string
+    } | null = null
     const downloadId = randomBytes(DOWNLOAD_ID_BYTES).toString('hex')
     const partPath = path.join(this.downloadDir, `${downloadId}.part`)
     try {
@@ -601,15 +649,40 @@ export class MavlinkFtp {
 
       await handle.close()
       handle = null
+
+      // MAVLink FTP can verify the complete remote file independently of the
+      // interval tracker. Compare it with a streaming local CRC before making
+      // the download visible; size-complete but corrupted data must never be
+      // registered as a valid ULog.
+      const crcReply = await this.transact(FTP_OPCODES.CalcFileCRC32, {
+        data: Buffer.from(filePath, 'utf8'),
+      })
+      if (crcReply.opcode === FTP_OPCODES.Nak) {
+        throw nakError(crcReply, `计算文件 ${filePath} CRC32 失败`)
+      }
+      if (crcReply.size < 4) {
+        throw new FtpError('ftp_protocol', 'CalcFileCRC32 应答缺少 CRC32')
+      }
+      const remoteCrc = crcReply.data.readUInt32LE(0)
+      const localCrc = await crc32File(partPath)
+      if (remoteCrc !== localCrc) {
+        throw new FtpError(
+          'ftp_crc_mismatch',
+          `下载文件 CRC32 不匹配（飞控 ${remoteCrc.toString(16).padStart(8, '0')}，本地 ${localCrc.toString(16).padStart(8, '0')}）`,
+          true,
+        )
+      }
+
       const finalPath = path.join(this.downloadDir, `${downloadId}.ulg`)
       await fsp.rename(partPath, finalPath)
       const fileName = sanitizeFileName(filePath)
       this.registerDownload(downloadId, { filePath: finalPath, fileName, sizeBytes: fileSize })
       emitProgress(true)
-      this.transport.emitMessage({
-        type: 'fs_download_complete',
-        data: { path: filePath, downloadId, sizeBytes: fileSize, fileName },
-      })
+      // Do not expose the download as complete until the FTP session below is
+      // closed and this operation releases the link. A client receiving this
+      // event may immediately begin a parameter sync; advertising completion
+      // earlier races that request against TerminateSession.
+      completedDownload = { path: filePath, downloadId, sizeBytes: fileSize, fileName }
     } catch (error) {
       await handle?.close().catch(() => undefined)
       handle = null
@@ -622,6 +695,9 @@ export class MavlinkFtp {
         await this.transact(FTP_OPCODES.TerminateSession, { session }, 1).catch(() => undefined)
       }
       this.release()
+    }
+    if (completedDownload) {
+      this.transport.emitMessage({ type: 'fs_download_complete', data: completedDownload })
     }
   }
 
@@ -678,6 +754,14 @@ export class MavlinkFtp {
     chunkSize: number,
     windowSize: number,
   ): Promise<void> {
+    // Guard the single-slot `pending` invariant (see the READ_WINDOW
+    // constants): concurrent transact() calls would overwrite each other.
+    if (windowSize > 1) {
+      throw new FtpError(
+        'ftp_window_unsupported',
+        'FTP 读取窗口 >1 需要先将 pending 改为按 seq 索引的 Map',
+      )
+    }
     for (const [start, end] of [...missingSnapshot]) {
       let offset = start
       while (offset < end) {

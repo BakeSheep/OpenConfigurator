@@ -79,8 +79,19 @@ function RateInput({ id }: { id: string }) {
       disabled={!param || !canWrite}
       onBlur={(event) => {
         if (!param) return
-        const value = Number(event.target.value)
-        if (Number.isFinite(value) && value !== param.value) {
+        const raw = event.target.value.trim()
+        // An emptied field means "abandon the edit", not "write zero": Number('')
+        // coerces to 0 and would silently zero the rate parameter.
+        if (raw === '') {
+          event.target.value = String(Math.round(param.value))
+          return
+        }
+        const value = Math.round(Number(raw))
+        if (!Number.isFinite(value) || value < 0) {
+          event.target.value = String(Math.round(param.value))
+          return
+        }
+        if (value !== param.value) {
           send({ type: 'param_set', data: { id, value, paramType: param.type } })
         }
       }}

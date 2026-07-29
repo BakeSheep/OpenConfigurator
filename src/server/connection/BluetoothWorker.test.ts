@@ -311,6 +311,40 @@ test('reconnect keeps the last error and waits for a new validated heartbeat', a
   await worker.disconnect()
 })
 
+test('deterministic port resolution failures stop reconnecting immediately', async () => {
+  const first = new FakeBluetoothLink()
+  let resolutionCalls = 0
+  const progress: ReconnectProgress[] = []
+  const worker = new BluetoothWorker(config, {
+    serialFactory: () => first,
+    resolvePort: async () => {
+      resolutionCalls += 1
+      if (resolutionCalls === 1) return 'COM7'
+      throw new BluetoothPortResolutionError(
+        'multiple matching Bluetooth ports',
+        'AMBIGUOUS',
+        ['COM7', 'COM9'],
+      )
+    },
+    reconnectBaseIntervalMs: 1,
+    maxReconnectIntervalMs: 1,
+  })
+  worker.on('reconnecting', (item: ReconnectProgress) => progress.push(item))
+  const terminalEvent = new Promise<ReconnectTerminalReason>((resolve) => {
+    worker.once('terminal', resolve)
+  })
+
+  await worker.connect()
+  worker.confirmVehicleHeartbeat()
+  first.emit('error', new Error('radio dropped'))
+  const reason = await terminalEvent
+  await delay(10)
+
+  assert.equal(reason.code, 'AMBIGUOUS')
+  assert.equal(resolutionCalls, 2, 'the deterministic failure must not be retried')
+  assert.equal(progress.length, 1)
+  assert.equal(worker.transportOpen, false)
+})
 test('heartbeat confirmation exhaustion produces a structured terminal reason', async () => {
   const links = [new FakeBluetoothLink(), new FakeBluetoothLink()]
   const worker = new BluetoothWorker(config, {

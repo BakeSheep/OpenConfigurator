@@ -13,10 +13,18 @@ import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types
 let wsInstance: WebSocket | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let reconnectAttempt = 0
 let autoParamRequestPending = false
+// Tracks the last vehicleReady seen so parameter downloads trigger only on the
+// false→true edge, not on every re-broadcast connection snapshot.
+let lastVehicleReady = false
+let activeParamGeneration: number | null = null
 let restControlToken: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+const RECONNECT_BASE_MS = 3000
+const RECONNECT_MAX_MS = 30_000
 
 function flushParamBatch() {
   if (paramFlushTimer) {
@@ -53,6 +61,14 @@ function queueParams(params: ParamData[]) {
   }
 }
 
+function acceptsParamGeneration(generation: number | undefined): boolean {
+  // Ungenerated messages are accepted only outside a generation-managed sync
+  // (for example a PARAM_SET echo). The server always stamps list batches.
+  return activeParamGeneration === null
+    ? generation === undefined
+    : generation === activeParamGeneration
+}
+
 function sendToServer(msg: ClientMessage) {
   if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) return false
   wsInstance.send(JSON.stringify(msg))
@@ -73,7 +89,7 @@ function handleMessage(msg: ServerMessage) {
     case 'controller':
       connStore.setController(msg.data.clientId, msg.data.expiresAt)
       break
-    case 'connection':
+    case 'connection': {
       connStore.setConnectionSnapshot({
         status: msg.data.status ?? (msg.data.connected ? 'connected' : 'disconnected'),
         transportOpen: msg.data.transportOpen ?? msg.data.connected,
@@ -81,14 +97,20 @@ function handleMessage(msg: ServerMessage) {
         port: msg.data.port,
         type: msg.data.type,
       })
-      if (msg.data.vehicleReady ?? msg.data.connected) {
+      const vehicleReadyNow = msg.data.vehicleReady ?? msg.data.connected
+      if (vehicleReadyNow) {
         // Wait for the first autopilot heartbeat before requesting parameters:
         // the backend learns the actual target system/component IDs from that
         // heartbeat, so the request cannot be sent to a stale/default target.
-        discardParamBatch()
-        paramStore.clear()
-        paramStore.setLoading(true)
-        autoParamRequestPending = true
+        // Only the false→true edge starts a download - the backend re-broadcasts
+        // connection snapshots (e.g. when another client joins), and clearing an
+        // already-downloaded parameter list on every snapshot would wipe it.
+        if (!lastVehicleReady) {
+          discardParamBatch()
+          paramStore.clear()
+          paramStore.setLoading(true)
+          autoParamRequestPending = true
+        }
       } else if (msg.data.reconnect) {
         // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
         // last-known telemetry visible (greyed) instead of a full reset: the
@@ -115,7 +137,9 @@ function handleMessage(msg: ServerMessage) {
         // FC filesystem state is meaningless without a link.
         useFileExplorerStore.getState().reset()
       }
+      lastVehicleReady = vehicleReadyNow
       break
+    }
     case 'telemetry':
       handleTelemetry(msg.msgType, msg.data)
       break
@@ -133,17 +157,33 @@ function handleMessage(msg: ServerMessage) {
       queueParam(msg.data)
       break
     case 'param_batch':
+      if (!acceptsParamGeneration(msg.generation)) {
+        console.warn('[WS] Ignoring stale parameter batch generation:', msg.generation)
+        break
+      }
       queueParams(msg.data)
       break
     case 'param_complete':
+      if (!acceptsParamGeneration(msg.generation)) {
+        console.warn('[WS] Ignoring stale parameter completion generation:', msg.generation)
+        break
+      }
       flushParamBatch()
       paramStore.setParamComplete(msg.data.count)
       break
     case 'param_retry':
+      if (!acceptsParamGeneration(msg.generation)) {
+        console.warn('[WS] Ignoring stale parameter retry generation:', msg.generation)
+        break
+      }
       flushParamBatch()
       paramStore.setParamRetry(msg.data.attempt, msg.data.missing, msg.data.total)
       break
     case 'param_failed':
+      if (!acceptsParamGeneration(msg.generation)) {
+        console.warn('[WS] Ignoring stale parameter failure generation:', msg.generation)
+        break
+      }
       flushParamBatch()
       paramStore.setParamFailed(msg.data.received, msg.data.total)
       break
@@ -230,6 +270,59 @@ function handleMessage(msg: ServerMessage) {
       telemetryStore.addStatusLog(3, `文件操作失败：${msg.data.message}`)
       break
     }
+    case 'client_error':
+      // Boundary rejections (controller conflict, validation failure, rate
+      // limit, ...) must reach the operator, not vanish silently.
+      console.warn('[WS] Request rejected:', msg.data.code, msg.data.message)
+      telemetryStore.addStatusLog(3, `请求被拒绝：${msg.data.message}${msg.data.retryable ? '（可重试）' : ''}`)
+      break
+    case 'operation_error':
+      console.warn('[WS] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
+      telemetryStore.addStatusLog(3, `${msg.data.operation} 操作失败：${msg.data.message}`)
+      break
+    case 'param_sync':
+      if (msg.data.status === 'started') {
+        if (activeParamGeneration !== null && msg.data.generation < activeParamGeneration) {
+          console.warn('[WS] Ignoring stale parameter sync start:', msg.data.generation)
+          break
+        }
+        activeParamGeneration = msg.data.generation
+        discardParamBatch()
+        paramStore.clear()
+        paramStore.setLoading(true)
+        break
+      }
+      if (activeParamGeneration !== msg.data.generation) {
+        console.warn('[WS] Ignoring stale parameter sync ending:', msg.data.generation)
+        break
+      }
+      // The owning client tracks normal progress via param_complete; surface
+      // abnormal endings so observers also learn why a sync vanished.
+      if (msg.data.status === 'failed' || msg.data.status === 'cancelled') {
+        discardParamBatch()
+        const { receivedCount, totalCount } = useParameterStore.getState()
+        paramStore.setParamFailed(receivedCount, totalCount)
+        telemetryStore.addStatusLog(
+          4,
+          `参数同步已${msg.data.status === 'failed' ? '失败' : '取消'}`
+            + `${msg.data.reason ? `：${msg.data.reason}` : ''}`,
+        )
+      }
+      activeParamGeneration = null
+      break
+    case 'target':
+      if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
+        telemetryStore.addStatusLog(
+          6,
+          `已选定飞控目标 system ${msg.data.systemId} / component ${msg.data.componentId}`,
+        )
+      } else {
+        console.log('[WS] target update:', msg.data)
+      }
+      break
+    default:
+      console.warn('[WS] Unhandled server message type:', (msg as { type?: string }).type)
+      break
   }
 }
 
@@ -315,6 +408,7 @@ function connectSocket() {
   wsInstance = ws
 
   ws.onopen = () => {
+    reconnectAttempt = 0
     console.log('[WS] Connected to server')
   }
 
@@ -328,11 +422,26 @@ function connectSocket() {
   }
 
   ws.onclose = () => {
-    if (wsInstance === ws) restControlToken = null
+    if (wsInstance === ws) {
+      restControlToken = null
+      autoParamRequestPending = false
+      lastVehicleReady = false
+      activeParamGeneration = null
+      discardParamBatch()
+      useConnectionStore.getState().setDisconnected()
+      useTelemetryStore.getState().markAllStale()
+      useSensorStore.getState().markAllOffline()
+      useParameterStore.getState().clear()
+    }
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return
-    console.log('[WS] Disconnected, reconnecting in 3s...')
-    reconnectTimer = setTimeout(connectSocket, 3000)
+    // Exponential backoff with jitter: a dead backend should not be hammered
+    // at a fixed cadence by every open tab.
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** reconnectAttempt)
+      + Math.floor(Math.random() * 500)
+    reconnectAttempt += 1
+    console.log(`[WS] Disconnected, reconnecting in ${(delay / 1000).toFixed(1)}s...`)
+    reconnectTimer = setTimeout(connectSocket, delay)
   }
 
   ws.onerror = () => {

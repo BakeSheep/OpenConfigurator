@@ -6,9 +6,26 @@ import { promises as fsp } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
-import { MavlinkFtp, subtractInterval, type FtpTransport } from './MavlinkFtp'
+import { crc32Buffer, MavlinkFtp, subtractInterval, type FtpTransport } from './MavlinkFtp'
 import type { ServerMessage } from '../../shared/types'
 
+// Independent, bit-at-a-time reference for PX4's crc32part convention. Keep
+// this separate from the production lookup-table implementation so a shared
+// initialization/finalization mistake cannot make both sides agree falsely.
+function px4ReferenceCrc32(data: Buffer): number {
+  let crc = 0
+  for (const byte of data) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc & 1) !== 0 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1
+    }
+  }
+  return crc >>> 0
+}
+
+assert.equal(crc32Buffer(Buffer.alloc(0)), 0)
+assert.equal(crc32Buffer(Buffer.from('123456789')), 0x2dfd2d88)
+assert.equal(crc32Buffer(Buffer.from('123456789')), px4ReferenceCrc32(Buffer.from('123456789')))
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
 
@@ -260,6 +277,12 @@ await (async () => {
         })
         break
       }
+      case FTP_OPCODES.CalcFileCRC32: {
+        const crc = Buffer.alloc(4)
+        crc.writeUInt32LE(px4ReferenceCrc32(content), 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, data: crc })
+        break
+      }
       case FTP_OPCODES.TerminateSession:
         terminated = true
         transport.reply(request, { opcode: FTP_OPCODES.Ack })
@@ -346,6 +369,12 @@ await (async () => {
         })
         break
       }
+      case FTP_OPCODES.CalcFileCRC32: {
+        const crc = Buffer.alloc(4)
+        crc.writeUInt32LE(px4ReferenceCrc32(content), 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, data: crc })
+        break
+      }
       case FTP_OPCODES.TerminateSession:
         transport.reply(request, { opcode: FTP_OPCODES.Ack })
         break
@@ -367,6 +396,56 @@ await (async () => {
   await fsp.rm(dir, { recursive: true, force: true })
 })()
 
+// ---------------------------------------------------------------------------
+// Download CRC mismatch rejects and removes a size-complete local file.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  const content = Buffer.from('crc-corruption-check')
+  const session = 9
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ResetSessions:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      case FTP_OPCODES.OpenFileRO: {
+        const size = Buffer.alloc(4)
+        size.writeUInt32LE(content.length, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, session, data: size })
+        break
+      }
+      case FTP_OPCODES.ReadFile:
+        transport.reply(request, {
+          opcode: FTP_OPCODES.Ack,
+          session,
+          offset: request.offset,
+          data: content.subarray(request.offset, request.offset + request.size),
+        })
+        break
+      case FTP_OPCODES.CalcFileCRC32: {
+        const wrongCrc = Buffer.alloc(4)
+        wrongCrc.writeUInt32LE((px4ReferenceCrc32(content) + 1) >>> 0, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, data: wrongCrc })
+        break
+      }
+      case FTP_OPCODES.TerminateSession:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
+
+  ftp.startDownload('/fs/microsd/log/corrupt.ulg', 'crc-request')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  const error = transport.messagesOf('fs_op_error')[0]
+  assert.equal(error.data.code, 'ftp_crc_mismatch')
+  assert.equal(transport.messagesOf('fs_download_complete').length, 0)
+  await waitFor(() => !ftp.busy)
+  assert.deepEqual(await fsp.readdir(dir), [], 'CRC-failed files must not be retained')
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
 // ---------------------------------------------------------------------------
 // Download cancellation removes the partial file and reports 'cancelled'.
 // ---------------------------------------------------------------------------
