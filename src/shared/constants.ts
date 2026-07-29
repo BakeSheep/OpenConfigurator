@@ -111,8 +111,13 @@ export const FTP_NAK_ERRORS = {
   FileNotFound: 10,
 } as const
 
-// PX4 stores ULog flight logs under this SD-card directory.
-export const FTP_DEFAULT_LOG_DIRECTORY = '/fs/microsd/log'
+// PX4 stores ULog flight logs under this SD-card directory. The name makes the
+// PX4/ULog scope explicit: ArduPilot uses DataFlash logs downloaded over the
+// LOG_REQUEST_* protocol, not this MAVFTP path.
+export const PX4_ULOG_LOG_DIRECTORY = '/fs/microsd/log'
+
+/** @deprecated Use PX4_ULOG_LOG_DIRECTORY - kept for backward compatibility. */
+export const FTP_DEFAULT_LOG_DIRECTORY = PX4_ULOG_LOG_DIRECTORY
 
 // Longest device path accepted from the frontend. MAVLink FTP payload data is
 // 239 bytes, so paths must leave room for the protocol header fields.

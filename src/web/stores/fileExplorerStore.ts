@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { FTP_DEFAULT_LOG_DIRECTORY } from '../../shared/constants'
+import { PX4_ULOG_LOG_DIRECTORY } from '../../shared/constants'
 import type { FsEntry } from '../../shared/types'
 
 export interface DownloadTask {
@@ -60,7 +60,7 @@ interface FileExplorerState {
 }
 
 export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
-  currentPath: FTP_DEFAULT_LOG_DIRECTORY,
+  currentPath: PX4_ULOG_LOG_DIRECTORY,
   entries: [],
   listedPath: null,
   loading: false,
