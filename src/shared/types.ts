@@ -455,6 +455,13 @@ export type ClientMessage =
   | { type: 'param_request_list'; requestId?: string }
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {
+      // Semantic mode change: the browser sends only the profile mode id and
+      // the server encodes stack-specific MAV_CMD_DO_SET_MODE parameters.
+      type: 'set_flight_mode'
+      requestId?: string
+      data: { modeId: number }
+    }
+  | {
       type: 'motor_test'
       requestId?: string
       data: {

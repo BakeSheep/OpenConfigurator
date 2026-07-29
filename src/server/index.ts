@@ -203,6 +203,7 @@ function isRetryableConnectionError(detail: ConnectionErrorDetail): boolean {
 
 function isMutatingMessage(message: BoundaryClientMessage): boolean {
   return message.type === 'command'
+    || message.type === 'set_flight_mode'
     || message.type === 'param_set'
     || message.type === 'param_request_list'
     || message.type === 'manual_control'

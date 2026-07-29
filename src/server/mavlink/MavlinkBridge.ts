@@ -18,6 +18,7 @@ import { FTP_MESSAGE_ID, MAVLINK_COMMANDS } from '../../shared/constants'
 import {
   buildVehicleIdentity,
   decodeFlightMode,
+  encodeModeCommand,
   formatFirmwareLabel,
   type VehicleIdentity,
 } from '../../shared/vehicleProfiles'
@@ -1413,6 +1414,20 @@ export class MavlinkBridge extends EventEmitter {
           )
         }
         break
+      case 'set_flight_mode': {
+        if (this.requireReadyTarget('set_flight_mode', msg.requestId)) {
+          // Stack-specific encoding happens here, after the vehicle profile is
+          // known; unknown/unimplemented profiles are rejected before any
+          // bytes are written to the serial link.
+          const encoded = encodeModeCommand(this.selectedIdentity, msg.data.modeId)
+          if (!encoded.ok) {
+            this.emitOperationError('set_flight_mode', encoded.code, encoded.message, msg.requestId)
+            break
+          }
+          this.sendCommand('MAV_CMD_DO_SET_MODE', encoded.params, msg.requestId)
+        }
+        break
+      }
       case 'param_set':
         if (this.requireReadyTarget('param_set', msg.requestId)) {
           this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)

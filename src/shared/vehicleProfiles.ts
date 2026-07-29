@@ -159,3 +159,73 @@ export function formatFirmwareLabel(family: AutopilotFamily, version: string): s
     default: return `Autopilot v${version}`
   }
 }
+
+export interface FlightModeOption {
+  /** Value carried by the semantic set_flight_mode client message. */
+  id: number
+  name: string
+}
+
+// First-release ArduCopter mode surface: only commonly safe, understood
+// modes. Anything else stays reachable through the RC transmitter but is
+// deliberately not offered (or encoded) by this GCS yet.
+const ARDUCOPTER_SELECTABLE_MODE_IDS = [0, 2, 5, 16, 3, 4, 6, 9, 1] as const
+
+/**
+ * Modes this GCS offers for the selected profile. An empty list means mode
+ * switching is not supported for the vehicle (UI must explain, not hide).
+ */
+export function availableModes(identity: VehicleIdentity | null): FlightModeOption[] {
+  if (!identity) return []
+  if (identity.family === 'px4') {
+    return Object.values(PX4_MODES).map((mode) => ({ id: mode.id, name: mode.name }))
+  }
+  if (identity.family === 'ardupilot' && identity.vehicleClass === 'copter') {
+    return ARDUCOPTER_SELECTABLE_MODE_IDS.map((id) => ({ id, name: ARDUCOPTER_MODES[id] }))
+  }
+  return []
+}
+
+export type ModeCommandEncoding =
+  | { ok: true; params: [number, number, number, number, number, number, number] }
+  | { ok: false; code: 'unsupported_vehicle_profile' | 'unknown_mode'; message: string }
+
+/**
+ * Encode MAV_CMD_DO_SET_MODE parameters for the selected profile. Rejects
+ * before serialization when the profile is unknown/unimplemented or the mode
+ * is not part of the vetted selectable list - stale or cross-stack mode
+ * numbers must never reach the serial link.
+ */
+export function encodeModeCommand(
+  identity: VehicleIdentity | null,
+  modeId: number,
+): ModeCommandEncoding {
+  if (!identity || identity.family === 'unknown') {
+    return {
+      ok: false,
+      code: 'unsupported_vehicle_profile',
+      message: '尚未识别飞控类型，无法安全编码飞行模式',
+    }
+  }
+  if (identity.family === 'px4') {
+    const mode = Object.values(PX4_MODES).find((candidate) => candidate.id === modeId)
+    if (!mode) {
+      return { ok: false, code: 'unknown_mode', message: `未知的 PX4 飞行模式 id ${modeId}` }
+    }
+    // PX4: param1=CUSTOM_MODE_ENABLED, param2=main mode, param3=sub mode.
+    return { ok: true, params: [1, mode.mainMode, mode.subMode, 0, 0, 0, 0] }
+  }
+  if (identity.vehicleClass === 'copter') {
+    if (!ARDUCOPTER_SELECTABLE_MODE_IDS.includes(modeId as never)) {
+      return { ok: false, code: 'unknown_mode', message: `未开放的 ArduCopter 飞行模式 id ${modeId}` }
+    }
+    // ArduPilot: param1=MAV_MODE_FLAG_CUSTOM_MODE_ENABLED(1), param2=raw
+    // flight-mode number, param3=0.
+    return { ok: true, params: [1, modeId, 0, 0, 0, 0, 0] }
+  }
+  return {
+    ok: false,
+    code: 'unsupported_vehicle_profile',
+    message: '当前机型的模式切换尚未适配（仅支持 ArduCopter）',
+  }
+}

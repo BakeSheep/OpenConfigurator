@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PX4_MODES } from '../../shared/constants'
+import { availableModes } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -10,6 +10,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 export default function FlightControlPage() {
   const send = sendClientMessage
   const vehicle = useTelemetryStore((state) => state.status)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const battery = useTelemetryStore((state) => state.battery)
   const gps = useTelemetryStore((state) => state.gps)
   const ekfStatus = useTelemetryStore((state) => state.ekfStatus)
@@ -62,8 +63,9 @@ export default function FlightControlPage() {
     safetyConfirmation: 'disarm',
   })
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
-  const setMode = (mainMode: number, subMode: number) =>
-    command('MAV_CMD_DO_SET_MODE', [1, mainMode, subMode, 0, 0, 0, 0])
+  const modeOptions = availableModes(vehicleIdentity)
+  const setMode = (modeId: number) =>
+    send({ type: 'set_flight_mode', data: { modeId } })
 
   const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
   const hasValidOpticalFlow = sensorHealth.opticalFlow === 'ok'
@@ -165,14 +167,19 @@ export default function FlightControlPage() {
             <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>模式切换通过 MAV_CMD_DO_SET_MODE 执行。</p>
           </div>
           <div className="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
-            {Object.values(PX4_MODES).map((mode) => (
+            {modeOptions.length === 0 && (
+              <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+                当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+              </p>
+            )}
+            {modeOptions.map((mode) => (
               <button
                 key={mode.id}
                 type="button"
                 disabled={!connected}
                 className="mc-btn min-h-10"
                 style={vehicle?.modeId === mode.id ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-                onClick={() => setMode(mode.mainMode, mode.subMode)}
+                onClick={() => setMode(mode.id)}
               >
                 {mode.name}
               </button>

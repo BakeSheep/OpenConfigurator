@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { PX4_MODES } from '../../../shared/constants'
+import { availableModes } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
@@ -118,6 +118,7 @@ export default function Topbar() {
   const gps = useTelemetryStore((s) => s.gps)
   const battery = useTelemetryStore((s) => s.battery)
   const vehicle = useTelemetryStore((s) => s.status)
+  const vehicleIdentity = useTelemetryStore((s) => s.vehicleIdentity)
   const relativeAlt = useTelemetryStore((s) => s.relativeAlt)
   const heading = useTelemetryStore((s) => s.heading)
   const isStale = useTelemetryStore((s) => s.isStale)
@@ -159,13 +160,14 @@ export default function Topbar() {
     armDraggingRef.current = false
   }, [armed, canArm, vehicleReady])
 
-  const selectMode = (mainMode: number, subMode: number) => {
+  const selectMode = (modeId: number) => {
     if (!vehicleReady || !canControl) return
+    // The server encodes stack-specific DO_SET_MODE parameters from the
+    // selected vehicle profile; the browser only names the mode.
     sendClientMessage({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: `mode-${Date.now().toString(36)}`,
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, mainMode, subMode, 0, 0, 0, 0],
+      data: { modeId },
     })
     setActiveStatusMenu(null)
   }
@@ -327,14 +329,19 @@ export default function Topbar() {
             <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label="选择飞行模式">
               <header><div><strong>飞行模式</strong><small>{vehicleReady && canControl ? '选择后立即向飞控发送模式切换指令' : '飞控未就绪或当前没有控制权'}</small></div></header>
               <div role="menu">
-                {Object.values(PX4_MODES).map((mode) => (
+                {availableModes(vehicleIdentity).length === 0 && (
+                  <p className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                    当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+                  </p>
+                )}
+                {availableModes(vehicleIdentity).map((mode) => (
                   <button
                     key={mode.id}
                     type="button"
                     role="menuitem"
                     disabled={!vehicleReady || !canControl}
                     data-active={vehicle?.modeId === mode.id}
-                    onClick={() => selectMode(mode.mainMode, mode.subMode)}
+                    onClick={() => selectMode(mode.id)}
                   >
                     <span>{mode.name}</span>
                     {vehicle?.modeId === mode.id && <Icon name="check" size={14} />}

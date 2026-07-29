@@ -467,6 +467,49 @@ for (const messageId of [106, 132]) {
   }), `expected telemetry interval request for MAVLink message #${messageId}`)
 }
 
+// Semantic mode change: the server encodes PX4 Position (id 3) as packed
+// main/sub-mode parameters [1, 3, 0, ...] on MAV_CMD_DO_SET_MODE.
+bridge.handleClientMessage({
+  type: 'set_flight_mode',
+  requestId: 'px4-mode-position',
+  data: { modeId: 3 },
+})
+const px4ModeFrame = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 176,
+)
+assert.ok(px4ModeFrame)
+{
+  const payload = framePayload(px4ModeFrame)
+  assert.equal(payload.readFloatLE(0), 1)
+  assert.equal(payload.readFloatLE(4), 3)
+  assert.equal(payload.readFloatLE(8), 0)
+}
+// Unvetted mode ids are rejected before serialization.
+const modeFramesBeforeBadMode = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+).length
+bridge.handleClientMessage({
+  type: 'set_flight_mode',
+  requestId: 'px4-mode-bad',
+  data: { modeId: 99 },
+})
+assert.equal(
+  connection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length,
+  modeFramesBeforeBadMode,
+)
+assert.equal(
+  findLast(messages, (message) => message.type === 'operation_error'
+    && message.data.requestId === 'px4-mode-bad')?.data.code,
+  'unknown_mode',
+)
+// Resolve the pending DO_SET_MODE transaction so later tests are unaffected,
+// then wait out the post-ACK settling quarantine window (commandTimeoutMs).
+inject(bridge, 77, commandAckPayload(176, 0))
+await wait(45)
+
 // A second autopilot is discovered but cannot steal status/liveness/target.
 const statusCountBeforeSecondTarget = messages.filter((message) => message.type === 'status').length
 inject(bridge, 0, heartbeatPayload(), 43, 1)
@@ -1260,6 +1303,25 @@ bridge.destroy()
   inject(apBridge, 0, heartbeatPayload(3, 2, 6), 55, 1)
   assert.equal(findLast(apMessages, (message) => message.type === 'status').data.mode, 'RTL')
 
+  // Semantic mode change encodes ArduCopter Loiter as raw custom mode 5:
+  // [1, 5, 0, ...] - never PX4's packed main/sub layout.
+  apBridge.handleClientMessage({
+    type: 'set_flight_mode',
+    requestId: 'ap-mode-loiter',
+    data: { modeId: 5 },
+  })
+  const apModeFrame = findLast(
+    apConnection.frames.filter((frame) => frameMessageId(frame) === 76),
+    (frame) => framePayload(frame).readUInt16LE(28) === 176,
+  )
+  assert.ok(apModeFrame)
+  {
+    const payload = framePayload(apModeFrame)
+    assert.equal(payload.readFloatLE(0), 1)
+    assert.equal(payload.readFloatLE(4), 5)
+    assert.equal(payload.readFloatLE(8), 0)
+  }
+
   // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
   // raw board/vendor/product fields intact.
   const apVersion = new standard.AutopilotVersion()
@@ -1291,6 +1353,45 @@ bridge.destroy()
   assert.equal(resetTarget.data.identity, null)
   assert.equal(resetTarget.data.systemId, null)
   apBridge.destroy()
+}
+
+// An unknown autopilot family (MAV_AUTOPILOT generic) is trackable but mode
+// requests must be rejected before serialization - no cross-stack guessing.
+{
+  const genericConnection = new FakeConnection()
+  const genericBridge = new MavlinkBridge(genericConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const genericMessages: any[] = []
+  genericBridge.on('message', (message) => genericMessages.push(message))
+  inject(genericBridge, 0, heartbeatPayload(0, 2, 0), 66, 1)
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'status').data.identity.family,
+    'unknown',
+  )
+  const framesBeforeMode = genericConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length
+  genericBridge.handleClientMessage({
+    type: 'set_flight_mode',
+    requestId: 'generic-mode',
+    data: { modeId: 0 },
+  })
+  assert.equal(
+    genericConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+    ).length,
+    framesBeforeMode,
+  )
+  const genericError = findLast(
+    genericMessages,
+    (message) => message.type === 'operation_error' && message.data.requestId === 'generic-mode',
+  )
+  assert.equal(genericError.data.operation, 'set_flight_mode')
+  assert.equal(genericError.data.code, 'unsupported_vehicle_profile')
+  genericBridge.destroy()
 }
 
 console.log('MAVLink codec, transaction, target and telemetry checks passed')

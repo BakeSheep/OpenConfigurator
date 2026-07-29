@@ -5,6 +5,8 @@ import {
   buildVehicleIdentity,
   decodeFlightMode,
   formatFirmwareLabel,
+  availableModes,
+  encodeModeCommand,
 } from './vehicleProfiles'
 
 // ---------------------------------------------------------------------------
@@ -105,5 +107,56 @@ assert.equal(decodeFlightMode('unknown', 'copter', 5).known, false)
 assert.equal(formatFirmwareLabel('ardupilot', '4.7.0'), 'ArduPilot v4.7.0')
 assert.equal(formatFirmwareLabel('px4', '1.17.0'), 'PX4 v1.17.0')
 assert.equal(formatFirmwareLabel('unknown', '2.0.1'), 'Autopilot v2.0.1')
+
+// ---------------------------------------------------------------------------
+// Profile-driven mode lists: only commonly safe, understood modes for the
+// first ArduCopter release; PX4 keeps its existing list; unknown gets none.
+// ---------------------------------------------------------------------------
+const apModes = availableModes(arducopter)
+assert.deepEqual(
+  apModes.map((mode) => mode.name),
+  ['Stabilize', 'AltHold', 'Loiter', 'PosHold', 'Auto', 'Guided', 'RTL', 'Land', 'Acro'],
+)
+assert.equal(apModes.find((mode) => mode.name === 'Loiter')?.id, 5)
+assert.equal(apModes.find((mode) => mode.name === 'Stabilize')?.id, 0)
+assert.ok(availableModes(px4Copter).some((mode) => mode.name === 'Position'))
+assert.ok(availableModes(px4Copter).some((mode) => mode.name === 'Mission'))
+assert.deepEqual(availableModes(unknownIdentity), [])
+assert.deepEqual(availableModes(null), [])
+assert.deepEqual(availableModes(buildVehicleIdentity(3, 1)), []) // ArduPlane deferred
+
+// ---------------------------------------------------------------------------
+// Server-side MAV_CMD_DO_SET_MODE parameter encoding by profile.
+// ---------------------------------------------------------------------------
+// ArduCopter Loiter: param1=CUSTOM_MODE_ENABLED, param2=raw mode, param3=0.
+const apLoiter = encodeModeCommand(arducopter, 5)
+assert.equal(apLoiter.ok, true)
+if (apLoiter.ok) assert.deepEqual(apLoiter.params, [1, 5, 0, 0, 0, 0, 0])
+
+// PX4 Position keeps the packed main/sub-mode encoding (main 3, sub 0).
+const px4Position = encodeModeCommand(px4Copter, 3)
+assert.equal(px4Position.ok, true)
+if (px4Position.ok) assert.deepEqual(px4Position.params, [1, 3, 0, 0, 0, 0, 0])
+
+// PX4 Mission (id 4) → main 4, sub 4.
+const px4Mission = encodeModeCommand(px4Copter, 4)
+assert.equal(px4Mission.ok, true)
+if (px4Mission.ok) assert.deepEqual(px4Mission.params, [1, 4, 4, 0, 0, 0, 0])
+
+// Unknown family / missing identity / unimplemented class: reject before
+// anything reaches the serial link.
+assert.deepEqual(encodeModeCommand(null, 0), {
+  ok: false,
+  code: 'unsupported_vehicle_profile',
+  message: '尚未识别飞控类型，无法安全编码飞行模式',
+})
+assert.equal(encodeModeCommand(unknownIdentity, 0).ok, false)
+assert.equal(encodeModeCommand(buildVehicleIdentity(3, 1), 0).ok, false) // plane
+const apUnknownMode = encodeModeCommand(arducopter, 14) // Flip not exposed
+assert.equal(apUnknownMode.ok, false)
+if (!apUnknownMode.ok) assert.equal(apUnknownMode.code, 'unknown_mode')
+const px4UnknownMode = encodeModeCommand(px4Copter, 99)
+assert.equal(px4UnknownMode.ok, false)
+if (!px4UnknownMode.ok) assert.equal(px4UnknownMode.code, 'unknown_mode')
 
 console.log('vehicleProfiles classification and mode decoding checks passed')

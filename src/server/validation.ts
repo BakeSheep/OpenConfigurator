@@ -241,6 +241,21 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
     case 'param_request_list':
       return withRequestId({ type: 'param_request_list' }, id) as BoundaryClientMessage
 
+    case 'set_flight_mode': {
+      const data = record(input.data, 'data')
+      // Only the profile mode id crosses the boundary; the server encodes the
+      // stack-specific MAV_CMD_DO_SET_MODE parameters after capability checks.
+      const modeId = finiteNumber(data.modeId, 'data.modeId', {
+        min: 0,
+        max: 0xffffffff,
+        integer: true,
+      })
+      return withRequestId({
+        type: 'set_flight_mode',
+        data: { modeId },
+      }, id) as BoundaryClientMessage
+    }
+
     case 'manual_control': {
       const data = record(input.data, 'data')
       const buttons = data.buttons === undefined
