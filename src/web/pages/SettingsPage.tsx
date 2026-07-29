@@ -3,7 +3,8 @@ import CollapsibleSubnav from '../components/layout/CollapsibleSubnav'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import { useParameterStore } from '../stores/parameterStore'
-import { getPx4AirframeInfo } from '../utils/px4Airframes'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { buildFrameConfigView } from '../utils/vehicleConfig'
 import JoystickPage from './JoystickPage'
 import MotorPage from './MotorPage'
 import PortSettingsPage from './PortSettingsPage'
@@ -29,9 +30,11 @@ export default function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const sectionParam = searchParams.get('section')
   const activeSection: SetupSection = isSetupSection(sectionParam) ? sectionParam : 'airframe'
-  const sysAutostart = useParameterStore((state) => state.params.get('SYS_AUTOSTART')?.value)
-  const airframeInfo = getPx4AirframeInfo(sysAutostart)
-  const autostartId = Number.isFinite(sysAutostart) ? Math.round(sysAutostart!) : null
+  const params = useParameterStore((state) => state.params)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  // Family-specific frame view: SYS_AUTOSTART for PX4, FRAME_CLASS/FRAME_TYPE
+  // for ArduPilot. No frame writes are offered in this release.
+  const frameView = params.size > 0 ? buildFrameConfigView(vehicleIdentity, params) : null
 
   const selectSection = (section: SetupSection) => {
     setSearchParams(section === 'airframe' ? {} : { section }, { replace: true })
@@ -65,14 +68,18 @@ export default function SettingsPage() {
                 <span className="mc-setup-identity__icon"><Icon name="flight" size={34} /></span>
                 <div>
                   <span className="mc-eyebrow">当前机架</span>
-                  <h2>{airframeInfo?.name ?? '等待飞控参数'}</h2>
-                  <p>{autostartId === null ? '连接飞控并完成参数同步后自动识别。' : `SYS_AUTOSTART ${autostartId}`}</p>
+                  <h2>{frameView?.name ?? '等待飞控参数'}</h2>
+                  <p>{frameView
+                    ? frameView.frameSource
+                    : params.size > 0 && vehicleIdentity
+                      ? '当前飞控类型尚未适配机架识别。'
+                      : '连接飞控并完成参数同步后自动识别。'}</p>
                 </div>
               </section>
               <section className="mc-card mc-setup-guidance">
                 <h2>配置顺序</h2>
                 <ol>
-                  <li><span>1</span><div><strong>确认机架</strong><small>核对飞控中的 SYS_AUTOSTART，不在未支持的界面中修改机架。</small></div></li>
+                  <li><span>1</span><div><strong>确认机架</strong><small>核对飞控中的机架参数（PX4：SYS_AUTOSTART；ArduPilot：FRAME_CLASS/FRAME_TYPE），不在未支持的界面中修改机架。</small></div></li>
                   <li><span>2</span><div><strong>校准传感器</strong><small>完成 IMU、罗盘和气压计校准，并检查实时数据。</small></div></li>
                   <li><span>3</span><div><strong>映射执行器</strong><small>确认物理输出、电机编号与旋向，再执行无桨测试。</small></div></li>
                   <li><span>4</span><div><strong>检查控制输入</strong><small>确认遥控器或游戏手柄通道响应正确。</small></div></li>
