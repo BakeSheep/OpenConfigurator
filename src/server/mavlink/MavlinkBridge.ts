@@ -194,6 +194,9 @@ export class MavlinkBridge extends EventEmitter {
   // Cleared with the selected protocol state so a reconnected or switched
   // vehicle can never inherit a previous vehicle's profile.
   private selectedIdentity: VehicleIdentity | null = null
+  // Last armed flag from the selected heartbeat; null until known. Used to
+  // refuse bench-only operations (motor test, calibration) while armed.
+  private lastArmedState: boolean | null = null
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
@@ -393,6 +396,7 @@ export class MavlinkBridge extends EventEmitter {
     this.requestedTelemetryStreams = false
     this.telemetryProfile = null
     this.selectedIdentity = null
+    this.lastArmedState = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
@@ -675,6 +679,7 @@ export class MavlinkBridge extends EventEmitter {
     if (this.versionAttempt === 0) this.requestAutopilotVersion()
 
     const armed = (hb.baseMode & 0x80) !== 0
+    this.lastArmedState = armed
     const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
     this.emit('message', {
       type: 'status',
@@ -2340,21 +2345,6 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
-    if (motorTestKind === 'motor-test') {
-      // ArduPilot uses MAV_CMD_DO_MOTOR_TEST (209); enabled in a later task.
-      this.emitOperationError(
-        'motor_test',
-        'unsupported_motor_test',
-        'ArduPilot 电机测试将在后续版本启用',
-        requestId,
-      )
-      return
-    }
-    // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
-    // Values >= 1000 in param5 are PX4-internal actuator functions with the
-    // 1000 transport offset. Motors 1..12 are functions 101..112, so an
-    // external GCS must send 1101..1112. This works across PX4 versions and
-    // avoids confusing the internal function ID with MAVLink's enum values.
     if (
       !Number.isInteger(instance)
       || instance < 1
@@ -2376,7 +2366,6 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
-    const outputFunction = 1100 + instance
     const shouldRelease = duration <= 0 || throttle <= 0
     if (!shouldRelease && propsRemoved !== true) {
       this.emitOperationError(
@@ -2387,6 +2376,64 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
+    // Spinning a motor on an armed vehicle is never a bench test. Stop
+    // commands stay allowed regardless of the armed state.
+    if (!shouldRelease && this.lastArmedState === true) {
+      this.emitOperationError(
+        'motor_test',
+        'vehicle_armed',
+        '飞行器已解锁，禁止启动电机测试',
+        requestId,
+      )
+      return
+    }
+
+    if (motorTestKind === 'motor-test') {
+      // ArduPilot: MAV_CMD_DO_MOTOR_TEST (209) with a 1-based motor instance,
+      // MOTOR_TEST_THROTTLE_PERCENT (0) as throttle type, percent throttle and
+      // a bounded timeout in seconds. Stop = throttle 0 / timeout 0.
+      const commandId = (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_DO_MOTOR_TEST
+      if (commandId === undefined) {
+        this.emitOperationError('motor_test', 'unsupported_command', '缺少电机测试命令', requestId)
+        return
+      }
+      const throttlePercent = shouldRelease ? 0 : Math.max(0, Math.min(100, throttle))
+      const timeoutSeconds = shouldRelease ? 0 : Math.max(0, Math.min(30, duration))
+      if (!this.writeMessage(
+        this.buildCommand(
+          commandId,
+          [instance, 0, throttlePercent, timeoutSeconds, 0, 0, 0],
+        ),
+        shouldRelease ? 'critical' : 'high',
+      )) {
+        this.emitOperationError(
+          'motor_test',
+          'write_rejected',
+          '连接发送队列拒绝电机测试命令',
+          requestId,
+          true,
+        )
+        return
+      }
+      this.emit('message', {
+        type: 'motor_test_status',
+        data: {
+          requestId,
+          instance,
+          action: shouldRelease ? 'stop' : 'start',
+          status: 'sent_unconfirmed',
+          reason: 'MAV_CMD_DO_MOTOR_TEST ACK 不包含电机实例，命令已发送但无法安全关联确认',
+        },
+      } as ServerMessage)
+      return
+    }
+
+    // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
+    // Values >= 1000 in param5 are PX4-internal actuator functions with the
+    // 1000 transport offset. Motors 1..12 are functions 101..112, so an
+    // external GCS must send 1101..1112. This works across PX4 versions and
+    // avoids confusing the internal function ID with MAVLink's enum values.
+    const outputFunction = 1100 + instance
     const value = shouldRelease ? Number.NaN : Math.max(0, Math.min(1, throttle / 100))
     const timeout = shouldRelease ? 0 : Math.max(0, duration)
     const commandId = (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_ACTUATOR_TEST

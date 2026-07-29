@@ -91,6 +91,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const airframeName = (params.size > 0 && frameView ? frameView.name : null)
     || (motorCount === 4 ? 'Quadrotor' : `${motorCount} Motor Geometry`)
   const motorCountRef = useRef(motorCount)
+  // True once the user enabled motor testing or a non-zero test command was
+  // sent. Merely opening/leaving this page must emit no motor-test command.
+  const testActivatedRef = useRef(false)
 
   const outputChannels = useMemo<FrameOutputChannel[]>(() => {
     const channels = frameView?.outputChannels ?? []
@@ -137,6 +140,10 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [motorCount])
 
   useEffect(() => () => {
+    // Stop frames are sent only after motor testing was actually activated;
+    // page navigation alone must not touch the motors (safety requirement,
+    // and ArduPilot rejected stray PX4 stop commands with UNSUPPORTED).
+    if (!testActivatedRef.current) return
     for (let index = 0; index < motorCountRef.current; index += 1) {
       send({ type: 'motor_test', data: { instance: index + 1, throttle: 0, duration: 0 } })
     }
@@ -145,6 +152,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const sendMotorLevel = (index: number, level: number) => {
     if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
+    if (throttle > 0) testActivatedRef.current = true
     setLevels((current) => current.map((value, motorIndex) => motorIndex === index ? throttle : value))
     send({
       type: 'motor_test',
@@ -160,6 +168,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const sendAllLevel = (level: number) => {
     if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
+    if (throttle > 0) testActivatedRef.current = true
     setLevels(Array.from({ length: motorCount }, () => throttle))
     for (let index = 0; index < motorCount; index += 1) {
       send({
@@ -178,6 +187,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const stopAll = () => sendAllLevel(0)
 
   const setSafety = (checked: boolean) => {
+    if (checked) testActivatedRef.current = true
     if (!checked && safetyConfirmed) stopAll()
     setSafetyConfirmed(checked)
   }

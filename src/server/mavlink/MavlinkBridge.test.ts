@@ -1322,6 +1322,90 @@ bridge.destroy()
     assert.equal(payload.readFloatLE(8), 0)
   }
 
+  // ArduPilot motor test uses MAV_CMD_DO_MOTOR_TEST (209): motor 1 at 5% for
+  // 2 s is [1, 0, 5, 2, 0, 0, 0]; PX4's command 310 is never sent.
+  const apMotorFrames = () => apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 209
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-noprops',
+    data: { instance: 1, throttle: 5, duration: 2 },
+  })
+  assert.equal(apMotorFrames().length, 0)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-motor-noprops')?.data.code,
+    'props_confirmation_required',
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-1',
+    data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
+  })
+  assert.equal(apMotorFrames().length, 1)
+  {
+    const payload = framePayload(apMotorFrames()[0])
+    assert.equal(payload.readFloatLE(0), 1)   // 1-based motor instance
+    assert.equal(payload.readFloatLE(4), 0)   // MOTOR_TEST_THROTTLE_PERCENT
+    assert.equal(payload.readFloatLE(8), 5)   // throttle percent
+    assert.equal(payload.readFloatLE(12), 2)  // bounded timeout seconds
+  }
+  assert.equal(
+    apConnection.writePriorities[apConnection.frames.indexOf(apMotorFrames()[0])],
+    'high',
+  )
+  assert.ok(apMessages.some((message) => message.type === 'motor_test_status'
+    && message.data.requestId === 'ap-motor-1'
+    && message.data.action === 'start'
+    && message.data.status === 'sent_unconfirmed'))
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-stop',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(apMotorFrames().length, 2)
+  {
+    const payload = framePayload(apMotorFrames()[1])
+    assert.equal(payload.readFloatLE(0), 1)
+    assert.equal(payload.readFloatLE(8), 0)
+    assert.equal(payload.readFloatLE(12), 0)
+  }
+  assert.equal(
+    apConnection.writePriorities[apConnection.frames.indexOf(apMotorFrames()[1])],
+    'critical',
+  )
+  assert.equal(
+    apConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+    ).length,
+    0,
+  )
+
+  // While armed, motor-test starts are refused before serialization; stop
+  // commands remain allowed.
+  const armedHeartbeat = heartbeatPayload(3, 2, 0)
+  armedHeartbeat[6] = 0x80
+  inject(apBridge, 0, armedHeartbeat, 55, 1)
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-armed',
+    data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
+  })
+  assert.equal(apMotorFrames().length, 2)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-motor-armed')?.data.code,
+    'vehicle_armed',
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-armed-stop',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(apMotorFrames().length, 3)
+  inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
   // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
   // raw board/vendor/product fields intact.
   const apVersion = new standard.AutopilotVersion()
