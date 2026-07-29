@@ -1404,7 +1404,53 @@ bridge.destroy()
     data: { instance: 1, throttle: 0, duration: 0 },
   })
   assert.equal(apMotorFrames().length, 3)
+  // Calibration is also refused while armed (bench-only operation).
+  const calFramesBeforeArmed = apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  ).length
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-armed', data: { kind: 'gyro' } })
+  assert.equal(
+    apConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+    ).length,
+    calFramesBeforeArmed,
+  )
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-cal-armed')?.data.code,
+    'vehicle_armed',
+  )
   inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
+  // Semantic calibration: ArduCopter maps supported kinds to command 241
+  // parameters and rejects kinds it does not implement (mag needs the mag-cal
+  // protocol). Gyro = param1, baro = param3, accel(level) = param5=2.
+  const apCalFrames = () => apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  )
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-gyro', data: { kind: 'gyro' } })
+  assert.equal(apCalFrames().length, 1)
+  assert.equal(framePayload(apCalFrames()[0]).readFloatLE(0), 1)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-baro', data: { kind: 'baro' } })
+  assert.equal(apCalFrames().length, 2)
+  assert.equal(framePayload(apCalFrames()[1]).readFloatLE(8), 1)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-accel', data: { kind: 'accel' } })
+  assert.equal(apCalFrames().length, 3)
+  assert.equal(framePayload(apCalFrames()[2]).readFloatLE(16), 2)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  // Mag calibration is not implemented for ArduCopter yet: rejected, no frame.
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-mag', data: { kind: 'mag' } })
+  assert.equal(apCalFrames().length, 3)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-cal-mag')?.data.code,
+    'unsupported_calibration_kind',
+  )
 
   // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
   // raw board/vendor/product fields intact.
@@ -1514,6 +1560,22 @@ bridge.destroy()
     )
     assert.equal(error?.data.code, code, `expected ${code} for ${requestId}`)
   }
+  // Semantic calibration also refuses to serialize command 241 for unknown.
+  const cal241Before = genericConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  ).length
+  genericBridge.handleClientMessage({ type: 'start_calibration', requestId: 'generic-cal2', data: { kind: 'gyro' } })
+  assert.equal(
+    genericConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+    ).length,
+    cal241Before,
+  )
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'generic-cal2')?.data.code,
+    'unsupported_vehicle_profile',
+  )
   genericBridge.destroy()
 }
 

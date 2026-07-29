@@ -256,6 +256,21 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       }, id) as BoundaryClientMessage
     }
 
+    case 'start_calibration': {
+      if (id === undefined) {
+        fail('missing_request_id', 'start_calibration 必须携带 requestId', 'requestId')
+      }
+      const data = record(input.data, 'data')
+      const kind = text(data.kind, 'data.kind', { minBytes: 1, maxBytes: 8, pattern: /^[a-z]+$/ })
+      if (kind !== 'accel' && kind !== 'gyro' && kind !== 'mag' && kind !== 'baro') {
+        fail('invalid_calibration_kind', `不支持的校准类型：${kind}`, 'data.kind')
+      }
+      return withRequestId({
+        type: 'start_calibration',
+        data: { kind },
+      }, id) as BoundaryClientMessage
+    }
+
     case 'manual_control': {
       const data = record(input.data, 'data')
       const buttons = data.buttons === undefined

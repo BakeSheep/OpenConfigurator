@@ -462,6 +462,14 @@ export type ClientMessage =
       data: { modeId: number }
     }
   | {
+      // Semantic calibration: the browser names the kind and the server maps
+      // it to stack-specific MAV_CMD_PREFLIGHT_CALIBRATION parameters after
+      // capability + armed checks.
+      type: 'start_calibration'
+      requestId: string
+      data: { kind: 'accel' | 'gyro' | 'mag' | 'baro' }
+    }
+  | {
       type: 'motor_test'
       requestId?: string
       data: {

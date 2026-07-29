@@ -1479,6 +1479,11 @@ export class MavlinkBridge extends EventEmitter {
         }
         break
       }
+      case 'start_calibration':
+        if (this.requireReadyTarget('start_calibration', msg.requestId)) {
+          this.sendCalibration(msg.data.kind, msg.requestId)
+        }
+        break
       case 'param_set':
         if (this.requireReadyTarget('param_set', msg.requestId)) {
           this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)
@@ -2324,6 +2329,62 @@ export class MavlinkBridge extends EventEmitter {
       control.target = this.targetSysId ?? 0
       this.writeMessage(control)
     })
+  }
+
+  // Semantic calibration: map a supported kind to stack-specific
+  // MAV_CMD_PREFLIGHT_CALIBRATION parameters. Only documented, testable flows
+  // are implemented; kinds needing multi-step position acknowledgement (e.g.
+  // ArduPilot mag) are rejected until modeled as explicit follow-up messages.
+  // The request-scoped state on the client advances from COMMAND_ACK and
+  // STATUSTEXT - never from a timer here.
+  private sendCalibration(kind: 'accel' | 'gyro' | 'mag' | 'baro', requestId: string) {
+    if (!vehicleCapabilities(this.selectedIdentity).calibrate) {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_vehicle_profile',
+        '当前飞控类型尚未适配校准流程',
+        requestId,
+      )
+      return
+    }
+    if (this.lastArmedState === true) {
+      this.emitOperationError('start_calibration', 'vehicle_armed', '飞行器已解锁，禁止校准', requestId)
+      return
+    }
+    const family = this.selectedIdentity?.family
+    // param order: [gyro, mag, groundPressure, radio, accel, esc/airspeed, ...]
+    const params: number[] = [0, 0, 0, 0, 0, 0, 0]
+    if (family === 'px4') {
+      // Preserve existing PX4 behavior for every kind.
+      if (kind === 'gyro') params[0] = 1
+      else if (kind === 'mag') params[1] = 1
+      else if (kind === 'baro') params[2] = 1
+      else params[4] = 1 // accel
+    } else if (family === 'ardupilot') {
+      // Only flows that do not need per-position acknowledgement.
+      if (kind === 'gyro') params[0] = 1
+      else if (kind === 'baro') params[2] = 1
+      else if (kind === 'accel') params[4] = 2 // simple/level accel calibration
+      else {
+        // mag calibration on ArduPilot uses the DO_START_MAG_CAL protocol.
+        this.emitOperationError(
+          'start_calibration',
+          'unsupported_calibration_kind',
+          '当前飞控暂不支持该校准类型（罗盘校准将在后续版本启用）',
+          requestId,
+        )
+        return
+      }
+    } else {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_vehicle_profile',
+        '尚未识别飞控类型，无法编码校准命令',
+        requestId,
+      )
+      return
+    }
+    this.sendCommand('MAV_CMD_PREFLIGHT_CALIBRATION', params, requestId)
   }
 
   private sendMotorTest(

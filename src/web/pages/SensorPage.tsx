@@ -188,14 +188,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
 
   const startCalibration = (type: CalibrationType) => {
     if (!canCalibrate) return
-    const params = [0, 0, 0, 0, 0, 0, 0]
-    if (type === 'gyro') params[0] = 1
-    if (type === 'mag') params[1] = 1
-    if (type === 'baro') params[2] = 1
-    if (type === 'accel') params[4] = 1
     const requestId = `cal-${type}-${Date.now().toString(36)}`
     const startedAt = Date.now()
-    const sent = send({ type: 'command', requestId, cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
+    // Semantic message: the server maps the kind to stack-specific
+    // MAV_CMD_PREFLIGHT_CALIBRATION parameters after capability/armed checks.
+    const sent = send({ type: 'start_calibration', requestId, data: { kind: type } })
     setCalibration({
       type,
       requestId,
