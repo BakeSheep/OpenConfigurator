@@ -1,6 +1,6 @@
 # OpenConfigurator
 
-OpenConfigurator is a local-first, browser-based ground control station for PX4. A React SPA communicates with a local Node.js service over REST and one WebSocket; the service communicates with the flight controller over MAVLink v1/v2 using USB serial or Bluetooth SPP.
+OpenConfigurator is a local-first, browser-based ground control station for PX4 and ArduPilot. A React SPA communicates with a local Node.js service over REST and one WebSocket; the service communicates with the flight controller over MAVLink v1/v2 using USB serial or Bluetooth SPP.
 
 [中文说明](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment](docs/DEPLOYMENT.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
@@ -17,6 +17,7 @@ OpenConfigurator is a local-first, browser-based ground control station for PX4.
 - MAVLink v1/v2 negotiation with optional MAVLink 2 signing
 - Live attitude, GPS, battery, IMU, pressure, optical-flow, rangefinder, and EKF telemetry
 - PX4 parameter synchronization, editing, confirmation, search, grouping, and export
+- Multi-autopilot support: PX4 / ArduPilot identified from HEARTBEAT, driving profile-specific modes, frame, parameter groups, and capability gating (ArduCopter 4.7 is the first-milestone acceptance target; see `docs/ARDUPILOT.md`)
 - Sensor monitoring and basic calibration commands, EKF setup, and PID tuning
 - Actuator mapping, guarded motor testing, RC monitoring, and gamepad input
 - Guarded arm/disarm/takeoff/land/RTL commands and flight-mode switching

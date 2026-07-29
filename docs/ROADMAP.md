@@ -1,8 +1,15 @@
 # OpenConfigurator 路线图
 
+## 近期：多飞控适配
+
+- ✅ ArduPilot 识别与 ArduCopter 4.7 适配（模式、机架、执行器、电机测试 209、PID/EKF/串口/朝向参数、能力门控）；见 `docs/ARDUPILOT.md`。
+- ArduPlane / Rover / Sub / Tracker 写操作（当前为显式只读）。
+- ArduPilot DataFlash `.BIN` 下载与分析（LOG_REQUEST_* 服务，待评估解析器）。
+- ArduPilot 罗盘校准（`DO_START_MAG_CAL` 多步交互）。
+
 ## 中期：可用性与连接能力
 
-- UDP 连接与 PX4 SITL 支持
+- UDP 连接与 PX4/ArduPilot SITL 支持
 - 地图、GPS 轨迹和基础任务规划
 - 飞行数据记录、导出与离线回放
 - 多语言与无障碍体验

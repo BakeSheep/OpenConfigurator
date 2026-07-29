@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  面向 PX4 的本地优先 Web 地面站：在浏览器中完成连接、监控、配置、调参与基础飞行操作。
+  面向 PX4 与 ArduPilot 的本地优先 Web 地面站：在浏览器中完成连接、监控、配置、调参与基础飞行操作。
 </p>
 
 <p align="center">
@@ -36,6 +36,7 @@ OpenConfigurator 是一个基于浏览器的 PX4 地面控制站（GCS）。Reac
 - MAVLink v1/v2 自动协商、可选 MAVLink 2 signing、目标飞控选择与链路统计
 - 姿态、GPS、电池、IMU、气压计、光流、测距和 EKF 实时遥测
 - PX4 参数下载、搜索、分组、修改、回显确认与导出
+- 多飞控适配：从 HEARTBEAT 自动识别 PX4 / ArduPilot，按机型驱动模式、机架、参数分组与能力门控（首个里程碑验收 ArduCopter 4.7，见 `docs/ARDUPILOT.md`）
 - 传感器监控与基础校准命令、EKF 融合设置、PID 调参
 - 执行器映射、电机测试、RC 通道监控和游戏手柄输入
 - 解锁、上锁、起飞、降落、返航和飞行模式切换
