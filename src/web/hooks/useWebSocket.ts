@@ -134,6 +134,9 @@ function handleMessage(msg: ServerMessage) {
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
         paramStore.clear()
+        // The vehicle profile is bound to the dropped link; a later reconnect
+        // must re-classify the vehicle instead of reusing the old identity.
+        telemetryStore.setVehicleIdentity(null)
         // FC filesystem state is meaningless without a link.
         useFileExplorerStore.getState().reset()
       }
@@ -311,6 +314,9 @@ function handleMessage(msg: ServerMessage) {
       activeParamGeneration = null
       break
     case 'target':
+      // Identity always tracks the backend's target lifecycle: cleared on
+      // reset/deselection so a new vehicle can never inherit a stale profile.
+      telemetryStore.setVehicleIdentity(msg.data.systemId === null ? null : msg.data.identity)
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
         telemetryStore.addStatusLog(
           6,
@@ -430,6 +436,7 @@ function connectSocket() {
       discardParamBatch()
       useConnectionStore.getState().setDisconnected()
       useTelemetryStore.getState().markAllStale()
+      useTelemetryStore.getState().setVehicleIdentity(null)
       useSensorStore.getState().markAllOffline()
       useParameterStore.getState().clear()
     }

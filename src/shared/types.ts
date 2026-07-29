@@ -1,5 +1,9 @@
 // MAVLink message types and shared interfaces between frontend and backend
 
+import type { VehicleIdentity, AutopilotFamily, VehicleClass } from './vehicleProfiles'
+
+export type { VehicleIdentity, AutopilotFamily, VehicleClass }
+
 export interface AttitudeData {
   roll: number
   pitch: number
@@ -76,6 +80,9 @@ export interface AutopilotVersionData {
   firmwareLabel: string
   vendorId: number
   productId: number
+  /** Autopilot family selected from HEARTBEAT identity, never inferred. */
+  family: AutopilotFamily
+  vehicleClass: VehicleClass
 }
 
 export interface BaroData {
@@ -144,6 +151,8 @@ export interface VehicleStatus {
   modeId: number
   failsafe: SafetyState
   systemStatus: number
+  /** Identity of the selected vehicle as classified from its HEARTBEAT. */
+  identity: VehicleIdentity
 }
 
 export interface ParamData {
@@ -362,10 +371,13 @@ export type ServerMessage =
         componentId: number | null
         ready: boolean
         reason: 'discovered' | 'selected' | 'reset'
+        /** Classified identity of the selected target; null until known. */
+        identity: VehicleIdentity | null
         discovered?: Array<{
           systemId: number
           componentId: number
           autopilot: number
+          type: number
         }>
       }
     }

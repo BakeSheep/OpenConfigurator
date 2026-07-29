@@ -104,6 +104,8 @@ function seedStatics() {
     firmwareLabel: 'Release',
     vendorId: 0x3162,
     productId: 0x0058,
+    family: 'px4',
+    vehicleClass: 'copter',
   })
   // Pre-select a few variables for the dashboard custom data board so the
   // showcase does not render an empty card (user picks are left untouched).
@@ -230,7 +232,15 @@ function pushSlowTelemetry() {
     protocolVersion: 2,
   })
 
-  t.setStatus({ armed: true, mode: 'Position', modeId: 3, failsafe: 'safe', systemStatus: 4 })
+  t.setStatus({
+    armed: true,
+    mode: 'Position',
+    modeId: 3,
+    failsafe: 'safe',
+    systemStatus: 4,
+    // Demo showcases the PX4 quadrotor profile.
+    identity: { autopilotId: 12, vehicleTypeId: 2, family: 'px4', vehicleClass: 'copter' },
+  })
 
   // Slow orbit around the launch point (Zurich Irchel, PX4 SITL default).
   const lat = 47.397742 + 0.00042 * Math.sin(time * 0.02)

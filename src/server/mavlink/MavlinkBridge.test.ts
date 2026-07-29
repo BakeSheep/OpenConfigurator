@@ -44,10 +44,14 @@ function makeHeartbeat(autopilot = 12): minimal.Heartbeat {
   return heartbeat
 }
 
-function heartbeatPayload(autopilot = 12): Buffer {
+function heartbeatPayload(
+  autopilot = 12,
+  type = autopilot === 8 ? 18 : 2,
+  customMode = 0x03040000,
+): Buffer {
   const payload = Buffer.alloc(9)
-  payload.writeUInt32LE(0x03040000, 0)
-  payload[4] = autopilot === 8 ? 18 : 2
+  payload.writeUInt32LE(customMode >>> 0, 0)
+  payload[4] = type
   payload[5] = autopilot
   payload[7] = 4
   payload[8] = 3
@@ -436,6 +440,16 @@ assert.equal((bridge as unknown as PrivateBridge).targetCompId, 1)
 assert.equal(connection.vehicleReady, true)
 assert.equal(connection.heartbeatNotifications, 1)
 assert.ok(messages.some((message) => message.type === 'status' && message.data.mode === 'Hold'))
+// The selected heartbeat classifies the vehicle profile and surfaces it on
+// both the status stream and the target lifecycle.
+const px4Status = findLast(messages, (message) => message.type === 'status')
+assert.equal(px4Status.data.identity.family, 'px4')
+assert.equal(px4Status.data.identity.vehicleClass, 'copter')
+assert.equal(px4Status.data.identity.autopilotId, 12)
+assert.equal(px4Status.data.identity.vehicleTypeId, 2)
+const selectedTarget = findLast(messages, (message) => message.type === 'target' && message.data.reason === 'selected')
+assert.equal(selectedTarget.data.identity.family, 'px4')
+assert.ok(selectedTarget.data.discovered.every((entry: { type: number }) => typeof entry.type === 'number'))
 
 const initialCommandFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
 assert.ok(initialCommandFrames.some((frame) => {
@@ -1216,6 +1230,67 @@ bridge.destroy()
   await wait(0)
   const after = destroyConnection.frames.filter((frame) => frameMessageId(frame) === 69).length
   assert.equal(after, before)
+}
+
+// ArduPilot identity: an ArduCopter heartbeat (autopilot 3, type 2) selects
+// the ardupilot/copter profile, decodes raw custom_mode values, labels the
+// firmware as ArduPilot, and never survives a target reset.
+{
+  const apConnection = new FakeConnection()
+  const apBridge = new MavlinkBridge(apConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const apMessages: any[] = []
+  apBridge.on('message', (message) => apMessages.push(message))
+
+  // ArduCopter Stabilize: custom_mode 0 must not decode through PX4's packed
+  // main/sub layout (which used to render it as "Mode 0").
+  inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+  const apStatus = findLast(apMessages, (message) => message.type === 'status')
+  assert.equal(apStatus.data.mode, 'Stabilize')
+  assert.equal(apStatus.data.modeId, 0)
+  assert.equal(apStatus.data.identity.family, 'ardupilot')
+  assert.equal(apStatus.data.identity.vehicleClass, 'copter')
+  const apTarget = findLast(apMessages, (message) => message.type === 'target' && message.data.reason === 'selected')
+  assert.equal(apTarget.data.identity.family, 'ardupilot')
+
+  // RTL by raw mode number.
+  inject(apBridge, 0, heartbeatPayload(3, 2, 6), 55, 1)
+  assert.equal(findLast(apMessages, (message) => message.type === 'status').data.mode, 'RTL')
+
+  // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
+  // raw board/vendor/product fields intact.
+  const apVersion = new standard.AutopilotVersion()
+  apVersion.capabilities = 8192n as never
+  apVersion.uid = 0n
+  apVersion.flightSwVersion = (4 << 24) | (7 << 16)
+  apVersion.middlewareSwVersion = 0
+  apVersion.osSwVersion = 0
+  apVersion.boardVersion = 1179 << 16
+  apVersion.vendorId = 4660
+  apVersion.productId = 22136
+  apVersion.flightCustomVersion = Array(8).fill(0)
+  apVersion.middlewareCustomVersion = Array(8).fill(0)
+  apVersion.osCustomVersion = Array(8).fill(0)
+  apVersion.uid2 = Array(18).fill(0)
+  apConnection.feed(new MavLinkProtocolV2(55, 1).serialize(apVersion, 3))
+  const apVersionData = findLast(apMessages, (message) => message.type === 'autopilot_version')?.data
+  assert.equal(apVersionData.firmwareLabel, 'ArduPilot v4.7.0')
+  assert.equal(apVersionData.family, 'ardupilot')
+  assert.equal(apVersionData.vehicleClass, 'copter')
+  assert.equal(apVersionData.boardName, 'MicoAir743v2')
+  assert.equal(apVersionData.vendorId, 4660)
+  assert.equal(apVersionData.productId, 22136)
+
+  // A connection status change resets the target; the identity must be
+  // cleared so a different vehicle on reconnect cannot inherit the profile.
+  ;(apBridge as unknown as { onStatusChange: (status: string) => void }).onStatusChange('disconnected')
+  const resetTarget = findLast(apMessages, (message) => message.type === 'target' && message.data.reason === 'reset')
+  assert.equal(resetTarget.data.identity, null)
+  assert.equal(resetTarget.data.systemId, null)
+  apBridge.destroy()
 }
 
 console.log('MAVLink codec, transaction, target and telemetry checks passed')

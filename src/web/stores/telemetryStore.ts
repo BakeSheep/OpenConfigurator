@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData } from '../../shared/types'
+import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VehicleIdentity } from '../../shared/types'
 
 export type StatusSeverity = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
@@ -51,6 +51,10 @@ interface TelemetryState {
   rcChannels: RcChannelsData | null
   motorOutputs: MotorOutputData | null
   autopilotVersion: AutopilotVersionData | null
+  // Selected vehicle identity from the backend 'target'/'status' messages.
+  // Kept independent of the parameter set and cleared on target reset or
+  // disconnect so a reconnected vehicle never reuses a stale profile.
+  vehicleIdentity: VehicleIdentity | null
   preflightCheck: boolean | null
   sensorsHealthy: boolean | null
   unhealthySensorMask: number
@@ -77,6 +81,7 @@ interface TelemetryState {
   setRcChannels: (data: RcChannelsData) => void
   setMotorOutputs: (data: MotorOutputData) => void
   setAutopilotVersion: (data: AutopilotVersionData) => void
+  setVehicleIdentity: (identity: VehicleIdentity | null) => void
   setVfrHud: (data: any) => void
   setGlobalPosition: (data: any) => void
   setSysStatus: (data: SysStatusData) => void
@@ -108,6 +113,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   rcChannels: null,
   motorOutputs: null,
   autopilotVersion: null,
+  vehicleIdentity: null,
   preflightCheck: null,
   sensorsHealthy: null,
   unhealthySensorMask: 0,
@@ -133,11 +139,18 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     batterySource: 'battery_status',
     lastUpdate: { ...state.lastUpdate, battery: Date.now() },
   })),
-  setStatus: (data) => set((state) => ({ status: data, lastUpdate: { ...state.lastUpdate, status: Date.now() } })),
+  setStatus: (data) => set((state) => ({
+    status: data,
+    // The heartbeat-derived status carries the authoritative identity; keep
+    // the store copy in sync so profile-driven UI follows reconnects.
+    vehicleIdentity: data.identity ?? state.vehicleIdentity,
+    lastUpdate: { ...state.lastUpdate, status: Date.now() },
+  })),
   setEkfStatus: (data) => set((state) => ({ ekfStatus: data, lastUpdate: { ...state.lastUpdate, ekfStatus: Date.now() } })),
   setRcChannels: (data) => set((state) => ({ rcChannels: data, lastUpdate: { ...state.lastUpdate, rcChannels: Date.now() } })),
   setMotorOutputs: (data) => set((state) => ({ motorOutputs: data, lastUpdate: { ...state.lastUpdate, motorOutputs: Date.now() } })),
   setAutopilotVersion: (data) => set({ autopilotVersion: data }),
+  setVehicleIdentity: (identity) => set({ vehicleIdentity: identity }),
   setVfrHud: (data) => set((state) => ({
     airSpeed: data.airspeed,
     groundSpeed: data.groundspeed,

@@ -14,7 +14,13 @@ import type { MavLinkData } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
 import type { SerialWritePriority } from '../connection/SerialConnection'
 import { MavlinkFtp, type FtpDownloadRecord } from './MavlinkFtp'
-import { FTP_MESSAGE_ID, MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
+import { FTP_MESSAGE_ID, MAVLINK_COMMANDS } from '../../shared/constants'
+import {
+  buildVehicleIdentity,
+  decodeFlightMode,
+  formatFirmwareLabel,
+  type VehicleIdentity,
+} from '../../shared/vehicleProfiles'
 import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
@@ -74,6 +80,8 @@ interface DiscoveredTarget {
   systemId: number
   componentId: number
   autopilot: number
+  /** Raw MAV_TYPE from the discovery heartbeat. */
+  type: number
   lastHeartbeatAt: number
 }
 
@@ -180,6 +188,10 @@ export class MavlinkBridge extends EventEmitter {
   private targetSysId: number | null = null
   private targetCompId: number | null = null
   private selectedHeartbeatReady = false
+  // Classified from the selected target's HEARTBEAT (autopilot + type).
+  // Cleared with the selected protocol state so a reconnected or switched
+  // vehicle can never inherit a previous vehicle's profile.
+  private selectedIdentity: VehicleIdentity | null = null
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
@@ -288,10 +300,12 @@ export class MavlinkBridge extends EventEmitter {
         componentId: this.targetCompId,
         ready: this.hasReadyTarget(),
         reason,
+        identity: this.selectedIdentity,
         discovered: [...this.discoveredTargets.values()].map((target) => ({
           systemId: target.systemId,
           componentId: target.componentId,
           autopilot: target.autopilot,
+          type: target.type,
         })),
       },
     } as ServerMessage)
@@ -353,6 +367,7 @@ export class MavlinkBridge extends EventEmitter {
   private resetSelectedProtocolState(): void {
     this.requestedTelemetryStreams = false
     this.telemetryProfile = null
+    this.selectedIdentity = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
@@ -603,6 +618,7 @@ export class MavlinkBridge extends EventEmitter {
       systemId: msg.sysId,
       componentId: msg.compId,
       autopilot: hb.autopilot,
+      type: hb.type,
       lastHeartbeatAt: performance.now(),
     })
     if (this.targetSysId === null) {
@@ -617,8 +633,15 @@ export class MavlinkBridge extends EventEmitter {
 
     const becameReady = !this.selectedHeartbeatReady
     this.selectedHeartbeatReady = true
+    // Preserve both HEARTBEAT identity fields for every selected heartbeat so
+    // the profile survives firmware reboots that change type/autopilot.
+    const identity = buildVehicleIdentity(hb.autopilot, hb.type)
+    const identityChanged = this.selectedIdentity === null
+      || this.selectedIdentity.autopilotId !== identity.autopilotId
+      || this.selectedIdentity.vehicleTypeId !== identity.vehicleTypeId
+    this.selectedIdentity = identity
     this.connManager.notifyAutopilotHeartbeat()
-    if (becameReady) this.emitTarget('selected')
+    if (becameReady || identityChanged) this.emitTarget('selected')
     // Use the autopilot class only as an early compatibility fallback. The
     // authoritative encoding is negotiated from AUTOPILOT_VERSION capabilities.
     if (!this.paramEncodingNegotiated) {
@@ -627,19 +650,21 @@ export class MavlinkBridge extends EventEmitter {
     if (this.versionAttempt === 0) this.requestAutopilotVersion()
 
     const armed = (hb.baseMode & 0x80) !== 0
-    const mode = this.getMode(hb.customMode)
+    const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
     this.emit('message', {
       type: 'status',
       data: {
         armed,
         mode: mode.name,
         modeId: mode.id,
-        // PX4 reports failsafe via STATUSTEXT / SYS_STATUS sensor flags rather
-        // than a dedicated HEARTBEAT bit, so it cannot be reliably derived
-        // here. Report 'unknown' instead of a misleading hardcoded false - a
-        // safety-critical field must never silently claim "no failsafe".
+        // Neither PX4 nor ArduPilot exposes a dedicated HEARTBEAT failsafe
+        // bit; both report failsafe via STATUSTEXT / SYS_STATUS sensor flags,
+        // so it cannot be reliably derived here. Report 'unknown' instead of
+        // a misleading hardcoded false - a safety-critical field must never
+        // silently claim "no failsafe".
         failsafe: 'unknown',
         systemStatus: hb.systemStatus,
+        identity,
       },
     } as ServerMessage)
 
@@ -1888,17 +1913,23 @@ export class MavlinkBridge extends EventEmitter {
     const lowerBoardId = boardVersion & 0xffff
     const boardId = BOARD_NAMES[upperBoardId] ? upperBoardId : BOARD_NAMES[lowerBoardId] ? lowerBoardId : upperBoardId || lowerBoardId
     const firmwareVersion = `${major}.${minor}.${patch}`
+    // The firmware label follows the HEARTBEAT-classified family; the version
+    // message itself carries no stack identity and must not assume PX4.
+    const family = this.selectedIdentity?.family ?? 'unknown'
+    const vehicleClass = this.selectedIdentity?.vehicleClass ?? 'unknown'
     this.emit('message', {
       type: 'autopilot_version',
       data: {
         boardId,
-        boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'PX4 Flight Controller'),
+        boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'Flight Controller'),
         firmwareVersion,
-        firmwareLabel: `PX4 v${firmwareVersion}`,
+        firmwareLabel: formatFirmwareLabel(family, firmwareVersion),
         // vendor/product are at wire offsets 32/34. The previous parser read
         // 56/58 (inside os_custom_version) - a latent bug fixed by node-mavlink.
         vendorId: d.vendorId,
         productId: d.productId,
+        family,
+        vehicleClass,
       },
     } as ServerMessage)
   }
@@ -2312,21 +2343,6 @@ export class MavlinkBridge extends EventEmitter {
         reason: 'MAV_CMD_ACTUATOR_TEST ACK 不包含电机实例，命令已发送但无法安全关联确认',
       },
     } as ServerMessage)
-  }
-
-  // PX4 custom_mode layout: reserved[0..15], main_mode[16..23],
-  // sub_mode[24..31]. Auto modes share main_mode=4 and differ by sub-mode.
-  private getMode(customMode: number): { id: number; name: string } {
-    const mainMode = customMode > 0xffff ? (customMode >>> 16) & 0xff : customMode
-    const subMode = customMode > 0xffff ? (customMode >>> 24) & 0xff : 0
-    const exact = Object.values(PX4_MODES).find((mode) =>
-      mode.mainMode === mainMode && mode.subMode === subMode
-    )
-    const mainOnly = Object.values(PX4_MODES).find((mode) =>
-      mode.mainMode === mainMode && mode.subMode === 0
-    )
-    const mode = exact ?? mainOnly
-    return mode ?? { id: customMode, name: `Mode ${mainMode}${subMode ? `.${subMode}` : ''}` }
   }
 
   destroy() {
