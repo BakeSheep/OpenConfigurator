@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { connectBackendIfEnabled } from '../runtimeMode'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -589,11 +590,13 @@ export function useWebSocket(enabled = true) {
   useEffect(() => {
     // Demo/static builds never open a socket: without one, sendClientMessage
     // always returns false, so no write can ever be faked as delivered.
-    if (!enabled) return
     if (mountedRef.current) return
-    mountedRef.current = true
-    refCount++
-    connectSocket()
+    const started = connectBackendIfEnabled(enabled, () => {
+      mountedRef.current = true
+      refCount++
+      connectSocket()
+    })
+    if (!started) return
 
     return () => {
       mountedRef.current = false

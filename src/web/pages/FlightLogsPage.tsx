@@ -15,6 +15,7 @@ import { logSupport } from '../utils/logProfiles'
 import { parsePx4DirectoryDate, parsePx4FileDate } from '../utils/ulogAnalysis'
 import { stashLogBuffer } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
+import { backendEnabled } from '../runtime'
 import type { FsEntry } from '../../shared/types'
 
 type SortKey = 'name' | 'date' | 'type' | 'size'
@@ -88,6 +89,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   const handledDownloadRef = useRef<string | null>(null)
 
   const requestListing = useCallback((path: string) => {
+    if (!backendEnabled) return
     useFileExplorerStore.getState().setLoading(true)
     sendClientMessage({ type: 'fs_list', data: { path } })
   }, [])
@@ -96,7 +98,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   // Only the PX4/ULog profile browses the filesystem over MAVLink FTP; the
   // DataFlash panel issues its own log_list requests.
   useEffect(() => {
-    if (vehicleReady && logs.format === 'ulog') requestListing(currentPath)
+    if (backendEnabled && vehicleReady && logs.format === 'ulog') requestListing(currentPath)
   }, [vehicleReady, logs.format, currentPath, requestListing])
 
   // Deletion finished: refresh the listing and dismiss the task shortly after.
@@ -295,7 +297,13 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
         }
       />}
 
-      {!vehicleReady ? (
+      {!backendEnabled ? (
+        <EmptyState
+          title="演示模式不读取飞控日志"
+          description="可进入日志分析并打开本地 .ulg 或 .bin 文件；在线日志浏览需要运行本地后端。"
+          icon="folder"
+        />
+      ) : !vehicleReady ? (
         <EmptyState
           title="请先连接飞控"
           description="连接后即可浏览并下载飞控上的日志文件"

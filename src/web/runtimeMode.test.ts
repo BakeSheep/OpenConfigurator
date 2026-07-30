@@ -1,6 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveRuntimeMode, shouldConnectBackend } from './runtimeMode'
+import {
+  connectBackendIfEnabled,
+  isReadOnlyRuntime,
+  resolveRuntimeMode,
+  shouldConnectBackend,
+} from './runtimeMode'
 
 test('VITE_APP_MODE=demo forces demo mode regardless of dev/query', () => {
   assert.equal(resolveRuntimeMode({ appMode: 'demo', dev: false, search: '' }), 'demo')
@@ -24,11 +29,26 @@ test('default is live mode', () => {
 test('demo mode never connects to the backend, live mode does', () => {
   assert.equal(shouldConnectBackend('demo'), false)
   assert.equal(shouldConnectBackend('live'), true)
+  assert.equal(isReadOnlyRuntime('demo'), true)
+  assert.equal(isReadOnlyRuntime('live'), false)
 })
 
-test('demo send policy is disabled: useWebSocket(enabled) derives enabled from shouldConnectBackend', () => {
-  // The hook returns a stub send that always reports failure when the backend
-  // is disabled, so no client message can ever be faked as delivered.
-  const sendEnabled = shouldConnectBackend('demo')
-  assert.equal(sendEnabled, false)
+test('disabled socket lifecycle never invokes the WebSocket connector', () => {
+  let connectionAttempts = 0
+  const started = connectBackendIfEnabled(
+    shouldConnectBackend('demo'),
+    () => { connectionAttempts += 1 },
+  )
+  assert.equal(started, false)
+  assert.equal(connectionAttempts, 0)
+})
+
+test('enabled socket lifecycle invokes the connector once', () => {
+  let connectionAttempts = 0
+  const started = connectBackendIfEnabled(
+    shouldConnectBackend('live'),
+    () => { connectionAttempts += 1 },
+  )
+  assert.equal(started, true)
+  assert.equal(connectionAttempts, 1)
 })

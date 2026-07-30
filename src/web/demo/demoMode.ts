@@ -134,12 +134,12 @@ function seedEscConfigurator() {
     state: 'active',
     sessionId,
     mode: 'ardupilot_passthrough',
-    ownerClientId: null,
+    ownerClientId: 'demo-readonly-owner',
     escCount: 4,
     activeJobId: null,
     recoverUntil: null,
     reason: null,
-    capabilities: { read: true, write: true },
+    capabilities: { read: true, write: false },
   })
   const devices = Array.from({ length: 4 }, (_, index) => ({
     index,
@@ -151,7 +151,8 @@ function seedEscConfigurator() {
     mcuName: 'STM32F051',
     bootloaderVersion: '13',
     layoutRevision: 3,
-    writable: true,
+    writable: false,
+    reason: 'not_validated' as const,
   }))
   store.applyDevices(sessionId, devices)
   const rawBase64 = btoa(String.fromCharCode(...new Uint8Array(0xb8)))
@@ -160,7 +161,7 @@ function seedEscConfigurator() {
     escIndex: device.index,
     firmwareKind: 'am32',
     layoutRevision: 3,
-    writable: true,
+    writable: false,
     rawBase64,
     values: {
       disableStickCalibration: 0,
@@ -300,6 +301,9 @@ function pushSlowTelemetry() {
     status: 'connected', transportOpen: true, vehicleReady: true, rawSessionActive: false,
     port: 'DEMO', type: 'synthetic', baudRate: 57600,
   })
+  // Keep the synthetic vehicle fully populated for preview while making every
+  // normal control gate resolve to read-only.
+  conn.setController('demo-readonly-owner', null)
   conn.setLinkStats({
     rxBps: Math.round(11840 + 900 * Math.sin(time * 0.5)),
     txBps: Math.round(486 + 60 * Math.sin(time * 0.8)),

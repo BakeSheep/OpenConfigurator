@@ -19,3 +19,17 @@ export function resolveRuntimeMode(input: {
 export function shouldConnectBackend(mode: AppRuntimeMode): boolean {
   return mode === 'live'
 }
+
+export function isReadOnlyRuntime(mode: AppRuntimeMode): boolean {
+  return mode === 'demo'
+}
+
+/**
+ * Starts the socket lifecycle only when the runtime allows backend access.
+ * Kept pure so the demo isolation boundary is covered without a browser.
+ */
+export function connectBackendIfEnabled(enabled: boolean, connect: () => void): boolean {
+  if (!enabled) return false
+  connect()
+  return true
+}

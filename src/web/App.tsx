@@ -8,8 +8,7 @@ import StatusBar from './components/layout/StatusBar'
 import Topbar from './components/layout/Topbar'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useGamepadController } from './hooks/useGamepadController'
-import { appRuntimeMode } from './runtime'
-import { shouldConnectBackend } from './runtimeMode'
+import { backendEnabled } from './runtime'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage'))
@@ -17,7 +16,7 @@ const FlightControlPage = lazy(() => import('./pages/FlightControlPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 export default function App() {
-  const { send } = useWebSocket(shouldConnectBackend(appRuntimeMode))
+  const { send } = useWebSocket(backendEnabled)
   useGamepadController(send)
 
   return (

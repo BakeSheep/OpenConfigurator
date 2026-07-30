@@ -28,6 +28,7 @@ import { logSupport } from '../utils/logProfiles'
 import { isDataflashFileName } from '../utils/dataflashAnalysis'
 import { takeStashedLog } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
+import { backendEnabled } from '../runtime'
 import type {
   SeriesData,
   UlogAnalysisDataset,
@@ -821,8 +822,10 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             <button
               type="button"
               className="mc-btn mc-btn-primary"
-              disabled={!vehicleReady}
-              title={vehicleReady ? undefined : '连接飞控后可直接导入日志'}
+              disabled={!backendEnabled || !vehicleReady}
+              title={!backendEnabled
+                ? '演示模式不连接飞控；仍可打开本地日志'
+                : vehicleReady ? undefined : '连接飞控后可直接导入日志'}
               onClick={() => setImportOpen(true)}
             >
               <Icon name="download" size={15} /> 从飞控导入
@@ -857,7 +860,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             拖入 .ulg / .bin 日志文件，或点击选择本地文件
           </p>
           <p style={{ margin: 0, fontSize: 12.5 }}>
-            支持 PX4 ULog 与 ArduPilot DataFlash；也可在已连接飞控时点击右上角“从飞控导入”直接下载并分析
+            支持 PX4 ULog 与 ArduPilot DataFlash
+            {backendEnabled && '；也可在已连接飞控时点击右上角“从飞控导入”直接下载并分析'}
           </p>
         </div>
       )}
