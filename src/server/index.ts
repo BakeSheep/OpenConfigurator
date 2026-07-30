@@ -345,6 +345,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   const clientContexts = new Map<WebSocket, ClientContext>()
   const shutdownCleanups = new Set<() => void>()
   let controllerLease: ControllerLease | null = null
+  // ESC session lease pin (ADR-004): while set, the lease belongs to the
+  // session owner and cannot expire or be taken over.
+  let escControllerPin: { clientId: string; sessionId: string } | null = null
   let parameterSync: ParamSyncState | null = null
   let parameterSyncTimer: ReturnType<typeof setTimeout> | null = null
   let nextParameterGeneration = 0
@@ -458,14 +461,56 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   }
 
   function expireController(now = Date.now()): void {
+    // While an ESC session pins the lease, it never expires and stays with
+    // the session owner (ADR-004); it is released via the session lifecycle.
+    if (escControllerPin) {
+      if (controllerLease?.clientId === escControllerPin.clientId) {
+        controllerLease.expiresAt = now + controllerLeaseMs
+      }
+      return
+    }
     if (!controllerLease || controllerLease.expiresAt > now) return
     controllerLease = null
     broadcast(controllerMessage('expired'))
   }
 
+  /**
+   * Pin the controller lease to the ESC session owner. Called by the ESC
+   * session manager on start/reclaim; while pinned no other client can take
+   * or expire the lease (wired in the ESC service integration task).
+   */
+  function pinControllerToEscSession(ownerClientId: string, sessionId: string): void {
+    escControllerPin = { clientId: ownerClientId, sessionId }
+    const now = Date.now()
+    if (!controllerLease || controllerLease.clientId !== ownerClientId) {
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      broadcast(controllerMessage('claimed'))
+    } else {
+      controllerLease.expiresAt = now + controllerLeaseMs
+    }
+  }
+
+  /** Drop the ESC pin when its session ends; normal expiry resumes. */
+  function releaseEscSessionController(sessionId: string): void {
+    if (escControllerPin?.sessionId !== sessionId) return
+    escControllerPin = null
+    expireController()
+  }
+
   function ensureController(ws: WebSocket, context: ClientContext, requestId?: string): boolean {
     const now = Date.now()
     expireController(now)
+    if (escControllerPin && escControllerPin.clientId !== context.id) {
+      sendClientError(
+        ws,
+        'controller_conflict',
+        'ESC 会话所有者当前持有飞控控制权',
+        requestId,
+        true,
+        { expiresAt: controllerLease?.expiresAt ?? null },
+      )
+      return false
+    }
     if (!controllerLease) {
       controllerLease = { clientId: context.id, expiresAt: now + controllerLeaseMs }
       broadcast(controllerMessage('claimed'))
@@ -489,6 +534,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   function releaseController(context: ClientContext, reason: 'released' | 'disconnected'): boolean {
     expireController()
     if (controllerLease?.clientId !== context.id) return false
+    // The lease of an ESC session owner survives WS disconnects so an
+    // orphaned session can be reclaimed; the session lifecycle releases it.
+    if (escControllerPin?.clientId === context.id) return false
     controllerLease = null
     broadcast(controllerMessage(reason))
     return true
