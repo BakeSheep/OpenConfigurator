@@ -8,6 +8,7 @@ import {
   availableModes,
   encodeModeCommand,
   vehicleCapabilities,
+  supportsCalibrationKind,
 } from './vehicleProfiles'
 
 // ---------------------------------------------------------------------------
@@ -221,5 +222,12 @@ for (const identity of [unknownIdentity, null]) {
   assert.equal(caps.serialConfig, false)
   assert.equal(caps.logFormat, 'unknown')
 }
+
+assert.equal(supportsCalibrationKind(px4Copter, 'mag'), true)
+assert.equal(supportsCalibrationKind(arducopter, 'accel'), true)
+assert.equal(supportsCalibrationKind(arducopter, 'gyro'), true)
+assert.equal(supportsCalibrationKind(arducopter, 'baro'), true)
+assert.equal(supportsCalibrationKind(arducopter, 'mag'), false)
+assert.equal(supportsCalibrationKind(unknownIdentity, 'accel'), false)
 
 console.log('vehicleProfiles classification and mode decoding checks passed')

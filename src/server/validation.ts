@@ -17,6 +17,8 @@ export const DEFAULT_WS_MAX_CLIENTS = 8
 export type BoundaryClientMessage = ClientMessage
 
 const CLIENT_DENIED_COMMANDS = new Set<string>([
+  'MAV_CMD_DO_SET_MODE',
+  'MAV_CMD_PREFLIGHT_CALIBRATION',
   'MAV_CMD_DO_MOTOR_TEST',
   'MAV_CMD_ACTUATOR_TEST',
   'MAV_CMD_DO_SET_SERVO',

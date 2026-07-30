@@ -264,6 +264,13 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     }),
     (error) => error instanceof InputValidationError && error.code === 'restricted_command',
   )
+  for (const cmd of ['MAV_CMD_DO_SET_MODE', 'MAV_CMD_PREFLIGHT_CALIBRATION']) {
+    assert.throws(
+      () => parseClientMessage({ type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] }),
+      (error) => error instanceof InputValidationError && error.code === 'restricted_command',
+    )
+  }
+
   assert.throws(
     () => parseClientMessage({
       type: 'motor_test',
@@ -420,10 +427,9 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     assert.equal(validationError.data?.code, 'out_of_range')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'not-ready',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     const notReady = await second.waitFor(
       'client_error',
@@ -438,20 +444,18 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     started.connManager.emit('statusChange', 'connected')
 
     first.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-1',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     await first.waitFor('controller', (message) => message.data?.reason === 'claimed')
     assert.equal(started.bridge.messages.length, 1)
-    assert.equal(started.bridge.messages[0].type, 'command')
+    assert.equal(started.bridge.messages[0].type, 'set_flight_mode')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-2',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     const conflict = await second.waitFor(
       'client_error',
@@ -474,10 +478,9 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     first.ws.send(JSON.stringify({ type: 'release_control', requestId: 'release-1' }))
     await second.waitFor('controller', (message) => message.data?.reason === 'released')
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-3',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     await second.waitFor(
       'controller',
@@ -639,10 +642,9 @@ test('REST connection mutations respect the active WebSocket controller lease', 
     started.connManager.vehicleReady = true
     started.connManager.emit('statusChange', 'connected')
     owner.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'claim-rest-control',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     await owner.waitFor('controller', (message) => message.data?.reason === 'claimed')
 
@@ -683,10 +685,9 @@ test('REST connection mutations respect the active WebSocket controller lease', 
     started.connManager.vehicleReady = true
     const messagesBeforeReclaim = owner.messages.length
     owner.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'reclaim-rest-control',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     await owner.waitFor(
       'controller',
@@ -789,18 +790,16 @@ test('expired controller leases allow a waiting observer to become controller', 
     started.connManager.vehicleReady = true
     started.connManager.emit('statusChange', 'connected')
     first.ws.send(JSON.stringify({
-      type: 'command',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      type: 'set_flight_mode',
+      data: { modeId: 1 },
     }))
     await first.waitFor('controller', (message) => message.data?.reason === 'claimed')
     await new Promise((resolve) => setTimeout(resolve, 90))
     await second.waitFor('controller', (message) => message.data?.reason === 'expired')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      type: 'set_flight_mode',
+      data: { modeId: 2 },
     }))
     await second.waitFor(
       'controller',

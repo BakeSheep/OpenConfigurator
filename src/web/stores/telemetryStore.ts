@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VehicleIdentity } from '../../shared/types'
+import type { ServerMessage } from '../../shared/types'
 
 export type StatusSeverity = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
@@ -18,6 +19,8 @@ export interface CommandAckState {
   terminal?: boolean
   time: number
 }
+
+export type OperationErrorState = Extract<ServerMessage, { type: 'operation_error' }>['data'] & { time: number }
 
 // Per-field freshness thresholds (ms). High-rate streams (attitude/imu/motors)
 // must update frequently; low-rate streams (gps/battery) are allowed more
@@ -68,6 +71,7 @@ interface TelemetryState {
   throttle: number
   globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
   statusLogs: StatusLogEntry[]
+  lastOperationError: OperationErrorState | null
   lastCommandAck: CommandAckState | null
   // Timestamp (Date.now()) of the last update per field. 0 = never received OR
   // explicitly marked stale by markAllStale() on disconnect. UI uses isStale()
@@ -86,6 +90,7 @@ interface TelemetryState {
   setGlobalPosition: (data: any) => void
   setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
+  setOperationError: (error: Omit<OperationErrorState, 'time'>) => void
   setCommandAck: (ack: Omit<CommandAckState, 'time'>) => void
   clearStatusLogs: () => void
   // Called on link drop: keep the last values (so the UI can show "frozen"
@@ -127,6 +132,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   throttle: 0,
   globalPosition: null,
   statusLogs: [],
+  lastOperationError: null,
   lastCommandAck: null,
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
@@ -219,6 +225,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     return { statusLogs: next.slice(0, 200) }
   }),
   setCommandAck: (ack) => set({ lastCommandAck: { ...ack, time: Date.now() } }),
+  setOperationError: (error) => set({ lastOperationError: { ...error, time: Date.now() } }),
   clearStatusLogs: () => set({ statusLogs: [] }),
   markAllStale: () => set({ lastUpdate: zeroLastUpdate() }),
   isStale: (field, thresholdMs) => {

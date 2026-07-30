@@ -65,12 +65,29 @@ assert.equal(apWithAux.outputChannels[5].motorInstance, null)
 // No MOT_PWM_TYPE parameter -> the protocol is reported unknown, not PWM.
 assert.equal(apWithAux.protocolLabel, '未知')
 
-// ArduPilot motor output function ids are 33..44 for Motor1..12.
+// ArduPilot motor output ids split after Motor8: 33..40 then 82..85.
 const apOptions = motorFunctionOptions('ardupilot', 4)
 assert.deepEqual(apOptions[0], { value: 0, label: 'Disabled' })
 assert.deepEqual(apOptions[1], { value: 33, label: 'Motor 1' })
 assert.deepEqual(apOptions[4], { value: 36, label: 'Motor 4' })
 assert.equal(apOptions.length, 5)
+const apTwelveOptions = motorFunctionOptions('ardupilot', 12)
+assert.deepEqual(apTwelveOptions[8], { value: 40, label: 'Motor 8' })
+assert.deepEqual(apTwelveOptions[9], { value: 82, label: 'Motor 9' })
+assert.deepEqual(apTwelveOptions[12], { value: 85, label: 'Motor 12' })
+
+const apDodeca = buildFrameConfigView(arducopter, params({
+  FRAME_CLASS: 12,
+  FRAME_TYPE: 0,
+  SERVO9_FUNCTION: 82,
+  SERVO10_FUNCTION: 83,
+  SERVO11_FUNCTION: 84,
+  SERVO12_FUNCTION: 85,
+  SERVO13_FUNCTION: 41,
+}))
+assert.ok(apDodeca)
+assert.deepEqual(apDodeca.outputChannels.map((output) => output.motorInstance), [9, 10, 11, 12, null])
+
 
 // Frame classes beyond quad resolve their documented motor counts.
 const hexa = buildFrameConfigView(arducopter, params({ FRAME_CLASS: 2, FRAME_TYPE: 0 }))

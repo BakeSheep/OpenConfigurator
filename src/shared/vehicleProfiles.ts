@@ -6,6 +6,7 @@ import { PX4_MODES } from './constants'
 
 export type AutopilotFamily = 'px4' | 'ardupilot' | 'unknown'
 export type VehicleClass = 'copter' | 'plane' | 'rover' | 'sub' | 'tracker' | 'unknown'
+export type CalibrationKind = 'accel' | 'gyro' | 'mag' | 'baro'
 
 export interface VehicleIdentity {
   /** Raw MAV_AUTOPILOT value from HEARTBEAT. */
@@ -303,4 +304,12 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
     return { ...READ_ONLY_CAPABILITIES, logFormat: 'dataflash' }
   }
   return { ...READ_ONLY_CAPABILITIES }
+}
+
+/** Per-kind calibration gate shared by the browser and command encoder. */
+export function supportsCalibrationKind(identity: VehicleIdentity | null, kind: CalibrationKind): boolean {
+  if (!vehicleCapabilities(identity).calibrate) return false
+  // ArduPilot compass calibration uses MAV_CMD_DO_START_MAG_CAL and needs a
+  // dedicated multi-step flow that is not implemented yet.
+  return identity?.family !== 'ardupilot' || kind !== 'mag'
 }

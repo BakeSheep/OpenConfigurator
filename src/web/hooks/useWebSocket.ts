@@ -280,6 +280,7 @@ function handleMessage(msg: ServerMessage) {
       telemetryStore.addStatusLog(3, `请求被拒绝：${msg.data.message}${msg.data.retryable ? '（可重试）' : ''}`)
       break
     case 'operation_error':
+      telemetryStore.setOperationError(msg.data)
       console.warn('[WS] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
       telemetryStore.addStatusLog(3, `${msg.data.operation} 操作失败：${msg.data.message}`)
       break

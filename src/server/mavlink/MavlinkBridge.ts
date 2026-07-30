@@ -21,6 +21,7 @@ import {
   encodeModeCommand,
   formatFirmwareLabel,
   vehicleCapabilities,
+  supportsCalibrationKind,
   type VehicleIdentity,
 } from '../../shared/vehicleProfiles'
 import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
@@ -2361,6 +2362,15 @@ export class MavlinkBridge extends EventEmitter {
       return
     }
     const family = this.selectedIdentity?.family
+    if (!supportsCalibrationKind(this.selectedIdentity, kind)) {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_calibration_kind',
+        '当前飞控暂不支持该校准类型（罗盘校准将在后续版本启用）',
+        requestId,
+      )
+      return
+    }
     // param order: [gyro, mag, groundPressure, radio, accel, esc/airspeed, ...]
     const params: number[] = [0, 0, 0, 0, 0, 0, 0]
     if (family === 'px4') {
@@ -2370,20 +2380,10 @@ export class MavlinkBridge extends EventEmitter {
       else if (kind === 'baro') params[2] = 1
       else params[4] = 1 // accel
     } else if (family === 'ardupilot') {
-      // Only flows that do not need per-position acknowledgement.
+      // The unsupported multi-step compass flow was rejected above.
       if (kind === 'gyro') params[0] = 1
       else if (kind === 'baro') params[2] = 1
-      else if (kind === 'accel') params[4] = 2 // simple/level accel calibration
-      else {
-        // mag calibration on ArduPilot uses the DO_START_MAG_CAL protocol.
-        this.emitOperationError(
-          'start_calibration',
-          'unsupported_calibration_kind',
-          '当前飞控暂不支持该校准类型（罗盘校准将在后续版本启用）',
-          requestId,
-        )
-        return
-      }
+      else params[4] = 2 // simple/level accel calibration
     } else {
       this.emitOperationError(
         'start_calibration',

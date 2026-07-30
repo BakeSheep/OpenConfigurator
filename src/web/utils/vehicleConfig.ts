@@ -74,8 +74,8 @@ const ARDUPILOT_PWM_TYPES: Record<number, string> = {
   8: 'PWMRange',
 }
 
-// SERVOx_FUNCTION 33..44 map to Motor1..12.
-const ARDUPILOT_MOTOR_FUNCTION_BASE = 32
+// ArduPilot keeps Motor9..12 in a separate SERVOx_FUNCTION range.
+const ARDUPILOT_MOTOR_FUNCTIONS = [33, 34, 35, 36, 37, 38, 39, 40, 82, 83, 84, 85] as const
 // PX4 external motor functions are 101..112 (internal 1xx + transport offset).
 const PX4_MOTOR_FUNCTION_BASE = 100
 const MAX_MOTORS = 12
@@ -122,10 +122,8 @@ function buildArduPilotView(params: Map<string, ParamData>): FrameConfigView {
     const param = params.get(paramId)
     if (!param) continue
     const functionValue = Math.round(param.value)
-    const motorInstance = functionValue > ARDUPILOT_MOTOR_FUNCTION_BASE
-      && functionValue <= ARDUPILOT_MOTOR_FUNCTION_BASE + MAX_MOTORS
-      ? functionValue - ARDUPILOT_MOTOR_FUNCTION_BASE
-      : null
+    const motorFunctionIndex = ARDUPILOT_MOTOR_FUNCTIONS.indexOf(functionValue as typeof ARDUPILOT_MOTOR_FUNCTIONS[number])
+    const motorInstance = motorFunctionIndex >= 0 ? motorFunctionIndex + 1 : null
     outputChannels.push({
       label: `SERVO${channel}`,
       paramId,
@@ -218,15 +216,15 @@ export function motorFunctionOptions(
   family: AutopilotFamily,
   motorCount: number,
 ): MotorFunctionOption[] {
-  const base = family === 'ardupilot'
-    ? ARDUPILOT_MOTOR_FUNCTION_BASE
-    : family === 'px4' ? PX4_MOTOR_FUNCTION_BASE : null
-  if (base === null) return []
+  const functions = family === 'ardupilot'
+    ? ARDUPILOT_MOTOR_FUNCTIONS
+    : family === 'px4' ? Array.from({ length: MAX_MOTORS }, (_, index) => PX4_MOTOR_FUNCTION_BASE + index + 1) : null
+  if (functions === null) return []
   const count = Math.min(MAX_MOTORS, Math.max(1, motorCount))
   return [
     { value: 0, label: 'Disabled' },
     ...Array.from({ length: count }, (_, index) => ({
-      value: base + index + 1,
+      value: functions[index],
       label: `Motor ${index + 1}`,
     })),
   ]
