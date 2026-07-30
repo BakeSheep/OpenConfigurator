@@ -129,3 +129,29 @@ export const FTP_DEFAULT_LOG_DIRECTORY = PX4_ULOG_LOG_DIRECTORY
 // Longest device path accepted from the frontend. MAVLink FTP payload data is
 // 239 bytes, so paths must leave room for the protocol header fields.
 export const FTP_MAX_PATH_BYTES = 200
+
+// -- ESC configuration ------------------------------------------------------
+
+// SERIAL_CONTROL flags (MAVLink common). REPLY marks vehicle->GCS replies;
+// RESPOND asks the vehicle to reply; EXCLUSIVE claims the UART.
+export const SERIAL_CONTROL_FLAGS = {
+  Reply: 1,
+  Respond: 2,
+  Exclusive: 4,
+  Blocking: 8,
+  Multi: 16,
+} as const
+
+// SERIAL_CONTROL data field is a fixed 70-byte array on the wire.
+export const SERIAL_CONTROL_MAX_DATA = 70
+
+// PX4 exposes ESC passthrough UARTs on SERIAL_CONTROL device ids 20..27
+// (one per DShot output). Provenance is Pending until hardware-verified;
+// see docs/ESC-PROTOCOL-SOURCES.md. Kept as an inclusive range so validation
+// and the transport share one definition.
+export const PX4_ESC_SERIAL_CONTROL_DEVICE_MIN = 20
+export const PX4_ESC_SERIAL_CONTROL_DEVICE_MAX = 27
+
+// ESC bootloader / passthrough baud rate (AM32 half-duplex and PX4 UART).
+export const ESC_SERIAL_BAUD_RATE = 19200
+

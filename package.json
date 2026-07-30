@@ -14,7 +14,7 @@
     "build": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit",
     "test:server": "tsx --test",
-    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts && tsx src/server/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/server/esc/EscSessionManager.test.ts && tsx src/server/esc/ArduPilotRawTransport.test.ts",
+    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts && tsx src/server/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/server/esc/EscSessionManager.test.ts && tsx src/server/esc/ArduPilotRawTransport.test.ts && tsx src/server/esc/Px4SerialControlTransport.test.ts",
     "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "test:dataflash": "tsx src/web/utils/dataflashAnalysis.test.ts",

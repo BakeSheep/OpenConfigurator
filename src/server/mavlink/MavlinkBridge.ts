@@ -75,7 +75,7 @@ const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
   1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 118,
-  120, 129, 132, 147, 148, 230, 245, 253,
+  120, 126, 129, 132, 147, 148, 230, 245, 253,
 ])
 type ParamEncoding = 'bytewise' | 'c-cast'
 type TelemetryProfile = 'normal' | 'parameter-sync'
@@ -223,6 +223,9 @@ export class MavlinkBridge extends EventEmitter {
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
+  // Temporary consumers for SERIAL_CONTROL (#126) replies, used by the PX4
+  // ESC transport. MAVLink is NOT paused in this mode.
+  private readonly serialControlListeners = new Set<(message: common.SerialControl) => void>()
   // True while an ESC session has borrowed the link (ADR-003/005). The GCS
   // heartbeat and data intake are detached so MAVLink frames cannot pollute
   // the raw ESC byte stream.
@@ -709,6 +712,9 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 245: // EXTENDED_SYS_STATE
         this.handleExtendedSysState(msg)
+        break
+      case 126: // SERIAL_CONTROL (PX4 ESC passthrough)
+        this.handleSerialControl(msg)
         break
       case 22: // PARAM_VALUE
         this.handleParamValue(msg)
@@ -1350,6 +1356,53 @@ export class MavlinkBridge extends EventEmitter {
       return false
     }
     return true
+  }
+
+  /**
+   * Register a temporary SERIAL_CONTROL reply consumer for the PX4 ESC
+   * transport. Returns an unsubscribe function. MAVLink is not paused; the
+   * transport filters replies by device itself.
+   */
+  onSerialControl(listener: (message: common.SerialControl) => void): () => void {
+    this.serialControlListeners.add(listener)
+    return () => this.serialControlListeners.delete(listener)
+  }
+
+  /** Send a SERIAL_CONTROL (#126) message to the selected autopilot. */
+  sendSerialControl(fields: {
+    device: number
+    flags: number
+    timeout: number
+    baudrate: number
+    count: number
+    data: Uint8Array
+  }): boolean {
+    const message = new common.SerialControl()
+    message.targetSystem = this.targetSysId ?? 0
+    message.targetComponent = this.targetCompId ?? 0
+    message.device = fields.device as unknown as typeof message.device
+    message.flags = fields.flags as unknown as typeof message.flags
+    message.timeout = fields.timeout
+    message.baudrate = fields.baudrate
+    message.count = fields.count
+    // The wire field is a fixed 70-byte array; MAVLink v2 zero-trims padding.
+    const padded = Buffer.alloc(70)
+    Buffer.from(fields.data).copy(padded, 0)
+    message.data = Array.from(padded) as unknown as typeof message.data
+    return this.writeMessage(message)
+  }
+
+  private handleSerialControl(msg: MavlinkMessage): void {
+    if (this.serialControlListeners.size === 0) return
+    const decoded = decode<common.SerialControl>(126, msg.payload)
+    if (!decoded) return
+    for (const listener of [...this.serialControlListeners]) {
+      try {
+        listener(decoded)
+      } catch (error) {
+        console.error('[MAVLink] SERIAL_CONTROL listener threw:', error)
+      }
+    }
   }
 
   private emitFsOpError(
