@@ -4,6 +4,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
+import { useLogTransferStore } from '../stores/logTransferStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
@@ -110,6 +111,14 @@ function handleMessage(msg: ServerMessage) {
           paramStore.clear()
           paramStore.setLoading(true)
           autoParamRequestPending = true
+          // vehicleReady is emitted only after the backend has selected a
+          // heartbeat-confirmed target. Start immediately so page-level
+          // protocol effects (for example DataFlash log enumeration) cannot
+          // win the link and reject the automatic parameter sync as busy.
+          if (sendToServer({ type: 'param_request_list' })) {
+            autoParamRequestPending = false
+            console.log('[FC] Automatic parameter download started')
+          }
         }
       } else if (msg.data.reconnect) {
         // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
@@ -137,8 +146,11 @@ function handleMessage(msg: ServerMessage) {
         // The vehicle profile is bound to the dropped link; a later reconnect
         // must re-classify the vehicle instead of reusing the old identity.
         telemetryStore.setVehicleIdentity(null)
+        // Same for the one-shot firmware snapshot: a different FC may connect.
+        telemetryStore.setAutopilotVersion(null)
         // FC filesystem state is meaningless without a link.
         useFileExplorerStore.getState().reset()
+        useLogTransferStore.getState().reset()
       }
       lastVehicleReady = vehicleReadyNow
       break
@@ -271,6 +283,36 @@ function handleMessage(msg: ServerMessage) {
       else if (msg.data.operation === 'download') explorer.failDownload(msg.data.message)
       else explorer.failDeletion(msg.data.message)
       telemetryStore.addStatusLog(3, `文件操作失败：${msg.data.message}`)
+      break
+    }
+    case 'log_list':
+      useLogTransferStore.getState().setListing(msg.data.entries)
+      break
+    case 'log_download_progress':
+      useLogTransferStore.getState().setDownloadProgress(
+        msg.data.logId,
+        msg.data.receivedBytes,
+        msg.data.totalBytes,
+        msg.data.rateBps,
+      )
+      break
+    case 'log_download_complete':
+      useLogTransferStore.getState().completeDownload(
+        msg.data.logId,
+        msg.data.downloadId,
+        msg.data.fileName,
+        msg.data.sizeBytes,
+      )
+      break
+    case 'log_erase_done':
+      useLogTransferStore.getState().completeErase()
+      break
+    case 'log_op_error': {
+      const transfer = useLogTransferStore.getState()
+      if (msg.data.operation === 'list') transfer.setListError(msg.data.message)
+      else if (msg.data.operation === 'download') transfer.failDownload(msg.data.message)
+      else transfer.failErase(msg.data.message)
+      telemetryStore.addStatusLog(3, `日志操作失败：${msg.data.message}`)
       break
     }
     case 'client_error':
@@ -440,8 +482,10 @@ function connectSocket() {
       useConnectionStore.getState().setDisconnected()
       useTelemetryStore.getState().markAllStale()
       useTelemetryStore.getState().setVehicleIdentity(null)
+      useTelemetryStore.getState().setAutopilotVersion(null)
       useSensorStore.getState().markAllOffline()
       useParameterStore.getState().clear()
+      useLogTransferStore.getState().reset()
     }
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return

@@ -331,6 +331,74 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
   )
 })
 
+test('runtime validation accepts DataFlash log requests and preserves erase safety', () => {
+  assert.deepEqual(
+    parseClientMessage({ type: 'log_list', requestId: 'logs-1' }),
+    { type: 'log_list', requestId: 'logs-1' },
+  )
+  assert.deepEqual(
+    parseClientMessage({
+      type: 'log_download',
+      requestId: 'log-download-1',
+      data: { logId: 42 },
+    }),
+    {
+      type: 'log_download',
+      requestId: 'log-download-1',
+      data: { logId: 42 },
+    },
+  )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'log_download',
+      data: { logId: 65_536 },
+    }),
+    (error) => error instanceof InputValidationError && error.path === 'data.logId',
+  )
+  assert.equal(
+    parseClientMessage({ type: 'log_download_cancel' }).type,
+    'log_download_cancel',
+  )
+  assert.throws(
+    () => parseClientMessage({ type: 'log_erase' }),
+    (error) =>
+      error instanceof InputValidationError
+      && error.code === 'safety_confirmation_required',
+  )
+  assert.equal(
+    parseClientMessage({
+      type: 'log_erase',
+      safetyConfirmation: 'erase_all_logs',
+    }).type,
+    'log_erase',
+  )
+})
+
+test('WebSocket boundary forwards a validated DataFlash log-list request', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    client.ws.send(JSON.stringify({
+      type: 'log_list',
+      requestId: 'logs-accepted',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(started.bridge.messages.length, 1)
+    assert.deepEqual(started.bridge.messages[0], {
+      type: 'log_list',
+      requestId: 'logs-accepted',
+    })
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
 test('REST boundary returns stable JSON errors and accepts only validated connection configs', async () => {
   const started = await startTestServer()
   try {

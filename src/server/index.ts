@@ -93,6 +93,8 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   handleClientMessage(message: ClientMessage): void
   cancelParameterDownload?(): void
   readonly currentParamRunId?: number
+  /** Cached one-shot autopilot_version message for late-joining WS clients. */
+  getAutopilotVersionMessage?(): ServerMessage | null
   getFtpDownload?(downloadId: string): {
     filePath: string
     fileName: string
@@ -213,6 +215,9 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
     || message.type === 'fs_download'
     || message.type === 'fs_download_cancel'
     || message.type === 'fs_delete'
+    || message.type === 'log_download'
+    || message.type === 'log_download_cancel'
+    || message.type === 'log_erase'
 }
 
 function requiresReadyTarget(message: BoundaryClientMessage): boolean {
@@ -1135,6 +1140,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     })
     safeSend(ws, connectionMessage())
     safeSend(ws, controllerMessage('snapshot'))
+    // autopilot_version is only broadcast once (at FC handshake); replay the
+    // cached snapshot so a page refresh / late WS join still shows firmware info.
+    const versionSnapshot = mavlinkBridge.getAutopilotVersionMessage?.() ?? null
+    if (versionSnapshot) safeSend(ws, versionSnapshot)
     if (parameterSync) {
       safeSend(ws, {
         type: 'param_sync',

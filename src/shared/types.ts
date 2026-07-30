@@ -43,6 +43,8 @@ export interface SysStatusData {
   voltageBattery: number | null
   currentBattery: number | null
   batteryRemaining: number | null
+  /** Autopilot mainloop load in percent (SYS_STATUS.load / 10). */
+  cpuLoad: number
   sensorsPresent: number
   sensorsEnabled: number
   sensorsHealth: number
@@ -228,6 +230,17 @@ export interface FsEntry {
   name: string
   kind: 'file' | 'dir'
   sizeBytes: number | null
+}
+
+/**
+ * One ArduPilot DataFlash log as reported by LOG_ENTRY. Logs are addressed
+ * by numeric id (there is no filesystem path over the LOG_REQUEST_* protocol).
+ */
+export interface DataflashLogEntry {
+  id: number
+  /** LOG_ENTRY.time_utc (seconds since 1970) converted to ms; 0 means null. */
+  timeUtcMs: number | null
+  sizeBytes: number
 }
 
 // WebSocket message types (server -> client)
@@ -423,6 +436,41 @@ export type ServerMessage =
       }
     }
   | {
+      // ArduPilot DataFlash log list (LOG_REQUEST_LIST -> LOG_ENTRY result).
+      type: 'log_list'
+      data: { entries: DataflashLogEntry[] }
+    }
+  | {
+      type: 'log_download_progress'
+      data: {
+        logId: number
+        receivedBytes: number
+        totalBytes: number
+        rateBps: number
+      }
+    }
+  | {
+      type: 'log_download_complete'
+      data: {
+        logId: number
+        /** Opaque id used by GET /api/logs/downloads/:downloadId. */
+        downloadId: string
+        sizeBytes: number
+        fileName: string
+      }
+    }
+  | { type: 'log_erase_done' }
+  | {
+      type: 'log_op_error'
+      data: {
+        requestId?: string
+        operation: 'list' | 'download' | 'erase'
+        code: string
+        message: string
+        retryable: boolean
+      }
+    }
+  | {
       // Link-quality telemetry surfaced ~1 Hz. Bytes/sec throughput plus CRC
       // error rate stand in for the RSSI that a raw SPP COM port cannot expose.
       type: 'link_stats'
@@ -493,6 +541,16 @@ export type ClientMessage =
       requestId?: string
       data: { entries: Array<{ path: string; kind: 'file' | 'dir' }> }
       safetyConfirmation: 'delete_files'
+    }
+  | { type: 'log_list'; requestId?: string }
+  | { type: 'log_download'; requestId?: string; data: { logId: number } }
+  | { type: 'log_download_cancel'; requestId?: string }
+  | {
+      // LOG_ERASE wipes ALL DataFlash logs on the FC (there is no per-log
+      // delete), hence its own explicit safety confirmation literal.
+      type: 'log_erase'
+      requestId?: string
+      safetyConfirmation: 'erase_all_logs'
     }
 
 export interface PortInfo {

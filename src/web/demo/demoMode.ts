@@ -100,8 +100,8 @@ function seedStatics() {
   t.setAutopilotVersion({
     boardId: 56,
     boardName: 'Pixhawk 6C',
-    firmwareVersion: 'v1.15.2',
-    firmwareLabel: 'Release',
+    firmwareVersion: '1.15.2',
+    firmwareLabel: 'PX4 v1.15.2',
     vendorId: 0x3162,
     productId: 0x0058,
     family: 'px4',
@@ -272,6 +272,7 @@ function pushSlowTelemetry() {
     voltageBattery: 15.92,
     currentBattery: 14.6,
     batteryRemaining: remaining,
+    cpuLoad: Math.round(38 + 6 * Math.sin(time * 0.6)),
     sensorsPresent: 0x3f_ff_ff,
     sensorsEnabled: 0x3f_ff_ff,
     sensorsHealth: 0x3f_ff_ff,

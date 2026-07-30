@@ -376,6 +376,40 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       }, id) as BoundaryClientMessage
     }
 
+    case 'log_list':
+      return withRequestId({ type: 'log_list' }, id) as BoundaryClientMessage
+
+    case 'log_download': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'log_download',
+        data: {
+          logId: finiteNumber(data.logId, 'data.logId', {
+            min: 0,
+            max: 0xffff,
+            integer: true,
+          }),
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'log_download_cancel':
+      return withRequestId({ type: 'log_download_cancel' }, id) as BoundaryClientMessage
+
+    case 'log_erase': {
+      if (input.safetyConfirmation !== 'erase_all_logs') {
+        fail(
+          'safety_confirmation_required',
+          '擦除全部 DataFlash 日志必须显式确认 erase_all_logs',
+          'safetyConfirmation',
+        )
+      }
+      return withRequestId({
+        type: 'log_erase',
+        safetyConfirmation: 'erase_all_logs' as const,
+      }, id) as BoundaryClientMessage
+    }
+
     default:
       return fail('unsupported_message', `不支持的消息类型：${type}`, 'type')
   }

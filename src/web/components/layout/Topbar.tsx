@@ -383,6 +383,16 @@ export default function Topbar() {
       </div>
 
       <div className="mc-topbar__actions">
+        <a
+          className="mc-topbar__link"
+          href="https://github.com/BakeSheep/OpenConfigurator"
+          target="_blank"
+          rel="noreferrer"
+          title="GitHub 仓库"
+          aria-label="打开 GitHub 仓库"
+        >
+          <Icon name="github" size={16} />
+        </a>
         <button
           type="button"
           className="mc-topbar__link"

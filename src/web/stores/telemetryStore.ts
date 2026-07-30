@@ -60,6 +60,8 @@ interface TelemetryState {
   vehicleIdentity: VehicleIdentity | null
   preflightCheck: boolean | null
   sensorsHealthy: boolean | null
+  // Autopilot mainloop load in percent from SYS_STATUS; null until received.
+  cpuLoad: number | null
   unhealthySensorMask: number
   unhealthySensors: string[]
   altitude: number
@@ -84,7 +86,7 @@ interface TelemetryState {
   setEkfStatus: (data: EkfStatusData) => void
   setRcChannels: (data: RcChannelsData) => void
   setMotorOutputs: (data: MotorOutputData) => void
-  setAutopilotVersion: (data: AutopilotVersionData) => void
+  setAutopilotVersion: (data: AutopilotVersionData | null) => void
   setVehicleIdentity: (identity: VehicleIdentity | null) => void
   setVfrHud: (data: any) => void
   setGlobalPosition: (data: any) => void
@@ -121,6 +123,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   vehicleIdentity: null,
   preflightCheck: null,
   sensorsHealthy: null,
+  cpuLoad: null,
   unhealthySensorMask: 0,
   unhealthySensors: [],
   altitude: 0,
@@ -201,6 +204,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
         : sysStatusHasVoltage ? 'sys_status' : state.batterySource,
       preflightCheck: data.preflightCheck,
       sensorsHealthy: data.sensorsHealthy,
+      cpuLoad: data.cpuLoad,
       unhealthySensorMask: data.unhealthySensorMask,
       unhealthySensors: data.unhealthySensors,
       lastUpdate: {

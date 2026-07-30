@@ -4,7 +4,7 @@ Status legend: ✅ pass · ⚠️ conditional/needs authorization · ⛔ not run
 
 Acceptance target: **ArduCopter 4.7** on **MicoAir743v2** (Quad/X), serial link.
 Automated suites (`npm run test:server`, `test:protocol`, `test:ulog`,
-`typecheck`, `build`) are green as of this milestone.
+`test:dataflash`, `typecheck`, `build`) are green as of this milestone.
 
 ## 1. ArduCopter SITL matrix (serial bridge)
 
@@ -39,7 +39,9 @@ Performed with props installed; no control is activated.
 | 6 | No motor command on navigation | Opening/leaving actuator page emits no 209/310 | ✅ (unit) |
 | 7 | PreArm failures | Remain visible and block arm | ⛔ |
 | 8 | Firmware label | Shown as `ArduPilot v4.7.0` | ⛔ |
-| 9 | Logs | Flight-log page shows DataFlash "not implemented" state, not an empty PX4 dir | ⛔ |
+| 9 | Logs | Flight-log page shows the DataFlash log list (id / UTC time / size), not an empty PX4 dir | ⛔ |
+| 10 | Log download | A small `.bin` downloads with live progress/rate; served via `/api/logs/downloads/:id` | ⛔ |
+| 11 | Log analysis | "Download & analyze" and local `.bin` open render charts (attitude/rates/battery/GPS track) | ⛔ |
 
 ## 3. MicoAir HIL — write checks (each needs separate explicit authorization)
 
@@ -55,6 +57,7 @@ and stop immediately on any unexpected mode/armed/STATUSTEXT.
 | 3 | Calibration (gyro/baro/level accel) | Disarmed, stationary, level | ⚠️ needs authorization |
 | 4 | Motor spin (one motor, min %, ≤2 s) | **Props removed**, disarmed | ⚠️ needs authorization |
 | 5 | Arm / disarm | Props removed, area clear | ⚠️ needs authorization |
+| 6 | Log erase (LOG_ERASE, wipes ALL logs) | No wanted logs remain; erase-all confirmed | ⚠️ needs authorization |
 
 **Never** include takeoff in bench HIL.
 
@@ -76,6 +79,7 @@ this milestone; hardware-connected rows above remain ⛔ pending authorization.
 | Parameters | Renders; empty (demo has no param sync) | ✅ render |
 | Messages | 12 live message types + link stats | ✅ |
 | Logs | Explorer UI renders; directory loading (demo has no MAVFTP) | ✅ render |
+| Log analysis | Dropzone accepts `.ulg`/`.bin`; format-selected worker dispatch | ✅ render |
 
 Notes: PID/Parameters/Logs empty states stem from demo mode not synthesizing
 parameter sync or MAVLink FTP responses — not an ArduPilot-adapter regression.

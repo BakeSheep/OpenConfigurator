@@ -14,7 +14,16 @@ import type { MavLinkData } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
 import type { SerialWritePriority } from '../connection/SerialConnection'
 import { MavlinkFtp, type FtpDownloadRecord } from './MavlinkFtp'
-import { FTP_MESSAGE_ID, MAVLINK_COMMANDS } from '../../shared/constants'
+import {
+  MavlinkLogTransfer,
+  type LogTransferRequest,
+} from './MavlinkLogTransfer'
+import {
+  FTP_MESSAGE_ID,
+  LOG_DATA_MESSAGE_ID,
+  LOG_ENTRY_MESSAGE_ID,
+  MAVLINK_COMMANDS,
+} from '../../shared/constants'
 import {
   buildVehicleIdentity,
   decodeFlightMode,
@@ -65,8 +74,8 @@ const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
 const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
-  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 129,
-  132, 147, 148, 230, 245, 253,
+  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 118,
+  120, 129, 132, 147, 148, 230, 245, 253,
 ])
 type ParamEncoding = 'bytewise' | 'c-cast'
 type TelemetryProfile = 'normal' | 'parameter-sync'
@@ -188,6 +197,9 @@ export class MavlinkBridge extends EventEmitter {
   private paramEncodingNegotiated = false
   private versionAttempt = 0
   private versionTimer: ReturnType<typeof setTimeout> | null = null
+  // AUTOPILOT_VERSION is a one-shot handshake message; cache the last emitted
+  // snapshot so WS clients that (re)connect later can still receive it.
+  private lastAutopilotVersionMessage: ServerMessage | null = null
   private targetSysId: number | null = null
   private targetCompId: number | null = null
   private selectedHeartbeatReady = false
@@ -209,6 +221,7 @@ export class MavlinkBridge extends EventEmitter {
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
   private readonly ftp: MavlinkFtp
+  private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
 
   private onData = (data: Buffer) => {
@@ -255,6 +268,11 @@ export class MavlinkBridge extends EventEmitter {
     })
     this.ftp = new MavlinkFtp({
       sendFtpPayload: (payload) => this.sendFtpPayload(payload),
+      emitMessage: (message) => this.emit('message', message),
+      linkIsBluetooth: () => this.connManager.config?.type === 'bluetooth',
+    })
+    this.logTransfer = new MavlinkLogTransfer({
+      sendLogRequest: (request) => this.sendLogRequest(request),
       emitMessage: (message) => this.emit('message', message),
       linkIsBluetooth: () => this.connManager.config?.type === 'bluetooth',
     })
@@ -408,6 +426,7 @@ export class MavlinkBridge extends EventEmitter {
     this.paramEncoding = 'c-cast'
     this.paramEncodingNegotiated = false
     this.versionAttempt = 0
+    this.lastAutopilotVersionMessage = null
     if (this.versionTimer) {
       clearTimeout(this.versionTimer)
       this.versionTimer = null
@@ -423,6 +442,7 @@ export class MavlinkBridge extends EventEmitter {
   private cancelProtocolOperations(restoreTelemetry: boolean, reason: string): void {
     this.cancelParamDownload(restoreTelemetry, reason)
     this.ftp.cancelAll(reason)
+    this.logTransfer.cancelAll(reason)
     for (const pending of this.pendingCommands.values()) {
       if (pending.timeout) clearTimeout(pending.timeout)
       this.emitOperationError(
@@ -617,6 +637,12 @@ export class MavlinkBridge extends EventEmitter {
       case 110: // FILE_TRANSFER_PROTOCOL
         this.handleFileTransferProtocol(msg)
         break
+      case 118: // LOG_ENTRY
+        this.handleLogEntry(msg)
+        break
+      case 120: // LOG_DATA
+        this.handleLogData(msg)
+        break
       case 147: // BATTERY_STATUS
         this.handleBattery(msg)
         break
@@ -775,6 +801,8 @@ export class MavlinkBridge extends EventEmitter {
         voltageBattery,
         currentBattery,
         batteryRemaining,
+        // load is in 0.1% units per the MAVLink spec (1000 = 100%).
+        cpuLoad: d.load / 10,
         sensorsPresent,
         sensorsEnabled,
         sensorsHealth,
@@ -1150,9 +1178,123 @@ export class MavlinkBridge extends EventEmitter {
     return this.writeMessage(message)
   }
 
-  /** Resolve a completed FTP download for the REST file endpoint. */
+  /** Resolve a completed FTP or DataFlash download for the REST file endpoint. */
   getFtpDownload(downloadId: string): FtpDownloadRecord | null {
-    return this.ftp.getDownload(downloadId)
+    return this.ftp.getDownload(downloadId) ?? this.logTransfer.getDownload(downloadId)
+  }
+
+  private handleLogEntry(msg: MavlinkMessage) {
+    const d = decode<common.LogEntry>(LOG_ENTRY_MESSAGE_ID, msg.payload)
+    if (!d) return
+    this.logTransfer.handleLogEntry({
+      id: d.id,
+      numLogs: d.numLogs,
+      lastLogNum: d.lastLogNum,
+      timeUtc: d.timeUtc,
+      size: d.size,
+    })
+  }
+
+  private handleLogData(msg: MavlinkMessage) {
+    const d = decode<common.LogData>(LOG_DATA_MESSAGE_ID, msg.payload)
+    if (!d) return
+    this.logTransfer.handleLogData({
+      id: d.id,
+      ofs: d.ofs,
+      count: d.count,
+      data: Buffer.from(d.data as unknown as number[]),
+    })
+  }
+
+  /** Map a log-transfer request descriptor onto the wire message classes. */
+  private sendLogRequest(request: LogTransferRequest): boolean {
+    const targetSystem = this.targetSysId ?? 0
+    const targetComponent = this.targetCompId ?? 0
+    switch (request.kind) {
+      case 'list': {
+        const message = new common.LogRequestList()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        message.start = request.start
+        message.end = request.end
+        return this.writeMessage(message)
+      }
+      case 'data': {
+        const message = new common.LogRequestData()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        message.id = request.logId
+        message.ofs = request.ofs
+        message.count = request.count
+        return this.writeMessage(message)
+      }
+      case 'erase': {
+        const message = new common.LogErase()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        return this.writeMessage(message)
+      }
+      case 'end': {
+        const message = new common.LogRequestEnd()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        return this.writeMessage(message)
+      }
+    }
+  }
+
+  private emitLogOpError(
+    operation: 'list' | 'download' | 'erase',
+    code: string,
+    message: string,
+    requestId?: string,
+    retryable = false,
+  ): void {
+    this.emit('message', {
+      type: 'log_op_error',
+      data: { ...(requestId ? { requestId } : {}), operation, code, message, retryable },
+    } as ServerMessage)
+  }
+
+  /**
+   * DataFlash log transfers must not share the link with a full parameter
+   * sync or an FTP transfer, and are only meaningful on vehicles whose
+   * profile reports the DataFlash log format (i.e. ArduPilot).
+   */
+  private requireLogTransferAvailable(
+    operation: 'list' | 'download' | 'erase',
+    requestId?: string,
+  ): boolean {
+    if (vehicleCapabilities(this.selectedIdentity).logFormat !== 'dataflash') {
+      this.emitLogOpError(
+        operation,
+        'unsupported_log_transport',
+        '当前飞控类型不使用 DataFlash 日志传输协议',
+        requestId,
+      )
+      return false
+    }
+    if (this.paramDownloadActive) {
+      this.emitLogOpError(
+        operation,
+        'param_sync_active',
+        '参数同步进行中，请稍后再执行日志操作',
+        requestId,
+        true,
+      )
+      return false
+    }
+    if (this.ftp.busy) {
+      this.emitLogOpError(
+        operation,
+        'ftp_busy',
+        '文件传输进行中，无法同时执行日志操作',
+        requestId,
+        true,
+      )
+      return false
+    }
+    return true
   }
 
   private emitFsOpError(
@@ -1168,11 +1310,21 @@ export class MavlinkBridge extends EventEmitter {
     } as ServerMessage)
   }
 
-  /** FTP transfers and full parameter sync must not share the link. */
+  /** FTP transfers, DataFlash transfers and full parameter sync must not share the link. */
   private requireFtpAvailable(
     operation: 'list' | 'download' | 'delete',
     requestId?: string,
   ): boolean {
+    if (this.logTransfer.busy) {
+      this.emitFsOpError(
+        operation,
+        'log_transfer_busy',
+        'DataFlash 日志传输进行中，请稍后再执行文件操作',
+        requestId,
+        true,
+      )
+      return false
+    }
     if (!this.paramDownloadActive) return true
     this.emitFsOpError(
       operation,
@@ -1501,9 +1653,9 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 'param_request_list':
         if (this.requireReadyTarget('param_request_list', msg.requestId)) {
-          if (this.ftp.busy) {
-            // A running FTP transfer would be starved by the parameter burst
-            // (and vice versa); reject instead of silently degrading both.
+          if (this.ftp.busy || this.logTransfer.busy) {
+            // A running FTP/log transfer would be starved by the parameter
+            // burst (and vice versa); reject instead of silently degrading both.
             this.emitOperationError(
               'param_request_list',
               'ftp_busy',
@@ -1572,6 +1724,42 @@ export class MavlinkBridge extends EventEmitter {
           && this.requireFtpAvailable('delete', msg.requestId)
         ) {
           this.ftp.startDelete(msg.data.entries, msg.requestId)
+        }
+        break
+      case 'log_list':
+        if (
+          this.requireReadyTarget('log_list', msg.requestId)
+          && this.requireLogTransferAvailable('list', msg.requestId)
+        ) {
+          this.logTransfer.startList(msg.requestId)
+        }
+        break
+      case 'log_download':
+        if (
+          this.requireReadyTarget('log_download', msg.requestId)
+          && this.requireLogTransferAvailable('download', msg.requestId)
+        ) {
+          this.logTransfer.startDownload(msg.data.logId, msg.requestId)
+        }
+        break
+      case 'log_download_cancel':
+        this.logTransfer.cancelDownload(msg.requestId)
+        break
+      case 'log_erase':
+        // LOG_ERASE wipes ALL logs on the FC; the runtime guard backs up the
+        // type-level literal for direct (test/raw WS) callers.
+        if ((msg as { safetyConfirmation?: string }).safetyConfirmation !== 'erase_all_logs') {
+          this.emitLogOpError(
+            'erase',
+            'safety_confirmation_required',
+            '擦除全部日志需要 erase_all_logs 安全确认',
+            msg.requestId,
+          )
+        } else if (
+          this.requireReadyTarget('log_erase', msg.requestId)
+          && this.requireLogTransferAvailable('erase', msg.requestId)
+        ) {
+          this.logTransfer.startErase(msg.requestId)
         }
         break
     }
@@ -1998,7 +2186,7 @@ export class MavlinkBridge extends EventEmitter {
     // message itself carries no stack identity and must not assume PX4.
     const family = this.selectedIdentity?.family ?? 'unknown'
     const vehicleClass = this.selectedIdentity?.vehicleClass ?? 'unknown'
-    this.emit('message', {
+    const versionMessage = {
       type: 'autopilot_version',
       data: {
         boardId,
@@ -2012,7 +2200,17 @@ export class MavlinkBridge extends EventEmitter {
         family,
         vehicleClass,
       },
-    } as ServerMessage)
+    } as ServerMessage
+    this.lastAutopilotVersionMessage = versionMessage
+    this.emit('message', versionMessage)
+  }
+
+  /**
+   * Last emitted autopilot_version snapshot for replay to late-joining WS
+   * clients (the FC only answers the version request once per link).
+   */
+  getAutopilotVersionMessage(): ServerMessage | null {
+    return this.lastAutopilotVersionMessage
   }
 
   private requestAutopilotVersion(): void {
@@ -2554,6 +2752,7 @@ export class MavlinkBridge extends EventEmitter {
     this.pendingManualControl = null
     this.cancelProtocolOperations(false, 'bridge_destroyed')
     this.ftp.destroy()
+    this.logTransfer.destroy()
     this.stopHeartbeat()
     this.stopLinkStats()
     if (this.versionTimer) clearTimeout(this.versionTimer)

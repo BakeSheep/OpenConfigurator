@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { EmptyState, PageHeader } from '../components/ui/PageFrame'
+import DataflashLogPanel from '../components/logs/DataflashLogPanel'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
@@ -92,9 +93,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   }, [])
 
   // (Re-)list whenever the target directory or the link readiness changes.
+  // Only the PX4/ULog profile browses the filesystem over MAVLink FTP; the
+  // DataFlash panel issues its own log_list requests.
   useEffect(() => {
-    if (vehicleReady) requestListing(currentPath)
-  }, [vehicleReady, currentPath, requestListing])
+    if (vehicleReady && logs.format === 'ulog') requestListing(currentPath)
+  }, [vehicleReady, logs.format, currentPath, requestListing])
 
   // Deletion finished: refresh the listing and dismiss the task shortly after.
   useEffect(() => {
@@ -278,7 +281,9 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     <div className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}>
       {!embedded && <PageHeader
         title="飞行日志"
-        description="浏览飞控 SD 卡文件，下载 ULog 日志或直接送入分析"
+        description={logs.format === 'dataflash'
+          ? '浏览飞控 DataFlash 日志，下载 .bin 日志或直接送入分析'
+          : '浏览飞控 SD 卡文件，下载 ULog 日志或直接送入分析'}
         actions={
           <button
             type="button"
@@ -293,17 +298,18 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
       {!vehicleReady ? (
         <EmptyState
           title="请先连接飞控"
-          description="连接后即可像资源管理器一样浏览 SD 卡上的日志文件"
+          description="连接后即可浏览并下载飞控上的日志文件"
           icon="folder"
         />
       ) : !logs.browse ? (
         <EmptyState
-          title={logs.format === 'dataflash' ? 'ArduPilot DataFlash 日志' : '当前飞控不支持日志浏览'}
-          description={logs.format === 'dataflash'
-            ? 'ArduPilot 使用 DataFlash 日志（通过 LOG_REQUEST_LIST/LOG_REQUEST_DATA 下载），本里程碑尚未实现下载与分析。详见 docs/ARDUPILOT.md。'
-            : '尚未识别飞控类型，不提供日志浏览、分析或删除。'}
+          title="当前飞控不支持日志浏览"
+          description="尚未识别飞控类型，不提供日志浏览、分析或删除。"
           icon="folder"
         />
+      ) : logs.format === 'dataflash' ? (
+        // ArduPilot: flat DataFlash log list over LOG_REQUEST_* (no filesystem).
+        <DataflashLogPanel vehicleReady={vehicleReady} />
       ) : (
         <section
           className="mc-card mc-explorer"

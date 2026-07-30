@@ -1475,6 +1475,11 @@ bridge.destroy()
   assert.equal(apVersionData.boardName, 'MicoAir743v2')
   assert.equal(apVersionData.vendorId, 4660)
   assert.equal(apVersionData.productId, 22136)
+  // The one-shot version message is cached so late-joining WS clients can be
+  // replayed the firmware snapshot (page refresh after the FC handshake).
+  const cachedVersion = apBridge.getAutopilotVersionMessage()
+  assert.equal(cachedVersion?.type, 'autopilot_version')
+  assert.equal((cachedVersion as { data: { firmwareLabel: string } }).data.firmwareLabel, 'ArduPilot v4.7.0')
 
   // ArduPilot telemetry edge cases (synthetic minimal fixtures):
   // SYS_STATUS with a PreArm-check bit present but unhealthy must surface

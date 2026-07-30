@@ -965,7 +965,10 @@ input[type="range"]:disabled {
   padding-right: 16px;
 }
 
-.mc-statusbar__temp { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 8px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+/* Non-interactive info chip (firmware / CPU load) sharing the temp pill look. */
+.mc-statusbar__chip { display: inline-flex; align-items: center; padding: 1px 8px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-tertiary); color: var(--text-secondary); font-size: 10px; font-weight: 700; white-space: nowrap; }
+
+.mc-statusbar__temp { display: inline-flex; align-items: center; padding: 1px 8px; border: 1px solid var(--border); border-radius: var(--radius-full); background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .mc-statusbar__temp:hover { border-color: var(--accent); color: var(--accent); }
 .mc-statusbar__temp[data-open] { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
 

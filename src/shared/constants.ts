@@ -111,6 +111,13 @@ export const FTP_NAK_ERRORS = {
   FileNotFound: 10,
 } as const
 
+// ArduPilot DataFlash log transfer (LOG_REQUEST_* protocol). Only the inbound
+// reply ids are needed for message routing; outbound requests (#117
+// LOG_REQUEST_LIST, #119 LOG_REQUEST_DATA, #121 LOG_ERASE, #122
+// LOG_REQUEST_END) are built from the mavlink-mappings message classes.
+export const LOG_ENTRY_MESSAGE_ID = 118
+export const LOG_DATA_MESSAGE_ID = 120
+
 // PX4 stores ULog flight logs under this SD-card directory. The name makes the
 // PX4/ULog scope explicit: ArduPilot uses DataFlash logs downloaded over the
 // LOG_REQUEST_* protocol, not this MAVFTP path.
