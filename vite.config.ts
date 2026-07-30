@@ -5,6 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   root: '.',
+  // Local/prod builds serve from '/'; the GitHub Pages workflow injects
+  // VITE_BASE_PATH=/OpenConfigurator/ for the repo-subpath deployment.
+  base: process.env.VITE_BASE_PATH || '/',
   build: {
     outDir: 'dist',
   },
