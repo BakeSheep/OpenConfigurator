@@ -440,7 +440,37 @@ export class SerialConnection extends EventEmitter {
     if (binding.closePromise) return binding.closePromise
     const closePromise = (async () => {
       if (!binding.nativeOpenSettled) {
-        await binding.nativeOpenPromise
+        // serialport cannot cancel a native open. Waiting forever would keep
+        // the binding and its listeners alive until process exit if the
+        // driver never settles, so cap the wait; a truly late open is still
+        // closed by the one-shot handler installed below.
+        const settled = await this.waitForNativeOpen(binding, this.closeTimeoutMs * 6)
+        if (!settled) {
+          // finalizeBinding removes the normal lifecycle listeners. Keep a
+          // dedicated one-shot error absorber until the abandoned native open
+          // eventually settles, otherwise EventEmitter would treat a late
+          // `error` as uncaught and could terminate the process.
+          const absorbLateError = (error: Error) => {
+            this.emitDiagnostic('lateNativeOpenErrorAfterRelease', error)
+          }
+          binding.port.once('error', absorbLateError)
+          binding.port.once('open', () => {
+            try {
+              binding.port.close((error) => {
+                binding.port.off('error', absorbLateError)
+                if (error) this.emitDiagnostic('lateCloseError', error)
+              })
+            } catch (error) {
+              binding.port.off('error', absorbLateError)
+              this.emitDiagnostic('lateCloseError', this.toError(error))
+            }
+          })
+          this.emitDiagnostic('nativeOpenNeverSettled', new Error(
+            `串口 ${binding.path} 的底层打开操作始终未返回，已放弃等待并释放绑定。`,
+          ))
+          this.finalizeBinding(binding)
+          return
+        }
       }
       if (!binding.closed && binding.port.isOpen) {
         await this.closeNativePort(binding)
@@ -461,6 +491,17 @@ export class SerialConnection extends EventEmitter {
       if (binding.closePromise === closePromise) binding.closePromise = null
     })
     return closePromise
+  }
+
+  private waitForNativeOpen(binding: PortBinding, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs)
+      timer.unref?.()
+      void binding.nativeOpenPromise.then(() => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
   }
 
   private closeNativePort(binding: PortBinding): Promise<void> {

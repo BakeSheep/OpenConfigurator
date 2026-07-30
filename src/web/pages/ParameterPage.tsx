@@ -5,6 +5,34 @@ import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 
+// PX4 circuit-breaker parameters disable safety protections outright; writing
+// them by accident must require an explicit confirmation.
+const DANGEROUS_PARAM_PREFIXES = ['CBRK_']
+
+const INTEGER_PARAM_RANGES: Record<number, readonly [number, number]> = {
+  1: [0, 0xff],
+  2: [-0x80, 0x7f],
+  3: [0, 0xffff],
+  4: [-0x8000, 0x7fff],
+  5: [0, 0xffffffff],
+  6: [-0x80000000, 0x7fffffff],
+  // JS numbers cannot exactly represent the full 64-bit integer domain. Keep
+  // writes inside the exact range instead of silently rounding an unsafe value.
+  7: [0, Number.MAX_SAFE_INTEGER],
+  8: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+}
+
+function validateParamValue(value: number, type: number): string | null {
+  if (!Number.isFinite(value)) return '参数值必须是有限数值'
+  if (type === 9) return Number.isFinite(Math.fround(value)) ? null : '参数值超出 REAL32 范围'
+  if (type === 10) return null
+  const range = INTEGER_PARAM_RANGES[type]
+  if (!range) return `不支持 MAV_PARAM_TYPE ${type}`
+  if (!Number.isInteger(value) || value < range[0] || value > range[1]) {
+    return `参数值必须位于 ${range[0]}–${range[1]} 范围内`
+  }
+  return null
+}
 export default function ParameterPage({ embedded = false }: { embedded?: boolean }) {
   const { params, loading, totalCount, receivedCount } = useParameterStore()
   const send = sendClientMessage
@@ -59,11 +87,24 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (!canWrite) return
     const param = params.get(id)
     if (!param) return
-    const parsedValue = Number.parseFloat(editValue)
-    if (!Number.isFinite(parsedValue)) return
-    const value = param.type >= 1 && param.type <= 8
-      ? Math.trunc(parsedValue)
-      : parsedValue
+    const rawValue = editValue.trim()
+    const parsedValue = rawValue === '' ? Number.NaN : Number(rawValue)
+    if (!Number.isFinite(parsedValue)) {
+      setWriteError(`${id} 不是有效数值`)
+      return
+    }
+    const value = parsedValue
+    const rangeError = validateParamValue(value, param.type)
+    if (rangeError) {
+      setWriteError(`${id}：${rangeError}`)
+      return
+    }
+    if (
+      DANGEROUS_PARAM_PREFIXES.some((prefix) => id.startsWith(prefix))
+      && !window.confirm(
+        `${id} 是安全熔断（circuit breaker）参数，错误的值会直接禁用关键安全保护。\n确认写入 ${value} 吗？`,
+      )
+    ) return
     setWriteError(null)
     setPendingWrite({ id, value })
     send({ type: 'param_set', requestId: `param-${id}-${Date.now().toString(36)}`, data: { id, value, paramType: param.type } })

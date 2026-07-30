@@ -1,14 +1,21 @@
 import { useEffect, useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
+import {
+  supportsCalibrationKind,
+  vehicleCapabilities,
+  type CalibrationKind,
+} from '../../shared/vehicleProfiles'
+import { boardOrientationField } from '../utils/parameterProfiles'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useParameterStore } from '../stores/parameterStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
 const tabs = [{ id: 'imu', label: 'IMU' }, { id: 'mag', label: '罗盘' }, { id: 'baro', label: '气压计' }, { id: 'gps', label: 'GPS' }, { id: 'optflow', label: '光流' }, { id: 'rangefinder', label: '测距仪' }]
-type CalibrationType = 'accel' | 'gyro' | 'mag' | 'baro'
+type CalibrationType = CalibrationKind
 type CalibrationStatus = 'sending' | 'running' | 'completed' | 'failed'
 type CalibrationState = {
   type: CalibrationType
@@ -153,7 +160,20 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const armed = useTelemetryStore((state) => state.status?.armed ?? false)
   const lastCommandAck = useTelemetryStore((state) => state.lastCommandAck)
-  const canCalibrate = hasCalibrationControl && !armed
+  const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
+  // Board orientation binds to the profile parameter: PX4 SENS_BOARD_ROT or
+  // ArduPilot AHRS_ORIENTATION. A wrong orientation is flight-critical.
+  const orientationField = boardOrientationField(vehicleIdentity)
+  const orientationParam = useParameterStore(
+    (state) => orientationField ? state.params.get(orientationField.id) : undefined,
+  )
+  // Calibration is capability-gated: unknown or untested vehicle profiles
+  // must never receive MAV_CMD_PREFLIGHT_CALIBRATION.
+  const canCalibrate = hasCalibrationControl && !armed && caps.calibrate
+  const canCalibrateKind = (type: CalibrationType) => canCalibrate && supportsCalibrationKind(vehicleIdentity, type)
+
   const selectedImuInstance = imuIndex === 'imu2' ? 1 : 0
   const imu = imus[selectedImuInstance] ?? null
 
@@ -170,19 +190,31 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   }, [calibration?.requestId, lastCommandAck])
 
   useEffect(() => {
+    const error = lastOperationError
+    if (
+      !calibration
+      || !error
+      || error.requestId !== calibration.requestId
+      || error.operation !== 'start_calibration'
+    ) return
+    setCalibration((current) => !current || current.requestId !== error.requestId ? current : {
+      ...current,
+      status: 'failed',
+      message: error.message,
+    })
+  }, [calibration?.requestId, lastOperationError])
+
+  useEffect(() => {
     setCalibration((current) => current ? applyCalibrationLogs(current, statusLogs) : null)
   }, [statusLogs])
 
   const startCalibration = (type: CalibrationType) => {
-    if (!canCalibrate) return
-    const params = [0, 0, 0, 0, 0, 0, 0]
-    if (type === 'gyro') params[0] = 1
-    if (type === 'mag') params[1] = 1
-    if (type === 'baro') params[2] = 1
-    if (type === 'accel') params[4] = 1
+    if (!canCalibrateKind(type)) return
     const requestId = `cal-${type}-${Date.now().toString(36)}`
     const startedAt = Date.now()
-    const sent = send({ type: 'command', requestId, cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION', params })
+    // Semantic message: the server maps the kind to stack-specific
+    // MAV_CMD_PREFLIGHT_CALIBRATION parameters after capability/armed checks.
+    const sent = send({ type: 'start_calibration', requestId, data: { kind: type } })
     setCalibration({
       type,
       requestId,
@@ -192,6 +224,12 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       completedSteps: [],
       message: sent ? '校准指令已发送，正在等待飞控确认。' : 'WebSocket 未连接，校准指令未发送。',
     })
+  }
+
+  const setBoardOrientation = (value: number) => {
+    if (!orientationField || !orientationParam || !canCalibrate) return
+    if (!window.confirm('确认修改飞控安装方向？错误的安装方向会直接导致起飞后失控（飞行关键）。')) return
+    send({ type: 'param_set', data: { id: orientationField.id, value, paramType: orientationParam.type } })
   }
 
   const calibrationWizard = calibration && (() => {
@@ -240,7 +278,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       {!canCalibrate && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
-          <span>{armed ? '飞行器已解锁，必须先安全上锁才能校准。' : '连接飞控并取得控制权后才可执行校准；实时监控仍保持只读。'}</span>
+          <span>{armed
+            ? '飞行器已解锁，必须先安全上锁才能校准。'
+            : hasCalibrationControl && !caps.calibrate
+              ? '当前飞控类型尚未适配校准流程（仅支持 PX4 与 ArduCopter），校准按钮已禁用。'
+              : '连接飞控并取得控制权后才可执行校准；实时监控仍保持只读。'}</span>
         </div>
       )}
 
@@ -250,7 +292,19 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
             <button type="button" data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1 {imus[0] ? '●' : '○'}</button>
             <button type="button" data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2 {imus[1] ? '●' : '○'}</button>
             <span>IMU安装方向</span>
-            <select className="mc-select" aria-label="SENS_BOARD_ROT" defaultValue="none" disabled><option value="none">No rotation</option></select>
+            <select
+              className="mc-select"
+              aria-label={orientationField?.id ?? 'IMU安装方向'}
+              value={orientationParam ? Math.round(orientationParam.value) : ''}
+              disabled={!orientationField || !orientationParam || !canCalibrate}
+              title={orientationField ? orientationField.hint : '当前飞控类型尚未适配安装方向参数'}
+              onChange={(event) => setBoardOrientation(Number(event.target.value))}
+            >
+              {!orientationParam && <option value="">{orientationField ? '等待参数' : '不适用'}</option>}
+              {orientationField?.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
           </div>
 
           <div className="mc-sensor-chart-grid">
@@ -268,7 +322,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
 
           <section className="mc-card mc-calibration-bar">
             <h2>校准</h2>
-            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={!canCalibrate || calibration !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={!canCalibrate || calibration !== null}>校准陀螺仪</button></div>
+            <div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('accel')} disabled={!canCalibrateKind('accel') || calibration !== null}>校准加速度计</button><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('gyro')} disabled={!canCalibrateKind('gyro') || calibration !== null}>校准陀螺仪</button></div>
             {calibrationWizard}
           </section>
         </>
@@ -277,13 +331,13 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       {activeTab === 'mag' && (
         <>
           <SensorStatusCard title="罗盘" values={[["磁场 X", mag?.x.toFixed(2) ?? '—'], ["磁场 Y", mag?.y.toFixed(2) ?? '—'], ["磁场 Z", mag?.z.toFixed(2) ?? '—'], ["校准状态", mag ? '数据正常' : '等待数据']]} />
-          <section className="mc-card mc-calibration-bar"><h2>罗盘校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('mag')} disabled={!canCalibrate || calibration !== null}>开始罗盘校准</button></div>{calibrationWizard}</section>
+          <section className="mc-card mc-calibration-bar"><h2>罗盘校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('mag')} disabled={!canCalibrateKind('mag') || calibration !== null} title={!supportsCalibrationKind(vehicleIdentity, 'mag') ? '当前飞控暂未适配罗盘校准流程' : undefined}>开始罗盘校准</button></div>{calibrationWizard}</section>
         </>
       )}
       {activeTab === 'baro' && (
         <>
           <SensorStatusCard title="气压计" values={[["绝对气压", baro ? `${baro.press_abs.toFixed(2)} hPa` : '—'], ["差压", baro ? `${baro.press_diff.toFixed(2)} hPa` : '—'], ["温度", baro?.temperature == null ? '—' : `${baro.temperature.toFixed(1)} °C`], ["气压高度", baro?.altitude == null ? '—' : `${baro.altitude.toFixed(1)} m`]]} />
-          <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={!canCalibrate || calibration !== null}>开始气压计校准</button></div>{calibrationWizard}</section>
+          <section className="mc-card mc-calibration-bar"><h2>气压计校准</h2><div><button type="button" className="mc-btn mc-btn-primary" onClick={() => startCalibration('baro')} disabled={!canCalibrateKind('baro') || calibration !== null}>开始气压计校准</button></div>{calibrationWizard}</section>
         </>
       )}
       {activeTab === 'gps' && <SensorStatusCard title="GPS" values={[["定位类型", gps ? String(gps.fix_type) : '—'], ["卫星数量", gps ? String(gps.satellites_visible) : '—'], ["水平精度", gps ? String(gps.eph) : '—'], ["状态", gps && gps.fix_type >= 3 ? '定位正常' : '未定位']]} />}

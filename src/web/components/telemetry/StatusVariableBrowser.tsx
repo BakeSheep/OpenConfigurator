@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from '../ui/Icon'
 import { useConnectionStore, type LinkStats } from '../../stores/connectionStore'
 import { useSensorStore } from '../../stores/sensorStore'
@@ -18,6 +18,21 @@ export interface StatusGroup {
 
 type TelemetrySnapshot = ReturnType<typeof useTelemetryStore.getState>
 type SensorSnapshot = ReturnType<typeof useSensorStore.getState>
+
+// High-rate telemetry arrives at tens of Hz. Subscribing to the whole stores
+// would rebuild the entire variable tree for every message, so the browser
+// (and the dashboard custom board) samples a snapshot at a fixed interval.
+export const STATUS_SNAPSHOT_INTERVAL_MS = 500
+
+export function readStatusVariableSnapshot() {
+  return {
+    telemetry: useTelemetryStore.getState(),
+    sensors: useSensorStore.getState(),
+    linkStats: useConnectionStore.getState().linkStats,
+  }
+}
+
+export type StatusVariableSnapshot = ReturnType<typeof readStatusVariableSnapshot>
 
 const RAD2DEG = 180 / Math.PI
 
@@ -267,13 +282,21 @@ function splitColumns(entries: StatusEntry[], columns: number): StatusEntry[][] 
 }
 
 export default function StatusVariableBrowser({ paused = false }: { paused?: boolean }) {
-  const telemetry = useTelemetryStore()
-  const sensors = useSensorStore()
-  const linkStats = useConnectionStore((state) => state.linkStats)
+  const [snapshot, setSnapshot] = useState(readStatusVariableSnapshot)
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setSnapshot(readStatusVariableSnapshot()),
+      STATUS_SNAPSHOT_INTERVAL_MS,
+    )
+    return () => window.clearInterval(timer)
+  }, [])
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
-  const liveGroups = buildGroups(telemetry, sensors, linkStats)
+  const liveGroups = useMemo(
+    () => buildGroups(snapshot.telemetry, snapshot.sensors, snapshot.linkStats),
+    [snapshot],
+  )
   // While paused, keep rendering the snapshot captured at pause time.
   const frozenRef = useRef<StatusGroup[] | null>(null)
   if (paused) {

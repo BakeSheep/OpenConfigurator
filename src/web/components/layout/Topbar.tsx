@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { PX4_MODES } from '../../../shared/constants'
+import { availableModes } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
@@ -15,7 +15,7 @@ import Icon from '../ui/Icon'
 const radToDeg = (r: number) => r * 180 / Math.PI
 
 export default function Topbar() {
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus } = useConnectionStore()
+  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
@@ -38,6 +38,7 @@ export default function Topbar() {
 
   const connectPreset = async (preset: ConnectionPreset) => {
     setConnectDropdown(false)
+    setConnectionError(null)
     setStatus('connecting')
     try {
       let resolved = preset
@@ -47,6 +48,7 @@ export default function Topbar() {
         if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
         const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
         if (!matched) {
+          setConnectionError('未找到与该预设匹配的串口，请重新选择设备。')
           setStatus('error')
           setConnectDialogOpen(true)
           return
@@ -76,8 +78,24 @@ export default function Topbar() {
         }),
       })
       const text = await res.text()
-      if (!res.ok) setStatus('error')
-    } catch { setStatus('error') }
+      let json: { success?: boolean; error?: { message?: string } } | null = null
+      if (text) {
+        try { json = JSON.parse(text) } catch { /* not JSON */ }
+      }
+      // A 200 with success=false is still a failure; never report it silently.
+      if (!res.ok || !json?.success) {
+        const reason = json?.error?.message ?? (text || `HTTP ${res.status}`)
+        console.error('[Connect] preset connect failed:', reason)
+        setConnectionError(`预设连接失败：${reason}`)
+        setStatus('error')
+        setConnectDialogOpen(true)
+      }
+    } catch (error) {
+      console.error('[Connect] preset connect failed:', error)
+      setConnectionError(`预设连接失败：${error instanceof Error ? error.message : String(error)}`)
+      setStatus('error')
+      setConnectDialogOpen(true)
+    }
   }
 
   const removePreset = (id: string) => {
@@ -100,6 +118,7 @@ export default function Topbar() {
   const gps = useTelemetryStore((s) => s.gps)
   const battery = useTelemetryStore((s) => s.battery)
   const vehicle = useTelemetryStore((s) => s.status)
+  const vehicleIdentity = useTelemetryStore((s) => s.vehicleIdentity)
   const relativeAlt = useTelemetryStore((s) => s.relativeAlt)
   const heading = useTelemetryStore((s) => s.heading)
   const isStale = useTelemetryStore((s) => s.isStale)
@@ -141,13 +160,14 @@ export default function Topbar() {
     armDraggingRef.current = false
   }, [armed, canArm, vehicleReady])
 
-  const selectMode = (mainMode: number, subMode: number) => {
+  const selectMode = (modeId: number) => {
     if (!vehicleReady || !canControl) return
+    // The server encodes stack-specific DO_SET_MODE parameters from the
+    // selected vehicle profile; the browser only names the mode.
     sendClientMessage({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: `mode-${Date.now().toString(36)}`,
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, mainMode, subMode, 0, 0, 0, 0],
+      data: { modeId },
     })
     setActiveStatusMenu(null)
   }
@@ -309,14 +329,19 @@ export default function Topbar() {
             <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label="选择飞行模式">
               <header><div><strong>飞行模式</strong><small>{vehicleReady && canControl ? '选择后立即向飞控发送模式切换指令' : '飞控未就绪或当前没有控制权'}</small></div></header>
               <div role="menu">
-                {Object.values(PX4_MODES).map((mode) => (
+                {availableModes(vehicleIdentity).length === 0 && (
+                  <p className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                    当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+                  </p>
+                )}
+                {availableModes(vehicleIdentity).map((mode) => (
                   <button
                     key={mode.id}
                     type="button"
                     role="menuitem"
                     disabled={!vehicleReady || !canControl}
                     data-active={vehicle?.modeId === mode.id}
-                    onClick={() => selectMode(mode.mainMode, mode.subMode)}
+                    onClick={() => selectMode(mode.id)}
                   >
                     <span>{mode.name}</span>
                     {vehicle?.modeId === mode.id && <Icon name="check" size={14} />}
@@ -358,6 +383,16 @@ export default function Topbar() {
       </div>
 
       <div className="mc-topbar__actions">
+        <a
+          className="mc-topbar__link"
+          href="https://github.com/BakeSheep/OpenConfigurator"
+          target="_blank"
+          rel="noreferrer"
+          title="GitHub 仓库"
+          aria-label="打开 GitHub 仓库"
+        >
+          <Icon name="github" size={16} />
+        </a>
         <button
           type="button"
           className="mc-topbar__link"

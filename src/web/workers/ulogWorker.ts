@@ -12,16 +12,18 @@ import {
   RAD_TO_DEG,
   VibrationAnalyzer,
   buildSegments,
-  computeSaturationPct,
-  downsampleMinMax,
   quaternionToEuler,
-  type SeriesData,
   type UlogAnalysisDataset,
   type UlogEvent,
   type UlogWorkerResult,
 } from '../utils/ulogAnalysis'
+import {
+  finishEnvelope,
+  finishRaw,
+  makeRaw,
+  pushRaw,
+} from '../utils/seriesCompression'
 
-const MAX_SERIES_POINTS = 4000
 const MAX_EVENTS = 500
 const ENVELOPE_BUCKET_SEC = 0.05
 const TRACK_MIN_INTERVAL_SEC = 0.2
@@ -36,33 +38,6 @@ function num(value: unknown): number {
 
 function numArray(value: unknown): number[] | null {
   return Array.isArray(value) ? value.map(num) : null
-}
-
-interface RawSeries {
-  label: string
-  times: number[]
-  values: number[]
-}
-
-function makeRaw(label: string): RawSeries {
-  return { label, times: [], values: [] }
-}
-
-function pushRaw(series: RawSeries, timeSec: number, value: number): void {
-  if (!Number.isFinite(value)) return
-  series.times.push(timeSec)
-  series.values.push(value)
-}
-
-function finishRaw(series: RawSeries): SeriesData {
-  const { times, values } = downsampleMinMax(series.times, series.values, MAX_SERIES_POINTS)
-  return { label: series.label, times, values }
-}
-
-function finishEnvelope(label: string, collector: EnvelopeCollector): SeriesData {
-  const { times, values } = collector.finish()
-  const bounded = downsampleMinMax(times, values, MAX_SERIES_POINTS)
-  return { label, times: bounded.times, values: bounded.values }
 }
 
 function infoString(map: Map<string, unknown> | undefined, key: string): string | null {
@@ -126,7 +101,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   }
   let motorEnvelopes: EnvelopeCollector[] = []
   let motorLabelsFromPwm = true
-  const motorSampleMax: number[] = []
+  let motorSampleCount = 0
+  let motorSaturatedCount = 0
   const vibration = new VibrationAnalyzer()
   const rawAcc: [EnvelopeCollector, EnvelopeCollector, EnvelopeCollector] = [
     new EnvelopeCollector(ENVELOPE_BUCKET_SEC),
@@ -207,7 +183,10 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       sampleMax = Math.max(sampleMax, value)
       any = true
     }
-    if (any) motorSampleMax.push(sampleMax)
+    if (any) {
+      motorSampleCount++
+      if (sampleMax >= (isPwm ? 1950 : 0.98)) motorSaturatedCount++
+    }
   }
 
   let haveActuatorMotors = false
@@ -253,7 +232,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
         // Normalized controls supersede the PWM mirror once observed.
         haveActuatorMotors = true
         motorEnvelopes = []
-        motorSampleMax.length = 0
+        motorSampleCount = 0
+        motorSaturatedCount = 0
       }
       handleActuatorSample(
         controls.filter((entry) => Number.isFinite(entry)),
@@ -330,14 +310,17 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     vehicle_status: (value, timeSec) => {
       const navState = num(value.nav_state)
       if (Number.isFinite(navState)) {
-        modeSamples.push({
-          timeSec,
-          label: NAV_STATE_NAMES[navState] ?? `模式 ${navState}`,
-        })
+        const label = NAV_STATE_NAMES[navState] ?? `模式 ${navState}`
+        if (modeSamples[modeSamples.length - 1]?.label !== label) {
+          modeSamples.push({ timeSec, label })
+        }
       }
       const armingState = num(value.arming_state)
       if (Number.isFinite(armingState)) {
-        armedSamples.push({ timeSec, label: armingState === 2 ? 'armed' : 'disarmed' })
+        const label = armingState === 2 ? 'armed' : 'disarmed'
+        if (armedSamples[armedSamples.length - 1]?.label !== label) {
+          armedSamples.push({ timeSec, label })
+        }
       }
     },
   }
@@ -425,7 +408,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     actuators: motorSeries,
     actuatorSaturation: motorSeries.length > 0
       ? {
-        saturationPct: computeSaturationPct(motorSampleMax),
+        saturationPct: motorSampleCount > 0 ? motorSaturatedCount / motorSampleCount * 100 : 0,
         motorCount: motorSeries.length,
       }
       : null,

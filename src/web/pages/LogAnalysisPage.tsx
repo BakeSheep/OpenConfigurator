@@ -1,7 +1,8 @@
-// Flight-Review-grade ULog analysis page. Data enters through three doors:
-// a local .ulg file (drag & drop / picker), the hand-off stash from the
-// flight-log explorer, or a direct FC import (FTP download -> analyze).
-// Parsing happens entirely inside a Web Worker; this page only renders the
+// Flight-Review-grade log analysis page for PX4 ULog (.ulg) and ArduPilot
+// DataFlash (.bin). Data enters through three doors: a local file (drag &
+// drop / picker), the hand-off stash from the flight-log explorer, or a
+// direct FC import (FTP / LOG_REQUEST download -> analyze). Parsing happens
+// entirely inside a format-selected Web Worker; this page only renders the
 // pre-digested dataset.
 import {
   Fragment,
@@ -20,6 +21,11 @@ import UPlotChart, { seriesColor } from '../components/logs/UPlotChart'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
+import { useLogTransferStore } from '../stores/logTransferStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { dataflashLogName } from '../components/logs/DataflashLogPanel'
+import { logSupport } from '../utils/logProfiles'
+import { isDataflashFileName } from '../utils/dataflashAnalysis'
 import { takeStashedLog } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
 import type {
@@ -28,7 +34,7 @@ import type {
   UlogWorkerResult,
 } from '../utils/ulogAnalysis'
 import { parsePx4LogPathDate } from '../utils/ulogAnalysis'
-import type { FsEntry } from '../../shared/types'
+import type { DataflashLogEntry, FsEntry } from '../../shared/types'
 
 // Leaflet is only pulled in when the log actually contains a GPS track.
 const TrackMap = lazy(() => import('../components/logs/TrackMap'))
@@ -64,12 +70,18 @@ const LOG_LEVEL_LABELS: Record<number, { label: string; color: string }> = {
   7: { label: 'DEBUG', color: 'var(--text-disabled)' },
 }
 
-function analyzeInWorker(buffer: ArrayBuffer, signal: AbortSignal): Promise<UlogAnalysisDataset> {
+type LogFormat = 'ulog' | 'dataflash'
+
+function analyzeInWorker(
+  buffer: ArrayBuffer,
+  signal: AbortSignal,
+  format: LogFormat,
+): Promise<UlogAnalysisDataset> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      new URL('../workers/ulogWorker.ts', import.meta.url),
-      { type: 'module' },
-    )
+    // Vite requires literal new URL() arguments to bundle each worker.
+    const worker = format === 'dataflash'
+      ? new Worker(new URL('../workers/dataflashWorker.ts', import.meta.url), { type: 'module' })
+      : new Worker(new URL('../workers/ulogWorker.ts', import.meta.url), { type: 'module' })
     let settled = false
     const cleanup = () => {
       signal.removeEventListener('abort', abort)
@@ -79,7 +91,7 @@ function analyzeInWorker(buffer: ArrayBuffer, signal: AbortSignal): Promise<Ulog
       if (settled) return
       settled = true
       cleanup()
-      const error = new Error('ULog 解析已取消')
+      const error = new Error('日志解析已取消')
       error.name = 'AbortError'
       reject(error)
     }
@@ -88,13 +100,13 @@ function analyzeInWorker(buffer: ArrayBuffer, signal: AbortSignal): Promise<Ulog
       settled = true
       cleanup()
       if (event.data.dataset) resolve(event.data.dataset)
-      else reject(new Error(event.data.error ?? 'ULog 解析失败'))
+      else reject(new Error(event.data.error ?? '日志解析失败'))
     }
     worker.onerror = (event) => {
       if (settled) return
       settled = true
       cleanup()
-      reject(new Error(event.message || 'ULog 解析线程异常'))
+      reject(new Error(event.message || '日志解析线程异常'))
     }
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) {
@@ -158,6 +170,7 @@ function ChartPanel({
   selectionGroups,
   headerAside,
   children,
+  onCursorTimeChange,
 }: {
   title: string
   series?: SeriesData[]
@@ -168,6 +181,7 @@ function ChartPanel({
   secondaryScaleLabels?: string[]
   selectionGroups?: SeriesSelectionGroup[]
   headerAside?: React.ReactNode
+  onCursorTimeChange?: (timeSec: number) => void
   children?: React.ReactNode
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -279,6 +293,7 @@ function ChartPanel({
             bands={bands}
             height={height}
             secondaryScaleLabels={secondaryScaleLabels}
+            onCursorTimeChange={onCursorTimeChange}
           />
         )}
         {children}
@@ -318,6 +333,7 @@ function ChartPanel({
                 bands={bands}
                 height={expandedHeight}
                 secondaryScaleLabels={secondaryScaleLabels}
+                onCursorTimeChange={onCursorTimeChange}
               />
             </div>
           </section>
@@ -462,9 +478,109 @@ function FcImportDialog({
   )
 }
 
+/** Lightweight DataFlash log picker for ArduPilot (LOG_REQUEST_* protocol). */
+function FcDataflashImportDialog({
+  onClose,
+}: {
+  onClose: () => void
+}) {
+  const entries = useLogTransferStore((state) => state.entries)
+  const loading = useLogTransferStore((state) => state.loading)
+  const listError = useLogTransferStore((state) => state.listError)
+  const download = useLogTransferStore((state) => state.download)
+
+  useEffect(() => {
+    useLogTransferStore.getState().setLoading(true)
+    sendClientMessage({ type: 'log_list' })
+  }, [])
+
+  const newestFirst = useMemo(
+    () => [...entries].sort((a, b) => b.id - a.id),
+    [entries],
+  )
+
+  const open = (entry: DataflashLogEntry) => {
+    if (download?.status === 'active') return
+    useLogTransferStore.getState().beginDownload(entry.id, 'analyze')
+    sendClientMessage({ type: 'log_download', data: { logId: entry.id } })
+  }
+
+  return (
+    <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
+      <div className="mc-card mc-modal">
+        <div className="flex items-center justify-between">
+          <h3 className="mc-section-title">从飞控导入日志</h3>
+          <button type="button" className="mc-icon-btn" aria-label="关闭" onClick={onClose}>
+            <Icon name="close" size={15} />
+          </button>
+        </div>
+        {download?.status === 'active' ? (
+          <div className="mc-explorer__transfer" style={{ padding: '12px 0' }}>
+            <progress
+              value={download.totalBytes > 0 ? download.receivedBytes : undefined}
+              max={download.totalBytes > 0 ? download.totalBytes : undefined}
+            />
+            <span className="mc-mono" style={{ fontSize: 12 }}>
+              {formatBytes(download.receivedBytes)} / {formatBytes(download.totalBytes)}
+            </span>
+            <button
+              type="button"
+              className="mc-btn mc-btn-ghost"
+              onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
+            >
+              取消
+            </button>
+          </div>
+        ) : (
+          <ul className="mc-modal__list" style={{ maxHeight: 300 }}>
+            {loading && <li style={{ color: 'var(--text-disabled)' }}>正在获取日志列表…</li>}
+            {!loading && listError && (
+              <li style={{ color: 'var(--danger)' }}>{listError}</li>
+            )}
+            {!loading && !listError && newestFirst.length === 0 && (
+              <li style={{ color: 'var(--text-disabled)' }}>飞控上没有日志</li>
+            )}
+            {!loading && newestFirst.map((entry) => (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  className="flex items-center gap-2"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    font: 'inherit',
+                    padding: '2px 0',
+                  }}
+                  onClick={() => open(entry)}
+                >
+                  <Icon name="log" size={14} style={{ color: 'var(--accent)' }} />
+                  {dataflashLogName(entry)}
+                  <span style={{ color: 'var(--text-disabled)' }}>
+                    {formatBytes(entry.sizeBytes)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {download?.status === 'error' && (
+          <p style={{ color: 'var(--danger)', fontSize: 12, margin: 0 }}>
+            下载失败：{download.error}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function LogAnalysisPage({ embedded = false }: { embedded?: boolean }) {
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const logs = logSupport(vehicleIdentity)
   const download = useFileExplorerStore((state) => state.download)
+  const logDownload = useLogTransferStore((state) => state.download)
   const [dataset, setDataset] = useState<UlogAnalysisDataset | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [parsing, setParsing] = useState(false)
@@ -472,10 +588,27 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const [dragOver, setDragOver] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [paramFilter, setParamFilter] = useState('')
+  const [chartCursorTimeSec, setChartCursorTimeSec] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
   const analysisAbortRef = useRef<AbortController | null>(null)
   const unmountAbortTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const replayStartSec = useMemo(() => {
+    if (!dataset) return 0
+    const takeoffSegment = dataset.modeSegments.find(
+      (segment) => segment.label === 'Takeoff' || segment.label === 'VTOL Takeoff',
+    )
+    return takeoffSegment?.startSec ?? dataset.armedSegments[0]?.startSec ?? 0
+  }, [dataset])
+
+  const handleChartCursorTimeChange = useCallback((timeSec: number) => {
+    setChartCursorTimeSec(timeSec)
+  }, [])
+
+  useEffect(() => {
+    setChartCursorTimeSec(null)
+  }, [dataset])
 
   const analyzeBuffer = useCallback((
     name: string,
@@ -485,14 +618,19 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     analysisAbortRef.current?.abort()
     const controller = new AbortController()
     analysisAbortRef.current = controller
+    const format: LogFormat = isDataflashFileName(name) ? 'dataflash' : 'ulog'
     setParsing(true)
     setParseError(null)
     setFileName(name)
-    analyzeInWorker(buffer, controller.signal)
+    analyzeInWorker(buffer, controller.signal, format)
       .then((result) => {
         if (controller.signal.aborted) return
         if (result.overview.startTimeUtcMs === null) {
-          const pathTime = parsePx4LogPathDate(options?.sourcePath ?? name)
+          // DataFlash file names carry no PX4-style timestamp; fall straight
+          // through to the file-modified estimate for .bin logs.
+          const pathTime = format === 'ulog'
+            ? parsePx4LogPathDate(options?.sourcePath ?? name)
+            : null
           if (pathTime !== null) {
             result.overview.startTimeUtcMs = pathTime
             result.overview.startTimeSource = 'filename'
@@ -571,11 +709,41 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     }
   }, [download, analyzeBuffer])
 
+  // ArduPilot DataFlash FC import completed: fetch and analyze in place.
+  useEffect(() => {
+    if (logDownload?.status !== 'done' || !logDownload.downloadId) return
+    if (logDownload.intent !== 'analyze') return
+    if (handledDownloadRef.current === logDownload.downloadId) return
+    const downloadId = logDownload.downloadId
+    let cancelled = false
+    void (async () => {
+      try {
+        const response = await fetch(`/api/logs/downloads/${downloadId}`)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const buffer = await response.arrayBuffer()
+        if (cancelled) return
+        handledDownloadRef.current = downloadId
+        useLogTransferStore.getState().clearDownload()
+        setImportOpen(false)
+        analyzeBuffer(logDownload.fileName ?? 'log.bin', buffer)
+      } catch (error) {
+        if (!cancelled) {
+          useLogTransferStore.getState().failDownload('读取已下载文件失败')
+          console.error('[Analysis] failed to fetch downloaded DataFlash log:', error)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [logDownload, analyzeBuffer])
+
   const handleFiles = useCallback((files: FileList | null) => {
     const file = files?.[0]
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.ulg')) {
-      setParseError('请选择 .ulg 格式的 PX4 飞行日志文件')
+    const lower = file.name.toLowerCase()
+    if (!lower.endsWith('.ulg') && !lower.endsWith('.bin')) {
+      setParseError('请选择 .ulg（PX4 ULog）或 .bin（ArduPilot DataFlash）格式的飞行日志文件')
       return
     }
     void file.arrayBuffer().then((buffer) => analyzeBuffer(file.name, buffer, {
@@ -630,13 +798,13 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     >
       <PageHeader
         title="日志分析"
-        description="解析 PX4 ULog 飞行日志，提供 Flight Review 级的全面分析"
+        description="解析 PX4 ULog 与 ArduPilot DataFlash 飞行日志，提供 Flight Review 级的全面分析"
         actions={
           <>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".ulg"
+              accept=".ulg,.bin"
               hidden
               onChange={(event) => {
                 handleFiles(event.target.files)
@@ -686,10 +854,10 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         >
           <Icon name="log" size={34} style={{ color: 'var(--accent)' }} />
           <p style={{ margin: '12px 0 4px', fontSize: 15, color: 'var(--text-primary)' }}>
-            拖入 .ulg 日志文件，或点击选择本地文件
+            拖入 .ulg / .bin 日志文件，或点击选择本地文件
           </p>
           <p style={{ margin: 0, fontSize: 12.5 }}>
-            也可以在已连接飞控时点击右上角"从飞控导入"直接下载并分析
+            支持 PX4 ULog 与 ArduPilot DataFlash；也可在已连接飞控时点击右上角“从飞控导入”直接下载并分析
           </p>
         </div>
       )}
@@ -796,6 +964,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               <LogAttitudeVisualizer
                 series={dataset.attitude}
                 durationSec={dataset.overview.durationSec}
+                startSec={replayStartSec}
+                syncTimeSec={chartCursorTimeSec}
               />
             </Suspense>
           </section>
@@ -805,6 +975,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             title="姿态跟踪（实际 vs 设定，°）"
             series={dataset.attitude}
             unit="°"
+            onCursorTimeChange={handleChartCursorTimeChange}
             bands={dataset.armedSegments}
             selectionGroups={ATTITUDE_GROUPS}
           />
@@ -940,7 +1111,9 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         </div>
       )}
 
-      {importOpen && <FcImportDialog onClose={() => setImportOpen(false)} />}
+      {importOpen && (logs.format === 'dataflash'
+        ? <FcDataflashImportDialog onClose={() => setImportOpen(false)} />
+        : <FcImportDialog onClose={() => setImportOpen(false)} />)}
     </div>
   )
 }

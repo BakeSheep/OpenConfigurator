@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData } from '../../shared/types'
+import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VehicleIdentity } from '../../shared/types'
+import type { ServerMessage } from '../../shared/types'
 
 export type StatusSeverity = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
@@ -18,6 +19,8 @@ export interface CommandAckState {
   terminal?: boolean
   time: number
 }
+
+export type OperationErrorState = Extract<ServerMessage, { type: 'operation_error' }>['data'] & { time: number }
 
 // Per-field freshness thresholds (ms). High-rate streams (attitude/imu/motors)
 // must update frequently; low-rate streams (gps/battery) are allowed more
@@ -43,13 +46,22 @@ interface TelemetryState {
   attitude: AttitudeData | null
   gps: GpsData | null
   battery: BatteryData | null
+  // Which message currently feeds `battery`: BATTERY_STATUS is authoritative,
+  // SYS_STATUS is only a fallback while BATTERY_STATUS is absent/stale.
+  batterySource: 'battery_status' | 'sys_status' | null
   status: VehicleStatus | null
   ekfStatus: EkfStatusData | null
   rcChannels: RcChannelsData | null
   motorOutputs: MotorOutputData | null
   autopilotVersion: AutopilotVersionData | null
+  // Selected vehicle identity from the backend 'target'/'status' messages.
+  // Kept independent of the parameter set and cleared on target reset or
+  // disconnect so a reconnected vehicle never reuses a stale profile.
+  vehicleIdentity: VehicleIdentity | null
   preflightCheck: boolean | null
   sensorsHealthy: boolean | null
+  // Autopilot mainloop load in percent from SYS_STATUS; null until received.
+  cpuLoad: number | null
   unhealthySensorMask: number
   unhealthySensors: string[]
   altitude: number
@@ -61,6 +73,7 @@ interface TelemetryState {
   throttle: number
   globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
   statusLogs: StatusLogEntry[]
+  lastOperationError: OperationErrorState | null
   lastCommandAck: CommandAckState | null
   // Timestamp (Date.now()) of the last update per field. 0 = never received OR
   // explicitly marked stale by markAllStale() on disconnect. UI uses isStale()
@@ -73,11 +86,13 @@ interface TelemetryState {
   setEkfStatus: (data: EkfStatusData) => void
   setRcChannels: (data: RcChannelsData) => void
   setMotorOutputs: (data: MotorOutputData) => void
-  setAutopilotVersion: (data: AutopilotVersionData) => void
+  setAutopilotVersion: (data: AutopilotVersionData | null) => void
+  setVehicleIdentity: (identity: VehicleIdentity | null) => void
   setVfrHud: (data: any) => void
   setGlobalPosition: (data: any) => void
   setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
+  setOperationError: (error: Omit<OperationErrorState, 'time'>) => void
   setCommandAck: (ack: Omit<CommandAckState, 'time'>) => void
   clearStatusLogs: () => void
   // Called on link drop: keep the last values (so the UI can show "frozen"
@@ -99,13 +114,16 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   attitude: null,
   gps: null,
   battery: null,
+  batterySource: null,
   status: null,
   ekfStatus: null,
   rcChannels: null,
   motorOutputs: null,
   autopilotVersion: null,
+  vehicleIdentity: null,
   preflightCheck: null,
   sensorsHealthy: null,
+  cpuLoad: null,
   unhealthySensorMask: 0,
   unhealthySensors: [],
   altitude: 0,
@@ -117,6 +135,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   throttle: 0,
   globalPosition: null,
   statusLogs: [],
+  lastOperationError: null,
   lastCommandAck: null,
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
@@ -126,13 +145,21 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   // IDs may be interleaved on the same MAVLink link.
   setBattery: (data) => set((state) => ({
     battery: data,
+    batterySource: 'battery_status',
     lastUpdate: { ...state.lastUpdate, battery: Date.now() },
   })),
-  setStatus: (data) => set((state) => ({ status: data, lastUpdate: { ...state.lastUpdate, status: Date.now() } })),
+  setStatus: (data) => set((state) => ({
+    status: data,
+    // The heartbeat-derived status carries the authoritative identity; keep
+    // the store copy in sync so profile-driven UI follows reconnects.
+    vehicleIdentity: data.identity ?? state.vehicleIdentity,
+    lastUpdate: { ...state.lastUpdate, status: Date.now() },
+  })),
   setEkfStatus: (data) => set((state) => ({ ekfStatus: data, lastUpdate: { ...state.lastUpdate, ekfStatus: Date.now() } })),
   setRcChannels: (data) => set((state) => ({ rcChannels: data, lastUpdate: { ...state.lastUpdate, rcChannels: Date.now() } })),
   setMotorOutputs: (data) => set((state) => ({ motorOutputs: data, lastUpdate: { ...state.lastUpdate, motorOutputs: Date.now() } })),
   setAutopilotVersion: (data) => set({ autopilotVersion: data }),
+  setVehicleIdentity: (identity) => set({ vehicleIdentity: identity }),
   setVfrHud: (data) => set((state) => ({
     airSpeed: data.airspeed,
     groundSpeed: data.groundspeed,
@@ -151,22 +178,43 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     const now = Date.now()
     // MAVLink recommends BATTERY_STATUS over the ambiguous SYS_STATUS fields.
     // Only use SYS_STATUS as a fallback when no recent BATTERY_STATUS exists.
-    const batteryStatusFresh = now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
-    const fallbackBattery: BatteryData | null = batteryStatusFresh ? state.battery : {
-      id: 0,
-      voltage: data.voltageBattery,
-      cell_voltages: [],
-      current: data.currentBattery,
-      remaining: data.batteryRemaining,
-      consumed_mah: null,
-    }
+    // The source flag distinguishes a fresh fallback stamp from a real
+    // BATTERY_STATUS stamp, so fallback data keeps refreshing every cycle.
+    const batteryStatusFresh = state.batterySource === 'battery_status'
+      && now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
+    // Only synthesize a fallback battery when SYS_STATUS carries a valid
+    // voltage; otherwise a monitor-less ArduPilot would show 0.0 V · 99%.
+    const sysStatusHasVoltage = data.voltageBattery != null
+    const fallbackBattery: BatteryData | null = batteryStatusFresh
+      ? state.battery
+      : sysStatusHasVoltage
+        ? {
+            id: 0,
+            voltage: data.voltageBattery,
+            cell_voltages: [],
+            current: data.currentBattery,
+            remaining: data.batteryRemaining,
+            consumed_mah: null,
+          }
+        : null
     return {
       battery: fallbackBattery,
+      batterySource: batteryStatusFresh
+        ? state.batterySource
+        : sysStatusHasVoltage ? 'sys_status' : state.batterySource,
       preflightCheck: data.preflightCheck,
       sensorsHealthy: data.sensorsHealthy,
+      cpuLoad: data.cpuLoad,
       unhealthySensorMask: data.unhealthySensorMask,
       unhealthySensors: data.unhealthySensors,
-      lastUpdate: { ...state.lastUpdate, sysStatus: now },
+      lastUpdate: {
+        ...state.lastUpdate,
+        sysStatus: now,
+        // The fallback is fresh data: stamp the battery timestamp too so
+        // consumers that only check it (e.g. RealtimeChart) do not grey out
+        // live fallback values.
+        ...(batteryStatusFresh || !sysStatusHasVoltage ? {} : { battery: now }),
+      },
     }
   }),
   addStatusLog: (severity, text) => set((state) => {
@@ -181,6 +229,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
     return { statusLogs: next.slice(0, 200) }
   }),
   setCommandAck: (ack) => set({ lastCommandAck: { ...ack, time: Date.now() } }),
+  setOperationError: (error) => set({ lastOperationError: { ...error, time: Date.now() } }),
   clearStatusLogs: () => set({ statusLogs: [] }),
   markAllStale: () => set({ lastUpdate: zeroLastUpdate() }),
   isStale: (field, thresholdMs) => {

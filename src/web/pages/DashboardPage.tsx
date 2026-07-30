@@ -1,8 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
-import { buildGroups } from '../components/telemetry/StatusVariableBrowser'
+import { buildGroups, readStatusVariableSnapshot, STATUS_SNAPSHOT_INTERVAL_MS } from '../components/telemetry/StatusVariableBrowser'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -112,14 +112,25 @@ function VerticalBarsCard({ title, subtitle, live, bars }: {
 // Custom data board: user picks any variables from the MAVLink status tree
 // (same registry as the status variable browser) for realtime display.
 function CustomDataCard() {
-  const telemetry = useTelemetryStore()
-  const sensors = useSensorStore()
-  const linkStats = useConnectionStore((state) => state.linkStats)
+  // Sample a snapshot on a fixed interval instead of subscribing to the whole
+  // telemetry/sensor stores, which would rebuild the variable tree for every
+  // high-rate message and re-render the dashboard on each packet.
+  const [snapshot, setSnapshot] = useState(readStatusVariableSnapshot)
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setSnapshot(readStatusVariableSnapshot()),
+      STATUS_SNAPSHOT_INTERVAL_MS,
+    )
+    return () => window.clearInterval(timer)
+  }, [])
   const [selected, setSelected] = useState(loadCustomVars)
   const [editing, setEditing] = useState(false)
   const [query, setQuery] = useState('')
 
-  const groups = buildGroups(telemetry, sensors, linkStats)
+  const groups = useMemo(
+    () => buildGroups(snapshot.telemetry, snapshot.sensors, snapshot.linkStats),
+    [snapshot],
+  )
   const entryById = new Map(groups.flatMap((group) => group.entries.map((entry) => [`${group.name}.${entry.name}`, entry] as [string, typeof entry])))
 
   const toggleVar = (id: string) => {

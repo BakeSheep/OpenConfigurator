@@ -24,11 +24,19 @@
 
 浏览器不直接解析 MAVLink。Node.js 服务持有操作系统串口，负责协议校验、目标选择、命令事务、控制权和连接生命周期；前端只消费 `src/shared/types.ts` 定义的网络消息。
 
+## 飞控适配（PX4 / ArduPilot）
+
+共享传输与消息归一化对所有飞控通用。飞控差异收敛到一个**框架无关的 vehicle profile**：从 HEARTBEAT 的 `autopilot` 与 `type` 字段分类（见 `src/shared/vehicleProfiles.ts`），得到 `family`（`px4`/`ardupilot`/`unknown`）与 `vehicleClass`。
+
+- 服务端拥有栈相关的命令编码与能力判定：`encodeModeCommand`、`vehicleCapabilities`、电机测试（PX4 `MAV_CMD_ACTUATOR_TEST` 310 / ArduPilot `MAV_CMD_DO_MOTOR_TEST` 209）、校准参数映射，全部在写入串口前按 profile 判定，未知/未适配机型一律拒绝。
+- 前端按 profile 渲染模式列表与参数分组（`vehicleConfig.ts`、`parameterProfiles.ts`、`logProfiles.ts`），从不把 PX4 参数名写给 ArduPilot（反之亦然）。ArduCopter 首个里程碑为验收目标；Plane/Rover/Sub/Tracker 建模为显式只读。详见 `docs/ARDUPILOT.md`。
+
 ## 目录职责
 
 | 路径 | 职责 |
 |---|---|
 | `src/shared/` | 前后端共享的纯 TypeScript 类型、协议 union 与 MAVLink/PX4 常量 |
+| `src/shared/vehicleProfiles.ts` | 从 HEARTBEAT 分类飞控 family/vehicleClass，模式解码/编码与能力矩阵 |
 | `src/web/` | React SPA、页面、组件、WebSocket 分发与 Zustand stores |
 | `src/server/index.ts` | HTTP/WS 边界、鉴权、Origin、限流、控制者租约和进程关闭 |
 | `src/server/validation.ts` | REST、WS 与服务环境变量的运行时校验 |

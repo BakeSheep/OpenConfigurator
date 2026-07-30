@@ -78,6 +78,7 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
 
 class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   readonly messages: ClientMessage[] = []
+  currentParamRunId = 0
   destroyed = false
   parameterCancellationCalls = 0
   destroyError: Error | null = null
@@ -89,6 +90,7 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
 
   handleClientMessage(message: ClientMessage): void {
     this.messages.push(message)
+    if (message.type === 'param_request_list') this.currentParamRunId += 1
   }
 
   cancelParameterDownload(): void {
@@ -262,6 +264,13 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     }),
     (error) => error instanceof InputValidationError && error.code === 'restricted_command',
   )
+  for (const cmd of ['MAV_CMD_DO_SET_MODE', 'MAV_CMD_PREFLIGHT_CALIBRATION']) {
+    assert.throws(
+      () => parseClientMessage({ type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] }),
+      (error) => error instanceof InputValidationError && error.code === 'restricted_command',
+    )
+  }
+
   assert.throws(
     () => parseClientMessage({
       type: 'motor_test',
@@ -322,6 +331,74 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
   )
 })
 
+test('runtime validation accepts DataFlash log requests and preserves erase safety', () => {
+  assert.deepEqual(
+    parseClientMessage({ type: 'log_list', requestId: 'logs-1' }),
+    { type: 'log_list', requestId: 'logs-1' },
+  )
+  assert.deepEqual(
+    parseClientMessage({
+      type: 'log_download',
+      requestId: 'log-download-1',
+      data: { logId: 42 },
+    }),
+    {
+      type: 'log_download',
+      requestId: 'log-download-1',
+      data: { logId: 42 },
+    },
+  )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'log_download',
+      data: { logId: 65_536 },
+    }),
+    (error) => error instanceof InputValidationError && error.path === 'data.logId',
+  )
+  assert.equal(
+    parseClientMessage({ type: 'log_download_cancel' }).type,
+    'log_download_cancel',
+  )
+  assert.throws(
+    () => parseClientMessage({ type: 'log_erase' }),
+    (error) =>
+      error instanceof InputValidationError
+      && error.code === 'safety_confirmation_required',
+  )
+  assert.equal(
+    parseClientMessage({
+      type: 'log_erase',
+      safetyConfirmation: 'erase_all_logs',
+    }).type,
+    'log_erase',
+  )
+})
+
+test('WebSocket boundary forwards a validated DataFlash log-list request', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    client.ws.send(JSON.stringify({
+      type: 'log_list',
+      requestId: 'logs-accepted',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(started.bridge.messages.length, 1)
+    assert.deepEqual(started.bridge.messages[0], {
+      type: 'log_list',
+      requestId: 'logs-accepted',
+    })
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
 test('REST boundary returns stable JSON errors and accepts only validated connection configs', async () => {
   const started = await startTestServer()
   try {
@@ -418,10 +495,9 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     assert.equal(validationError.data?.code, 'out_of_range')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'not-ready',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     const notReady = await second.waitFor(
       'client_error',
@@ -436,20 +512,18 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     started.connManager.emit('statusChange', 'connected')
 
     first.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-1',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     await first.waitFor('controller', (message) => message.data?.reason === 'claimed')
     assert.equal(started.bridge.messages.length, 1)
-    assert.equal(started.bridge.messages[0].type, 'command')
+    assert.equal(started.bridge.messages[0].type, 'set_flight_mode')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-2',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     const conflict = await second.waitFor(
       'client_error',
@@ -472,10 +546,9 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     first.ws.send(JSON.stringify({ type: 'release_control', requestId: 'release-1' }))
     await second.waitFor('controller', (message) => message.data?.reason === 'released')
     second.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'mode-3',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     await second.waitFor(
       'controller',
@@ -523,8 +596,51 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
       (message) => message.data?.status === 'started' && message.data?.generation === 2,
     )
     assert.equal(generationTwo.data?.generation, 2)
-    started.bridge.emit('message', { type: 'param_complete', data: { count: 0 } })
-    await first.waitFor('param_sync', (message) => message.data?.status === 'complete')
+    assert.equal(started.bridge.currentParamRunId, 2)
+
+    const beforeStaleRun = first.messages.length
+    started.bridge.emit('message', {
+      type: 'param',
+      data: { id: 'STALE_RUN', value: 1, type: 9, param_count: 1, param_index: 0 },
+      paramRunId: 1,
+    })
+    started.bridge.emit('message', {
+      type: 'param_complete',
+      data: { count: 1 },
+      paramRunId: 1,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(
+      first.messages.slice(beforeStaleRun).some((message) =>
+        message.type === 'param_batch'
+        || (message.type === 'param_sync' && message.data?.status === 'complete')),
+      false,
+      'late events from the cancelled run must not contaminate the new generation',
+    )
+
+    started.bridge.emit('message', {
+      type: 'param',
+      data: { id: 'CURRENT_RUN', value: 2, type: 9, param_count: 1, param_index: 0 },
+      paramRunId: 2,
+    })
+    started.bridge.emit('message', {
+      type: 'param_complete',
+      data: { count: 1 },
+      paramRunId: 2,
+    })
+    const currentBatch = await first.waitFor(
+      'param_batch',
+      (message) => message.generation === 2,
+      1_000,
+      beforeStaleRun,
+    )
+    assert.equal((currentBatch.data as unknown as Array<{ id: string }>)[0]?.id, 'CURRENT_RUN')
+    await first.waitFor(
+      'param_sync',
+      (message) => message.data?.status === 'complete' && message.data?.generation === 2,
+      1_000,
+      beforeStaleRun,
+    )
 
     // The compatibility flag must track the physical transport even while a
     // lifecycle status is briefly stale during bounded teardown.
@@ -594,10 +710,9 @@ test('REST connection mutations respect the active WebSocket controller lease', 
     started.connManager.vehicleReady = true
     started.connManager.emit('statusChange', 'connected')
     owner.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'claim-rest-control',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      data: { modeId: 1 },
     }))
     await owner.waitFor('controller', (message) => message.data?.reason === 'claimed')
 
@@ -638,10 +753,9 @@ test('REST connection mutations respect the active WebSocket controller lease', 
     started.connManager.vehicleReady = true
     const messagesBeforeReclaim = owner.messages.length
     owner.ws.send(JSON.stringify({
-      type: 'command',
+      type: 'set_flight_mode',
       requestId: 'reclaim-rest-control',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      data: { modeId: 2 },
     }))
     await owner.waitFor(
       'controller',
@@ -744,18 +858,16 @@ test('expired controller leases allow a waiting observer to become controller', 
     started.connManager.vehicleReady = true
     started.connManager.emit('statusChange', 'connected')
     first.ws.send(JSON.stringify({
-      type: 'command',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 1, 0, 0, 0, 0, 0],
+      type: 'set_flight_mode',
+      data: { modeId: 1 },
     }))
     await first.waitFor('controller', (message) => message.data?.reason === 'claimed')
     await new Promise((resolve) => setTimeout(resolve, 90))
     await second.waitFor('controller', (message) => message.data?.reason === 'expired')
 
     second.ws.send(JSON.stringify({
-      type: 'command',
-      cmd: 'MAV_CMD_DO_SET_MODE',
-      params: [1, 2, 0, 0, 0, 0, 0],
+      type: 'set_flight_mode',
+      data: { modeId: 2 },
     }))
     await second.waitFor(
       'controller',

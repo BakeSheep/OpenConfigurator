@@ -1,7 +1,14 @@
 import { NavLink } from 'react-router-dom'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import {
+  ardupilotSerialPorts,
+  ARDUPILOT_SERIAL_PROTOCOLS,
+  ARDUPILOT_SERIAL_BAUDS,
+} from '../utils/parameterProfiles'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
 
 const PORT_OPTIONS = [
   [0, 'Disabled'],
@@ -40,9 +47,9 @@ const BAUD_PARAMS: Record<number, string> = {
 
 const baudParamForPort = (portValue: number | undefined) => BAUD_PARAMS[portValue ?? -1]
 
-function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<readonly [number, string]> }) {
+function ParamSelect({ id, options, writable = true }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable?: boolean }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
@@ -65,9 +72,9 @@ function ParamSelect({ id, options }: { id: string; options: ReadonlyArray<reado
   )
 }
 
-function RateInput({ id }: { id: string }) {
+function RateInput({ id, writable = true }: { id: string; writable?: boolean }) {
   const param = useParameterStore((state) => state.params.get(id))
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
   return (
     <input
@@ -79,8 +86,19 @@ function RateInput({ id }: { id: string }) {
       disabled={!param || !canWrite}
       onBlur={(event) => {
         if (!param) return
-        const value = Number(event.target.value)
-        if (Number.isFinite(value) && value !== param.value) {
+        const raw = event.target.value.trim()
+        // An emptied field means "abandon the edit", not "write zero": Number('')
+        // coerces to 0 and would silently zero the rate parameter.
+        if (raw === '') {
+          event.target.value = String(Math.round(param.value))
+          return
+        }
+        const value = Math.round(Number(raw))
+        if (!Number.isFinite(value) || value < 0) {
+          event.target.value = String(Math.round(param.value))
+          return
+        }
+        if (value !== param.value) {
           send({ type: 'param_set', data: { id, value, paramType: param.type } })
         }
       }}
@@ -90,6 +108,12 @@ function RateInput({ id }: { id: string }) {
 
 export default function PortSettingsPage() {
   const params = useParameterStore((state) => state.params)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const serialWritable = vehicleCapabilities(vehicleIdentity).serialConfig
+  // ArduPilot exposes SERIALx_* ports; PX4 uses the MAV_x instance layout.
+  if (vehicleIdentity?.family === 'ardupilot') {
+    return <ArduPilotSerialPorts params={params} writable={serialWritable} />
+  }
   const rows = [0, 1, 2].map((instance) => {
     const prefix = `MAV_${instance}`
     const portValue = params.get(`${prefix}_CONFIG`)?.value
@@ -108,6 +132,12 @@ export default function PortSettingsPage() {
         <span>{params.size ? '参数已同步' : '连接飞控后读取配置'}</span>
       </header>
 
+      {vehicleIdentity && !serialWritable && (
+        <p className="mc-capability-note" data-state="waiting">
+          当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配串口配置写入，控件仅供查看。
+        </p>
+      )}
+
       <div className="mc-port-table-scroll">
         <div className="mc-port-table">
           <div className="mc-port-row mc-port-row--head">
@@ -117,20 +147,91 @@ export default function PortSettingsPage() {
           {rows.map(({ instance, prefix, baudValue }) => (
             <div className="mc-port-row" key={instance}>
               <strong className="mc-port-instance">MAV{instance}</strong>
-              <ParamSelect id={`${prefix}_CONFIG`} options={PORT_OPTIONS} />
+              <ParamSelect id={`${prefix}_CONFIG`} options={PORT_OPTIONS} writable={serialWritable} />
               <div className="mc-port-baud mc-mono">
                 {baudValue ? `${Math.round(baudValue)} 8N1` : instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? '无波特率参数' : '—'}
               </div>
-              <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} />
-              <RateInput id={`${prefix}_RATE`} />
-              <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} />
-              <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} />
+              <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} writable={serialWritable} />
+              <RateInput id={`${prefix}_RATE`} writable={serialWritable} />
+              <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} writable={serialWritable} />
+              <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} writable={serialWritable} />
               <NavLink to="/diagnostics" className="mc-btn mc-btn-ghost">高级</NavLink>
             </div>
           ))}
         </div>
       </div>
       <footer>端口或波特率更改通常需要重启飞控后生效。</footer>
+    </section>
+  )
+}
+
+function ArduPilotSerialSelect({ id, options, writable }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable: boolean }) {
+  const param = useParameterStore((state) => state.params.get(id))
+  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
+  const send = sendClientMessage
+  const value = param ? Math.round(param.value) : ''
+  const known = options.some(([option]) => option === value)
+  return (
+    <select
+      className="mc-select"
+      aria-label={id}
+      value={value}
+      disabled={!param || !canWrite}
+      onChange={(event) => {
+        if (!param) return
+        send({ type: 'param_set', data: { id, value: Number(event.target.value), paramType: param.type } })
+      }}
+    >
+      {!param && <option value="">等待参数</option>}
+      {/* Preserve a protocol/baud value the UI does not know, never drop it. */}
+      {param && !known && <option value={value}>值 {value}</option>}
+      {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
+    </select>
+  )
+}
+
+function ArduPilotSerialPorts({ params, writable }: { params: Map<string, import('../../shared/types').ParamData>; writable: boolean }) {
+  const ports = ardupilotSerialPorts(params)
+  return (
+    <section className="mc-port-settings mc-card">
+      <header>
+        <div>
+          <h2>ArduPilot 串口</h2>
+          <p>配置各 SERIALx 端口的协议与波特率。仅显示飞控实际返回的 SERIALx 参数。</p>
+        </div>
+        <span>{ports.length ? `${ports.length} 个串口` : '连接飞控后读取配置'}</span>
+      </header>
+
+      {!writable && (
+        <p className="mc-capability-note" data-state="waiting">
+          当前飞控类型尚未适配串口配置写入，控件仅供查看。
+        </p>
+      )}
+
+      <div className="mc-port-table-scroll">
+        <div className="mc-port-table">
+          <div className="mc-port-row mc-port-row--head">
+            <span>端口</span><span>协议</span><span>波特率</span><span>流数据速率 (SRx_*)</span>
+          </div>
+          {ports.length === 0 ? (
+            <div className="mc-port-row"><span>暂无 SERIALx 参数</span></div>
+          ) : ports.map((port) => (
+            <div className="mc-port-row" key={port.index}>
+              <strong className="mc-port-instance">{port.label}</strong>
+              <ArduPilotSerialSelect id={port.protocolParam} options={ARDUPILOT_SERIAL_PROTOCOLS} writable={writable} />
+              <ArduPilotSerialSelect id={port.baudParam} options={ARDUPILOT_SERIAL_BAUDS} writable={writable} />
+              <div className="mc-port-baud mc-mono">
+                {port.streamRateParams.length === 0
+                  ? '—'
+                  : port.streamRateParams
+                    .map((id) => `${id.replace(/^SR\d+_/, '')}:${Math.round(params.get(id)?.value ?? 0)}`)
+                    .join('  ')}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <footer>协议或波特率更改通常需要重启飞控后生效；SRx_* 流数据速率此处仅供查看。</footer>
     </section>
   )
 }

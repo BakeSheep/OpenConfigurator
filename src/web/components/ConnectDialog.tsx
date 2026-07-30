@@ -34,7 +34,7 @@ interface PickedPort {
 }
 
 export default function ConnectDialog() {
-  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, setPorts, setScanning, setStatus, setConnectDialogOpen } = useConnectionStore()
+  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen } = useConnectionStore()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
   const [connType, setConnType] = useState<'serial' | 'bluetooth'>('serial')
@@ -125,6 +125,7 @@ export default function ConnectDialog() {
   }
 
   const postConnect = async (body: any): Promise<void> => {
+    setConnectionError(null)
     setStatus('connecting')
     try {
       const res = await fetch('/api/connections/connect', {
@@ -144,17 +145,21 @@ export default function ConnectDialog() {
       if (!res.ok || !json || !json.success) {
         setStatus('error')
         const reason = json?.error || (text ? `HTTP ${res.status}: ${text.slice(0, 200)}` : `HTTP ${res.status} 无响应（后端可能已崩溃）`)
-        setError(`连接失败：${reason}`)
+        const reasonText = typeof reason === 'string' ? reason : JSON.stringify(reason)
+        setError(`连接失败：${reasonText}`)
+        setConnectionError(`连接失败：${reasonText}`)
         return
       }
     } catch (e: any) {
       setStatus('error')
       setError(`连接失败：${e?.message || String(e)}`)
+      setConnectionError(`连接失败：${e?.message || String(e)}`)
     }
   }
 
   const connect = async () => {
     setError(null)
+    setConnectionError(null)
     if (connType === 'bluetooth') {
       if (selectedBtPort) {
         const selected = bluetoothPorts.find((port) => port.path === selectedBtPort)
@@ -412,9 +417,9 @@ export default function ConnectDialog() {
           )}
 
           {/* Error */}
-          {error && (
+          {(error ?? connectionError) && (
             <div className="p-3 rounded-xl text-[12px]" style={{ background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid rgba(239,68,68,.25)' }}>
-              {error}
+              {error ?? connectionError}
             </div>
           )}
 
@@ -434,13 +439,22 @@ export default function ConnectDialog() {
               断开连接
             </button>
           ) : (
-            <button
-              onClick={saveAsPreset}
-              disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
-              className="mc-btn mc-btn-primary flex-1 py-2.5"
-            >
-              添加到预设
-            </button>
+            <>
+              <button
+                onClick={saveAsPreset}
+                disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
+                className="mc-btn mc-btn-ghost flex-1 py-2.5"
+              >
+                添加到预设
+              </button>
+              <button
+                onClick={connect}
+                disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
+                className="mc-btn mc-btn-primary flex-1 py-2.5"
+              >
+                {status === 'connecting' ? '连接中…' : '连接'}
+              </button>
+            </>
           )}
         </div>
       </div>

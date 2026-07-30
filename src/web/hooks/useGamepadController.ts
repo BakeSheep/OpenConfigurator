@@ -1,24 +1,28 @@
 import { useEffect, useRef } from 'react'
-import { PX4_MODES } from '../../shared/constants'
+import { availableModes } from '../../shared/vehicleProfiles'
 import type { ClientMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
+  NON_REPEATABLE_ACTIONS,
   useGamepadStore,
   type GamepadActionId,
   type GamepadMapping,
 } from '../stores/gamepadStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
-const actionModes: Partial<Record<GamepadActionId, (typeof PX4_MODES)[keyof typeof PX4_MODES]>> = {
-  manual: PX4_MODES.MANUAL,
-  altitude: PX4_MODES.ALTCTL,
-  position: PX4_MODES.POSCTL,
-  mission: PX4_MODES.AUTO_MISSION,
-  hold: PX4_MODES.AUTO_LOITER,
-  rtl: PX4_MODES.AUTO_RTL,
-  land: PX4_MODES.AUTO_LAND,
-  stabilized: PX4_MODES.STABILIZED,
-  acro: PX4_MODES.ACRO,
+// Gamepad actions map to semantic mode names per autopilot family; the id of
+// the resolved profile mode option is sent through set_flight_mode and the
+// server performs the stack-specific command encoding.
+const actionModeNames: Partial<Record<GamepadActionId, { px4: string; ardupilot: string }>> = {
+  manual: { px4: 'Manual', ardupilot: 'Stabilize' },
+  altitude: { px4: 'Altitude', ardupilot: 'AltHold' },
+  position: { px4: 'Position', ardupilot: 'PosHold' },
+  mission: { px4: 'Mission', ardupilot: 'Auto' },
+  hold: { px4: 'Hold', ardupilot: 'Loiter' },
+  rtl: { px4: 'RTL', ardupilot: 'RTL' },
+  land: { px4: 'Land', ardupilot: 'Land' },
+  stabilized: { px4: 'Stabilized', ardupilot: 'Stabilize' },
+  acro: { px4: 'Acro', ardupilot: 'Acro' },
 }
 
 /**
@@ -67,14 +71,24 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
         gamepadActions.setActionNotice(`B${button}：已发送上锁指令`)
         return
       }
-      const mode = actionModes[action]
-      if (mode) {
+      const modeNames = actionModeNames[action]
+      if (modeNames) {
+        const identity = useTelemetryStore.getState().vehicleIdentity
+        const targetName = identity?.family === 'px4'
+          ? modeNames.px4
+          : identity?.family === 'ardupilot' ? modeNames.ardupilot : null
+        const option = targetName
+          ? availableModes(identity).find((candidate) => candidate.name === targetName)
+          : undefined
+        if (!option) {
+          gamepadActions.setActionNotice(`B${button}：当前飞控不支持该模式切换`)
+          return
+        }
         sendRef.current({
-          type: 'command',
-          cmd: 'MAV_CMD_DO_SET_MODE',
-          params: [1, mode.mainMode, mode.subMode, 0, 0, 0, 0],
+          type: 'set_flight_mode',
+          data: { modeId: option.id },
         })
-        gamepadActions.setActionNotice(`B${button}：切换至 ${mode.name}`)
+        gamepadActions.setActionNotice(`B${button}：切换至 ${option.name}`)
       }
     }
 
@@ -97,7 +111,13 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
           rawButtons.forEach((pressed, index) => {
             const assignment = current.buttonAssignments[index]
             const downTransition = pressed && !previousButtonsRef.current[index]
-            const repeatDue = pressed && assignment?.repeat && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
+            // Arm-class actions fire on the press edge only, regardless of any
+            // (legacy/corrupted) repeat flag: holding a button must never
+            // re-send arm/disarm at the button frequency.
+            const repeatDue = pressed
+              && assignment?.repeat
+              && !NON_REPEATABLE_ACTIONS.has(assignment.action)
+              && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
             if (assignment && (downTransition || repeatDue)) {
               lastButtonFireRef.current[index] = now
               fireAction(assignment.action, index)

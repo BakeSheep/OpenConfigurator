@@ -84,20 +84,31 @@ function formatTime(value: number): string {
 export default function LogAttitudeVisualizer({
   series,
   durationSec,
+  startSec = 0,
+  syncTimeSec,
 }: {
   series: SeriesData[]
   durationSec: number
+  startSec?: number
+  syncTimeSec?: number | null
 }) {
   const rollSeries = useMemo(() => series.find((entry) => entry.label === '横滚'), [series])
   const pitchSeries = useMemo(() => series.find((entry) => entry.label === '俯仰'), [series])
   const yawSeries = useMemo(() => series.find((entry) => entry.label === '偏航'), [series])
-  const [timeSec, setTimeSec] = useState(0)
+  const replayStartSec = Math.min(Math.max(startSec, 0), durationSec)
+  const [timeSec, setTimeSec] = useState(replayStartSec)
   const [playing, setPlaying] = useState(false)
 
   useEffect(() => {
-    setTimeSec(0)
+    setTimeSec(replayStartSec)
     setPlaying(false)
-  }, [series])
+  }, [series, replayStartSec])
+
+  useEffect(() => {
+    if (syncTimeSec == null || !Number.isFinite(syncTimeSec)) return
+    setPlaying(false)
+    setTimeSec(Math.min(durationSec, Math.max(replayStartSec, syncTimeSec)))
+  }, [durationSec, replayStartSec, syncTimeSec])
 
   useEffect(() => {
     if (!playing) return
@@ -131,7 +142,7 @@ export default function LogAttitudeVisualizer({
   }
 
   const togglePlayback = () => {
-    if (!playing && timeSec >= durationSec) setTimeSec(0)
+    if (!playing && timeSec >= durationSec) setTimeSec(replayStartSec)
     setPlaying((current) => !current)
   }
 
@@ -159,7 +170,7 @@ export default function LogAttitudeVisualizer({
         </button>
         <input
           type="range"
-          min={0}
+          min={replayStartSec}
           max={Math.max(durationSec, 0.01)}
           step={0.01}
           value={timeSec}
@@ -169,7 +180,9 @@ export default function LogAttitudeVisualizer({
             setTimeSec(Number(event.target.value))
           }}
         />
-        <span className="mc-mono">{formatTime(timeSec)} / {formatTime(durationSec)}</span>
+        <span className="mc-mono">
+          {formatTime(timeSec - replayStartSec)} / {formatTime(durationSec - replayStartSec)}
+        </span>
       </div>
       <div className="mc-log-attitude__values">
         <span>Roll <strong>{attitude.roll.toFixed(1)}°</strong></span>

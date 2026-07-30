@@ -6,22 +6,14 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import type { ParamData } from '../../shared/types'
-import { getPx4AirframeInfo } from '../utils/px4Airframes'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import {
+  buildFrameConfigView,
+  motorFunctionOptions,
+  type FrameOutputChannel,
+} from '../utils/vehicleConfig'
 
 const MAX_MOTORS = 12
-const OUTPUT_BUSES = [
-  { prefix: 'PWM_MAIN', label: 'MAIN', port: 0 },
-  { prefix: 'PWM_AUX', label: 'AUX', port: 1 },
-] as const
-
-interface OutputChannel {
-  prefix: (typeof OUTPUT_BUSES)[number]['prefix']
-  busLabel: string
-  port: number
-  channel: number
-  paramId: string
-  param?: ParamData
-}
 
 interface RotorGeometry {
   index: number
@@ -82,53 +74,48 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const connected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const { params, loading, receivedCount, totalCount } = useParameterStore()
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
+  // Motor testing / actuator writes are capability-gated by the selected
+  // vehicle profile; unsupported profiles keep the controls visible but
+  // disabled with an explanation.
+  const motorTestSupported = caps.motorTest !== 'none'
+  const actuatorWritesSupported = caps.actuatorConfig
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
   const [activePanel, setActivePanel] = useState<'mapping' | 'test'>('mapping')
   const [levels, setLevels] = useState<number[]>([])
-  const motorCount = clampMotorCount(params.get('CA_ROTOR_COUNT')?.value)
-  const sysAutostart = params.get('SYS_AUTOSTART')?.value
-  const airframeName = getPx4AirframeInfo(sysAutostart)?.name
+  // Family-specific frame/actuator read model: SERVOx_FUNCTION for ArduPilot,
+  // PWM_MAIN/AUX_FUNCx + CA_ROTOR* for PX4.
+  const frameView = useMemo(() => buildFrameConfigView(vehicleIdentity, params), [vehicleIdentity, params])
+  const motorCount = clampMotorCount(frameView?.motorCount ?? undefined)
+  const airframeName = (params.size > 0 && frameView ? frameView.name : null)
     || (motorCount === 4 ? 'Quadrotor' : `${motorCount} Motor Geometry`)
   const motorCountRef = useRef(motorCount)
+  // True once the user enabled motor testing or a non-zero test command was
+  // sent. Merely opening/leaving this page must emit no motor-test command.
+  const testActivatedRef = useRef(false)
 
-  const outputChannels = useMemo<OutputChannel[]>(() => {
-    const configured: OutputChannel[] = []
-    for (const bus of OUTPUT_BUSES) {
-      for (let channel = 1; channel <= 16; channel += 1) {
-        const paramId = `${bus.prefix}_FUNC${channel}`
-        const param = params.get(paramId)
-        if (param) {
-          configured.push({
-            prefix: bus.prefix,
-            busLabel: bus.label,
-            port: bus.port,
-            channel,
-            paramId,
-            param,
-          })
-        }
-      }
-    }
-    if (configured.length > 0 || params.size > 0) return configured
+  const outputChannels = useMemo<FrameOutputChannel[]>(() => {
+    const channels = frameView?.outputChannels ?? []
+    if (channels.length > 0 || params.size > 0) return channels
+    // No parameters yet: show placeholder rows so the table shape is visible.
     return Array.from({ length: 8 }, (_, index) => ({
-      prefix: 'PWM_MAIN' as const,
-      busLabel: 'MAIN',
+      label: `MAIN${index + 1}`,
+      paramId: `PWM_MAIN_FUNC${index + 1}`,
+      functionValue: 0,
+      motorInstance: null,
       port: 0,
       channel: index + 1,
-      paramId: `PWM_MAIN_FUNC${index + 1}`,
     }))
-  }, [params])
+  }, [frameView, params])
 
   const outputByMotor = useMemo(() => {
     const mapping = new Map<number, string>()
-    for (const output of outputChannels) {
-      const value = Math.round(output.param?.value ?? 0)
-      if (value >= 101 && value <= 112) {
-        mapping.set(value - 100, `${output.busLabel} ${output.channel}`)
-      }
+    for (const output of frameView?.outputChannels ?? []) {
+      if (output.motorInstance !== null) mapping.set(output.motorInstance, output.label)
     }
     return mapping
-  }, [outputChannels])
+  }, [frameView])
 
   const rotors = useMemo<RotorGeometry[]>(() => {
     return Array.from({ length: motorCount }, (_, index) => {
@@ -153,14 +140,19 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [motorCount])
 
   useEffect(() => () => {
+    // Stop frames are sent only after motor testing was actually activated;
+    // page navigation alone must not touch the motors (safety requirement,
+    // and ArduPilot rejected stray PX4 stop commands with UNSUPPORTED).
+    if (!testActivatedRef.current) return
     for (let index = 0; index < motorCountRef.current; index += 1) {
       send({ type: 'motor_test', data: { instance: index + 1, throttle: 0, duration: 0 } })
     }
   }, [send])
 
   const sendMotorLevel = (index: number, level: number) => {
-    if (!connected || !safetyConfirmed) return
+    if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
+    if (throttle > 0) testActivatedRef.current = true
     setLevels((current) => current.map((value, motorIndex) => motorIndex === index ? throttle : value))
     send({
       type: 'motor_test',
@@ -174,8 +166,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }
 
   const sendAllLevel = (level: number) => {
-    if (!connected || !safetyConfirmed) return
+    if (!connected || !safetyConfirmed || !motorTestSupported) return
     const throttle = Math.max(0, Math.min(100, level))
+    if (throttle > 0) testActivatedRef.current = true
     setLevels(Array.from({ length: motorCount }, () => throttle))
     for (let index = 0; index < motorCount; index += 1) {
       send({
@@ -194,15 +187,17 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const stopAll = () => sendAllLevel(0)
 
   const setSafety = (checked: boolean) => {
+    if (checked) testActivatedRef.current = true
     if (!checked && safetyConfirmed) stopAll()
     setSafetyConfirmed(checked)
   }
 
-  const updateOutputFunction = (output: OutputChannel, value: number) => {
-    if (!output.param) return
+  const updateOutputFunction = (paramId: string, value: number) => {
+    const param = params.get(paramId)
+    if (!param || !actuatorWritesSupported) return
     send({
       type: 'param_set',
-      data: { id: output.paramId, value, paramType: output.param.type },
+      data: { id: paramId, value, paramType: param.type },
     })
   }
 
@@ -231,6 +226,13 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         <p>输出功能来自飞控参数；修改下拉框会直接写入对应的 <span className="mc-mono">*_FUNCx</span> 参数。</p>
       </div>
 
+      {vehicleIdentity && !motorTestSupported && (
+        <div className="mc-capability-note" data-state="waiting">
+          <Icon name="warning" size={15} />
+          <span>当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配电机测试与输出写入，控件已禁用，仅供查看。</span>
+        </div>
+      )}
+
       <PageTabs tabs={[{ id: 'mapping', label: '输出映射' }, { id: 'test', label: '电机测试' }]} active={activePanel} onChange={changePanel} />
 
       <section className="mc-motor-workspace">
@@ -244,34 +246,40 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
           </div>
           <div className="mc-motor-output-rows">
             {outputChannels.length === 0 ? (
-              <div className="mc-motor-output-empty">当前飞控没有提供 PWM MAIN/AUX 输出功能参数。</div>
+              <div className="mc-motor-output-empty">当前飞控没有提供输出功能参数（PX4：PWM_MAIN/AUX_FUNCx；ArduPilot：SERVOx_FUNCTION）。</div>
             ) : outputChannels.map((output) => {
-              const functionValue = Math.round(output.param?.value ?? 0)
-              const isKnownFunction = functionValue === 0 || (functionValue >= 101 && functionValue <= 100 + motorCount)
+              const param = params.get(output.paramId)
+              const functionValue = param ? Math.round(param.value) : output.functionValue
+              const functionOptions = motorFunctionOptions(vehicleIdentity?.family ?? 'unknown', motorCount)
+              const isKnownFunction = functionValue === 0
+                || functionOptions.some((option) => option.value === functionValue)
               const liveValue = motorOutputs?.port === output.port
                 ? motorOutputs.outputs[output.channel - 1]
                 : null
+              const protocol = vehicleIdentity?.family === 'px4'
+                ? getBusProtocol(params, output.paramId.split('_FUNC')[0])
+                : frameView?.protocolLabel ?? '未知'
               return (
                 <div className="mc-motor-output-row" key={output.paramId}>
-                  <span className="mc-motor-channel" data-assigned={functionValue >= 101 && functionValue <= 112}>
-                    <strong>{output.busLabel}{output.channel}</strong>
+                  <span className="mc-motor-channel" data-assigned={output.motorInstance !== null}>
+                    <strong>{output.label}</strong>
                     <small>PORT {output.port}</small>
                   </span>
                   <span className="mc-motor-live-value">{liveValue == null ? '—' : liveValue}</span>
                   <select
                     className="mc-select"
                     value={functionValue}
-                    disabled={!connected || !output.param}
-                    onChange={(event) => updateOutputFunction(output, Number(event.target.value))}
-                    aria-label={`${output.busLabel} ${output.channel} 输出功能`}
+                    disabled={!connected || !param || !actuatorWritesSupported || functionOptions.length === 0}
+                    onChange={(event) => updateOutputFunction(output.paramId, Number(event.target.value))}
+                    aria-label={`${output.label} 输出功能`}
                   >
                     {!isKnownFunction && <option value={functionValue}>Function {functionValue}</option>}
-                    <option value={0}>Disabled</option>
-                    {Array.from({ length: motorCount }, (_, index) => (
-                      <option value={101 + index} key={index}>Motor {index + 1}</option>
+                    {functionOptions.length === 0 && isKnownFunction && <option value={functionValue}>值 {functionValue}</option>}
+                    {functionOptions.map((option) => (
+                      <option value={option.value} key={option.value}>{option.label}</option>
                     ))}
                   </select>
-                  <span className="mc-motor-protocol">{getBusProtocol(params, output.prefix)}</span>
+                  <span className="mc-motor-protocol">{protocol}</span>
                   <span className="mc-motor-param-name">{output.paramId}</span>
                 </div>
               )
@@ -281,13 +289,19 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
         {activePanel === 'test' && <aside className="mc-motor-test-panel mc-motor-test-panel--standalone">
           <p className="mc-motor-test-intro">手动控制各逻辑电机，用于验证输出映射、位置与方向</p>
-          <AirframeDiagram rotors={rotors} airframeName={airframeName} />
+          <AirframeDiagram
+            rotors={rotors}
+            airframeName={airframeName}
+            geometrySource={vehicleIdentity?.family === 'ardupilot'
+              ? '布局基于 FRAME_CLASS/FRAME_TYPE 推断'
+              : '位置与方向来自 CA_ROTOR* 参数'}
+          />
 
           <label className="mc-motor-safety">
             <input
               type="checkbox"
               checked={safetyConfirmed}
-              disabled={!connected}
+              disabled={!connected || !motorTestSupported}
               onChange={(event) => setSafety(event.target.checked)}
             />
             <span>
@@ -358,7 +372,7 @@ function MotorSlider({
   )
 }
 
-function AirframeDiagram({ rotors, airframeName }: { rotors: RotorGeometry[]; airframeName: string }) {
+function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: RotorGeometry[]; airframeName: string; geometrySource: string }) {
   const scale = Math.max(1, ...rotors.flatMap((rotor) => [Math.abs(rotor.px), Math.abs(rotor.py)]))
   const points = rotors.map((rotor) => ({
     ...rotor,
@@ -394,7 +408,7 @@ function AirframeDiagram({ rotors, airframeName }: { rotors: RotorGeometry[]; ai
         ))}
       </svg>
       <strong>{airframeName.toUpperCase()}</strong>
-      <small>位置与方向来自 CA_ROTOR* 参数</small>
+      <small>{geometrySource}</small>
     </div>
   )
 }

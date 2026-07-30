@@ -400,6 +400,13 @@ export class BluetoothWorker extends EventEmitter {
       void this.runOpenAttempt(generation, true).catch((error) => {
         if (this.intentionalDisconnect || generation !== this.lifecycleGeneration) return
         this._lastReconnectError = this.toError(error)
+        // Deterministic resolution failures (ambiguous port set, identity
+        // mismatch) cannot be cured by retrying: burn no backoff budget on a
+        // misleading "reconnecting" display and surface a terminal reason.
+        if (error instanceof BluetoothPortResolutionError) {
+          this.finishTerminal(error.code, this.toError(error))
+          return
+        }
         this.scheduleReconnect(generation)
       })
     }, delayMs)

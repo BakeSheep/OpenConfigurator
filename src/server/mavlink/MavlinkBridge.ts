@@ -14,7 +14,25 @@ import type { MavLinkData } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
 import type { SerialWritePriority } from '../connection/SerialConnection'
 import { MavlinkFtp, type FtpDownloadRecord } from './MavlinkFtp'
-import { FTP_MESSAGE_ID, MAVLINK_COMMANDS, PX4_MODES } from '../../shared/constants'
+import {
+  MavlinkLogTransfer,
+  type LogTransferRequest,
+} from './MavlinkLogTransfer'
+import {
+  FTP_MESSAGE_ID,
+  LOG_DATA_MESSAGE_ID,
+  LOG_ENTRY_MESSAGE_ID,
+  MAVLINK_COMMANDS,
+} from '../../shared/constants'
+import {
+  buildVehicleIdentity,
+  decodeFlightMode,
+  encodeModeCommand,
+  formatFirmwareLabel,
+  vehicleCapabilities,
+  supportsCalibrationKind,
+  type VehicleIdentity,
+} from '../../shared/vehicleProfiles'
 import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
@@ -56,8 +74,8 @@ const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
 const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
-  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 129,
-  132, 147, 148, 230, 245, 253,
+  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 118,
+  120, 129, 132, 147, 148, 230, 245, 253,
 ])
 type ParamEncoding = 'bytewise' | 'c-cast'
 type TelemetryProfile = 'normal' | 'parameter-sync'
@@ -74,6 +92,8 @@ interface DiscoveredTarget {
   systemId: number
   componentId: number
   autopilot: number
+  /** Raw MAV_TYPE from the discovery heartbeat. */
+  type: number
   lastHeartbeatAt: number
 }
 
@@ -162,6 +182,9 @@ export class MavlinkBridge extends EventEmitter {
   private paramExpectedCount = 0
   private paramIndices = new Set<number>()
   private paramDownloadActive = false
+  // Monotonic id for each parameter download run. Stamped onto param lifecycle
+  // events so the server can drop late events from a superseded/cancelled run.
+  private paramRunId = 0
   private paramDownloadDeadlineAt = 0
   private paramReadRequests = 0
   // True once we stop waiting for PX4's initial stream and begin actively
@@ -174,9 +197,19 @@ export class MavlinkBridge extends EventEmitter {
   private paramEncodingNegotiated = false
   private versionAttempt = 0
   private versionTimer: ReturnType<typeof setTimeout> | null = null
+  // AUTOPILOT_VERSION is a one-shot handshake message; cache the last emitted
+  // snapshot so WS clients that (re)connect later can still receive it.
+  private lastAutopilotVersionMessage: ServerMessage | null = null
   private targetSysId: number | null = null
   private targetCompId: number | null = null
   private selectedHeartbeatReady = false
+  // Classified from the selected target's HEARTBEAT (autopilot + type).
+  // Cleared with the selected protocol state so a reconnected or switched
+  // vehicle can never inherit a previous vehicle's profile.
+  private selectedIdentity: VehicleIdentity | null = null
+  // Last armed flag from the selected heartbeat; null until known. Used to
+  // refuse bench-only operations (motor test, calibration) while armed.
+  private lastArmedState: boolean | null = null
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
@@ -188,6 +221,7 @@ export class MavlinkBridge extends EventEmitter {
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
   private readonly ftp: MavlinkFtp
+  private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
 
   private onData = (data: Buffer) => {
@@ -234,6 +268,11 @@ export class MavlinkBridge extends EventEmitter {
     })
     this.ftp = new MavlinkFtp({
       sendFtpPayload: (payload) => this.sendFtpPayload(payload),
+      emitMessage: (message) => this.emit('message', message),
+      linkIsBluetooth: () => this.connManager.config?.type === 'bluetooth',
+    })
+    this.logTransfer = new MavlinkLogTransfer({
+      sendLogRequest: (request) => this.sendLogRequest(request),
       emitMessage: (message) => this.emit('message', message),
       linkIsBluetooth: () => this.connManager.config?.type === 'bluetooth',
     })
@@ -285,10 +324,12 @@ export class MavlinkBridge extends EventEmitter {
         componentId: this.targetCompId,
         ready: this.hasReadyTarget(),
         reason,
+        identity: this.selectedIdentity,
         discovered: [...this.discoveredTargets.values()].map((target) => ({
           systemId: target.systemId,
           componentId: target.componentId,
           autopilot: target.autopilot,
+          type: target.type,
         })),
       },
     } as ServerMessage)
@@ -301,9 +342,12 @@ export class MavlinkBridge extends EventEmitter {
     requestId?: string,
     retryable = false,
   ): void {
+    const belongsToParamRun = this.paramDownloadActive
+      && (operation === 'param_request_list' || operation === 'parameter_download' || operation === 'param_sync')
     this.emit('message', {
       type: 'operation_error',
       data: { requestId, operation, code, message, retryable },
+      ...(belongsToParamRun ? { paramRunId: this.paramRunId } : {}),
     } as ServerMessage)
   }
 
@@ -317,6 +361,29 @@ export class MavlinkBridge extends EventEmitter {
       true,
     )
     return false
+  }
+
+  /**
+   * Capability gate for client-issued MAVLink commands. Returns the blocking
+   * explanation, or null when the selected profile supports the command.
+   * Computed from HEARTBEAT identity only - never from parameters.
+   */
+  private commandCapabilityError(cmd: string): string | null {
+    const caps = vehicleCapabilities(this.selectedIdentity)
+    switch (cmd) {
+      case 'MAV_CMD_COMPONENT_ARM_DISARM':
+        return caps.arm ? null : '当前飞控类型尚未适配解锁/上锁操作'
+      case 'MAV_CMD_NAV_TAKEOFF':
+        return caps.guidedTakeoff ? null : '当前飞控类型尚未适配引导起飞'
+      case 'MAV_CMD_NAV_LAND':
+      case 'MAV_CMD_NAV_RETURN_TO_LAUNCH':
+      case 'MAV_CMD_DO_SET_MODE':
+        return caps.setMode ? null : '当前飞控类型尚未适配模式/导航命令'
+      case 'MAV_CMD_PREFLIGHT_CALIBRATION':
+        return caps.calibrate ? null : '当前飞控类型尚未适配校准流程'
+      default:
+        return null
+    }
   }
 
   private writeMessage(
@@ -347,6 +414,8 @@ export class MavlinkBridge extends EventEmitter {
   private resetSelectedProtocolState(): void {
     this.requestedTelemetryStreams = false
     this.telemetryProfile = null
+    this.selectedIdentity = null
+    this.lastArmedState = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
@@ -357,6 +426,7 @@ export class MavlinkBridge extends EventEmitter {
     this.paramEncoding = 'c-cast'
     this.paramEncodingNegotiated = false
     this.versionAttempt = 0
+    this.lastAutopilotVersionMessage = null
     if (this.versionTimer) {
       clearTimeout(this.versionTimer)
       this.versionTimer = null
@@ -372,6 +442,7 @@ export class MavlinkBridge extends EventEmitter {
   private cancelProtocolOperations(restoreTelemetry: boolean, reason: string): void {
     this.cancelParamDownload(restoreTelemetry, reason)
     this.ftp.cancelAll(reason)
+    this.logTransfer.cancelAll(reason)
     for (const pending of this.pendingCommands.values()) {
       if (pending.timeout) clearTimeout(pending.timeout)
       this.emitOperationError(
@@ -566,6 +637,12 @@ export class MavlinkBridge extends EventEmitter {
       case 110: // FILE_TRANSFER_PROTOCOL
         this.handleFileTransferProtocol(msg)
         break
+      case 118: // LOG_ENTRY
+        this.handleLogEntry(msg)
+        break
+      case 120: // LOG_DATA
+        this.handleLogData(msg)
+        break
       case 147: // BATTERY_STATUS
         this.handleBattery(msg)
         break
@@ -597,6 +674,7 @@ export class MavlinkBridge extends EventEmitter {
       systemId: msg.sysId,
       componentId: msg.compId,
       autopilot: hb.autopilot,
+      type: hb.type,
       lastHeartbeatAt: performance.now(),
     })
     if (this.targetSysId === null) {
@@ -611,8 +689,15 @@ export class MavlinkBridge extends EventEmitter {
 
     const becameReady = !this.selectedHeartbeatReady
     this.selectedHeartbeatReady = true
+    // Preserve both HEARTBEAT identity fields for every selected heartbeat so
+    // the profile survives firmware reboots that change type/autopilot.
+    const identity = buildVehicleIdentity(hb.autopilot, hb.type)
+    const identityChanged = this.selectedIdentity === null
+      || this.selectedIdentity.autopilotId !== identity.autopilotId
+      || this.selectedIdentity.vehicleTypeId !== identity.vehicleTypeId
+    this.selectedIdentity = identity
     this.connManager.notifyAutopilotHeartbeat()
-    if (becameReady) this.emitTarget('selected')
+    if (becameReady || identityChanged) this.emitTarget('selected')
     // Use the autopilot class only as an early compatibility fallback. The
     // authoritative encoding is negotiated from AUTOPILOT_VERSION capabilities.
     if (!this.paramEncodingNegotiated) {
@@ -621,19 +706,22 @@ export class MavlinkBridge extends EventEmitter {
     if (this.versionAttempt === 0) this.requestAutopilotVersion()
 
     const armed = (hb.baseMode & 0x80) !== 0
-    const mode = this.getMode(hb.customMode)
+    this.lastArmedState = armed
+    const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
     this.emit('message', {
       type: 'status',
       data: {
         armed,
         mode: mode.name,
         modeId: mode.id,
-        // PX4 reports failsafe via STATUSTEXT / SYS_STATUS sensor flags rather
-        // than a dedicated HEARTBEAT bit, so it cannot be reliably derived
-        // here. Report 'unknown' instead of a misleading hardcoded false - a
-        // safety-critical field must never silently claim "no failsafe".
+        // Neither PX4 nor ArduPilot exposes a dedicated HEARTBEAT failsafe
+        // bit; both report failsafe via STATUSTEXT / SYS_STATUS sensor flags,
+        // so it cannot be reliably derived here. Report 'unknown' instead of
+        // a misleading hardcoded false - a safety-critical field must never
+        // silently claim "no failsafe".
         failsafe: 'unknown',
         systemStatus: hb.systemStatus,
+        identity,
       },
     } as ServerMessage)
 
@@ -683,11 +771,20 @@ export class MavlinkBridge extends EventEmitter {
     const sensorsPresent: number = d.onboardControlSensorsPresent
     const sensorsEnabled: number = d.onboardControlSensorsEnabled
     const sensorsHealth: number = d.onboardControlSensorsHealth
-    const voltageBattery = d.voltageBattery === 0xffff ? null : d.voltageBattery / 1000
+    // 0xffff is the documented "unknown" sentinel. ArduPilot without a battery
+    // monitor reports exactly 0 mV instead, which must not render as a healthy
+    // 0.0 V. Treat both as "no valid voltage source".
+    const voltageBattery = (d.voltageBattery === 0xffff || d.voltageBattery === 0)
+      ? null
+      : d.voltageBattery / 1000
     const currentBattery = d.currentBattery === -1 ? null : d.currentBattery / 100
     // battery_remaining is at wire offset 30. The previous hand-rolled parser
     // read offset 18 (drop_rate_comm) - a latent bug fixed by this migration.
-    const batteryRemaining = d.batteryRemaining === -1 ? null : d.batteryRemaining
+    // Without a valid voltage source the remaining percentage is not
+    // trustworthy, so suppress it rather than imply a healthy pack.
+    const batteryRemaining = (d.batteryRemaining === -1 || voltageBattery === null)
+      ? null
+      : d.batteryRemaining
     const prearmCheckMask = 0x10000000
     const supportsPreflightCheck = (sensorsPresent & prearmCheckMask) !== 0
     const unhealthySensorMask = (sensorsEnabled & ~sensorsHealth) >>> 0
@@ -704,6 +801,8 @@ export class MavlinkBridge extends EventEmitter {
         voltageBattery,
         currentBattery,
         batteryRemaining,
+        // load is in 0.1% units per the MAVLink spec (1000 = 100%).
+        cpuLoad: d.load / 10,
         sensorsPresent,
         sensorsEnabled,
         sensorsHealth,
@@ -940,16 +1039,17 @@ export class MavlinkBridge extends EventEmitter {
     // MAVLink v2 zero-trims trailing payload bytes: a short v2 frame means
     // the remaining extension bytes are zero (decode() already padded them),
     // not absent. Only v1 frames genuinely lack the extension fields, so
-    // length-gating applies to them alone.
+    // length-gating applies to them alone. Filter by the configured GCS
+    // identity (not literal 255/190) so custom gcs ids keep receiving ACKs.
     const hasExtensions = msg.version !== 1
     if (
       (hasExtensions || msg.payload.length >= 9)
       && (
-        (d.targetSystem !== 0 && d.targetSystem !== 255)
+        (d.targetSystem !== 0 && d.targetSystem !== this.codec.gcsSystemId)
         || (
           (hasExtensions || msg.payload.length >= 10)
           && d.targetComponent !== 0
-          && d.targetComponent !== 190
+          && d.targetComponent !== this.codec.gcsComponentId
         )
       )
     ) return
@@ -1061,7 +1161,7 @@ export class MavlinkBridge extends EventEmitter {
     const d = decode<common.FileTransferProtocol>(FTP_MESSAGE_ID, msg.payload)
     if (!d) return
     // Only consume replies addressed to this GCS (or broadcast).
-    if (d.targetSystem !== 0 && d.targetSystem !== 255) return
+    if (d.targetSystem !== 0 && d.targetSystem !== this.codec.gcsSystemId) return
     this.ftp.handleFtpPayload(Buffer.from(d.payload as unknown as number[]))
   }
 
@@ -1078,9 +1178,123 @@ export class MavlinkBridge extends EventEmitter {
     return this.writeMessage(message)
   }
 
-  /** Resolve a completed FTP download for the REST file endpoint. */
+  /** Resolve a completed FTP or DataFlash download for the REST file endpoint. */
   getFtpDownload(downloadId: string): FtpDownloadRecord | null {
-    return this.ftp.getDownload(downloadId)
+    return this.ftp.getDownload(downloadId) ?? this.logTransfer.getDownload(downloadId)
+  }
+
+  private handleLogEntry(msg: MavlinkMessage) {
+    const d = decode<common.LogEntry>(LOG_ENTRY_MESSAGE_ID, msg.payload)
+    if (!d) return
+    this.logTransfer.handleLogEntry({
+      id: d.id,
+      numLogs: d.numLogs,
+      lastLogNum: d.lastLogNum,
+      timeUtc: d.timeUtc,
+      size: d.size,
+    })
+  }
+
+  private handleLogData(msg: MavlinkMessage) {
+    const d = decode<common.LogData>(LOG_DATA_MESSAGE_ID, msg.payload)
+    if (!d) return
+    this.logTransfer.handleLogData({
+      id: d.id,
+      ofs: d.ofs,
+      count: d.count,
+      data: Buffer.from(d.data as unknown as number[]),
+    })
+  }
+
+  /** Map a log-transfer request descriptor onto the wire message classes. */
+  private sendLogRequest(request: LogTransferRequest): boolean {
+    const targetSystem = this.targetSysId ?? 0
+    const targetComponent = this.targetCompId ?? 0
+    switch (request.kind) {
+      case 'list': {
+        const message = new common.LogRequestList()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        message.start = request.start
+        message.end = request.end
+        return this.writeMessage(message)
+      }
+      case 'data': {
+        const message = new common.LogRequestData()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        message.id = request.logId
+        message.ofs = request.ofs
+        message.count = request.count
+        return this.writeMessage(message)
+      }
+      case 'erase': {
+        const message = new common.LogErase()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        return this.writeMessage(message)
+      }
+      case 'end': {
+        const message = new common.LogRequestEnd()
+        message.targetSystem = targetSystem
+        message.targetComponent = targetComponent
+        return this.writeMessage(message)
+      }
+    }
+  }
+
+  private emitLogOpError(
+    operation: 'list' | 'download' | 'erase',
+    code: string,
+    message: string,
+    requestId?: string,
+    retryable = false,
+  ): void {
+    this.emit('message', {
+      type: 'log_op_error',
+      data: { ...(requestId ? { requestId } : {}), operation, code, message, retryable },
+    } as ServerMessage)
+  }
+
+  /**
+   * DataFlash log transfers must not share the link with a full parameter
+   * sync or an FTP transfer, and are only meaningful on vehicles whose
+   * profile reports the DataFlash log format (i.e. ArduPilot).
+   */
+  private requireLogTransferAvailable(
+    operation: 'list' | 'download' | 'erase',
+    requestId?: string,
+  ): boolean {
+    if (vehicleCapabilities(this.selectedIdentity).logFormat !== 'dataflash') {
+      this.emitLogOpError(
+        operation,
+        'unsupported_log_transport',
+        '当前飞控类型不使用 DataFlash 日志传输协议',
+        requestId,
+      )
+      return false
+    }
+    if (this.paramDownloadActive) {
+      this.emitLogOpError(
+        operation,
+        'param_sync_active',
+        '参数同步进行中，请稍后再执行日志操作',
+        requestId,
+        true,
+      )
+      return false
+    }
+    if (this.ftp.busy) {
+      this.emitLogOpError(
+        operation,
+        'ftp_busy',
+        '文件传输进行中，无法同时执行日志操作',
+        requestId,
+        true,
+      )
+      return false
+    }
+    return true
   }
 
   private emitFsOpError(
@@ -1096,11 +1310,21 @@ export class MavlinkBridge extends EventEmitter {
     } as ServerMessage)
   }
 
-  /** FTP transfers and full parameter sync must not share the link. */
+  /** FTP transfers, DataFlash transfers and full parameter sync must not share the link. */
   private requireFtpAvailable(
     operation: 'list' | 'download' | 'delete',
     requestId?: string,
   ): boolean {
+    if (this.logTransfer.busy) {
+      this.emitFsOpError(
+        operation,
+        'log_transfer_busy',
+        'DataFlash 日志传输进行中，请稍后再执行文件操作',
+        requestId,
+        true,
+      )
+      return false
+    }
     if (!this.paramDownloadActive) return true
     this.emitFsOpError(
       operation,
@@ -1132,8 +1356,10 @@ export class MavlinkBridge extends EventEmitter {
   private handleBattery(msg: MavlinkMessage) {
     const d = decode<common.BatteryStatus>(147, msg.payload)
     if (!d) return
+    // 0xffff = unknown/not populated; 0xfffe = cell present but the voltage
+    // exceeds the field range (would otherwise read as a bogus 65.534 V).
     const baseCellVoltages = (d.voltages ?? []).map((voltage) =>
-      voltage === 0xffff ? null : voltage / 1000
+      voltage >= 0xfffe ? null : voltage / 1000
     )
     const extendedCellVoltages = (d.voltagesExt ?? []).map((voltage, index) => {
       // MAVLink 2 trims trailing zero bytes, including the high byte of a
@@ -1211,6 +1437,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param',
       data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
+      ...(this.paramDownloadActive ? { paramRunId: this.paramRunId } : {}),
     } as ServerMessage)
 
     const pendingSet = this.pendingParamSets.get(id)
@@ -1360,17 +1587,63 @@ export class MavlinkBridge extends EventEmitter {
     this.cancelParamDownload(true)
   }
 
+  /** Current parameter download run id, read by the server to tag generations. */
+  get currentParamRunId(): number {
+    return this.paramRunId
+  }
+
   // Send commands from frontend
   handleClientMessage(msg: ClientMessage) {
     switch (msg.type) {
-      case 'command':
+      case 'command': {
         if (this.requireReadyTarget('command', msg.requestId)) {
+          // Capability gate: safety-critical commands are rejected before
+          // serialization when the selected profile does not support them.
+          const capabilityError = this.commandCapabilityError(msg.cmd)
+          if (capabilityError) {
+            this.emitOperationError(
+              'command',
+              'unsupported_vehicle_profile',
+              capabilityError,
+              msg.requestId,
+            )
+            break
+          }
           this.sendCommand(
             msg.cmd,
             msg.params,
             msg.requestId,
             msg.safetyConfirmation,
           )
+        }
+        break
+      }
+      case 'set_flight_mode': {
+        if (this.requireReadyTarget('set_flight_mode', msg.requestId)) {
+          if (!vehicleCapabilities(this.selectedIdentity).setMode) {
+            this.emitOperationError(
+              'set_flight_mode',
+              'unsupported_vehicle_profile',
+              '当前飞控类型尚未适配模式切换',
+              msg.requestId,
+            )
+            break
+          }
+          // Stack-specific encoding happens here, after the vehicle profile is
+          // known; unknown/unimplemented profiles are rejected before any
+          // bytes are written to the serial link.
+          const encoded = encodeModeCommand(this.selectedIdentity, msg.data.modeId)
+          if (!encoded.ok) {
+            this.emitOperationError('set_flight_mode', encoded.code, encoded.message, msg.requestId)
+            break
+          }
+          this.sendCommand('MAV_CMD_DO_SET_MODE', encoded.params, msg.requestId)
+        }
+        break
+      }
+      case 'start_calibration':
+        if (this.requireReadyTarget('start_calibration', msg.requestId)) {
+          this.sendCalibration(msg.data.kind, msg.requestId)
         }
         break
       case 'param_set':
@@ -1380,9 +1653,9 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 'param_request_list':
         if (this.requireReadyTarget('param_request_list', msg.requestId)) {
-          if (this.ftp.busy) {
-            // A running FTP transfer would be starved by the parameter burst
-            // (and vice versa); reject instead of silently degrading both.
+          if (this.ftp.busy || this.logTransfer.busy) {
+            // A running FTP/log transfer would be starved by the parameter
+            // burst (and vice versa); reject instead of silently degrading both.
             this.emitOperationError(
               'param_request_list',
               'ftp_busy',
@@ -1451,6 +1724,42 @@ export class MavlinkBridge extends EventEmitter {
           && this.requireFtpAvailable('delete', msg.requestId)
         ) {
           this.ftp.startDelete(msg.data.entries, msg.requestId)
+        }
+        break
+      case 'log_list':
+        if (
+          this.requireReadyTarget('log_list', msg.requestId)
+          && this.requireLogTransferAvailable('list', msg.requestId)
+        ) {
+          this.logTransfer.startList(msg.requestId)
+        }
+        break
+      case 'log_download':
+        if (
+          this.requireReadyTarget('log_download', msg.requestId)
+          && this.requireLogTransferAvailable('download', msg.requestId)
+        ) {
+          this.logTransfer.startDownload(msg.data.logId, msg.requestId)
+        }
+        break
+      case 'log_download_cancel':
+        this.logTransfer.cancelDownload(msg.requestId)
+        break
+      case 'log_erase':
+        // LOG_ERASE wipes ALL logs on the FC; the runtime guard backs up the
+        // type-level literal for direct (test/raw WS) callers.
+        if ((msg as { safetyConfirmation?: string }).safetyConfirmation !== 'erase_all_logs') {
+          this.emitLogOpError(
+            'erase',
+            'safety_confirmation_required',
+            '擦除全部日志需要 erase_all_logs 安全确认',
+            msg.requestId,
+          )
+        } else if (
+          this.requireReadyTarget('log_erase', msg.requestId)
+          && this.requireLogTransferAvailable('erase', msg.requestId)
+        ) {
+          this.logTransfer.startErase(msg.requestId)
         }
         break
     }
@@ -1817,6 +2126,7 @@ export class MavlinkBridge extends EventEmitter {
     // download. Keep this local reset silent so the cancellation cannot be
     // misattributed to the newly-created generation.
     this.cancelParamDownload(false)
+    this.paramRunId += 1
     this.paramExpectedCount = 0
     this.paramIndices.clear()
     this.paramDownloadActive = true
@@ -1872,19 +2182,35 @@ export class MavlinkBridge extends EventEmitter {
     const lowerBoardId = boardVersion & 0xffff
     const boardId = BOARD_NAMES[upperBoardId] ? upperBoardId : BOARD_NAMES[lowerBoardId] ? lowerBoardId : upperBoardId || lowerBoardId
     const firmwareVersion = `${major}.${minor}.${patch}`
-    this.emit('message', {
+    // The firmware label follows the HEARTBEAT-classified family; the version
+    // message itself carries no stack identity and must not assume PX4.
+    const family = this.selectedIdentity?.family ?? 'unknown'
+    const vehicleClass = this.selectedIdentity?.vehicleClass ?? 'unknown'
+    const versionMessage = {
       type: 'autopilot_version',
       data: {
         boardId,
-        boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'PX4 Flight Controller'),
+        boardName: BOARD_NAMES[boardId] ?? (boardId ? `Board ${boardId}` : 'Flight Controller'),
         firmwareVersion,
-        firmwareLabel: `PX4 v${firmwareVersion}`,
+        firmwareLabel: formatFirmwareLabel(family, firmwareVersion),
         // vendor/product are at wire offsets 32/34. The previous parser read
         // 56/58 (inside os_custom_version) - a latent bug fixed by node-mavlink.
         vendorId: d.vendorId,
         productId: d.productId,
+        family,
+        vehicleClass,
       },
-    } as ServerMessage)
+    } as ServerMessage
+    this.lastAutopilotVersionMessage = versionMessage
+    this.emit('message', versionMessage)
+  }
+
+  /**
+   * Last emitted autopilot_version snapshot for replay to late-joining WS
+   * clients (the FC only answers the version request once per link).
+   */
+  getAutopilotVersionMessage(): ServerMessage | null {
+    return this.lastAutopilotVersionMessage
   }
 
   private requestAutopilotVersion(): void {
@@ -2013,6 +2339,7 @@ export class MavlinkBridge extends EventEmitter {
       this.emit('message', {
         type: 'param_retry',
         data: { attempt: this.paramRetryAttempt, missing: 0, total: 0 },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     } else {
       const missing: number[] = []
@@ -2047,6 +2374,7 @@ export class MavlinkBridge extends EventEmitter {
           missing: missing.length,
           total: this.paramExpectedCount,
         },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     }
     this.scheduleParamRetry()
@@ -2064,6 +2392,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param_complete',
       data: { count: this.paramExpectedCount },
+      paramRunId: this.paramRunId,
     } as ServerMessage)
     this.applyTelemetryProfile('normal')
   }
@@ -2080,6 +2409,7 @@ export class MavlinkBridge extends EventEmitter {
     this.emit('message', {
       type: 'param_failed',
       data: { received: this.paramIndices.size, total: this.paramExpectedCount, reason },
+      paramRunId: this.paramRunId,
     } as ServerMessage)
     this.applyTelemetryProfile('normal')
   }
@@ -2102,6 +2432,7 @@ export class MavlinkBridge extends EventEmitter {
           total: this.paramExpectedCount,
           reason,
         },
+        paramRunId: this.paramRunId,
       } as ServerMessage)
     }
     if (restoreTelemetry) this.applyTelemetryProfile('normal')
@@ -2208,6 +2539,61 @@ export class MavlinkBridge extends EventEmitter {
     })
   }
 
+  // Semantic calibration: map a supported kind to stack-specific
+  // MAV_CMD_PREFLIGHT_CALIBRATION parameters. Only documented, testable flows
+  // are implemented; kinds needing multi-step position acknowledgement (e.g.
+  // ArduPilot mag) are rejected until modeled as explicit follow-up messages.
+  // The request-scoped state on the client advances from COMMAND_ACK and
+  // STATUSTEXT - never from a timer here.
+  private sendCalibration(kind: 'accel' | 'gyro' | 'mag' | 'baro', requestId: string) {
+    if (!vehicleCapabilities(this.selectedIdentity).calibrate) {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_vehicle_profile',
+        '当前飞控类型尚未适配校准流程',
+        requestId,
+      )
+      return
+    }
+    if (this.lastArmedState === true) {
+      this.emitOperationError('start_calibration', 'vehicle_armed', '飞行器已解锁，禁止校准', requestId)
+      return
+    }
+    const family = this.selectedIdentity?.family
+    if (!supportsCalibrationKind(this.selectedIdentity, kind)) {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_calibration_kind',
+        '当前飞控暂不支持该校准类型（罗盘校准将在后续版本启用）',
+        requestId,
+      )
+      return
+    }
+    // param order: [gyro, mag, groundPressure, radio, accel, esc/airspeed, ...]
+    const params: number[] = [0, 0, 0, 0, 0, 0, 0]
+    if (family === 'px4') {
+      // Preserve existing PX4 behavior for every kind.
+      if (kind === 'gyro') params[0] = 1
+      else if (kind === 'mag') params[1] = 1
+      else if (kind === 'baro') params[2] = 1
+      else params[4] = 1 // accel
+    } else if (family === 'ardupilot') {
+      // The unsupported multi-step compass flow was rejected above.
+      if (kind === 'gyro') params[0] = 1
+      else if (kind === 'baro') params[2] = 1
+      else params[4] = 2 // simple/level accel calibration
+    } else {
+      this.emitOperationError(
+        'start_calibration',
+        'unsupported_vehicle_profile',
+        '尚未识别飞控类型，无法编码校准命令',
+        requestId,
+      )
+      return
+    }
+    this.sendCommand('MAV_CMD_PREFLIGHT_CALIBRATION', params, requestId)
+  }
+
   private sendMotorTest(
     instance: number,
     throttle: number,
@@ -2215,11 +2601,18 @@ export class MavlinkBridge extends EventEmitter {
     requestId?: string,
     propsRemoved?: boolean,
   ) {
-    // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
-    // Values >= 1000 in param5 are PX4-internal actuator functions with the
-    // 1000 transport offset. Motors 1..12 are functions 101..112, so an
-    // external GCS must send 1101..1112. This works across PX4 versions and
-    // avoids confusing the internal function ID with MAVLink's enum values.
+    // Capability gate before anything else: unknown or unimplemented profiles
+    // must never receive a motor-test command (not even a stop frame).
+    const motorTestKind = vehicleCapabilities(this.selectedIdentity).motorTest
+    if (motorTestKind === 'none') {
+      this.emitOperationError(
+        'motor_test',
+        'unsupported_motor_test',
+        '当前飞控类型尚未适配电机测试',
+        requestId,
+      )
+      return
+    }
     if (
       !Number.isInteger(instance)
       || instance < 1
@@ -2241,7 +2634,6 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
-    const outputFunction = 1100 + instance
     const shouldRelease = duration <= 0 || throttle <= 0
     if (!shouldRelease && propsRemoved !== true) {
       this.emitOperationError(
@@ -2252,6 +2644,64 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
+    // Spinning a motor on an armed vehicle is never a bench test. Stop
+    // commands stay allowed regardless of the armed state.
+    if (!shouldRelease && this.lastArmedState === true) {
+      this.emitOperationError(
+        'motor_test',
+        'vehicle_armed',
+        '飞行器已解锁，禁止启动电机测试',
+        requestId,
+      )
+      return
+    }
+
+    if (motorTestKind === 'motor-test') {
+      // ArduPilot: MAV_CMD_DO_MOTOR_TEST (209) with a 1-based motor instance,
+      // MOTOR_TEST_THROTTLE_PERCENT (0) as throttle type, percent throttle and
+      // a bounded timeout in seconds. Stop = throttle 0 / timeout 0.
+      const commandId = (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_DO_MOTOR_TEST
+      if (commandId === undefined) {
+        this.emitOperationError('motor_test', 'unsupported_command', '缺少电机测试命令', requestId)
+        return
+      }
+      const throttlePercent = shouldRelease ? 0 : Math.max(0, Math.min(100, throttle))
+      const timeoutSeconds = shouldRelease ? 0 : Math.max(0, Math.min(30, duration))
+      if (!this.writeMessage(
+        this.buildCommand(
+          commandId,
+          [instance, 0, throttlePercent, timeoutSeconds, 0, 0, 0],
+        ),
+        shouldRelease ? 'critical' : 'high',
+      )) {
+        this.emitOperationError(
+          'motor_test',
+          'write_rejected',
+          '连接发送队列拒绝电机测试命令',
+          requestId,
+          true,
+        )
+        return
+      }
+      this.emit('message', {
+        type: 'motor_test_status',
+        data: {
+          requestId,
+          instance,
+          action: shouldRelease ? 'stop' : 'start',
+          status: 'sent_unconfirmed',
+          reason: 'MAV_CMD_DO_MOTOR_TEST ACK 不包含电机实例，命令已发送但无法安全关联确认',
+        },
+      } as ServerMessage)
+      return
+    }
+
+    // PX4 handles individual motor testing through MAV_CMD_ACTUATOR_TEST.
+    // Values >= 1000 in param5 are PX4-internal actuator functions with the
+    // 1000 transport offset. Motors 1..12 are functions 101..112, so an
+    // external GCS must send 1101..1112. This works across PX4 versions and
+    // avoids confusing the internal function ID with MAVLink's enum values.
+    const outputFunction = 1100 + instance
     const value = shouldRelease ? Number.NaN : Math.max(0, Math.min(1, throttle / 100))
     const timeout = shouldRelease ? 0 : Math.max(0, duration)
     const commandId = (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_ACTUATOR_TEST
@@ -2293,21 +2743,6 @@ export class MavlinkBridge extends EventEmitter {
     } as ServerMessage)
   }
 
-  // PX4 custom_mode layout: reserved[0..15], main_mode[16..23],
-  // sub_mode[24..31]. Auto modes share main_mode=4 and differ by sub-mode.
-  private getMode(customMode: number): { id: number; name: string } {
-    const mainMode = customMode > 0xffff ? (customMode >>> 16) & 0xff : customMode
-    const subMode = customMode > 0xffff ? (customMode >>> 24) & 0xff : 0
-    const exact = Object.values(PX4_MODES).find((mode) =>
-      mode.mainMode === mainMode && mode.subMode === subMode
-    )
-    const mainOnly = Object.values(PX4_MODES).find((mode) =>
-      mode.mainMode === mainMode && mode.subMode === 0
-    )
-    const mode = exact ?? mainOnly
-    return mode ?? { id: customMode, name: `Mode ${mainMode}${subMode ? `.${subMode}` : ''}` }
-  }
-
   destroy() {
     this.destroyed = true
     if (this.manualControlFlushHandle) {
@@ -2317,6 +2752,7 @@ export class MavlinkBridge extends EventEmitter {
     this.pendingManualControl = null
     this.cancelProtocolOperations(false, 'bridge_destroyed')
     this.ftp.destroy()
+    this.logTransfer.destroy()
     this.stopHeartbeat()
     this.stopLinkStats()
     if (this.versionTimer) clearTimeout(this.versionTimer)

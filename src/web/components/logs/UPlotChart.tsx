@@ -22,6 +22,8 @@ interface UPlotChartProps {
   noSync?: boolean
   /** Series labels plotted against an independent right-hand Y axis. */
   secondaryScaleLabels?: string[]
+  /** Absolute log time reported whenever the shared cursor moves. */
+  onCursorTimeChange?: (timeSec: number) => void
 }
 
 function cssVar(name: string, fallback: string): string {
@@ -67,6 +69,7 @@ export default function UPlotChart({
   frequencyAxis = false,
   noSync = false,
   secondaryScaleLabels,
+  onCursorTimeChange,
 }: UPlotChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -155,27 +158,34 @@ export default function UPlotChart({
             value == null ? '—' : `${value.toFixed(2)}${unit ? ` ${unit}` : ''}`,
         })),
       ],
-      hooks: bands && bands.length > 0
-        ? {
-          // Paint segment bands beneath the series (armed windows etc.).
-          drawClear: [
-            (u) => {
-              const { ctx } = u
-              ctx.save()
-              ctx.fillStyle = accentDim
-              for (const band of bands) {
-                const left = u.valToPos(band.startSec, 'x', true)
-                const right = u.valToPos(band.endSec, 'x', true)
-                if (right < u.bbox.left || left > u.bbox.left + u.bbox.width) continue
-                const clampedLeft = Math.max(left, u.bbox.left)
-                const clampedRight = Math.min(right, u.bbox.left + u.bbox.width)
-                ctx.fillRect(clampedLeft, u.bbox.top, clampedRight - clampedLeft, u.bbox.height)
-              }
-              ctx.restore()
-            },
-          ],
-        }
-        : undefined,
+      hooks: {
+        setCursor: onCursorTimeChange && !noSync
+          ? [(u) => {
+            const index = u.cursor.idx
+            const timeSec = index == null ? undefined : u.data[0][index]
+            if (typeof timeSec === 'number' && Number.isFinite(timeSec)) {
+              onCursorTimeChange(timeSec)
+            }
+          }]
+          : [],
+        // Paint segment bands beneath the series (armed windows etc.).
+        drawClear: bands && bands.length > 0
+          ? [(u) => {
+            const { ctx } = u
+            ctx.save()
+            ctx.fillStyle = accentDim
+            for (const band of bands) {
+              const left = u.valToPos(band.startSec, 'x', true)
+              const right = u.valToPos(band.endSec, 'x', true)
+              if (right < u.bbox.left || left > u.bbox.left + u.bbox.width) continue
+              const clampedLeft = Math.max(left, u.bbox.left)
+              const clampedRight = Math.min(right, u.bbox.left + u.bbox.width)
+              ctx.fillRect(clampedLeft, u.bbox.top, clampedRight - clampedLeft, u.bbox.height)
+            }
+            ctx.restore()
+          }]
+          : [],
+      },
     }
 
     const plot = new uPlot(options, data, container)
@@ -195,7 +205,7 @@ export default function UPlotChart({
       plotRef.current = null
     }
     // Recreate on theme switch so colors are re-read from CSS variables.
-  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleLabels, theme])
+  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleLabels, onCursorTimeChange, theme])
 
   if (!data) {
     return <p className="mc-explorer__notice">此日志不包含该板块的数据</p>

@@ -17,6 +17,8 @@ export const DEFAULT_WS_MAX_CLIENTS = 8
 export type BoundaryClientMessage = ClientMessage
 
 const CLIENT_DENIED_COMMANDS = new Set<string>([
+  'MAV_CMD_DO_SET_MODE',
+  'MAV_CMD_PREFLIGHT_CALIBRATION',
   'MAV_CMD_DO_MOTOR_TEST',
   'MAV_CMD_ACTUATOR_TEST',
   'MAV_CMD_DO_SET_SERVO',
@@ -241,6 +243,36 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
     case 'param_request_list':
       return withRequestId({ type: 'param_request_list' }, id) as BoundaryClientMessage
 
+    case 'set_flight_mode': {
+      const data = record(input.data, 'data')
+      // Only the profile mode id crosses the boundary; the server encodes the
+      // stack-specific MAV_CMD_DO_SET_MODE parameters after capability checks.
+      const modeId = finiteNumber(data.modeId, 'data.modeId', {
+        min: 0,
+        max: 0xffffffff,
+        integer: true,
+      })
+      return withRequestId({
+        type: 'set_flight_mode',
+        data: { modeId },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'start_calibration': {
+      if (id === undefined) {
+        fail('missing_request_id', 'start_calibration 必须携带 requestId', 'requestId')
+      }
+      const data = record(input.data, 'data')
+      const kind = text(data.kind, 'data.kind', { minBytes: 1, maxBytes: 8, pattern: /^[a-z]+$/ })
+      if (kind !== 'accel' && kind !== 'gyro' && kind !== 'mag' && kind !== 'baro') {
+        fail('invalid_calibration_kind', `不支持的校准类型：${kind}`, 'data.kind')
+      }
+      return withRequestId({
+        type: 'start_calibration',
+        data: { kind },
+      }, id) as BoundaryClientMessage
+    }
+
     case 'manual_control': {
       const data = record(input.data, 'data')
       const buttons = data.buttons === undefined
@@ -341,6 +373,40 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         type: 'fs_delete',
         data: { entries },
         safetyConfirmation: 'delete_files' as const,
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'log_list':
+      return withRequestId({ type: 'log_list' }, id) as BoundaryClientMessage
+
+    case 'log_download': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'log_download',
+        data: {
+          logId: finiteNumber(data.logId, 'data.logId', {
+            min: 0,
+            max: 0xffff,
+            integer: true,
+          }),
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'log_download_cancel':
+      return withRequestId({ type: 'log_download_cancel' }, id) as BoundaryClientMessage
+
+    case 'log_erase': {
+      if (input.safetyConfirmation !== 'erase_all_logs') {
+        fail(
+          'safety_confirmation_required',
+          '擦除全部 DataFlash 日志必须显式确认 erase_all_logs',
+          'safetyConfirmation',
+        )
+      }
+      return withRequestId({
+        type: 'log_erase',
+        safetyConfirmation: 'erase_all_logs' as const,
       }, id) as BoundaryClientMessage
     }
 

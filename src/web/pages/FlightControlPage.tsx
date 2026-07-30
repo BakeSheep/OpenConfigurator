@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PX4_MODES } from '../../shared/constants'
+import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -10,6 +10,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 export default function FlightControlPage() {
   const send = sendClientMessage
   const vehicle = useTelemetryStore((state) => state.status)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const battery = useTelemetryStore((state) => state.battery)
   const gps = useTelemetryStore((state) => state.gps)
   const ekfStatus = useTelemetryStore((state) => state.ekfStatus)
@@ -46,6 +47,12 @@ export default function FlightControlPage() {
       params: [1, 0, 0, 0, 0, 0, 0],
       safetyConfirmation: 'arm',
     })
+    // Clear the pending 3 s reset timer so it cannot fire after a successful
+    // confirmation and needlessly toggle state later.
+    if (confirmationTimer.current !== null) {
+      window.clearTimeout(confirmationTimer.current)
+      confirmationTimer.current = null
+    }
     setArmConfirmation(false)
   }
 
@@ -56,10 +63,18 @@ export default function FlightControlPage() {
     safetyConfirmation: 'disarm',
   })
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
-  const setMode = (mainMode: number, subMode: number) =>
-    command('MAV_CMD_DO_SET_MODE', [1, mainMode, subMode, 0, 0, 0, 0])
+  const modeOptions = availableModes(vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
+  const setMode = (modeId: number) =>
+    send({ type: 'set_flight_mode', data: { modeId } })
 
   const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
+  // ArduPilot broadcasts PreArm failures via STATUSTEXT ("PreArm: ..."). Treat
+  // a recent, unresolved PreArm failure as authoritative and blocking - a
+  // UI-only readiness heuristic must never claim the FC is ready when the FC
+  // itself reports a PreArm failure.
+  const recentPrearmFailure = statusLogs.find((entry) => /pre-?arm/i.test(entry.text)
+    && !/pre-?arm (?:good|checks (?:passed|ok)|ok)/i.test(entry.text))
   const hasValidOpticalFlow = sensorHealth.opticalFlow === 'ok'
     && !isSensorStale('opticalFlow')
     && (opticalFlow?.quality ?? 0) > 0
@@ -76,7 +91,8 @@ export default function FlightControlPage() {
     : '飞控系统健康'
   const checks = [
     { label: '位置源（GPS 或光流+测距）', ok: hasGpsPosition || hasFlowPosition },
-    { label: '电池电量 > 20%', ok: (battery?.remaining ?? 0) > 20 },
+    // Battery gate keys off a valid voltage source, not a stale/absent percent.
+    { label: '电池电量 > 20%', ok: battery?.voltage != null && (battery?.remaining ?? 0) > 20 },
     { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' && !isSensorStale('imu') },
     { label: '气压计正常', ok: sensorHealth.baro === 'ok' && !isSensorStale('baro') },
     { label: 'EKF 正常', ok: ekfStatus !== null && !isTelemetryStale('ekfStatus') && ekfStatus.health_flags !== 0 },
@@ -84,6 +100,9 @@ export default function FlightControlPage() {
     ...(preflightCheck === null
       ? []
       : [{ label: '飞控预检', ok: sysStatusFresh && preflightCheck === true }]),
+    ...(recentPrearmFailure
+      ? [{ label: `飞控 PreArm：${recentPrearmFailure.text}`, ok: false }]
+      : []),
   ]
   const allChecksPassed = checks.every((check) => check.ok)
   const latestArmMessage = statusLogs.find((entry) =>
@@ -101,6 +120,13 @@ export default function FlightControlPage() {
         </div>
       )}
 
+      {connected && !caps.arm && (
+        <div className="mc-capability-note" data-state="waiting">
+          <Icon name="warning" size={15} />
+          <span>当前飞控类型（{vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : '未识别'}）尚未适配飞行控制写操作，本页仅供查看。目前仅支持 PX4 与 ArduCopter。</span>
+        </div>
+      )}
+
       <section className="mc-card overflow-hidden mt-4">
         <div className="flex flex-col gap-5 p-5 md:flex-row md:items-center">
           <span className="grid h-12 w-12 place-items-center rounded-xl" style={{ background: armed ? 'var(--success-dim)' : 'var(--bg-tertiary)', color: armed ? 'var(--success)' : 'var(--text-disabled)' }}>
@@ -111,11 +137,11 @@ export default function FlightControlPage() {
             <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? '当前模式：' + (vehicle?.mode ?? '—') : '飞控未连接，所有指令已锁定。'}</p>
           </div>
           {!armed && (
-            <button type="button" disabled={!connected || !allChecksPassed} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
-              {armConfirmation ? '再次点击确认解锁' : '解锁飞行器'}
+            <button type="button" disabled={!connected || !allChecksPassed || !caps.arm} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
+              {armConfirmation ? '再次点击确认解锁' : caps.arm ? '解锁飞行器' : '解锁未适配'}
             </button>
           )}
-          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
+          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed || !caps.arm} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
         </div>
       </section>
 
@@ -137,7 +163,7 @@ export default function FlightControlPage() {
               <button
                 type="button"
                 className="mc-btn mc-btn-primary min-h-10"
-                disabled={!connected || !armed || !allChecksPassed}
+                disabled={!connected || !armed || !allChecksPassed || !caps.guidedTakeoff}
                 onClick={() => send({
                   type: 'command',
                   cmd: 'MAV_CMD_NAV_TAKEOFF',
@@ -147,8 +173,8 @@ export default function FlightControlPage() {
               >
                 起飞
               </button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
             </div>
           </div>
         </div>
@@ -159,14 +185,19 @@ export default function FlightControlPage() {
             <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>模式切换通过 MAV_CMD_DO_SET_MODE 执行。</p>
           </div>
           <div className="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
-            {Object.values(PX4_MODES).map((mode) => (
+            {modeOptions.length === 0 && (
+              <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+                当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+              </p>
+            )}
+            {modeOptions.map((mode) => (
               <button
                 key={mode.id}
                 type="button"
                 disabled={!connected}
                 className="mc-btn min-h-10"
                 style={vehicle?.modeId === mode.id ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-                onClick={() => setMode(mode.mainMode, mode.subMode)}
+                onClick={() => setMode(mode.id)}
               >
                 {mode.name}
               </button>

@@ -36,6 +36,8 @@ export interface MavlinkSigningOptions {
   linkId?: number
   /** Reject unsigned inbound packets. Defaults to false for compatibility. */
   requireSigned?: boolean
+  /** Allow a valid but wall-clock-stale first packet from no-RTC controllers. */
+  allowStaleFirstPacket?: boolean
 }
 
 export interface MavlinkCodecSessionOptions {
@@ -133,6 +135,7 @@ export function codecOptionsFromEnvironment(): MavlinkCodecSessionOptions {
         : MavLinkPacketSignature.key(secret),
       linkId: envInteger(process.env.MAVLINK_SIGNING_LINK_ID, 0, 0, 255),
       requireSigned: envBoolean(process.env.MAVLINK_SIGNING_REQUIRE),
+      allowStaleFirstPacket: envBoolean(process.env.MAVLINK_SIGNING_ALLOW_STALE_FIRST),
     }
   }
   return { protocol, signing }
@@ -226,6 +229,15 @@ export class MavlinkCodecSession extends EventEmitter {
 
   get protocolVersion(): 1 | 2 {
     return this.negotiatedVersion
+  }
+
+  /** GCS identity used for outbound frames; consumers filter replies by it. */
+  get gcsSystemId(): number {
+    return this.options.gcsSystemId
+  }
+
+  get gcsComponentId(): number {
+    return this.options.gcsComponentId
   }
 
   get stats(): MavlinkCodecStats {
@@ -469,9 +481,15 @@ export class MavlinkCodecSession extends EventEmitter {
         const replayKey = `${header.sysid}:${header.compid}:${packet.signature!.linkId}`
         const timestamp = packet.signature!.timestamp
         const previous = this.replayTimestamps.get(replayKey)
+        // Secure default: first contact must be close to the local signing
+        // clock, preventing a recorded signed packet from becoming valid again
+        // after restart or watermark eviction. Controllers without an RTC may
+        // explicitly opt into monotonic-only first-contact compatibility via
+        // MAVLINK_SIGNING_ALLOW_STALE_FIRST=1; that trade-off is never implicit.
         const localTimestamp = (Date.now() - MavLinkProtocolV2.SIGNATURE_START_TIME) * 100
         if (
           previous === undefined
+          && !signing.allowStaleFirstPacket
           && timestamp < localTimestamp - SIGNATURE_MAX_AGE_TICKS
         ) {
           this.counters.rejectedPackets++

@@ -34,13 +34,13 @@ function getLinkQuality(stats: { rxBps: number; crcErrorsPerSec: number } | null
 export default function StatusBar() {
   const [expanded, setExpanded] = useState(false)
   const [tempOpen, setTempOpen] = useState(false)
-  const connectionStatus = useConnectionStore((state) => state.status)
   const transportOpen = useConnectionStore((state) => state.transportOpen)
-  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
-  const reconnect = useConnectionStore((state) => state.reconnect)
   const linkStats = useConnectionStore((state) => state.linkStats)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
+  const autopilotVersion = useTelemetryStore((state) => state.autopilotVersion)
+  const cpuLoad = useTelemetryStore((state) => state.cpuLoad)
+  const sysStatusStale = useTelemetryStore((state) => state.isStale('sysStatus'))
   const imus = useSensorStore((state) => state.imus)
   const baro = useSensorStore((state) => state.baro)
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
@@ -63,16 +63,8 @@ export default function StatusBar() {
     ? validTemps.reduce((sum, source) => sum + (source.value as number), 0) / validTemps.length
     : null
 
-  const statusText = vehicleReady ? '飞控已就绪'
-    : transportOpen ? '端口已打开 · 等待飞控'
-    : connectionStatus === 'reconnecting' ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
-    : connectionStatus === 'connecting' ? '连接中' : '未连接'
-  const statusColor = vehicleReady ? 'var(--success)'
-    : transportOpen ? 'var(--warning)'
-    : connectionStatus === 'reconnecting' || connectionStatus === 'connecting' ? 'var(--warning)'
-    : 'var(--text-disabled)'
   const linkText = linkStats && transportOpen
-    ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${(linkStats.crcErrorsPerSec / 1024).toFixed(1)}KB/s` : ''}`
+    ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${linkStats.crcErrorsPerSec.toFixed(1)}/s` : ''}`
     : null
   const linkQuality = transportOpen ? getLinkQuality(linkStats) : { percent: 0, color: 'var(--text-disabled)' }
 
@@ -80,8 +72,16 @@ export default function StatusBar() {
     <footer className="mc-statusbar">
       <button type="button" className="mc-statusbar__summary" onClick={() => { setTempOpen(false); setExpanded((current) => !current) }}>
         <span className="flex items-center gap-1.5">
-          <span className="mc-status-dot" style={{ background: latest ? severityTone[latest.severity] : statusColor }} />
-          <span>状态 {statusText}</span>
+          {autopilotVersion && (
+            <span className="mc-statusbar__chip mc-mono" title="飞控固件型号与版本">
+              {autopilotVersion.firmwareLabel}
+            </span>
+          )}
+          {cpuLoad !== null && !sysStatusStale && (
+            <span className="mc-statusbar__chip mc-mono" title="飞控CPU占用率">
+              CPU {cpuLoad.toFixed(0)}%
+            </span>
+          )}
           {avgTemp !== null && (
             <span
               role="button"

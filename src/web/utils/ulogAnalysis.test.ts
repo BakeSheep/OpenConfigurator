@@ -134,6 +134,22 @@ import {
 }
 
 // ---------------------------------------------------------------------------
+// EnvelopeCollector periodically compacts very long streams without losing
+// the global extrema that matter for chart inspection.
+// ---------------------------------------------------------------------------
+{
+  const collector = new EnvelopeCollector(0.001)
+  for (let index = 0; index < 50_000; index++) {
+    collector.add(index * 0.002, index === 41_337 ? 1_000_000 : Math.sin(index))
+  }
+  const { times, values } = collector.finish()
+  assert.ok(times.length < 32_000, 'streaming envelope must remain bounded')
+  assert.ok(values.includes(1_000_000), 'compaction must preserve an isolated spike')
+  for (let index = 1; index < times.length; index++) {
+    assert.ok(times[index] >= times[index - 1])
+  }
+}
+// ---------------------------------------------------------------------------
 // Segment building merges repeats and closes intervals.
 // ---------------------------------------------------------------------------
 {

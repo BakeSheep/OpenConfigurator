@@ -5,10 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { EmptyState, PageHeader } from '../components/ui/PageFrame'
+import DataflashLogPanel from '../components/logs/DataflashLogPanel'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
-import { FTP_DEFAULT_LOG_DIRECTORY } from '../../shared/constants'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { PX4_ULOG_LOG_DIRECTORY } from '../../shared/constants'
+import { logSupport } from '../utils/logProfiles'
 import { parsePx4DirectoryDate, parsePx4FileDate } from '../utils/ulogAnalysis'
 import { stashLogBuffer } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
@@ -63,6 +66,8 @@ function entryTimestamp(entry: FsEntry, currentPath: string): number | null {
 export default function FlightLogsPage({ embedded = false }: { embedded?: boolean }) {
   const navigate = useNavigate()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const logs = logSupport(vehicleIdentity)
   const currentPath = useFileExplorerStore((state) => state.currentPath)
   const entries = useFileExplorerStore((state) => state.entries)
   const listedPath = useFileExplorerStore((state) => state.listedPath)
@@ -88,9 +93,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   }, [])
 
   // (Re-)list whenever the target directory or the link readiness changes.
+  // Only the PX4/ULog profile browses the filesystem over MAVLink FTP; the
+  // DataFlash panel issues its own log_list requests.
   useEffect(() => {
-    if (vehicleReady) requestListing(currentPath)
-  }, [vehicleReady, currentPath, requestListing])
+    if (vehicleReady && logs.format === 'ulog') requestListing(currentPath)
+  }, [vehicleReady, logs.format, currentPath, requestListing])
 
   // Deletion finished: refresh the listing and dismiss the task shortly after.
   useEffect(() => {
@@ -274,7 +281,9 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     <div className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}>
       {!embedded && <PageHeader
         title="飞行日志"
-        description="浏览飞控 SD 卡文件，下载 ULog 日志或直接送入分析"
+        description={logs.format === 'dataflash'
+          ? '浏览飞控 DataFlash 日志，下载 .bin 日志或直接送入分析'
+          : '浏览飞控 SD 卡文件，下载 ULog 日志或直接送入分析'}
         actions={
           <button
             type="button"
@@ -289,9 +298,18 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
       {!vehicleReady ? (
         <EmptyState
           title="请先连接飞控"
-          description="连接后即可像资源管理器一样浏览 SD 卡上的日志文件"
+          description="连接后即可浏览并下载飞控上的日志文件"
           icon="folder"
         />
+      ) : !logs.browse ? (
+        <EmptyState
+          title="当前飞控不支持日志浏览"
+          description="尚未识别飞控类型，不提供日志浏览、分析或删除。"
+          icon="folder"
+        />
+      ) : logs.format === 'dataflash' ? (
+        // ArduPilot: flat DataFlash log list over LOG_REQUEST_* (no filesystem).
+        <DataflashLogPanel vehicleReady={vehicleReady} />
       ) : (
         <section
           className="mc-card mc-explorer"
@@ -350,7 +368,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               <button
                 type="button"
                 className="mc-btn mc-btn-ghost"
-                onClick={() => useFileExplorerStore.getState().navigateTo(FTP_DEFAULT_LOG_DIRECTORY)}
+                onClick={() => useFileExplorerStore.getState().navigateTo(PX4_ULOG_LOG_DIRECTORY)}
               >
                 <Icon name="log" size={14} /> 日志目录
               </button>

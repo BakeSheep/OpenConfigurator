@@ -100,10 +100,12 @@ function seedStatics() {
   t.setAutopilotVersion({
     boardId: 56,
     boardName: 'Pixhawk 6C',
-    firmwareVersion: 'v1.15.2',
-    firmwareLabel: 'Release',
+    firmwareVersion: '1.15.2',
+    firmwareLabel: 'PX4 v1.15.2',
     vendorId: 0x3162,
     productId: 0x0058,
+    family: 'px4',
+    vehicleClass: 'copter',
   })
   // Pre-select a few variables for the dashboard custom data board so the
   // showcase does not render an empty card (user picks are left untouched).
@@ -230,7 +232,15 @@ function pushSlowTelemetry() {
     protocolVersion: 2,
   })
 
-  t.setStatus({ armed: true, mode: 'Position', modeId: 3, failsafe: 'safe', systemStatus: 4 })
+  t.setStatus({
+    armed: true,
+    mode: 'Position',
+    modeId: 3,
+    failsafe: 'safe',
+    systemStatus: 4,
+    // Demo showcases the PX4 quadrotor profile.
+    identity: { autopilotId: 12, vehicleTypeId: 2, family: 'px4', vehicleClass: 'copter' },
+  })
 
   // Slow orbit around the launch point (Zurich Irchel, PX4 SITL default).
   const lat = 47.397742 + 0.00042 * Math.sin(time * 0.02)
@@ -262,6 +272,7 @@ function pushSlowTelemetry() {
     voltageBattery: 15.92,
     currentBattery: 14.6,
     batteryRemaining: remaining,
+    cpuLoad: Math.round(38 + 6 * Math.sin(time * 0.6)),
     sensorsPresent: 0x3f_ff_ff,
     sensorsEnabled: 0x3f_ff_ff,
     sensorsHealth: 0x3f_ff_ff,

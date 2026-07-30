@@ -44,10 +44,14 @@ function makeHeartbeat(autopilot = 12): minimal.Heartbeat {
   return heartbeat
 }
 
-function heartbeatPayload(autopilot = 12): Buffer {
+function heartbeatPayload(
+  autopilot = 12,
+  type = autopilot === 8 ? 18 : 2,
+  customMode = 0x03040000,
+): Buffer {
   const payload = Buffer.alloc(9)
-  payload.writeUInt32LE(0x03040000, 0)
-  payload[4] = autopilot === 8 ? 18 : 2
+  payload.writeUInt32LE(customMode >>> 0, 0)
+  payload[4] = type
   payload[5] = autopilot
   payload[7] = 4
   payload[8] = 3
@@ -216,19 +220,48 @@ function framePayload(frame: Buffer): Buffer {
   )
   assert.equal(signedSession.stats.rejectedPackets, 1)
 
+  // A no-RTC flight controller signs with a timestamp far in the past. First
+  // contact must accept the cryptographically valid frame and establish the
+  // replay watermark; an equal-or-older follow-up is then rejected as replay.
   const staleSigningSession = new MavlinkCodecSession({
-    signing: { key: signingKey, linkId: 7, requireSigned: true },
+    signing: { key: signingKey, linkId: 7, requireSigned: true, allowStaleFirstPacket: true },
   })
   let staleSigningMessages = 0
   staleSigningSession.on('message', () => { staleSigningMessages++ })
+  const staleTimestampMs = Date.now() - 24 * 60 * 60 * 1000
   staleSigningSession.write(signingProtocol.sign(
     signingProtocol.serialize(makeHeartbeat(), 12),
     7,
     signingKey,
-    Date.now() - 24 * 60 * 60 * 1000,
+    staleTimestampMs,
   ))
-  assert.equal(staleSigningMessages, 0)
+  assert.equal(staleSigningMessages, 1, 'first contact from a no-RTC source must be accepted')
+  assert.equal(staleSigningSession.stats.rejectedPackets, 0)
+  staleSigningSession.write(signingProtocol.sign(
+    signingProtocol.serialize(makeHeartbeat(), 13),
+    7,
+    signingKey,
+    staleTimestampMs,
+  ))
+  assert.equal(
+    staleSigningMessages,
+    1,
+    'a same-timestamp frame is a replay once the watermark exists',
+  )
   assert.equal(staleSigningSession.stats.rejectedPackets, 1)
+  const secureFirstContact = new MavlinkCodecSession({
+    signing: { key: signingKey, linkId: 7, requireSigned: true },
+  })
+  let secureFirstContactMessages = 0
+  secureFirstContact.on('message', () => { secureFirstContactMessages++ })
+  secureFirstContact.write(signingProtocol.sign(
+    signingProtocol.serialize(makeHeartbeat(), 11),
+    7,
+    signingKey,
+    staleTimestampMs,
+  ))
+  assert.equal(secureFirstContactMessages, 0, 'secure default must reject a stale first packet')
+  assert.equal(secureFirstContact.stats.rejectedPackets, 1)
   for (let index = 0; index < 300; index++) {
     const systemId = (index % 250) + 1
     const componentId = Math.floor(index / 250) + 1
@@ -407,6 +440,16 @@ assert.equal((bridge as unknown as PrivateBridge).targetCompId, 1)
 assert.equal(connection.vehicleReady, true)
 assert.equal(connection.heartbeatNotifications, 1)
 assert.ok(messages.some((message) => message.type === 'status' && message.data.mode === 'Hold'))
+// The selected heartbeat classifies the vehicle profile and surfaces it on
+// both the status stream and the target lifecycle.
+const px4Status = findLast(messages, (message) => message.type === 'status')
+assert.equal(px4Status.data.identity.family, 'px4')
+assert.equal(px4Status.data.identity.vehicleClass, 'copter')
+assert.equal(px4Status.data.identity.autopilotId, 12)
+assert.equal(px4Status.data.identity.vehicleTypeId, 2)
+const selectedTarget = findLast(messages, (message) => message.type === 'target' && message.data.reason === 'selected')
+assert.equal(selectedTarget.data.identity.family, 'px4')
+assert.ok(selectedTarget.data.discovered.every((entry: { type: number }) => typeof entry.type === 'number'))
 
 const initialCommandFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
 assert.ok(initialCommandFrames.some((frame) => {
@@ -423,6 +466,49 @@ for (const messageId of [106, 132]) {
     return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === messageId
   }), `expected telemetry interval request for MAVLink message #${messageId}`)
 }
+
+// Semantic mode change: the server encodes PX4 Position (id 3) as packed
+// main/sub-mode parameters [1, 3, 0, ...] on MAV_CMD_DO_SET_MODE.
+bridge.handleClientMessage({
+  type: 'set_flight_mode',
+  requestId: 'px4-mode-position',
+  data: { modeId: 3 },
+})
+const px4ModeFrame = findLast(
+  connection.frames.filter((frame) => frameMessageId(frame) === 76),
+  (frame) => framePayload(frame).readUInt16LE(28) === 176,
+)
+assert.ok(px4ModeFrame)
+{
+  const payload = framePayload(px4ModeFrame)
+  assert.equal(payload.readFloatLE(0), 1)
+  assert.equal(payload.readFloatLE(4), 3)
+  assert.equal(payload.readFloatLE(8), 0)
+}
+// Unvetted mode ids are rejected before serialization.
+const modeFramesBeforeBadMode = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+).length
+bridge.handleClientMessage({
+  type: 'set_flight_mode',
+  requestId: 'px4-mode-bad',
+  data: { modeId: 99 },
+})
+assert.equal(
+  connection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length,
+  modeFramesBeforeBadMode,
+)
+assert.equal(
+  findLast(messages, (message) => message.type === 'operation_error'
+    && message.data.requestId === 'px4-mode-bad')?.data.code,
+  'unknown_mode',
+)
+// Resolve the pending DO_SET_MODE transaction so later tests are unaffected,
+// then wait out the post-ACK settling quarantine window (commandTimeoutMs).
+inject(bridge, 77, commandAckPayload(176, 0))
+await wait(45)
 
 // A second autopilot is discovered but cannot steal status/liveness/target.
 const statusCountBeforeSecondTarget = messages.filter((message) => message.type === 'status').length
@@ -1187,6 +1273,358 @@ bridge.destroy()
   await wait(0)
   const after = destroyConnection.frames.filter((frame) => frameMessageId(frame) === 69).length
   assert.equal(after, before)
+}
+
+// ArduPilot identity: an ArduCopter heartbeat (autopilot 3, type 2) selects
+// the ardupilot/copter profile, decodes raw custom_mode values, labels the
+// firmware as ArduPilot, and never survives a target reset.
+{
+  const apConnection = new FakeConnection()
+  const apBridge = new MavlinkBridge(apConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const apMessages: any[] = []
+  apBridge.on('message', (message) => apMessages.push(message))
+
+  // ArduCopter Stabilize: custom_mode 0 must not decode through PX4's packed
+  // main/sub layout (which used to render it as "Mode 0").
+  inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+  const apStatus = findLast(apMessages, (message) => message.type === 'status')
+  assert.equal(apStatus.data.mode, 'Stabilize')
+  assert.equal(apStatus.data.modeId, 0)
+  assert.equal(apStatus.data.identity.family, 'ardupilot')
+  assert.equal(apStatus.data.identity.vehicleClass, 'copter')
+  const apTarget = findLast(apMessages, (message) => message.type === 'target' && message.data.reason === 'selected')
+  assert.equal(apTarget.data.identity.family, 'ardupilot')
+
+  // RTL by raw mode number.
+  inject(apBridge, 0, heartbeatPayload(3, 2, 6), 55, 1)
+  assert.equal(findLast(apMessages, (message) => message.type === 'status').data.mode, 'RTL')
+
+  // Semantic mode change encodes ArduCopter Loiter as raw custom mode 5:
+  // [1, 5, 0, ...] - never PX4's packed main/sub layout.
+  apBridge.handleClientMessage({
+    type: 'set_flight_mode',
+    requestId: 'ap-mode-loiter',
+    data: { modeId: 5 },
+  })
+  const apModeFrame = findLast(
+    apConnection.frames.filter((frame) => frameMessageId(frame) === 76),
+    (frame) => framePayload(frame).readUInt16LE(28) === 176,
+  )
+  assert.ok(apModeFrame)
+  {
+    const payload = framePayload(apModeFrame)
+    assert.equal(payload.readFloatLE(0), 1)
+    assert.equal(payload.readFloatLE(4), 5)
+    assert.equal(payload.readFloatLE(8), 0)
+  }
+
+  // ArduPilot motor test uses MAV_CMD_DO_MOTOR_TEST (209): motor 1 at 5% for
+  // 2 s is [1, 0, 5, 2, 0, 0, 0]; PX4's command 310 is never sent.
+  const apMotorFrames = () => apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 209
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-noprops',
+    data: { instance: 1, throttle: 5, duration: 2 },
+  })
+  assert.equal(apMotorFrames().length, 0)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-motor-noprops')?.data.code,
+    'props_confirmation_required',
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-1',
+    data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
+  })
+  assert.equal(apMotorFrames().length, 1)
+  {
+    const payload = framePayload(apMotorFrames()[0])
+    assert.equal(payload.readFloatLE(0), 1)   // 1-based motor instance
+    assert.equal(payload.readFloatLE(4), 0)   // MOTOR_TEST_THROTTLE_PERCENT
+    assert.equal(payload.readFloatLE(8), 5)   // throttle percent
+    assert.equal(payload.readFloatLE(12), 2)  // bounded timeout seconds
+  }
+  assert.equal(
+    apConnection.writePriorities[apConnection.frames.indexOf(apMotorFrames()[0])],
+    'high',
+  )
+  assert.ok(apMessages.some((message) => message.type === 'motor_test_status'
+    && message.data.requestId === 'ap-motor-1'
+    && message.data.action === 'start'
+    && message.data.status === 'sent_unconfirmed'))
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-stop',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(apMotorFrames().length, 2)
+  {
+    const payload = framePayload(apMotorFrames()[1])
+    assert.equal(payload.readFloatLE(0), 1)
+    assert.equal(payload.readFloatLE(8), 0)
+    assert.equal(payload.readFloatLE(12), 0)
+  }
+  assert.equal(
+    apConnection.writePriorities[apConnection.frames.indexOf(apMotorFrames()[1])],
+    'critical',
+  )
+  assert.equal(
+    apConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+    ).length,
+    0,
+  )
+
+  // While armed, motor-test starts are refused before serialization; stop
+  // commands remain allowed.
+  const armedHeartbeat = heartbeatPayload(3, 2, 0)
+  armedHeartbeat[6] = 0x80
+  inject(apBridge, 0, armedHeartbeat, 55, 1)
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-armed',
+    data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
+  })
+  assert.equal(apMotorFrames().length, 2)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-motor-armed')?.data.code,
+    'vehicle_armed',
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'ap-motor-armed-stop',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(apMotorFrames().length, 3)
+  // Calibration is also refused while armed (bench-only operation).
+  const calFramesBeforeArmed = apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  ).length
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-armed', data: { kind: 'gyro' } })
+  assert.equal(
+    apConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+    ).length,
+    calFramesBeforeArmed,
+  )
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-cal-armed')?.data.code,
+    'vehicle_armed',
+  )
+  inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
+  // Semantic calibration: ArduCopter maps supported kinds to command 241
+  // parameters and rejects kinds it does not implement (mag needs the mag-cal
+  // protocol). Gyro = param1, baro = param3, accel(level) = param5=2.
+  const apCalFrames = () => apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  )
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-gyro', data: { kind: 'gyro' } })
+  assert.equal(apCalFrames().length, 1)
+  assert.equal(framePayload(apCalFrames()[0]).readFloatLE(0), 1)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-baro', data: { kind: 'baro' } })
+  assert.equal(apCalFrames().length, 2)
+  assert.equal(framePayload(apCalFrames()[1]).readFloatLE(8), 1)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-accel', data: { kind: 'accel' } })
+  assert.equal(apCalFrames().length, 3)
+  assert.equal(framePayload(apCalFrames()[2]).readFloatLE(16), 2)
+  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
+  await wait(45)
+  // Mag calibration is not implemented for ArduCopter yet: rejected, no frame.
+  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-mag', data: { kind: 'mag' } })
+  assert.equal(apCalFrames().length, 3)
+  assert.equal(
+    findLast(apMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'ap-cal-mag')?.data.code,
+    'unsupported_calibration_kind',
+  )
+
+  // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
+  // raw board/vendor/product fields intact.
+  const apVersion = new standard.AutopilotVersion()
+  apVersion.capabilities = 8192n as never
+  apVersion.uid = 0n
+  apVersion.flightSwVersion = (4 << 24) | (7 << 16)
+  apVersion.middlewareSwVersion = 0
+  apVersion.osSwVersion = 0
+  apVersion.boardVersion = 1179 << 16
+  apVersion.vendorId = 4660
+  apVersion.productId = 22136
+  apVersion.flightCustomVersion = Array(8).fill(0)
+  apVersion.middlewareCustomVersion = Array(8).fill(0)
+  apVersion.osCustomVersion = Array(8).fill(0)
+  apVersion.uid2 = Array(18).fill(0)
+  apConnection.feed(new MavLinkProtocolV2(55, 1).serialize(apVersion, 3))
+  const apVersionData = findLast(apMessages, (message) => message.type === 'autopilot_version')?.data
+  assert.equal(apVersionData.firmwareLabel, 'ArduPilot v4.7.0')
+  assert.equal(apVersionData.family, 'ardupilot')
+  assert.equal(apVersionData.vehicleClass, 'copter')
+  assert.equal(apVersionData.boardName, 'MicoAir743v2')
+  assert.equal(apVersionData.vendorId, 4660)
+  assert.equal(apVersionData.productId, 22136)
+  // The one-shot version message is cached so late-joining WS clients can be
+  // replayed the firmware snapshot (page refresh after the FC handshake).
+  const cachedVersion = apBridge.getAutopilotVersionMessage()
+  assert.equal(cachedVersion?.type, 'autopilot_version')
+  assert.equal((cachedVersion as { data: { firmwareLabel: string } }).data.firmwareLabel, 'ArduPilot v4.7.0')
+
+  // ArduPilot telemetry edge cases (synthetic minimal fixtures):
+  // SYS_STATUS with a PreArm-check bit present but unhealthy must surface
+  // preflightCheck=false and remain blocking.
+  const sysStatusPayload = Buffer.alloc(31)
+  const PREARM_BIT = 0x10000000
+  const GYRO_BIT = 0x00000001
+  sysStatusPayload.writeUInt32LE(PREARM_BIT | GYRO_BIT, 0)  // present
+  sysStatusPayload.writeUInt32LE(PREARM_BIT | GYRO_BIT, 4)  // enabled
+  sysStatusPayload.writeUInt32LE(GYRO_BIT, 8)               // health: prearm NOT healthy
+  sysStatusPayload.writeUInt16LE(0, 14)                     // voltage 0 = no monitor
+  sysStatusPayload.writeInt16LE(-1, 16)                     // current unknown
+  sysStatusPayload.writeInt8(97, 30)                        // battery_remaining 97%
+  inject(apBridge, 1, sysStatusPayload, 55, 1)
+  const apSysStatus = findLast(apMessages, (message) =>
+    message.type === 'telemetry' && message.msgType === 'SYS_STATUS')?.data
+  assert.equal(apSysStatus.preflightCheck, false)
+  // A monitor-less 0 mV must not become a healthy 0.0 V / 97%.
+  assert.equal(apSysStatus.voltageBattery, null)
+  assert.equal(apSysStatus.batteryRemaining, null)
+
+  // BATTERY_STATUS with all-unknown voltages reports voltage null (no pack).
+  const apBatteryPayload = Buffer.alloc(36)
+  apBatteryPayload.writeInt32LE(-1, 0)                      // current unknown
+  for (let cell = 0; cell < 10; cell += 1) apBatteryPayload.writeUInt16LE(0xffff, 10 + cell * 2)
+  apBatteryPayload.writeInt16LE(-1, 30)                     // temperature unknown
+  apBatteryPayload[32] = 0                                  // id 0
+  apBatteryPayload.writeInt8(-1, 35)                        // remaining unknown
+  inject(apBridge, 147, apBatteryPayload, 55, 1)
+  const apBattery = findLast(apMessages, (message) =>
+    message.type === 'telemetry' && message.msgType === 'BATTERY_STATUS')?.data
+  assert.equal(apBattery.voltage, null)
+  assert.equal(apBattery.remaining, null)
+
+  // ESTIMATOR_STATUS (#230) surfaces an EKF status report for the panel.
+  // MAVLink v2 reorders fields by type size: uint64 time_usec, then the eight
+  // float ratios, then the uint16 flags at the end (offset 40).
+  const estimatorPayload = Buffer.alloc(42)
+  estimatorPayload.writeFloatLE(0.3, 8)     // vel_ratio
+  estimatorPayload.writeUInt16LE(0x1f, 40)  // flags (health bits set)
+  inject(apBridge, 230, estimatorPayload, 55, 1)
+  const apEkf = findLast(apMessages, (message) => message.type === 'ekf_status')?.data
+  assert.equal(apEkf.health_flags, 0x1f)
+
+  // A connection status change resets the target; the identity must be
+  // cleared so a different vehicle on reconnect cannot inherit the profile.
+  ;(apBridge as unknown as { onStatusChange: (status: string) => void }).onStatusChange('disconnected')
+  const resetTarget = findLast(apMessages, (message) => message.type === 'target' && message.data.reason === 'reset')
+  assert.equal(resetTarget.data.identity, null)
+  assert.equal(resetTarget.data.systemId, null)
+  apBridge.destroy()
+}
+
+// An unknown autopilot family (MAV_AUTOPILOT generic) is trackable but mode
+// requests must be rejected before serialization - no cross-stack guessing.
+{
+  const genericConnection = new FakeConnection()
+  const genericBridge = new MavlinkBridge(genericConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const genericMessages: any[] = []
+  genericBridge.on('message', (message) => genericMessages.push(message))
+  inject(genericBridge, 0, heartbeatPayload(0, 2, 0), 66, 1)
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'status').data.identity.family,
+    'unknown',
+  )
+  const framesBeforeMode = genericConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length
+  genericBridge.handleClientMessage({
+    type: 'set_flight_mode',
+    requestId: 'generic-mode',
+    data: { modeId: 0 },
+  })
+  assert.equal(
+    genericConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+    ).length,
+    framesBeforeMode,
+  )
+  const genericError = findLast(
+    genericMessages,
+    (message) => message.type === 'operation_error' && message.data.requestId === 'generic-mode',
+  )
+  assert.equal(genericError.data.operation, 'set_flight_mode')
+  assert.equal(genericError.data.code, 'unsupported_vehicle_profile')
+
+  // Every capability-gated write surface refuses before serialization: arm,
+  // calibration and motor test produce no COMMAND_LONG frames at all.
+  const commandFramesBeforeGated = genericConnection.frames.filter(
+    (frame) => frameMessageId(frame) === 76,
+  ).length
+  genericBridge.handleClientMessage({
+    type: 'command',
+    requestId: 'generic-arm',
+    cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+    params: [1, 0, 0, 0, 0, 0, 0],
+    safetyConfirmation: 'arm',
+  })
+  genericBridge.handleClientMessage({
+    type: 'command',
+    requestId: 'generic-cal',
+    cmd: 'MAV_CMD_PREFLIGHT_CALIBRATION',
+    params: [1, 0, 0, 0, 0, 0, 0],
+  })
+  genericBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'generic-motor',
+    data: { instance: 1, throttle: 0, duration: 0 },
+  })
+  assert.equal(
+    genericConnection.frames.filter((frame) => frameMessageId(frame) === 76).length,
+    commandFramesBeforeGated,
+  )
+  for (const [requestId, code] of [
+    ['generic-arm', 'unsupported_vehicle_profile'],
+    ['generic-cal', 'unsupported_vehicle_profile'],
+    ['generic-motor', 'unsupported_motor_test'],
+  ] as const) {
+    const error = findLast(
+      genericMessages,
+      (message) => message.type === 'operation_error' && message.data.requestId === requestId,
+    )
+    assert.equal(error?.data.code, code, `expected ${code} for ${requestId}`)
+  }
+  // Semantic calibration also refuses to serialize command 241 for unknown.
+  const cal241Before = genericConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  ).length
+  genericBridge.handleClientMessage({ type: 'start_calibration', requestId: 'generic-cal2', data: { kind: 'gyro' } })
+  assert.equal(
+    genericConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+    ).length,
+    cal241Before,
+  )
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'generic-cal2')?.data.code,
+    'unsupported_vehicle_profile',
+  )
+  genericBridge.destroy()
 }
 
 console.log('MAVLink codec, transaction, target and telemetry checks passed')
