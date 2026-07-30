@@ -7,16 +7,18 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { buildFrameConfigView } from '../utils/vehicleConfig'
 import JoystickPage from './JoystickPage'
 import MotorPage from './MotorPage'
+import EscPage from './EscPage'
 import PortSettingsPage from './PortSettingsPage'
 import ReceiverPage from './ReceiverPage'
 import SensorPage from './SensorPage'
 
-type SetupSection = 'airframe' | 'sensors' | 'actuators' | 'receiver' | 'joystick' | 'ports'
+type SetupSection = 'airframe' | 'sensors' | 'actuators' | 'esc' | 'receiver' | 'joystick' | 'ports'
 
 const sections: Array<{ id: SetupSection; label: string; description: string; icon: IconName }> = [
   { id: 'airframe', label: '机架', description: '识别当前飞行器配置', icon: 'flight' },
   { id: 'sensors', label: '传感器', description: '监控与校准', icon: 'sensor' },
   { id: 'actuators', label: '执行器', description: '输出映射与电机测试', icon: 'motor' },
+  { id: 'esc', label: '电调', description: '直通配置与固件刷写', icon: 'motor' },
   { id: 'receiver', label: '遥控器', description: '通道监控', icon: 'receiver' },
   { id: 'joystick', label: '游戏手柄', description: '轴、按钮与响应曲线', icon: 'gamepad' },
   { id: 'ports', label: '端口', description: 'MAVLink 串口实例', icon: 'plug' },
@@ -89,6 +91,7 @@ export default function SettingsPage() {
           )}
           {activeSection === 'sensors' && <SensorPage embedded />}
           {activeSection === 'actuators' && <MotorPage embedded />}
+          {activeSection === 'esc' && <EscPage embedded />}
           {activeSection === 'receiver' && <ReceiverPage embedded />}
           {activeSection === 'joystick' && <JoystickPage embedded />}
           {activeSection === 'ports' && <PortSettingsPage />}

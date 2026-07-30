@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useConnectionStore } from '../../stores/connectionStore'
+import { useEscStore } from '../../stores/escStore'
 import { useSensorStore } from '../../stores/sensorStore'
 import { useTelemetryStore, type StatusSeverity } from '../../stores/telemetryStore'
 import Icon from '../ui/Icon'
@@ -36,6 +37,7 @@ export default function StatusBar() {
   const [tempOpen, setTempOpen] = useState(false)
   const transportOpen = useConnectionStore((state) => state.transportOpen)
   const linkStats = useConnectionStore((state) => state.linkStats)
+  const escSession = useEscStore((state) => state.session)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
   const autopilotVersion = useTelemetryStore((state) => state.autopilotVersion)
@@ -63,6 +65,12 @@ export default function StatusBar() {
     ? validTemps.reduce((sum, source) => sum + (source.value as number), 0) / validTemps.length
     : null
 
+  const escActive = escSession !== null && escSession.state !== 'idle'
+  const escBanner = !escActive ? null
+    : escSession.mode === 'ardupilot_passthrough' ? 'MAVLink 已暂停（电调直通中）'
+    : escSession.mode === 'px4_serial_control' ? 'PX4 电调 SERIAL_CONTROL 会话中'
+    : '电调直连中'
+
   const linkText = linkStats && transportOpen
     ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${linkStats.crcErrorsPerSec.toFixed(1)}/s` : ''}`
     : null
@@ -80,6 +88,11 @@ export default function StatusBar() {
           {cpuLoad !== null && !sysStatusStale && (
             <span className="mc-statusbar__chip mc-mono" title="飞控CPU占用率">
               CPU {cpuLoad.toFixed(0)}%
+            </span>
+          )}
+          {escBanner && (
+            <span className="mc-statusbar__chip" style={{ color: 'var(--accent)' }}>
+              {escBanner}
             </span>
           )}
           {avgTemp !== null && (

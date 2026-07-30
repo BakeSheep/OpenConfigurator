@@ -5,6 +5,7 @@ import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useLogTransferStore } from '../stores/logTransferStore'
+import { useEscStore } from '../stores/escStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
@@ -151,6 +152,7 @@ function handleMessage(msg: ServerMessage) {
         // FC filesystem state is meaningless without a link.
         useFileExplorerStore.getState().reset()
         useLogTransferStore.getState().reset()
+      useEscStore.getState().reset()
       }
       lastVehicleReady = vehicleReadyNow
       break
@@ -486,6 +488,7 @@ function connectSocket() {
       useSensorStore.getState().markAllOffline()
       useParameterStore.getState().clear()
       useLogTransferStore.getState().reset()
+      useEscStore.getState().reset()
     }
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return
