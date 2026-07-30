@@ -778,6 +778,29 @@ input[type="range"]:disabled {
   color: var(--warning);
 }
 
+/* Static demo preview banner: always visible below the topbar. */
+.mc-demo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+  background: var(--warning-dim);
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.mc-demo-banner__badge {
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+
 .mc-topbar__arm-btn {
   display: inline-flex;
   height: 31px;

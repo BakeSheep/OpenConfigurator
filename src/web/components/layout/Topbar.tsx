@@ -4,6 +4,7 @@ import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
+import { appRuntimeMode } from '../../runtime'
 import {
   loadConnectionPresets,
   resolveSerialPreset,
@@ -17,6 +18,7 @@ const radToDeg = (r: number) => r * 180 / Math.PI
 export default function Topbar() {
   const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
+  const isDemo = appRuntimeMode === 'demo'
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
     ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '飞控已就绪')
@@ -438,6 +440,18 @@ export default function Topbar() {
           <span>{rebootConfirm ? '确认重启' : '重启'}</span>
         </button>
         <div className="relative">
+          {isDemo ? (
+            // Static preview: read-only badge, no REST scan/connect/disconnect.
+            <span
+              className="mc-topbar__connect is-connected"
+              style={{ cursor: 'default' }}
+              title="在线演示：模拟连接，无真实设备"
+            >
+              <span className="mc-status-dot" style={{ background: 'var(--success)' }} />
+              <span>模拟连接 · {port ?? 'DEMO'}</span>
+            </span>
+          ) : (
+            <>
           <button
             type="button"
             className={'mc-topbar__connect' + (vehicleReady ? ' is-connected' : transportOpen ? ' is-waiting' : '')}
@@ -477,6 +491,8 @@ export default function Topbar() {
                 </div>
               ))}
             </div>
+          )}
+            </>
           )}
         </div>
       </div>

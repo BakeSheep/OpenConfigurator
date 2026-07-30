@@ -1,12 +1,15 @@
 import { lazy, Suspense } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import ConnectDialog from './components/ConnectDialog'
+import DemoBanner from './components/layout/DemoBanner'
 import ParameterProgressBar from './components/layout/ParameterProgressBar'
 import Sidebar from './components/layout/Sidebar'
 import StatusBar from './components/layout/StatusBar'
 import Topbar from './components/layout/Topbar'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useGamepadController } from './hooks/useGamepadController'
+import { appRuntimeMode } from './runtime'
+import { shouldConnectBackend } from './runtimeMode'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage'))
@@ -14,13 +17,14 @@ const FlightControlPage = lazy(() => import('./pages/FlightControlPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 export default function App() {
-  const { send } = useWebSocket()
+  const { send } = useWebSocket(shouldConnectBackend(appRuntimeMode))
   useGamepadController(send)
 
   return (
     <HashRouter>
       <div className="mc-app-shell">
         <Topbar />
+        <DemoBanner />
         <ParameterProgressBar />
         <div className="mc-app-shell__body">
           <Sidebar />

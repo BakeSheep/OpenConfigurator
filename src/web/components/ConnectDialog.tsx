@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
 import { getRestControlHeaders } from '../hooks/useWebSocket'
+import { appRuntimeMode } from '../runtime'
 import {
   loadConnectionPresets,
   samePresetDevice,
@@ -42,16 +43,19 @@ export default function ConnectDialog() {
   const [selectedBtPort, setSelectedBtPort] = useState('')
   const [serialSupported, setSerialSupported] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Static demo preview: the dialog never renders and never touches /api or
+  // navigator.serial - there is no backend and no real device to connect.
+  const isDemo = appRuntimeMode === 'demo'
 
   // Auto-scan serial ports every time the dialog opens (the available port
   // set may change between opens, e.g. user plugged in a new device).
   useEffect(() => {
-    if (connectDialogOpen) {
+    if (connectDialogOpen && !isDemo) {
       scanPorts()
     }
     // scanPorts is stable enough for this purpose (only uses setState fns).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectDialogOpen])
+  }, [connectDialogOpen, isDemo])
 
   // Check Web Serial support
   useEffect(() => {
@@ -251,7 +255,7 @@ export default function ConnectDialog() {
     setConnectDialogOpen(false)
   }
 
-  if (!connectDialogOpen) return null
+  if (!connectDialogOpen || isDemo) return null
 
   return (
     <div

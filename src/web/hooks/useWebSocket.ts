@@ -573,16 +573,23 @@ export function sendClientMessage(msg: ClientMessage): boolean {
   return sendToServer(msg)
 }
 
+// Stable stub for disabled (demo) mode: always reports failure, and stays
+// referentially identical so consumers can keep it in dependency arrays.
+const sendDisabled = (_msg: ClientMessage): boolean => false
+
 export function getRestControlHeaders(): Record<string, string> {
   return restControlToken
     ? { 'X-SkyLab-Control-Token': restControlToken }
     : {}
 }
 
-export function useWebSocket() {
+export function useWebSocket(enabled = true) {
   const mountedRef = useRef(false)
 
   useEffect(() => {
+    // Demo/static builds never open a socket: without one, sendClientMessage
+    // always returns false, so no write can ever be faked as delivered.
+    if (!enabled) return
     if (mountedRef.current) return
     mountedRef.current = true
     refCount++
@@ -601,7 +608,7 @@ export function useWebSocket() {
         wsInstance = null
       }
     }
-  }, [])
+  }, [enabled])
 
-  return { send: sendClientMessage }
+  return { send: enabled ? sendClientMessage : sendDisabled }
 }

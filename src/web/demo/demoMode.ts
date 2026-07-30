@@ -1,8 +1,10 @@
 // Demo mode: feeds every zustand store with realistic synthetic telemetry so
-// the UI can be showcased (README screenshots, design review) without a flight
-// controller. Activated only in dev builds via the `?demo=1` query parameter
-// (see main.tsx) - it never ships active in production, because it fakes
-// `vehicleReady` and would otherwise defeat the safety interlocks.
+// the UI can be showcased without a flight controller. Active in two places:
+// the dev-only `?demo=1` query parameter, and the dedicated static demo build
+// (`VITE_APP_MODE=demo`, GitHub Pages). Demo builds never open a WebSocket or
+// call REST (see runtime.ts / useWebSocket), so the faked `vehicleReady` can
+// never coexist with a real flight controller link, and no device write can
+// ever be reported as successful.
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -292,10 +294,11 @@ function pushSlowTelemetry() {
   const conn = useConnectionStore.getState()
   const time = tick * 0.1
 
-  // Keep the UI convinced the transport + vehicle are live.
+  // Keep the UI convinced the transport + vehicle are live. The port/type are
+  // deliberately synthetic markers, not a plausible real device.
   conn.setConnectionSnapshot({
     status: 'connected', transportOpen: true, vehicleReady: true, rawSessionActive: false,
-    port: 'COM7', type: 'serial', baudRate: 57600,
+    port: 'DEMO', type: 'synthetic', baudRate: 57600,
   })
   conn.setLinkStats({
     rxBps: Math.round(11840 + 900 * Math.sin(time * 0.5)),
@@ -408,7 +411,7 @@ let started = false
 export function startDemoMode() {
   if (started) return
   started = true
-  console.log('[Demo] Synthetic telemetry enabled (?demo=1) - no flight controller is connected')
+  console.log('[Demo] Synthetic telemetry enabled - no flight controller is connected')
   seedParams()
   seedStatics()
   seedEscConfigurator()

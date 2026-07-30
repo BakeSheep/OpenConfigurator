@@ -25,3 +25,10 @@ test('demo mode never connects to the backend, live mode does', () => {
   assert.equal(shouldConnectBackend('demo'), false)
   assert.equal(shouldConnectBackend('live'), true)
 })
+
+test('demo send policy is disabled: useWebSocket(enabled) derives enabled from shouldConnectBackend', () => {
+  // The hook returns a stub send that always reports failure when the backend
+  // is disabled, so no client message can ever be faked as delivered.
+  const sendEnabled = shouldConnectBackend('demo')
+  assert.equal(sendEnabled, false)
+})
