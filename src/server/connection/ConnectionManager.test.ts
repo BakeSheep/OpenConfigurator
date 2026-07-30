@@ -483,3 +483,137 @@ test('teardown failures remain observable and prevent replacement from racing th
   assert.equal(second.connectCalls, 1)
   await manager.disconnect()
 })
+
+// ---------------------------------------------------------------------------
+// Raw ESC session lifecycle (ADR-003/005).
+// ---------------------------------------------------------------------------
+
+test('raw session suspends the heartbeat monitor and drops vehicleReady', async () => {
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({
+    serialFactory: () => link,
+    heartbeatCheckIntervalMs: 5,
+    serialSoftHeartbeatTimeoutMs: 10,
+    serialHardHeartbeatTimeoutMs: 20,
+    activityGraceMs: 5,
+  })
+  const timeouts: unknown[] = []
+  manager.on('heartbeatTimeout', (detail) => timeouts.push(detail))
+  manager.on('connectionError', () => undefined)
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+
+  const handle = manager.beginRawSession()
+  assert.equal(manager.rawSessionActive, true)
+  assert.equal(manager.vehicleReady, false, 'raw session must drop vehicleReady')
+
+  // Well past the hard deadline: with the monitor suspended the link survives.
+  await delay(60)
+  assert.equal(timeouts.length, 0, 'heartbeat monitor must be suspended in raw mode')
+  assert.equal(manager.status, 'connected')
+
+  handle.release()
+  await manager.disconnect()
+})
+
+test('raw session routes inbound bytes to the sink, not the data event', async () => {
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({ serialFactory: () => link })
+  const mavlinkData: Buffer[] = []
+  manager.on('data', (data: Buffer) => mavlinkData.push(data))
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+
+  // Before the raw session, bytes flow to MAVLink.
+  link.emit('data', Buffer.from([0x01]))
+  assert.equal(mavlinkData.length, 1)
+
+  const handle = manager.beginRawSession()
+  const rawData: Buffer[] = []
+  handle.onData((data) => rawData.push(data))
+
+  link.emit('data', Buffer.from([0x2f, 0x30]))
+  assert.equal(rawData.length, 1, 'raw bytes go to the sink')
+  assert.deepEqual([...rawData[0]], [0x2f, 0x30])
+  assert.equal(mavlinkData.length, 1, 'raw bytes must not reach the MAVLink data event')
+
+  // Outbound writes use high priority.
+  assert.equal(handle.write(Buffer.from([0xaa])), true)
+  assert.equal(link.writePriorities[link.writePriorities.length - 1], 'high')
+
+  // After release bytes flow to MAVLink again.
+  handle.release()
+  link.emit('data', Buffer.from([0x02]))
+  assert.equal(mavlinkData.length, 2)
+
+  await manager.disconnect()
+})
+
+test('link teardown invalidates the raw handle and fires onAborted', async () => {
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({ serialFactory: () => link })
+  manager.on('connectionError', () => undefined)
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  const handle = manager.beginRawSession()
+  const aborts: string[] = []
+  handle.onAborted((reason) => aborts.push(reason))
+
+  // Simulate a spontaneous serial disconnect.
+  link.emit('disconnected')
+  await delay(0)
+
+  assert.equal(aborts.length, 1, 'onAborted must fire exactly once on teardown')
+  assert.equal(manager.rawSessionActive, false)
+  // A dead handle rejects further writes.
+  assert.equal(handle.write(Buffer.from([0xaa])), false)
+
+  await manager.disconnect()
+})
+
+test('raw session release is idempotent and restarts the monitor without vehicleReady', async () => {
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({
+    serialFactory: () => link,
+    heartbeatCheckIntervalMs: 5,
+    serialSoftHeartbeatTimeoutMs: 10,
+    serialHardHeartbeatTimeoutMs: 20,
+    activityGraceMs: 5,
+  })
+  manager.on('connectionError', () => undefined)
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  const handle = manager.beginRawSession()
+
+  handle.release()
+  assert.equal(manager.rawSessionActive, false)
+  assert.equal(manager.vehicleReady, false, 'release keeps vehicleReady false until a real heartbeat')
+
+  // Second release is a no-op.
+  handle.release()
+  assert.equal(manager.rawSessionActive, false)
+
+  // The restored monitor accepts a fresh heartbeat and raises readiness.
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+
+  await manager.disconnect()
+})
+
+test('beginRawSession rejects bluetooth links', async () => {
+  const bt = new FakeBluetoothLink()
+  const manager = new ConnectionManager({
+    bluetoothFactory: () => bt as unknown as never,
+  })
+  await manager.connect({ type: 'bluetooth', port: 'COM_BT', baudRate: 57600 })
+  manager.notifyAutopilotHeartbeat()
+  assert.throws(() => manager.beginRawSession(), /仅支持串口/)
+  await manager.disconnect()
+})
+
+

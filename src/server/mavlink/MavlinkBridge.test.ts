@@ -1628,3 +1628,69 @@ bridge.destroy()
 }
 
 console.log('MAVLink codec, transaction, target and telemetry checks passed')
+
+// ---------------------------------------------------------------------------
+// ESC session protocol pause/resume (ADR-003/005).
+// ---------------------------------------------------------------------------
+{
+  const pauseConnection = new FakeConnection()
+  const pauseBridge = new MavlinkBridge(pauseConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    paramSetTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+
+  // Serialized heartbeat frames from sysid 42 (ArduPilot) exercise the real
+  // data -> codec -> handleMessage path so we can observe intake attach/detach.
+  const hbProtocol = new MavLinkProtocolV2(42, 1)
+  const hbFrame = (seq: number) => hbProtocol.serialize(makeHeartbeat(3), seq)
+
+  // Before pause, bytes on the data event discover the target.
+  pauseConnection.emit('data', hbFrame(0))
+  assert.ok((pauseBridge as unknown as PrivateBridge).discoveredTargets.size >= 1,
+    'target discovered before pause')
+
+  // Pause detaches the intake and stops the GCS heartbeat (ADR-003/005).
+  pauseBridge.pauseProtocol('esc_session')
+  assert.equal(pauseBridge.isProtocolPaused, true)
+  ;(pauseBridge as unknown as PrivateBridge).discoveredTargets.clear()
+  pauseConnection.emit('data', hbFrame(1))
+  assert.equal((pauseBridge as unknown as PrivateBridge).discoveredTargets.size, 0,
+    'paused bridge must not parse raw bytes')
+
+  // While paused, GCS heartbeats stop: no outbound frames are produced.
+  const framesAfterPause = pauseConnection.frames.length
+  pauseConnection.emit('data', Buffer.from([0x2f, 0x30, 0x00]))
+  assert.equal(pauseConnection.frames.length, framesAfterPause,
+    'paused bridge must not respond to raw bytes')
+
+  // A status change to connected must NOT re-arm MAVLink while paused (ADR-005).
+  pauseConnection.emit('statusChange', 'connected')
+  assert.equal(pauseConnection.frames.length, framesAfterPause,
+    'paused bridge must not restart the heartbeat on statusChange')
+
+  // Resume re-attaches intake and restarts the heartbeat, without faking readiness.
+  pauseBridge.resumeProtocol()
+  assert.equal(pauseBridge.isProtocolPaused, false)
+  const framesAfterResume = pauseConnection.frames.length
+  ;(pauseBridge as unknown as { sendHeartbeat: () => void }).sendHeartbeat()
+  assert.ok(pauseConnection.frames.length > framesAfterResume, 'resume restores GCS heartbeat')
+
+  // After resume the codec parses again: a valid heartbeat re-discovers targets.
+  ;(pauseBridge as unknown as PrivateBridge).discoveredTargets.clear()
+  pauseConnection.emit('data', hbFrame(2))
+  assert.ok((pauseBridge as unknown as PrivateBridge).discoveredTargets.size >= 1,
+    'resumed bridge processes MAVLink messages again')
+
+  // Idempotency.
+  pauseBridge.resumeProtocol()
+  assert.equal(pauseBridge.isProtocolPaused, false)
+  pauseBridge.pauseProtocol('esc_session')
+  pauseBridge.pauseProtocol('esc_session')
+  assert.equal(pauseBridge.isProtocolPaused, true)
+  pauseBridge.resumeProtocol()
+
+  pauseBridge.destroy()
+  console.log('MAVLink ESC pause/resume checks passed')
+}

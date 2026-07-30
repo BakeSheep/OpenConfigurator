@@ -223,6 +223,10 @@ export class MavlinkBridge extends EventEmitter {
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
+  // True while an ESC session has borrowed the link (ADR-003/005). The GCS
+  // heartbeat and data intake are detached so MAVLink frames cannot pollute
+  // the raw ESC byte stream.
+  private protocolPaused = false
 
   private onData = (data: Buffer) => {
     this.codec.write(data)
@@ -239,6 +243,12 @@ export class MavlinkBridge extends EventEmitter {
   private onStatusChange = (status: string) => {
     this.cancelProtocolOperations(false, 'connection_changed')
     if (status === 'connected') {
+      // A raw ESC session keeps the link 'connected' while borrowing it; do
+      // not re-arm MAVLink underneath the ESC protocol.
+      if (this.protocolPaused) {
+        this.resetTargetState(true)
+        return
+      }
       // Transport-open is enough to parse bytes and send the GCS heartbeat.
       // Vehicle-ready is established only by a validated selected heartbeat.
       this.codec.reset()
@@ -249,6 +259,51 @@ export class MavlinkBridge extends EventEmitter {
       this.resetTargetState(true)
       this.stopHeartbeat()
       this.stopLinkStats()
+    }
+  }
+
+  /** Last known armed flag of the selected autopilot; null until known. */
+  get armedState(): boolean | null {
+    return this.lastArmedState
+  }
+
+  /** True while an ESC session has paused the MAVLink protocol. */
+  get isProtocolPaused(): boolean {
+    return this.protocolPaused
+  }
+
+  /**
+   * Suspend MAVLink protocol handling so an ESC session can borrow the link
+   * (ADR-003). Cancels in-flight protocol operations, stops the GCS heartbeat
+   * and link-stats timers, and detaches the byte intake so nothing writes to
+   * or parses the raw ESC stream. Idempotent.
+   */
+  pauseProtocol(reason: string): void {
+    if (this.protocolPaused) return
+    this.protocolPaused = true
+    this.cancelProtocolOperations(false, reason)
+    this.stopHeartbeat()
+    this.stopLinkStats()
+    this.connManager.off('data', this.onData)
+    this.resetTargetState(true)
+  }
+
+  /**
+   * Resume MAVLink after an ESC session ends. Rebuilds the codec session and
+   * re-attaches the byte intake, but deliberately does NOT fabricate a
+   * connected/status event or raise vehicleReady: the existing false→true
+   * readiness edge from the next validated autopilot heartbeat is what makes
+   * the frontend re-download parameters (ADR-005). Idempotent.
+   */
+  resumeProtocol(): void {
+    if (!this.protocolPaused) return
+    this.protocolPaused = false
+    this.codec.reset()
+    this.resetTargetState(true)
+    this.connManager.on('data', this.onData)
+    if (this.connManager.status === 'connected') {
+      this.startHeartbeat()
+      this.startLinkStats()
     }
   }
 

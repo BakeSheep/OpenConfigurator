@@ -37,6 +37,27 @@ interface ManagedLink extends EventEmitter {
   write(data: Buffer, priority?: SerialWritePriority): boolean | void
 }
 
+/**
+ * Exclusive raw byte channel over the live serial link (ADR-002/003). While
+ * held, the MAVLink heartbeat monitor is suspended and inbound bytes are
+ * routed to this handle instead of the 'data' event. Used by the ArduPilot
+ * ESC passthrough transport.
+ */
+export interface RawSessionHandle {
+  write(data: Buffer): boolean
+  onData(listener: (data: Buffer) => void): () => void
+  onAborted(listener: (reason: string) => void): () => void
+  release(): void
+}
+
+interface RawSessionState {
+  generation: number
+  active: boolean
+  dataListeners: Set<(data: Buffer) => void>
+  abortedListeners: Set<(reason: string) => void>
+  handle: RawSessionHandle
+}
+
 interface ManagedSerialLink extends ManagedLink {
   connect(path: string, baudRate: number, timeoutMs?: number): Promise<void>
 }
@@ -116,6 +137,7 @@ export class ConnectionManager extends EventEmitter {
   private _bytesSent = 0
   private _reconnect: ReconnectProgress | null = null
   private _reconnectTerminalReason: ReconnectTerminalReason | null = null
+  private rawSession: RawSessionState | null = null
 
   private readonly serialFactory: () => ManagedSerialLink
   private readonly bluetoothFactory: (config: ConnectionConfig) => ManagedBluetoothLink
@@ -334,6 +356,100 @@ export class ConnectionManager extends EventEmitter {
     return this.link.write(data, priority) !== false
   }
 
+  /** True while an exclusive raw ESC session holds the serial link. */
+  get rawSessionActive(): boolean {
+    return this.rawSession?.active ?? false
+  }
+
+  /**
+   * Take exclusive control of the live serial link for a raw ESC session
+   * (ADR-003 ArduPilot passthrough). Suspends the heartbeat monitor, drops
+   * vehicleReady to false and routes inbound bytes to the returned handle.
+   * Only a connected serial link qualifies; Bluetooth is rejected because its
+   * reconnect/latency semantics are unsafe for half-duplex flashing.
+   */
+  beginRawSession(): RawSessionHandle {
+    if (this.rawSession) {
+      throw new Error('已存在一个原始会话')
+    }
+    if (!this.link || !this._transportOpen || this._status !== 'connected') {
+      throw new Error('原始会话需要处于已连接状态的链路')
+    }
+    if (this.linkKind !== 'serial') {
+      throw new Error('原始会话仅支持串口链路')
+    }
+
+    const generation = this.connectionGeneration
+    const state: RawSessionState = {
+      generation,
+      active: true,
+      dataListeners: new Set(),
+      abortedListeners: new Set(),
+      handle: undefined as unknown as RawSessionHandle,
+    }
+    const handle: RawSessionHandle = {
+      write: (data: Buffer): boolean => {
+        if (!state.active || this.rawSession !== state) return false
+        if (!this.link || this._status !== 'connected') return false
+        return this.link.write(data, 'high') !== false
+      },
+      onData: (listener: (data: Buffer) => void): (() => void) => {
+        state.dataListeners.add(listener)
+        return () => state.dataListeners.delete(listener)
+      },
+      onAborted: (listener: (reason: string) => void): (() => void) => {
+        state.abortedListeners.add(listener)
+        return () => state.abortedListeners.delete(listener)
+      },
+      release: (): void => {
+        if (this.rawSession !== state || !state.active) return
+        state.active = false
+        this.rawSession = null
+        // Restore the MAVLink heartbeat monitor but keep vehicleReady false:
+        // only a freshly validated autopilot heartbeat may raise it (ADR-005).
+        if (this.link && this._transportOpen && this._status === 'connected') {
+          this.startHeartbeatMonitor(false)
+        }
+      },
+    }
+    state.handle = handle
+    this.rawSession = state
+    this.stopHeartbeatMonitor()
+    this.setVehicleReady(false)
+    return handle
+  }
+
+  private deliverRawData(data: Buffer): void {
+    const state = this.rawSession
+    if (!state) return
+    for (const listener of [...state.dataListeners]) {
+      try {
+        listener(data)
+      } catch (error) {
+        console.error('[Connection] raw session data listener threw:', error)
+      }
+    }
+  }
+
+  /**
+   * Invalidate a raw session when the underlying link goes away. Fires
+   * onAborted so the ESC transport can finalize; teardown owns the monitor,
+   * so unlike release() this does not restart the heartbeat monitor.
+   */
+  private abortRawSession(reason: string): void {
+    const state = this.rawSession
+    if (!state || !state.active) return
+    state.active = false
+    this.rawSession = null
+    for (const listener of [...state.abortedListeners]) {
+      try {
+        listener(reason)
+      } catch (error) {
+        console.error('[Connection] raw session aborted listener threw:', error)
+      }
+    }
+  }
+
   /**
    * Called only for a validated HEARTBEAT from the selected autopilot.
    * Transport readiness remains separate so Bridge can parse before this point.
@@ -386,6 +502,11 @@ export class ConnectionManager extends EventEmitter {
           if (this._status === 'connecting' || this._status === 'reconnecting') {
             this.bufferPreTransportData(data)
           }
+          return
+        }
+        // In a raw ESC session, bytes belong to the ESC protocol, not MAVLink.
+        if (this.rawSession?.active && this.rawSession.generation === generation) {
+          this.deliverRawData(data)
           return
         }
         this.emit('data', data)
@@ -604,6 +725,7 @@ export class ConnectionManager extends EventEmitter {
   private async cleanupActiveLink(link: ManagedLink, generation: number): Promise<void> {
     if (!this.isActive(link, generation)) return
     this.cleanupGeneration = generation
+    this.abortRawSession('link_lost')
     this.stopHeartbeatMonitor()
     this.clearPreTransportData()
     this.setVehicleReady(false)
@@ -719,6 +841,7 @@ export class ConnectionManager extends EventEmitter {
   }
 
   private prepareForTeardown(status: ConnectionStatus): void {
+    this.abortRawSession('link_lost')
     this.stopHeartbeatMonitor()
     this.clearPreTransportData()
     this.setVehicleReady(false)
