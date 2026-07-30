@@ -30,7 +30,7 @@
 
 | Item | Value/Range | Source | License | Used as | Verified by |
 |---|---|---|---|---|---|
-| MSP v1 帧格式 | `$M<`/`$M>` + size + cmd + XOR checksum | Public protocol docs (MultiWii/Betaflight wiki) | Protocol fact | Independent implementation | Golden vector |
+| MSP v1 帧格式 | `$M<`/`$M>` + size + cmd + XOR checksum | Public protocol docs (MultiWii/Betaflight wiki) | Protocol fact | Independent implementation | Golden vector (`msp.test.ts`) |
 | MSP_API_VERSION | cmd 1 | Betaflight MSP docs | Protocol fact | Command id only | Pending |
 | MSP_FC_VARIANT | cmd 2 | Betaflight MSP docs | Protocol fact | Command id only | Pending |
 | MSP_BATTERY_STATE | cmd 130 | Betaflight MSP docs | Protocol fact | Command id only | Pending |
@@ -41,7 +41,7 @@
 
 | Item | Value/Range | Source | License | Used as | Verified by |
 |---|---|---|---|---|---|
-| 帧格式 | `0x2F` + cmd + addr(2) + param_len + params + CRC16-XMODEM | BLHeliSuite 4-way interface 公开文档 / ArduPilot AP_BLHeli 文档 | Protocol fact | Independent implementation | Golden vector |
+| 帧格式 | `0x2F` + cmd + addr(2) + param_len + params + CRC16-XMODEM | BLHeliSuite 4-way interface 公开文档 / ArduPilot AP_BLHeli 文档 | Protocol fact | Independent implementation | Golden vector (`fourWay.test.ts`)；param_len 0 表示 256 |
 | cmd_InterfaceTestAlive | 0x30 | 4-way interface spec | Protocol fact | Command id only | Pending |
 | cmd_ProtocolGetVersion | 0x31 | 4-way interface spec | Protocol fact | Command id only | Pending |
 | cmd_InterfaceExit | 0x34 | 4-way interface spec | Protocol fact | Command id only | Pending |
@@ -51,7 +51,8 @@
 | cmd_DevicePageErase | 0x39 | 4-way interface spec | Protocol fact | Command id only | Pending |
 | cmd_DeviceRead | 0x3A | 4-way interface spec | Protocol fact | Command id only | Pending |
 | cmd_DeviceWrite | 0x3B | 4-way interface spec | Protocol fact | Command id only | Pending |
-| ACK codes | OK=0x00, UNKNOWN_ERROR=0x01, INVALID_CMD=0x02, INVALID_CRC=0x03, VERIFY_ERROR=0x04, INVALID_CHANNEL=0x08 | 4-way interface spec | Protocol fact | Error mapping | Pending |
+| ACK codes | OK=0x00, UNKNOWN_ERROR=0x01, INVALID_CMD=0x02, INVALID_CRC=0x03, VERIFY_ERROR=0x04, INVALID_CHANNEL=0x08 | 4-way interface spec | Protocol fact | Error mapping | Golden vector (`fourWay.test.ts`) |
+| DeviceInitFlash 响应字段 | signature=params[0..1]，interfaceMode=params[3]（ARMBLB=4, SiLBLB=1） | 4-way interface spec + 行为参考 | Protocol fact | 固件家族分类（仅显示，不启用写入） | Pending（偏移待真机校验，未识别一律只读） |
 
 ### ArduPilot passthrough
 
