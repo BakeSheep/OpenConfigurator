@@ -45,6 +45,29 @@ npm start
 
 REST 使用 `Authorization: Bearer <token>`；WebSocket 使用 `/ws?token=<token>`。应用 token 不能替代网络隔离或主机加固。
 
+## GitHub Pages 在线演示
+
+`https://bakesheep.github.io/OpenConfigurator/` 是一个纯静态、只读的前端预览：没有 Node.js 后端，所有数据均为合成数据，不创建 WebSocket、不调用 REST，也不能连接真实设备或执行写操作。
+
+部署由 `.github/workflows/pages.yml` 完成：每次 push 到 `main`（或手动 `workflow_dispatch`）时构建并发布 `dist/`。Pages 专用构建通过两个环境变量与本地生产构建隔离：
+
+| 变量 | Pages 取值 | 说明 |
+|---|---|---|
+| `VITE_APP_MODE` | `demo` | 构建时固化只读演示模式；生产构建不设置此变量，`?demo=1` 仅在 dev 构建生效 |
+| `VITE_BASE_PATH` | `/OpenConfigurator/` | Vite base；本地 `npm run build` 不设置时仍为 `/` |
+
+本地验证 Pages 构建（PowerShell）：
+
+```powershell
+$env:VITE_APP_MODE='demo'
+$env:VITE_BASE_PATH='/OpenConfigurator/'
+npm run build:pages
+Remove-Item Env:VITE_APP_MODE
+Remove-Item Env:VITE_BASE_PATH
+```
+
+一次性仓库设置：仓库管理员需在 GitHub **Settings → Pages → Build and deployment** 中将 Source 选为 **GitHub Actions**，否则 workflow 无法发布。
+
 ## MAVLink signing
 
 配置 signing 后出站强制使用 MAVLink 2。`MAVLINK_SIGNING_REQUIRE=true` 会拒绝未签名帧，错误 key 会造成“串口已打开但飞控未就绪”。部署前分别验证 v1-only、v2 未签名、v2 签名以及 require-signed 的合法/非法输入。不要提交或记录 signing key。

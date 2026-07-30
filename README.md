@@ -9,12 +9,16 @@
 </p>
 
 <p align="center">
+  <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线预览</b></a> ·
   <a href="README.en.md">English</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
   <a href="docs/DEPLOYMENT.md">部署</a> ·
   <a href="CONTRIBUTING.md">参与贡献</a> ·
   <a href="SECURITY.md">安全策略</a>
 </p>
+
+> [!TIP]
+> [在线预览](https://bakesheep.github.io/OpenConfigurator/) 是纯静态的只读演示：所有数据均为合成数据，没有后端服务，不能连接真实设备，也不会执行任何写操作。
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="飞行总览工作区（演示数据）" width="860" />
@@ -116,7 +120,7 @@ npm run build
 npm start
 ```
 
-打开 <http://localhost:3000>。只查看界面时可运行 `npm run dev:web`，然后访问 <http://localhost:5173/?demo=1>。
+打开 <http://localhost:3000>。只查看界面时可运行 `npm run dev:web`，然后访问 <http://localhost:5173/?demo=1>（与在线预览相同的合成数据演示）。
 
 | 命令 | 用途 |
 |---|---|
