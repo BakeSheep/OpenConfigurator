@@ -145,9 +145,9 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       {!canWrite && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>连接飞控并取得控制权后可同步或修改参数。</span></div>}
       {writeError && <div className="mc-capability-note" data-state="error"><Icon name="warning" size={15} /><span>{writeError}</span></div>}
 
-      <div className="relative mb-4">
-        <Icon name="search" size={17} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-disabled)' }} />
-        <input className="mc-input pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名…" />
+      <div className="mc-param-search">
+        <Icon name="search" size={17} aria-hidden="true" />
+        <input className="mc-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名…" />
       </div>
 
       {loading && (

@@ -28,6 +28,7 @@ import type {
   PortInfo,
   ServerMessage,
 } from '../shared/types'
+import type { VehicleIdentity } from '../shared/vehicleProfiles'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
 import { EscService } from './esc/EscService'
@@ -84,6 +85,7 @@ export interface ConnectionManagerBoundary extends EventEmitter {
   } | null
   readonly transportOpen?: boolean
   readonly vehicleReady?: boolean
+  readonly rawSessionActive?: boolean
   readonly lastError?: ConnectionErrorDetail | null
   scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }>
   connect(config: ConnectionConfig): Promise<void>
@@ -96,6 +98,8 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   readonly currentParamRunId?: number
   /** Cached one-shot autopilot_version message for late-joining WS clients. */
   getAutopilotVersionMessage?(): ServerMessage | null
+  readonly vehicleIdentity?: VehicleIdentity | null
+  getParameterValue?(id: string): number | null
   getFtpDownload?(downloadId: string): {
     filePath: string
     fileName: string
@@ -206,6 +210,7 @@ function isRetryableConnectionError(detail: ConnectionErrorDetail): boolean {
 
 function isMutatingMessage(message: BoundaryClientMessage): boolean {
   return message.type === 'command'
+    || message.type === 'reboot_vehicle'
     || message.type === 'set_flight_mode'
     || message.type === 'start_calibration'
     || message.type === 'param_set'
@@ -379,8 +384,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         status,
         transportOpen,
         vehicleReady,
+        rawSessionActive: manager.rawSessionActive === true,
         ...(manager.config?.port ? { port: manager.config.port } : {}),
         ...(manager.config?.type ? { type: manager.config.type } : {}),
+        ...(manager.config?.baudRate ? { baudRate: manager.config.baudRate } : {}),
         ...(status === 'reconnecting' && manager.reconnect
           ? { reconnect: manager.reconnect }
           : {}),
@@ -432,6 +439,15 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     const serialized = serializeMessage(data)
     if (serialized === null) return
     for (const client of wss.clients) safeSendSerialized(client, serialized)
+  }
+
+  function sendToClientId(clientId: string, data: WireMessage): void {
+    for (const [client, context] of clientContexts) {
+      if (context.id === clientId) {
+        safeSend(client, data)
+        return
+      }
+    }
   }
 
   function sendClientError(
@@ -756,6 +772,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   }
 
   const onStatusChange = (status: ConnectionStatus): void => {
+    escService.handleMavlinkStatus(status)
     if (status === 'connecting' || status === 'connected') {
       lastConnectionError = null
     }
@@ -792,6 +809,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     connManager: connManager as ConnectionManager,
     bridge: mavlinkBridge as unknown as MavlinkBridge,
     emit: (message) => broadcast(message),
+    emitToClient: (clientId, message) => sendToClientId(clientId, message),
+    getVehicleFamily: () => mavlinkBridge.vehicleIdentity?.family ?? 'unknown',
+    getParameterValue: (id) => mavlinkBridge.getParameterValue?.(id) ?? null,
     pinController: pinControllerToEscSession,
     releaseController: releaseEscSessionController,
     isLinkBusy: () => (parameterSync ? 'parameter_sync' : null),
@@ -803,6 +823,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   connManager.on('connectionError', onConnectionError)
   connManager.on('transportChange', onConnectionStateDetail)
   connManager.on('vehicleReadyChange', onConnectionStateDetail)
+  connManager.on('rawSessionChange', onConnectionStateDetail)
   connManager.on('errorDetailChange', onErrorDetailChange)
 
   app.use((request, response, next) => {
@@ -1136,7 +1157,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
-    // A non-direct ESC session owns the MAVLink link; refuse mutations that
+    // Any ESC session isolates flight-control mutations; refuse operations that
     // would collide with it (motor test, param writes, FTP, etc.).
     if (escService.blocksMavlinkMutations() && isMutatingMessage(message)) {
       sendClientError(ws, 'esc_session_active', 'ESC 直通会话进行中，暂不能执行该操作', requestId, true)
@@ -1242,10 +1263,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     })
     safeSend(ws, connectionMessage())
     safeSend(ws, controllerMessage('snapshot'))
-    // autopilot_version is only broadcast once (at FC handshake); replay the
-    // cached snapshot so a page refresh / late WS join still shows firmware info.
+    // Replay one-shot state for late-joining or reconnected clients.
     const versionSnapshot = mavlinkBridge.getAutopilotVersionMessage?.() ?? null
     if (versionSnapshot) safeSend(ws, versionSnapshot)
+    safeSend(ws, { type: 'esc_session', data: escService.snapshot() })
     if (parameterSync) {
       safeSend(ws, {
         type: 'param_sync',
@@ -1398,6 +1419,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       connManager.off('connectionError', onConnectionError)
       connManager.off('transportChange', onConnectionStateDetail)
       connManager.off('vehicleReadyChange', onConnectionStateDetail)
+      connManager.off('rawSessionChange', onConnectionStateDetail)
       connManager.off('errorDetailChange', onErrorDetailChange)
       for (const cleanup of shutdownCleanups) {
         try {

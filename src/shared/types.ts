@@ -323,8 +323,11 @@ export type ServerMessage =
         status?: ConnectionStatus
         transportOpen?: boolean
         vehicleReady?: boolean
+        /** True while the serial link is exclusively borrowed by an ESC raw session. */
+        rawSessionActive?: boolean
         port?: string
         type?: string
+        baudRate?: number
         error?: {
           phase: 'connect' | 'runtime' | 'disconnect' | 'heartbeat' | 'reconnect'
           message: string
@@ -500,6 +503,7 @@ export type ServerMessage =
     }
   // -- ESC configuration (see src/shared/esc) --------------------------------
   | { type: 'esc_session'; data: EscSessionSnapshot }
+  | { type: 'esc_session_started'; data: { sessionId: string; recoveryToken: string } }
   | { type: 'esc_devices'; data: { sessionId: string; escs: EscDeviceInfo[] } }
   | { type: 'esc_settings'; data: EscSettingsSnapshot }
   | { type: 'esc_job_progress'; data: EscJobProgressSnapshot }
@@ -518,6 +522,7 @@ export type ClientMessage =
     }
   | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
   | { type: 'param_request_list'; requestId?: string }
+  | { type: 'reboot_vehicle'; requestId: string; safetyConfirmation: 'reboot_flight_controller' }
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {
       // Semantic mode change: the browser sends only the profile mode id and
@@ -569,67 +574,6 @@ export type ClientMessage =
       requestId?: string
       safetyConfirmation: 'erase_all_logs'
     }
-  // -- ESC configuration (see src/shared/esc) --------------------------------
-  | { type: 'esc_session'; data: EscSessionSnapshot }
-  | { type: 'esc_devices'; data: { sessionId: string; escs: EscDeviceInfo[] } }
-  | { type: 'esc_settings'; data: EscSettingsSnapshot }
-  | { type: 'esc_job_progress'; data: EscJobProgressSnapshot }
-  | { type: 'esc_job_done'; data: EscJobResult }
-  | { type: 'esc_op_error'; data: EscOperationError & { requestId?: string } }
-  | { type: 'esc_log'; data: { sessionId: string; entries: EscLogEntry[] } }
-
-// WebSocket message types (client -> server)
-export type ClientMessage =
-  | {
-      type: 'command'
-      requestId?: string
-      cmd: string
-      params: number[]
-      safetyConfirmation?: 'arm' | 'disarm' | 'takeoff'
-    }
-  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
-  | { type: 'param_request_list'; requestId?: string }
-  | { type: 'manual_control'; requestId?: string; data: ManualControlData }
-  | {
-      // Semantic mode change: the browser sends only the profile mode id and
-      // the server encodes stack-specific MAV_CMD_DO_SET_MODE parameters.
-      type: 'set_flight_mode'
-      requestId?: string
-      data: { modeId: number }
-    }
-  | {
-      // Semantic calibration: the browser names the kind and the server maps
-      // it to stack-specific MAV_CMD_PREFLIGHT_CALIBRATION parameters after
-      // capability + armed checks.
-      type: 'start_calibration'
-      requestId: string
-      data: { kind: 'accel' | 'gyro' | 'mag' | 'baro' }
-    }
-  | {
-      type: 'motor_test'
-      requestId?: string
-      data: {
-        instance: number
-        throttle: number
-        duration: number
-        propsRemoved?: boolean
-      }
-    }
-  | {
-      type: 'select_target'
-      requestId?: string
-      data: { systemId: number; componentId: number }
-    }
-  | { type: 'release_control'; requestId?: string }
-  | { type: 'fs_list'; requestId?: string; data: { path: string } }
-  | { type: 'fs_download'; requestId?: string; data: { path: string } }
-  | { type: 'fs_download_cancel'; requestId?: string }
-  | {
-      type: 'fs_delete'
-      requestId?: string
-      data: { entries: Array<{ path: string; kind: 'file' | 'dir' }> }
-      safetyConfirmation: 'delete_files'
-    }
   // -- ESC configuration -----------------------------------------------------
   | {
       type: 'esc_session_start'
@@ -637,7 +581,7 @@ export type ClientMessage =
       data:
         | { mode: 'ardupilot_passthrough' }
         | { mode: 'px4_serial_control'; channels: number[] }
-        | { mode: 'direct'; port: string; baudRate?: 19200 }
+        | { mode: 'direct' }
     }
   | { type: 'esc_session_reclaim'; requestId?: string; data: { sessionId: string; recoveryToken: string } }
   | { type: 'esc_session_exit'; requestId?: string; data: { sessionId: string } }
@@ -652,18 +596,6 @@ export type ClientMessage =
       requestId?: string
       data: { sessionId: string; targets: number[]; values: Record<string, number> }
     }
-  | {
-      type: 'esc_flash_start'
-      requestId?: string
-      data: { sessionId: string; targets: number[]; assetId: string; safetyConfirmation: 'flash_esc_props_removed' }
-    }
-  | { type: 'esc_flash_cancel'; requestId?: string; data: { sessionId: string; jobId: string } }
-  | {
-      type: 'esc_flash_decide'
-      requestId?: string
-      data: { sessionId: string; jobId: string; decision: 'retry_current' | 'skip_current' | 'exit' }
-    }
-  | { type: 'esc_melody_write'; requestId?: string; data: { sessionId: string; targets: number[]; rtttl: string } }
 
 export interface PortInfo {
   path: string

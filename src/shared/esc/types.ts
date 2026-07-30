@@ -19,8 +19,6 @@ export type EscFirmwareKind = 'am32' | 'blheli_s' | 'bluejay' | 'unknown'
 export interface EscTransportCapabilities {
   read: boolean
   write: boolean
-  flash: boolean
-  melody: boolean
 }
 
 /** Identity of a single detected ESC. */
@@ -59,7 +57,17 @@ export interface EscSessionSnapshot {
   capabilities: EscTransportCapabilities | null
 }
 
-export type EscSettingKind = 'bool' | 'enum' | 'number' | 'melody' | 'raw'
+export type EscSettingKind = 'bool' | 'enum' | 'number'
+
+export type EscSettingsGroup =
+  | 'essentials'
+  | 'motor'
+  | 'extended'
+  | 'limits'
+  | 'current'
+  | 'sine'
+  | 'brake'
+  | 'servo'
 
 /**
  * Declarative descriptor for one EEPROM-backed setting. The backend uses
@@ -70,19 +78,30 @@ export interface EscSettingsField {
   key: string
   label: string
   kind: EscSettingKind
+  group: EscSettingsGroup
   /** Byte offset inside the layout's EEPROM window. */
   offset: number
   /** Field width in bytes. */
   size: number
+  minLayoutRevision?: number
+  maxLayoutRevision?: number
   min?: number
   max?: number
   step?: number
   unit?: string
+  precision?: number
+  /** Display value = raw * scale + add. */
+  scale?: number
+  add?: number
+  /** Decoded sentinel shown as disabled instead of a numeric value. */
+  disabledValue?: number
   options?: Array<{ value: number; label: string }>
   /** common: usually equal across all ESCs; perEsc: naturally individual. */
   scope: 'common' | 'perEsc'
   /** Render/apply only when another field currently equals a value. */
   visibleIf?: { key: string; equals: number }
+  /** Keep visible but prevent editing when another field equals a value. */
+  disabledIf?: { key: string; equals: number }
   description?: string
 }
 
@@ -102,20 +121,7 @@ export interface EscSettingsSnapshot {
   rawBase64: string
 }
 
-export type EscJobKind = 'scan' | 'settings_read' | 'settings_write' | 'flash' | 'melody_write'
-
-/** Flash job phases (ADR-006). Cancel only applies at safe boundaries. */
-export type EscFlashPhase =
-  | 'preflight'
-  | 'backup'
-  | 'erase_page'
-  | 'write_page'
-  | 'verify_page'
-  | 'verify_image'
-  | 'reset'
-  | 'paused'
-  | 'done'
-  | 'failed'
+export type EscJobKind = 'scan' | 'settings_read' | 'settings_write'
 
 /**
  * Absolute progress snapshot broadcast as `esc_job_progress` (max 4Hz).
@@ -127,7 +133,7 @@ export interface EscJobProgressSnapshot {
   kind: EscJobKind
   /** ESC currently being worked on, null for whole-session jobs. */
   escIndex: number | null
-  /** EscFlashPhase for flash jobs; job-kind specific strings otherwise. */
+  /** Job-specific phase such as read, write, verify or done. */
   phase: string
   bytesDone: number
   bytesTotal: number

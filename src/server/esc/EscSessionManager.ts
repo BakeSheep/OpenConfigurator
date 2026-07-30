@@ -20,6 +20,12 @@ export interface EscSessionManagerOptions {
   pinController?: (ownerClientId: string, sessionId: string) => void
   /** Release the pinned controller lease when the session ends. */
   releaseController?: (sessionId: string) => void
+  /** Best-effort protocol-level exit before the physical transport is closed. */
+  beforeTransportClose?: (
+    transport: EscByteTransport,
+    reason: string,
+    signal: AbortSignal,
+  ) => Promise<void>
   /** Idle watchdog: exit sessions receiving no commands. Suspended by jobs. */
   idleTimeoutMs?: number
   /** How long an orphaned session waits for the owner to reclaim it. */
@@ -115,13 +121,11 @@ export class EscSessionManager extends EventEmitter {
   }
 
   /**
-   * Capabilities exposed to clients. Hardware-validation gating
-   * (docs/ESC-COMPATIBILITY.md) is applied on top of the transport's own
-   * capabilities; until combinations are validated everything beyond read
-   * stays disabled here.
+   * Transport-level capabilities exposed to clients. Per-device signature
+   * and layout checks still gate every parameter write in EscService.
    */
   private effectiveCapabilities(base: EscTransportCapabilities): EscTransportCapabilities {
-    return { read: base.read, write: base.write, flash: base.flash, melody: base.melody }
+    return { read: base.read, write: base.write }
   }
 
   // -- Guards ---------------------------------------------------------------
@@ -137,7 +141,7 @@ export class EscSessionManager extends EventEmitter {
 
   /** True while a session exists: MAVLink mutations must be rejected. */
   blocksMavlinkMutations(): boolean {
-    return this.session !== null && this.session.target.mode !== 'direct'
+    return this.session !== null
   }
 
   /**
@@ -224,6 +228,7 @@ export class EscSessionManager extends EventEmitter {
     this.assertOwner(clientId, sessionId)
     const session = this.session
     if (!session) throw new EscError('session_not_found', '没有匹配的 ESC 会话')
+    if (session.activeJob) throw new EscError('busy', 'ESC 任务执行期间不能退出会话')
     await this.finalizeSession(session, 'owner_exit')
   }
 
@@ -342,8 +347,17 @@ export class EscSessionManager extends EventEmitter {
         session.orphanTimer = null
       }
       this.emitSnapshot()
-      session.abort.abort()
       session.offAborted()
+      try {
+        await this.options.beforeTransportClose?.(
+          session.transport,
+          reason,
+          session.abort.signal,
+        )
+      } catch (error) {
+        this.logger.warn('[ESC] protocol exit failed:', error)
+      }
+      session.abort.abort()
       try {
         await session.transport.close(reason)
       } catch (error) {
@@ -358,6 +372,12 @@ export class EscSessionManager extends EventEmitter {
       this.emitSnapshot(reason)
     })()
     return session.finalizePromise
+  }
+
+  /** End a MAVLink-backed session when its underlying vehicle link disappears. */
+  handleExternalLinkLost(): void {
+    const session = this.session
+    if (session) void this.finalizeSession(session, 'link_lost')
   }
 
   async destroy(): Promise<void> {

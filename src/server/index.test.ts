@@ -36,6 +36,7 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
   reconnect = null
   transportOpen = false
   vehicleReady = false
+  rawSessionActive = false
   lastError = null
   reconnectTerminalReason: {
     code: string
@@ -264,12 +265,29 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     }),
     (error) => error instanceof InputValidationError && error.code === 'restricted_command',
   )
-  for (const cmd of ['MAV_CMD_DO_SET_MODE', 'MAV_CMD_PREFLIGHT_CALIBRATION']) {
+  for (const cmd of ['MAV_CMD_DO_SET_MODE', 'MAV_CMD_PREFLIGHT_CALIBRATION', 'MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN']) {
     assert.throws(
       () => parseClientMessage({ type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] }),
       (error) => error instanceof InputValidationError && error.code === 'restricted_command',
     )
   }
+
+  assert.deepEqual(
+    parseClientMessage({
+      type: 'reboot_vehicle',
+      requestId: 'reboot-1',
+      safetyConfirmation: 'reboot_flight_controller',
+    }),
+    {
+      type: 'reboot_vehicle',
+      requestId: 'reboot-1',
+      safetyConfirmation: 'reboot_flight_controller',
+    },
+  )
+  assert.throws(
+    () => parseClientMessage({ type: 'reboot_vehicle', requestId: 'reboot-2' }),
+    (error) => error instanceof InputValidationError && error.code === 'safety_confirmation_required',
+  )
 
   assert.throws(
     () => parseClientMessage({
@@ -287,6 +305,7 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     }).type,
     'motor_test',
   )
+
   assert.throws(
     () => parseClientMessage({
       type: 'motor_test',
@@ -482,6 +501,7 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
     const connection = await first.waitFor('connection')
     assert.equal(connection.data?.status, 'disconnected')
     assert.equal(connection.data?.transportOpen, false)
+    assert.equal(connection.data?.rawSessionActive, false)
 
     second.ws.send(JSON.stringify({
       type: 'manual_control',

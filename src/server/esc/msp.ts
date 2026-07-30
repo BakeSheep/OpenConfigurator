@@ -52,32 +52,23 @@ export interface MspResponse {
 }
 
 /**
- * Frame-length probe for a response buffer, suitable for
- * EscTransactionOptions.frameLength. Returns the total frame length once a
- * complete `$M>`/`$M!` frame is present, null when more bytes are needed, or
- * throws EscError for an impossible prefix.
+ * Locate a complete MSP response in a raw serial stream. ArduPilot may still
+ * have queued MAVLink bytes when the port changes ownership and some USB
+ * adapters echo `$M<` requests, so response framing must resynchronize on the
+ * first `$M>`/`$M!` marker instead of treating leading bytes as fatal.
  */
 export function mspFrameLength(buffered: Uint8Array): number | null {
-  if (buffered.length < 1) return null
-  if (buffered[0] !== DOLLAR) throw new EscError('crc_mismatch', 'MSP 帧起始字节错误')
-  if (buffered.length < 2) return null
-  if (buffered[1] !== M) throw new EscError('crc_mismatch', 'MSP 帧头错误')
-  if (buffered.length < 3) return null
-  const dir = buffered[2]
-  if (dir !== DIR_FROM_FC && dir !== DIR_ERROR) {
-    throw new EscError('crc_mismatch', 'MSP 帧方向错误')
-  }
-  if (buffered.length < 4) return null
-  const size = buffered[3]
-  return 6 + size
+  const start = findMspResponseStart(buffered)
+  if (start === null || buffered.length < start + 4) return null
+  return start + 6 + buffered[start + 3]
 }
 
 /** Decode a complete MSP v1 response frame and verify its checksum. */
-export function decodeMspResponse(frame: Uint8Array): MspResponse {
+export function decodeMspResponse(bytes: Uint8Array): MspResponse {
+  const start = findMspResponseStart(bytes)
+  if (start === null) throw new EscError('crc_mismatch', '未找到 MSP 响应帧')
+  const frame = bytes.subarray(start)
   if (frame.length < 6) throw new EscError('crc_mismatch', 'MSP 帧过短')
-  if (frame[0] !== DOLLAR || frame[1] !== M) {
-    throw new EscError('crc_mismatch', 'MSP 帧头错误')
-  }
   const dir = frame[2]
   if (dir !== DIR_FROM_FC && dir !== DIR_ERROR) {
     throw new EscError('crc_mismatch', 'MSP 帧方向错误')
@@ -92,4 +83,13 @@ export function decodeMspResponse(frame: Uint8Array): MspResponse {
     throw new EscError('crc_mismatch', `MSP 校验和错误：期望 ${expected}，实际 ${actual}`)
   }
   return { command, payload: Uint8Array.from(payload), isError: dir === DIR_ERROR }
+}
+
+function findMspResponseStart(bytes: Uint8Array): number | null {
+  for (let index = 0; index + 2 < bytes.length; index++) {
+    if (bytes[index] !== DOLLAR || bytes[index + 1] !== M) continue
+    const direction = bytes[index + 2]
+    if (direction === DIR_FROM_FC || direction === DIR_ERROR) return index
+  }
+  return null
 }

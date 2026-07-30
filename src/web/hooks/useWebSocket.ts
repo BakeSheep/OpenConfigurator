@@ -22,6 +22,7 @@ let autoParamRequestPending = false
 let lastVehicleReady = false
 let activeParamGeneration: number | null = null
 let restControlToken: string | null = null
+let escReclaimAttempt: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -92,12 +93,16 @@ function handleMessage(msg: ServerMessage) {
       connStore.setController(msg.data.clientId, msg.data.expiresAt)
       break
     case 'connection': {
+      const wasRawSessionActive = connStore.rawSessionActive
+      const transportOpenNow = msg.data.transportOpen ?? msg.data.connected
       connStore.setConnectionSnapshot({
         status: msg.data.status ?? (msg.data.connected ? 'connected' : 'disconnected'),
-        transportOpen: msg.data.transportOpen ?? msg.data.connected,
+        transportOpen: transportOpenNow,
         vehicleReady: msg.data.vehicleReady ?? msg.data.connected,
+        rawSessionActive: msg.data.rawSessionActive ?? false,
         port: msg.data.port,
         type: msg.data.type,
+        baudRate: msg.data.baudRate,
       })
       const vehicleReadyNow = msg.data.vehicleReady ?? msg.data.connected
       if (vehicleReadyNow) {
@@ -121,6 +126,16 @@ function handleMessage(msg: ServerMessage) {
             console.log('[FC] Automatic parameter download started')
           }
         }
+      } else if (msg.data.rawSessionActive || (transportOpenNow && wasRawSessionActive)) {
+        // An ESC raw session deliberately pauses MAVLink and drops
+        // vehicleReady while keeping the same serial transport open. Preserve
+        // the FC identity, synchronized parameters and ESC session state: this
+        // is not a disconnect, and clearing them makes the passthrough toggle
+        // appear to turn itself off even though no parameter was changed.
+        autoParamRequestPending = false
+        discardParamBatch()
+        telemetryStore.markAllStale()
+        sensorStore.markAllOffline()
       } else if (msg.data.reconnect) {
         // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
         // last-known telemetry visible (greyed) instead of a full reset: the
@@ -152,7 +167,7 @@ function handleMessage(msg: ServerMessage) {
         // FC filesystem state is meaningless without a link.
         useFileExplorerStore.getState().reset()
         useLogTransferStore.getState().reset()
-      useEscStore.getState().reset()
+        useEscStore.getState().reset()
       }
       lastVehicleReady = vehicleReadyNow
       break
@@ -370,6 +385,52 @@ function handleMessage(msg: ServerMessage) {
       } else {
         console.log('[WS] target update:', msg.data)
       }
+      break
+    case 'esc_session': {
+      const escStore = useEscStore.getState()
+      escStore.applySession(msg.data)
+      const recovery = useEscStore.getState().recovery
+      if (
+        msg.data.state === 'orphaned'
+        && recovery?.sessionId === msg.data.sessionId
+      ) {
+        const attemptKey = recovery.sessionId + ':' + (msg.data.recoverUntil ?? 0)
+        if (escReclaimAttempt !== attemptKey && sendToServer({
+          type: 'esc_session_reclaim',
+          data: recovery,
+        })) {
+          escReclaimAttempt = attemptKey
+        }
+      } else if (msg.data.state === 'active' || msg.data.state === 'idle') {
+        escReclaimAttempt = null
+      }
+      break
+    }
+    case 'esc_session_started':
+      escReclaimAttempt = null
+      useEscStore.getState().setRecovery(msg.data)
+      break
+    case 'esc_devices':
+      useEscStore.getState().applyDevices(msg.data.sessionId, msg.data.escs)
+      break
+    case 'esc_settings':
+      useEscStore.getState().applySettings(msg.data)
+      break
+    case 'esc_job_progress':
+      useEscStore.getState().applyProgress(msg.data)
+      break
+    case 'esc_job_done':
+      useEscStore.getState().applyJobDone(msg.data)
+      break
+    case 'esc_op_error':
+      useEscStore.getState().applyOpError(msg.data)
+      if (msg.data.code === 'invalid_recovery_token' || msg.data.code === 'session_not_found') {
+        useEscStore.getState().clearRecovery()
+        escReclaimAttempt = null
+      }
+      break
+    case 'esc_log':
+      useEscStore.getState().appendLog(msg.data.sessionId, msg.data.entries)
       break
     default:
       console.warn('[WS] Unhandled server message type:', (msg as { type?: string }).type)

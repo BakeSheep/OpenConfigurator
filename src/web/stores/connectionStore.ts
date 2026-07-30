@@ -27,8 +27,10 @@ interface ConnectionState {
   status: ConnectionStatus
   transportOpen: boolean
   vehicleReady: boolean
+  rawSessionActive: boolean
   port: string | null
   type: string | null
+  baudRate: number | null
   clientId: string | null
   controllerClientId: string | null
   controllerExpiresAt: number | null
@@ -48,8 +50,10 @@ interface ConnectionState {
     status: ConnectionStatus
     transportOpen: boolean
     vehicleReady: boolean
+    rawSessionActive: boolean
     port?: string
     type?: string
+    baudRate?: number
   }) => void
   setClientId: (clientId: string) => void
   setController: (clientId: string | null, expiresAt: number | null) => void
@@ -65,8 +69,10 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   status: 'disconnected',
   transportOpen: false,
   vehicleReady: false,
+  rawSessionActive: false,
   port: null,
   type: null,
+  baudRate: null,
   clientId: null,
   controllerClientId: null,
   controllerExpiresAt: null,
@@ -84,8 +90,10 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     status: snapshot.status,
     transportOpen: snapshot.transportOpen,
     vehicleReady: snapshot.vehicleReady,
+    rawSessionActive: snapshot.rawSessionActive,
     port: snapshot.port ?? (snapshot.transportOpen ? state.port : null),
     type: snapshot.type ?? (snapshot.transportOpen ? state.type : null),
+    baudRate: snapshot.baudRate ?? (snapshot.transportOpen ? state.baudRate : null),
     reconnect: snapshot.status === 'reconnecting' ? state.reconnect : null,
     connectDialogOpen: snapshot.transportOpen ? false : state.connectDialogOpen,
     connectionError: snapshot.transportOpen ? null : state.connectionError,
@@ -100,13 +108,21 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     canControl: controllerClientId === null || controllerClientId === state.clientId,
   })),
   // Keep port/type so the UI can show which device is being retried.
-  setReconnecting: (info) => set({ status: 'reconnecting', transportOpen: false, vehicleReady: false, reconnect: info }),
+  setReconnecting: (info) => set({
+    status: 'reconnecting',
+    transportOpen: false,
+    vehicleReady: false,
+    rawSessionActive: false,
+    reconnect: info,
+  }),
   setDisconnected: () => set({
     status: 'disconnected',
     transportOpen: false,
     vehicleReady: false,
+    rawSessionActive: false,
     port: null,
     type: null,
+    baudRate: null,
     reconnect: null,
     linkStats: null,
     controllerClientId: null,

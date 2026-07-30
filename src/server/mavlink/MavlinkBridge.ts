@@ -72,7 +72,7 @@ const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
 // An ATTITUDE time_boot_ms regression larger than this margin means the FC
 // rebooted (its SET_MESSAGE_INTERVAL configuration is gone).
 const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
-const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 310, 400])
+const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 246, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
   1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 118,
   120, 126, 129, 132, 147, 148, 230, 245, 253,
@@ -218,6 +218,7 @@ export class MavlinkBridge extends EventEmitter {
   private readonly uncertainCommands = new Set<number>()
   private readonly commandQuarantineUntil = new Map<number, number>()
   private readonly pendingParamSets = new Map<string, PendingParamSet>()
+  private readonly parameterValues = new Map<string, number>()
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
   private readonly ftp: MavlinkFtp
@@ -263,6 +264,16 @@ export class MavlinkBridge extends EventEmitter {
       this.stopHeartbeat()
       this.stopLinkStats()
     }
+  }
+
+  /** Server-authoritative identity of the selected HEARTBEAT target. */
+  get vehicleIdentity(): VehicleIdentity | null {
+    return this.selectedIdentity
+  }
+
+  /** Latest validated PARAM_VALUE for the selected target. */
+  getParameterValue(id: string): number | null {
+    return this.parameterValues.get(id) ?? null
   }
 
   /** Last known armed flag of the selected autopilot; null until known. */
@@ -473,6 +484,7 @@ export class MavlinkBridge extends EventEmitter {
     this.requestedTelemetryStreams = false
     this.telemetryProfile = null
     this.selectedIdentity = null
+    this.parameterValues.clear()
     this.lastArmedState = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
@@ -1541,6 +1553,7 @@ export class MavlinkBridge extends EventEmitter {
       || [...actualIdBytes].some((byte) => byte < 0x20 || byte > 0x7e)
     ) return
     const id = actualIdBytes.toString('ascii')
+    this.parameterValues.set(id, value)
 
     this.emit('message', {
       type: 'param',
@@ -1758,6 +1771,32 @@ export class MavlinkBridge extends EventEmitter {
         if (this.requireReadyTarget('param_set', msg.requestId)) {
           this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)
         }
+        break
+      case 'reboot_vehicle':
+        if (!this.requireReadyTarget('reboot_vehicle', msg.requestId)) break
+        if (this.lastArmedState !== false) {
+          this.emitOperationError(
+            'reboot_vehicle',
+            this.lastArmedState === true ? 'armed' : 'arming_state_unknown',
+            this.lastArmedState === true ? '飞控已解锁，拒绝重启' : '飞控解锁状态未知，拒绝重启',
+            msg.requestId,
+          )
+          break
+        }
+        if (this.selectedIdentity?.family !== 'px4' && this.selectedIdentity?.family !== 'ardupilot') {
+          this.emitOperationError(
+            'reboot_vehicle',
+            'unsupported_vehicle_profile',
+            '当前飞控类型尚未适配远程重启',
+            msg.requestId,
+          )
+          break
+        }
+        this.sendCommand(
+          'MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN',
+          [1, 0, 0, 0, 0, 0, 0],
+          msg.requestId,
+        )
         break
       case 'param_request_list':
         if (this.requireReadyTarget('param_request_list', msg.requestId)) {

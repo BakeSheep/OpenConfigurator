@@ -24,7 +24,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void
 
 class FakeTransport implements EscByteTransport {
   readonly kind = 'direct' as const
-  readonly capabilities = { read: true, write: false, flash: false, melody: false }
+  readonly capabilities = { read: true, write: true }
   openCalls = 0
   closeCalls = 0
   closeReasons: string[] = []
@@ -124,6 +124,8 @@ async function run(): Promise<void> {
     assert.equal(snapshot.state, 'active')
     assert.equal(snapshot.ownerClientId, 'client-a')
     assert.equal(snapshot.mode, 'direct')
+    assert.deepEqual(snapshot.capabilities, { read: true, write: true })
+    assert.equal(h.manager.blocksMavlinkMutations(), true, 'direct sessions also isolate flight mutations')
     assert.deepEqual(h.pins[h.pins.length - 1], { clientId: 'client-a', sessionId: started.sessionId })
     assert.ok(h.snapshots.some((s) => s.state === 'entering'))
     assert.ok(h.snapshots.some((s) => s.state === 'active'))
@@ -299,6 +301,12 @@ async function run(): Promise<void> {
       return null
     })
     await waitFor(() => h.manager.snapshot().activeJobId !== null)
+    const activeSessionId = h.manager.snapshot().sessionId!
+    await expectEscError(
+      h.manager.exit('client-a', activeSessionId),
+      'busy',
+      'exit during active job',
+    )
     await expectEscError(
       h.manager.runExclusiveJob('client-a', 'scan', async () => null),
       'busy',
@@ -336,7 +344,7 @@ async function run(): Promise<void> {
     const jobGate = new Promise<void>((resolve) => {
       releaseJob = resolve
     })
-    const job = h.manager.runExclusiveJob('client-a', 'flash', async () => {
+    const job = h.manager.runExclusiveJob('client-a', 'settings_write', async () => {
       await jobGate
       return null
     })

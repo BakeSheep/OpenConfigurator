@@ -11,7 +11,7 @@ const FIRMWARE_LABELS: Record<EscFirmwareKind, string> = {
 const REASON_LABELS: Record<string, string> = {
   unsupported_signature_or_layout: '固件签名/布局未识别，仅可只读',
   not_validated: '该组合尚未通过硬件验证，仅可只读',
-  detect_failed: '识别失败',
+  detect_failed: 'ESC 未响应（检查供电、信号线与 bootloader）',
 }
 
 function formatSignature(signature: number | null): string {

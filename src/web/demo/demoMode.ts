@@ -7,6 +7,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
+import { useEscStore } from '../stores/escStore'
 import type { ParamData } from '../../shared/types'
 
 const deg = Math.PI / 180
@@ -68,7 +69,7 @@ const DEMO_PARAMS: Array<[string, number, number]> = [
   // System / MAVLink
   ['MAV_SYS_ID', 1, 6], ['MAV_COMP_ID', 1, 6], ['MAV_TYPE', 2, 6], ['MAV_PROTO_VER', 2, 6],
   ['SER_TEL1_BAUD', 57600, 6], ['SER_TEL2_BAUD', 921600, 6], ['SYS_AUTOSTART', 4001, 6], ['SYS_HAS_MAG', 1, 6],
-  ['SDLOG_MODE', 0, 6], ['SDLOG_PROFILE', 1, 6],
+  ['SDLOG_MODE', 0, 6], ['SDLOG_PROFILE', 1, 6], ['PASSTHRU_EN', 0, 6],
 ]
 
 function seedParams() {
@@ -124,6 +125,85 @@ function seedStatics() {
     }
   } catch { /* storage unavailable - the card just stays empty */ }
 }
+function seedEscConfigurator() {
+  const sessionId = 'demo-esc-session'
+  const store = useEscStore.getState()
+  store.applySession({
+    state: 'active',
+    sessionId,
+    mode: 'ardupilot_passthrough',
+    ownerClientId: null,
+    escCount: 4,
+    activeJobId: null,
+    recoverUntil: null,
+    reason: null,
+    capabilities: { read: true, write: true },
+  })
+  const devices = Array.from({ length: 4 }, (_, index) => ({
+    index,
+    interfaceMode: 4,
+    firmwareKind: 'am32' as const,
+    firmwareName: 'AM32_MICOAIR_80',
+    firmwareVersion: '2.17',
+    mcuSignature: 0x1f06,
+    mcuName: 'STM32F051',
+    bootloaderVersion: '13',
+    layoutRevision: 3,
+    writable: true,
+  }))
+  store.applyDevices(sessionId, devices)
+  const rawBase64 = btoa(String.fromCharCode(...new Uint8Array(0xb8)))
+  devices.forEach((device) => store.applySettings({
+    sessionId,
+    escIndex: device.index,
+    firmwareKind: 'am32',
+    layoutRevision: 3,
+    writable: true,
+    rawBase64,
+    values: {
+      disableStickCalibration: 0,
+      protocol: 0,
+      motorDirection: device.index % 2,
+      bidirectional: 0,
+      stuckRotorProtection: 1,
+      stallProtection: 1,
+      hallSensors: 0,
+      intervalTelemetry: 1,
+      complementaryPwm: 1,
+      autoTimingAdvance: 0,
+      pwmType: 1,
+      timingAdvance: 14.0625,
+      startupPower: 100,
+      motorKv: 3300,
+      motorPoles: 14,
+      beeperVolume: 5,
+      pwmFrequency: 48,
+      rampRate: 16,
+      minimumDutyCycle: 4,
+      lowVoltageCutoff: 1,
+      temperatureLimit: 120,
+      currentLimit: 80,
+      lowVoltageThreshold: 3.2,
+      absoluteVoltageThreshold: 12,
+      currentP: 100,
+      currentI: 20,
+      currentD: 100,
+      sinusoidalStartup: 1,
+      sineModeRange: 15,
+      sineModePower: 6,
+      carReverseBraking: 0,
+      brakeOnStop: 0,
+      brakeStrength: 10,
+      runningBrakeLevel: 10,
+      activeBrakePower: 0,
+      servoLowThreshold: 1006,
+      servoHighThreshold: 2006,
+      servoNeutral: 1502,
+      servoDeadBand: 50,
+    },
+  }))
+}
+
 
 let tick = 0
 
@@ -214,8 +294,8 @@ function pushSlowTelemetry() {
 
   // Keep the UI convinced the transport + vehicle are live.
   conn.setConnectionSnapshot({
-    status: 'connected', transportOpen: true, vehicleReady: true,
-    port: 'COM7', type: 'serial',
+    status: 'connected', transportOpen: true, vehicleReady: true, rawSessionActive: false,
+    port: 'COM7', type: 'serial', baudRate: 57600,
   })
   conn.setLinkStats({
     rxBps: Math.round(11840 + 900 * Math.sin(time * 0.5)),
@@ -331,6 +411,7 @@ export function startDemoMode() {
   console.log('[Demo] Synthetic telemetry enabled (?demo=1) - no flight controller is connected')
   seedParams()
   seedStatics()
+  seedEscConfigurator()
   seedStatusLogs()
   pushFastTelemetry()
   pushSlowTelemetry()

@@ -3,13 +3,18 @@
 // ConnectionManager. Stays protocol-agnostic: the MSP -> 4-way handshake is
 // driven by the protocol/detector layer through transact(); this module only
 // owns the safe channel lifecycle and framed request/response plumbing.
-import { EscError, toEscError, type EscTransportCapabilities } from '../../shared/esc'
+import { EscError, toEscError, type EscTransportCapabilities, type EscTransportKind } from '../../shared/esc'
 import type { RawSessionHandle } from '../connection/ConnectionManager'
 import type {
   EscByteTransport,
   EscTransactionOptions,
   EscTransportTarget,
 } from './EscByteTransport'
+
+// ArduPilot's alternative-protocol detector only examines non-MAVLink bytes
+// after the link has been quiet for more than 4000 ms. Leave scheduling margin
+// so the first MSP probe cannot be consumed by the MAVLink parser.
+const ARDUPILOT_PROTOCOL_QUIET_MS = 4500
 
 /** Minimal ConnectionManager surface this transport depends on. */
 export interface RawSessionProvider {
@@ -36,22 +41,26 @@ export interface ArduPilotRawTransportOptions {
    */
   checkBusy?: () => string | null
   capabilities?: EscTransportCapabilities
+  /** Reuse the live USB link either for FC passthrough or a directly attached ESC. */
+  targetMode?: 'ardupilot_passthrough' | 'direct'
+  /** Quiet interval after MAVLink is paused so queued frames can drain. */
+  settleMs?: number
 }
 
 const DEFAULT_CAPABILITIES: EscTransportCapabilities = {
   read: true,
   write: true,
-  flash: true,
-  melody: true,
 }
 
 export class ArduPilotRawTransport implements EscByteTransport {
-  readonly kind = 'ardupilot_raw' as const
+  readonly kind: EscTransportKind
   readonly capabilities: EscTransportCapabilities
 
   private readonly connManager: RawSessionProvider
   private readonly bridge: ProtocolPauseController
   private readonly checkBusy: () => string | null
+  private readonly targetMode: 'ardupilot_passthrough' | 'direct'
+  private readonly settleMs: number
   private handle: RawSessionHandle | null = null
   private offData: (() => void) | null = null
   private offAborted: (() => void) | null = null
@@ -65,23 +74,30 @@ export class ArduPilotRawTransport implements EscByteTransport {
     this.connManager = options.connManager
     this.bridge = options.bridge
     this.checkBusy = options.checkBusy ?? (() => null)
+    this.targetMode = options.targetMode ?? 'ardupilot_passthrough'
+    this.settleMs = options.settleMs
+      ?? (this.targetMode === 'ardupilot_passthrough' ? ARDUPILOT_PROTOCOL_QUIET_MS : 0)
+    this.kind = this.targetMode === 'direct' ? 'direct' : 'ardupilot_raw'
     this.capabilities = options.capabilities ?? DEFAULT_CAPABILITIES
   }
 
   async open(target: EscTransportTarget, signal: AbortSignal): Promise<void> {
-    if (target.mode !== 'ardupilot_passthrough') {
-      throw new EscError('invalid_state', 'ArduPilot 传输不支持该模式')
+    if (target.mode !== this.targetMode) {
+      throw new EscError('invalid_state', '原始 USB 传输不支持该模式')
     }
-    // ADR-003 preconditions: never enter passthrough on an armed vehicle or
-    // when the arming state is unknown/stale.
-    if (this.bridge.armedState === null) {
-      throw new EscError('arming_state_unknown', '飞控解锁状态未知，拒绝进入 ESC 直通')
-    }
-    if (this.bridge.armedState === true) {
-      throw new EscError('armed', '飞控已解锁，拒绝进入 ESC 直通')
-    }
-    if (this.connManager.vehicleReady !== true) {
-      throw new EscError('precondition_failed', '飞控心跳未就绪，无法进入 ESC 直通')
+    // FC passthrough is safety-critical and needs a fresh disarmed heartbeat.
+    // A directly attached ESC has no MAVLink heartbeat, so it only requires
+    // the already-open serial connection checked by EscService.
+    if (this.targetMode === 'ardupilot_passthrough') {
+      if (this.bridge.armedState === null) {
+        throw new EscError('arming_state_unknown', '飞控解锁状态未知，拒绝进入 ESC 直通')
+      }
+      if (this.bridge.armedState === true) {
+        throw new EscError('armed', '飞控已解锁，拒绝进入 ESC 直通')
+      }
+      if (this.connManager.vehicleReady !== true) {
+        throw new EscError('precondition_failed', '飞控心跳未就绪，无法进入 ESC 直通')
+      }
     }
     const busy = this.checkBusy()
     if (busy) {
@@ -104,11 +120,19 @@ export class ArduPilotRawTransport implements EscByteTransport {
       this.offAborted = handle.onAborted((reason) => {
         this.notifyAborted(new EscError('link_lost', `ESC 链路已断开：${reason}`))
       })
+      await abortableDelay(this.settleMs, signal)
     } catch (error) {
-      // Roll back the pause so MAVLink recovers even if we never took the link.
+      // Roll back both raw ownership and the protocol pause on every partial
+      // open failure, including cancellation during the quiet interval.
+      this.offData?.()
+      this.offData = null
+      this.offAborted?.()
+      this.offAborted = null
+      this.handle?.release()
+      this.handle = null
       this.bridge.resumeProtocol()
       this.paused = false
-      throw toEscError(error, 'link_unavailable')
+      throw toEscError(error, signal.aborted ? 'cancelled' : 'link_unavailable')
     }
   }
 
@@ -217,7 +241,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
       try {
         listener(error)
       } catch (err) {
-        console.error('[ESC] ArduPilot transport aborted listener threw:', err)
+        console.error('[ESC] raw USB transport aborted listener threw:', err)
       }
     }
   }
@@ -234,4 +258,21 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.length
   }
   return out
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve()
+  if (signal.aborted) return Promise.reject(new EscError('cancelled', 'ESC 会话在建立期间被取消'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(new EscError('cancelled', 'ESC 会话在建立期间被取消'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }

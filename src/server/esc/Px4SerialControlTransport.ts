@@ -54,9 +54,7 @@ export interface Px4SerialControlTransportOptions {
 
 const DEFAULT_CAPABILITIES: EscTransportCapabilities = {
   read: true,
-  write: true,
-  flash: true,
-  melody: true,
+  write: false,
 }
 
 const DEFAULT_INIT_SETTLE_MS = 2000
@@ -261,6 +259,19 @@ export class Px4SerialControlTransport implements EscByteTransport {
     this.closed = true
     this.offReply?.()
     this.offReply = null
+    // SERIAL_CONTROL_FLAG_EXCLUSIVE is released only by sending a request
+    // without that flag. Return every channel the session may have claimed.
+    for (const device of this.channels) {
+      this.bridge.sendSerialControl({
+        device,
+        flags: 0,
+        timeout: 0,
+        baudrate: ESC_SERIAL_BAUD_RATE,
+        count: 0,
+        data: new Uint8Array(0),
+      })
+    }
+    this.channels = []
     this.activeDevice = null
     void reason
   }

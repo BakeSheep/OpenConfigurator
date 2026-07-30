@@ -31,11 +31,11 @@ assert.equal(mspChecksum(100, Uint8Array.of(0x01, 0x02, 0x03)), (3 ^ 100 ^ 0x01 
 {
   assert.equal(mspFrameLength(Uint8Array.of(0x24)), null)
   assert.equal(mspFrameLength(Uint8Array.of(0x24, 0x4d, 0x3e, 0x03)), 9) // 6 + size(3)
-  assert.throws(() => mspFrameLength(Uint8Array.of(0x00)), (e: unknown) => e instanceof EscError)
-  assert.throws(
-    () => mspFrameLength(Uint8Array.of(0x24, 0x4d, 0x40)),
-    (e: unknown) => e instanceof EscError,
-    'bad direction byte rejected',
+  assert.equal(mspFrameLength(Uint8Array.of(0xfe, 0x09, 0x00)), null)
+  assert.equal(
+    mspFrameLength(Uint8Array.of(0xfe, 0x09, 0x24, 0x4d, 0x3c, 0x00, 0x01, 0x01, 0x24, 0x4d, 0x3e, 0x00)),
+    14,
+    'MAVLink noise and an echoed request are skipped before the response',
   )
 }
 
@@ -50,7 +50,11 @@ assert.equal(mspChecksum(100, Uint8Array.of(0x01, 0x02, 0x03)), (3 ^ 100 ^ 0x01 
   assert.equal(decoded.command, cmd)
   assert.equal(decoded.isError, false)
   assert.deepEqual([...decoded.payload], [...payload])
-}
+
+  const withLeadingNoise = Uint8Array.of(0xfd, 0x09, 0x00, ...frame)
+  const resynchronized = decodeMspResponse(withLeadingNoise)
+  assert.equal(resynchronized.command, cmd)
+  assert.deepEqual([...resynchronized.payload], [...payload])}
 
 // Error direction ('!') is flagged.
 {

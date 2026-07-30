@@ -29,10 +29,12 @@ export default function Topbar() {
   // Presets for QGC-style connection dropdown
   const [presets, setPresets] = useState(loadConnectionPresets)
   const [connectDropdown, setConnectDropdown] = useState(false)
+  const [rebootConfirm, setRebootConfirm] = useState(false)
   const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | null>(null)
   const [armDragProgress, setArmDragProgress] = useState(0)
   const [armDragging, setArmDragging] = useState(false)
   const topbarRef = useRef<HTMLElement | null>(null)
+  const rebootTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const armSliderRef = useRef<HTMLButtonElement | null>(null)
   const armDraggingRef = useRef(false)
 
@@ -138,6 +140,28 @@ export default function Topbar() {
   const recentArmErrors = statusLogs
     .filter((entry) => /arm|arming|pre-arm|preflight|解锁|预检/i.test(entry.text))
     .slice(0, 4)
+
+  const requestVehicleReboot = () => {
+    if (!vehicleReady || !canControl || armed) return
+    if (!rebootConfirm) {
+      setRebootConfirm(true)
+      if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
+      rebootTimerRef.current = setTimeout(() => setRebootConfirm(false), 3000)
+      return
+    }
+    if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
+    rebootTimerRef.current = null
+    setRebootConfirm(false)
+    sendClientMessage({
+      type: 'reboot_vehicle',
+      requestId: `reboot-${Date.now().toString(36)}`,
+      safetyConfirmation: 'reboot_flight_controller',
+    })
+  }
+
+  useEffect(() => () => {
+    if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const closeOnOutside = (event: PointerEvent) => {
@@ -400,6 +424,18 @@ export default function Topbar() {
           onClick={toggleTheme}
         >
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+        </button>
+        <button
+          type="button"
+          className="mc-topbar__reboot"
+          data-confirm={rebootConfirm || undefined}
+          disabled={!vehicleReady || !canControl || armed}
+          title={armed ? '飞控已解锁，不能重启' : rebootConfirm ? '再次点击确认重启飞控' : '重启飞控'}
+          aria-label={rebootConfirm ? '确认重启飞控' : '重启飞控'}
+          onClick={requestVehicleReboot}
+        >
+          <Icon name="refresh" size={15} />
+          <span>{rebootConfirm ? '确认重启' : '重启'}</span>
         </button>
         <div className="relative">
           <button

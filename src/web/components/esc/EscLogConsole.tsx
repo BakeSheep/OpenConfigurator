@@ -7,39 +7,19 @@ export default function EscLogConsole() {
   if (log.length === 0) return null
 
   return (
-    <section className="mc-card">
-      <div className="mc-section-title">操作日志</div>
-      <div
-        className="mc-mono"
-        style={{
-          maxHeight: 200,
-          overflowY: 'auto',
-          fontSize: 12,
-          lineHeight: 1.6,
-          background: 'var(--bg-secondary)',
-          borderRadius: 8,
-          padding: '8px 12px',
-        }}
-      >
+    <details className="mc-card mc-esc-log">
+      <summary>
+        <span>通讯记录</span>
+        <small>{log.length} 条 · 默认收起</small>
+      </summary>
+      <div className="mc-mono mc-esc-log__entries">
         {log.map((entry, index) => (
-          <div
-            key={`${entry.timestamp}-${index}`}
-            style={{
-              color:
-                entry.level === 'error'
-                  ? 'var(--danger)'
-                  : entry.level === 'warn'
-                    ? 'var(--warning)'
-                    : 'var(--text-secondary)',
-            }}
-          >
-            <span style={{ opacity: 0.6 }}>
-              {new Date(entry.timestamp).toLocaleTimeString()}
-            </span>{' '}
-            {entry.text}
+          <div key={`${entry.timestamp}-${index}`} data-level={entry.level}>
+            <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
+            <p>{entry.text}</p>
           </div>
         ))}
       </div>
-    </section>
+    </details>
   )
 }

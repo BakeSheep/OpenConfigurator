@@ -39,9 +39,7 @@ export interface DirectSerialTransportOptions {
 
 const DEFAULT_CAPABILITIES: EscTransportCapabilities = {
   read: true,
-  write: true,
-  flash: true,
-  melody: true,
+  write: false,
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3

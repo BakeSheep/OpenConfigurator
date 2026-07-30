@@ -21,12 +21,12 @@ import {
   encodeFourWay,
   FOUR_WAY_ACK,
   FOUR_WAY_COMMANDS,
-  FOUR_WAY_START,
+  FOUR_WAY_RESPONSE_START,
 } from './fourWay'
 import { decodeMspResponse, encodeMspRequest, mspChecksum, MSP_COMMANDS } from './msp'
 
 function fourWayResponse(command: number, params: number[], ack: number = FOUR_WAY_ACK.OK): Uint8Array {
-  const head = Uint8Array.of(FOUR_WAY_START, command, 0, 0, params.length, ...params, ack)
+  const head = Uint8Array.of(FOUR_WAY_RESPONSE_START, command, 0, 0, params.length, ...params, ack)
   const crc = crc16Xmodem(head)
   return Uint8Array.of(...head, (crc >> 8) & 0xff, crc & 0xff)
 }
@@ -42,7 +42,7 @@ function mspResponse(command: number, payload: number[]): Uint8Array {
  */
 class ScriptedTransport implements EscByteTransport {
   readonly kind = 'ardupilot_raw' as const
-  readonly capabilities = { read: true, write: false, flash: false, melody: false }
+  readonly capabilities = { read: true, write: false }
   constructor(private readonly handler: (request: Uint8Array) => Uint8Array) {}
   async open(_t: EscTransportTarget, _s: AbortSignal): Promise<void> {}
   async transact(
@@ -74,7 +74,7 @@ async function run(): Promise<void> {
   {
     const response = decodeFourWay(fourWayResponse(FOUR_WAY_COMMANDS.DeviceInitFlash, [0x14, 0x40, 0x00, 0x04]))
     const info = parseDeviceInitInfo(response)
-    assert.equal(info.signature, 0x1440)
+    assert.equal(info.signature, 0x4014)
     assert.equal(info.interfaceMode, FOUR_WAY_INTERFACE_MODE.ARMBLB)
   }
 
@@ -90,18 +90,37 @@ async function run(): Promise<void> {
     assert.equal(count, 4)
   }
 
+  // A stale or cross-command response must never be accepted as the reply.
+  {
+    const transport = new ScriptedTransport(() =>
+      fourWayResponse(FOUR_WAY_COMMANDS.ProtocolGetVersion, [0]),
+    )
+    const fourWay = new FourWayClient(transport)
+    await assert.rejects(
+      () => fourWay.testAlive(signal),
+      (error: unknown) => error instanceof EscError && error.code === 'target_mismatch',
+    )
+  }
+
   // detectEscs classifies AM32 vs SiLabs across channels; failures degrade.
   {
     const modes = [FOUR_WAY_INTERFACE_MODE.ARMBLB, FOUR_WAY_INTERFACE_MODE.SiLBLB]
+    let transientInitAttempts = 0
+    let failedInitAttempts = 0
     const transport = new ScriptedTransport((request) => {
       const decoded = decodeFourWay(padFourWayRequestToResponse(request))
-      if (decoded.command === FOUR_WAY_COMMANDS.InterfaceTestAlive) {
-        return fourWayResponse(FOUR_WAY_COMMANDS.InterfaceTestAlive, [0])
+      if (decoded.command === FOUR_WAY_COMMANDS.ProtocolGetVersion) {
+        return fourWayResponse(FOUR_WAY_COMMANDS.ProtocolGetVersion, [107])
       }
       if (decoded.command === FOUR_WAY_COMMANDS.DeviceInitFlash) {
         const channel = decoded.params[0]
+        if (channel === 1 && ++transientInitAttempts < 3) {
+          // Retryable FC/ESC failures can clear after the bootloader wakes.
+          return fourWayResponse(FOUR_WAY_COMMANDS.DeviceInitFlash, [0], FOUR_WAY_ACK.GeneralError)
+        }
         if (channel === 2) {
-          // Third ESC reports an error ACK -> degraded to detect_failed.
+          // Third ESC exhausts the host retry budget and degrades cleanly.
+          failedInitAttempts += 1
           return fourWayResponse(FOUR_WAY_COMMANDS.DeviceInitFlash, [0], FOUR_WAY_ACK.UnknownError)
         }
         const mode = modes[channel] ?? 99
@@ -117,6 +136,8 @@ async function run(): Promise<void> {
     assert.equal(escs[0].writable, false, 'detection never marks writable')
     assert.equal(escs[0].reason, 'not_validated')
     assert.equal(escs[1].firmwareKind, 'blheli_s')
+    assert.equal(transientInitAttempts, 3, 'retryable failure recovers within budget')
+    assert.equal(failedInitAttempts, 5, 'retryable failure uses the full host retry budget')
     assert.equal(escs[2].firmwareKind, 'unknown')
     assert.equal(escs[2].reason, 'detect_failed')
   }
@@ -137,7 +158,8 @@ function mirrorMsp(request: Uint8Array): Uint8Array {
 // before the CRC so the request can be decoded to inspect command/params.
 function padFourWayRequestToResponse(request: Uint8Array): Uint8Array {
   const paramLen = request[4] === 0 ? 256 : request[4]
-  const head = request.subarray(0, 5 + paramLen)
+  const head = Uint8Array.from(request.subarray(0, 5 + paramLen))
+  head[0] = FOUR_WAY_RESPONSE_START
   const withAck = Uint8Array.of(...head, FOUR_WAY_ACK.OK)
   const crc = crc16Xmodem(withAck)
   return Uint8Array.of(...withAck, (crc >> 8) & 0xff, crc & 0xff)

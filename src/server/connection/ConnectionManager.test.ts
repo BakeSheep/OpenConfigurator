@@ -498,7 +498,9 @@ test('raw session suspends the heartbeat monitor and drops vehicleReady', async 
     activityGraceMs: 5,
   })
   const timeouts: unknown[] = []
+  const rawSessionChanges: boolean[] = []
   manager.on('heartbeatTimeout', (detail) => timeouts.push(detail))
+  manager.on('rawSessionChange', (active) => rawSessionChanges.push(active))
   manager.on('connectionError', () => undefined)
 
   await manager.connect(serialConfig('COM1'))
@@ -515,6 +517,7 @@ test('raw session suspends the heartbeat monitor and drops vehicleReady', async 
   assert.equal(manager.status, 'connected')
 
   handle.release()
+  assert.deepEqual(rawSessionChanges, [true, false], 'raw ownership changes are broadcast')
   await manager.disconnect()
 })
 

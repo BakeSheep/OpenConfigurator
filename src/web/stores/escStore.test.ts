@@ -15,7 +15,7 @@ function session(overrides: Partial<EscSessionSnapshot> = {}): EscSessionSnapsho
     activeJobId: null,
     recoverUntil: null,
     reason: null,
-    capabilities: { read: true, write: false, flash: false, melody: false },
+    capabilities: { read: true, write: false },
     ...overrides,
   }
 }
@@ -23,6 +23,11 @@ function session(overrides: Partial<EscSessionSnapshot> = {}): EscSessionSnapsho
 function run(): void {
   const store = useEscStore.getState()
   store.reset()
+
+  // Recovery credentials survive transient WebSocket-store resets.
+  store.setRecovery({ sessionId: 's1', recoveryToken: '0123456789abcdef' })
+  store.reset()
+  assert.equal(useEscStore.getState().recovery?.sessionId, 's1')
 
   // Session snapshot replaces prior state.
   store.applySession(session())
@@ -51,29 +56,31 @@ function run(): void {
 
   // Progress snapshots overwrite with absolute values.
   store.applyProgress({
-    sessionId: 's1', jobId: 'j1', kind: 'flash', escIndex: 0, phase: 'write_page',
+    sessionId: 's1', jobId: 'j1', kind: 'settings_write', escIndex: 0, phase: 'write',
     bytesDone: 100, bytesTotal: 1000, currentTargetOrdinal: 1, targetCount: 1,
   })
   store.applyProgress({
-    sessionId: 's1', jobId: 'j1', kind: 'flash', escIndex: 0, phase: 'write_page',
+    sessionId: 's1', jobId: 'j1', kind: 'settings_write', escIndex: 0, phase: 'verify',
     bytesDone: 500, bytesTotal: 1000, currentTargetOrdinal: 1, targetCount: 1,
   })
   assert.equal(useEscStore.getState().activeJob?.bytesDone, 500, 'progress is absolute')
 
   // Stale progress from another session is ignored.
   store.applyProgress({
-    sessionId: 'other', jobId: 'jx', kind: 'flash', escIndex: 0, phase: 'write_page',
+    sessionId: 'other', jobId: 'jx', kind: 'settings_write', escIndex: 0, phase: 'write',
     bytesDone: 999, bytesTotal: 1000, currentTargetOrdinal: 1, targetCount: 1,
   })
   assert.equal(useEscStore.getState().activeJob?.bytesDone, 500, 'stale progress ignored')
 
   // Job done clears the active job without fabricating success/failure elsewhere.
-  store.applyJobDone({ sessionId: 's1', jobId: 'j1', kind: 'flash', ok: true, perTarget: [] })
+  store.applyJobDone({ sessionId: 's1', jobId: 'j1', kind: 'settings_write', ok: true, perTarget: [] })
   assert.equal(useEscStore.getState().activeJob, null)
   assert.equal(useEscStore.getState().lastJobResult?.ok, true)
 
-  // Changing session id invalidates devices/settings.
+  // Changing session id invalidates devices/settings and stale errors.
+  store.applyOpError({ operation: 'esc_devices_scan', code: 'timeout', message: 'old failure', retryable: true })
   store.applySession(session({ sessionId: 's2' }))
+  assert.equal(useEscStore.getState().lastError, null, 'new session clears stale error')
   assert.equal(useEscStore.getState().devices.length, 0, 'new session clears devices')
 
   // Log ring buffer caps at ESC_LOG_CAPACITY.
@@ -95,6 +102,7 @@ function run(): void {
   store.applySession(session({ sessionId: 's2', state: 'idle', activeJobId: null, ownerClientId: null }))
   assert.equal(useEscStore.getState().activeJob, null, 'idle clears active job')
   assert.equal(useEscStore.getState().devices.length, 0)
+  assert.equal(useEscStore.getState().recovery, null, 'idle clears recovery credential')
 
   // reset() returns to the pristine state.
   store.reset()

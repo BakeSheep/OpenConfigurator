@@ -1,112 +1,72 @@
-# OpenConfigurator 架构
+# 架构
 
 ## 系统边界
 
 ```text
-┌──────────────────────────────────────────────┐
-│ Browser                                      │
-│ React SPA → pages/components → Zustand stores│
-│                       ▲                      │
-│                 useWebSocket                 │
-└───────────────────────┼──────────────────────┘
-                        │ REST + WebSocket
-┌───────────────────────┼──────────────────────┐
-│ Node.js server        ▼                      │
-│ Express / ws → validation → MavlinkBridge    │
-│                              ↕ codec session │
-│                    ConnectionManager         │
-└───────────────────────────────┼──────────────┘
-                                │ Serial bytes
-                     USB Serial │ Bluetooth SPP
-                                ▼
-                       PX4 flight controller
+Browser / React / Zustand
+          │ REST + one WebSocket
+          ▼
+Express + ws + runtime validation
+          │
+          ├─ controller lease
+          ├─ MavlinkBridge ── codec ── serial/Bluetooth ── PX4 / ArduPilot
+          ├─ MAVLink FTP / DataFlash log transfer
+          └─ EscService ── passthrough / SERIAL_CONTROL / direct serial ── ESC
 ```
 
-浏览器不直接解析 MAVLink。Node.js 服务持有操作系统串口，负责协议校验、目标选择、命令事务、控制权和连接生命周期；前端只消费 `src/shared/types.ts` 定义的网络消息。
-
-## 飞控适配（PX4 / ArduPilot）
-
-共享传输与消息归一化对所有飞控通用。飞控差异收敛到一个**框架无关的 vehicle profile**：从 HEARTBEAT 的 `autopilot` 与 `type` 字段分类（见 `src/shared/vehicleProfiles.ts`），得到 `family`（`px4`/`ardupilot`/`unknown`）与 `vehicleClass`。
-
-- 服务端拥有栈相关的命令编码与能力判定：`encodeModeCommand`、`vehicleCapabilities`、电机测试（PX4 `MAV_CMD_ACTUATOR_TEST` 310 / ArduPilot `MAV_CMD_DO_MOTOR_TEST` 209）、校准参数映射，全部在写入串口前按 profile 判定，未知/未适配机型一律拒绝。
-- 前端按 profile 渲染模式列表与参数分组（`vehicleConfig.ts`、`parameterProfiles.ts`、`logProfiles.ts`），从不把 PX4 参数名写给 ArduPilot（反之亦然）。ArduCopter 首个里程碑为验收目标；Plane/Rover/Sub/Tracker 建模为显式只读。详见 `docs/ARDUPILOT.md`。
+浏览器不解析 MAVLink，也不直接拥有系统串口。Node.js 服务负责目标选择、协议校验、命令事务、控制权和连接生命周期；前端只消费 `src/shared/types.ts` 定义的消息。
 
 ## 目录职责
 
 | 路径 | 职责 |
 |---|---|
-| `src/shared/` | 前后端共享的纯 TypeScript 类型、协议 union 与 MAVLink/PX4 常量 |
-| `src/shared/vehicleProfiles.ts` | 从 HEARTBEAT 分类飞控 family/vehicleClass，模式解码/编码与能力矩阵 |
-| `src/web/` | React SPA、页面、组件、WebSocket 分发与 Zustand stores |
-| `src/server/index.ts` | HTTP/WS 边界、鉴权、Origin、限流、控制者租约和进程关闭 |
-| `src/server/validation.ts` | REST、WS 与服务环境变量的运行时校验 |
-| `src/server/connection/` | USB/Bluetooth 发现、串口生命周期、重连和背压 |
-| `src/server/mavlink/codec.ts` | MAVLink v1/v2 framing、CRC、signing、parser session 与序列号 |
-| `src/server/mavlink/MavlinkBridge.ts` | 目标飞控、遥测转换、参数同步和命令事务 |
+| `src/shared/` | 纯 TypeScript 类型、WS union、vehicle profile、常量与 ESC layout |
+| `src/web/` | 四个工作区、组件、单一 WS dispatch、Zustand stores 与日志分析 worker |
+| `src/server/index.ts` | HTTP/WS、鉴权、Origin、限流、控制者租约与服务编排 |
+| `src/server/connection/` | 串口/蓝牙发现、生命周期、重连与背压 |
+| `src/server/mavlink/` | codec、MAVLink bridge、FTP 与 DataFlash 传输 |
+| `src/server/esc/` | ESC 会话、传输适配、MSP/4-way、发现与 AM32 参数服务 |
 
-## 数据流
+## 飞控 profile
 
-入站遥测：
+`src/shared/vehicleProfiles.ts` 只根据 HEARTBEAT 的 `autopilot` 与 `type` 分类 `family` 和 `vehicleClass`。模式、命令编码、参数页面、日志格式与写能力都从该 profile 派生。
 
-```text
-serial bytes → connection generation → codec splitter/parser
-→ CRC/signature validation → selected-target filter
-→ semantic conversion → ServerMessage → WebSocket
-→ useWebSocket dispatch → Zustand store → React view
-```
+- PX4 使用现有完整能力集。
+- ArduCopter 使用 ArduPilot 模式、参数、`MAV_CMD_DO_MOTOR_TEST` 与 DataFlash。
+- 其他 ArduPilot 机型和未知飞控保留通用显示能力，安全关键写操作默认关闭。
 
-出站控制：
+参数名、STATUSTEXT 或历史状态不得用来授权某个飞控栈的写操作。
+
+## 数据流与状态
 
 ```text
-user safety interaction → ClientMessage → runtime validation
-→ controller lease / vehicleReady check → command transaction
-→ node-mavlink serialization → prioritized serial queue → PX4
-→ COMMAND_ACK or protocol-specific confirmation → requesting client
+serial bytes → per-connection codec session → target filter
+→ semantic ServerMessage → useWebSocket → Zustand → React
 ```
-
-## 关键不变量
-
-### 单一共享表面
-
-服务端不得导入 `src/web/`，前端不得导入 `src/server/`。两端共用的内容必须进入无框架依赖的 `src/shared/`。
-
-### 单一 WebSocket
-
-`useWebSocket` 在应用层挂载并拥有唯一浏览器连接。页面与组件从 stores 读取状态，通过共享发送函数发出消息，不能自行创建 socket。
-
-### 连接状态分层
 
 ```text
-native handle → transportOpen → vehicleReady → controller lease
+user confirmation → ClientMessage → runtime validation
+→ vehicle capability + vehicleReady + controller lease
+→ MAVLink/ESC operation → ACK/read-back/state observation
 ```
 
-`transportOpen` 只表示底层端口可用；`vehicleReady` 必须由目标 autopilot 的有效 HEARTBEAT 建立。飞控变更消息还需要当前客户端持有 controller lease。
+连接状态依次为 native handle → `transportOpen` → `vehicleReady` → controller lease。每次物理重连都创建新的 parser、协议探测、发送序列和链路统计。
 
-### 每条物理连接独立 codec session
+## ESC 会话
 
-parser、发送序列、协议版本探测和统计不能跨重连复用。MAVLink framing、CRC 与 signing 只允许经 `codec.ts` 处理，禁止重新维护手工 offset 或 CRC_EXTRA 表。
+- ArduPilot passthrough 暂停普通 MAVLink 并切换到 MSP/4-way 原始字节流。
+- PX4 通过 MAVLink `SERIAL_CONTROL` 建立 ESC 字节通道。
+- Direct 模式复用已按 19200 波特打开的 USB 单线适配器。
+- 会话 pin 控制者租约并隔离其他写命令；断开后仅允许原所有者在窗口内 reclaim。
+- AM32 写入从原始 EEPROM 副本打补丁，保留未知字节，随后整块读回比对。
 
-### 危险操作纵深防御
+## 不变量
 
-UI 确认不是唯一安全边界。服务端还会验证消息类型、范围、目标就绪状态和控制权，并禁止通用 command 绕过电机/执行器等专用流程。
+- `src/shared/` 是唯一共享表面；前后端不能互相导入。
+- `useWebSocket` 是浏览器唯一 socket owner。
+- MAVLink framing、CRC、dialect、signing 与序列号只由 `codec.ts` 管理。
+- UI 确认之外，服务端仍验证输入、目标、能力、控制权和会话冲突。
+- WS 驱动的持久状态进入 store；RAF/interval 回调稳定挂载。
+- 自动化测试不替代 HIL，文档必须区分软件支持与硬件验证。
 
-## 扩展协议
-
-新增一类 WebSocket 消息通常需要同时完成：
-
-1. 在 `src/shared/types.ts` 扩展 `ClientMessage` 或 `ServerMessage` union。
-2. 在 `src/server/validation.ts` 添加入站运行时校验（适用时）。
-3. 在 `MavlinkBridge` 或 `src/server/index.ts` 实现处理与 emit。
-4. 在 `useWebSocket.handleMessage` 中分发服务端消息。
-5. 将 WS 驱动的持久状态放入 Zustand store，而不是页面局部 state。
-6. 增加协议或服务边界回归测试。
-
-## 测试分层
-
-- `*.test.ts`：连接状态机、蓝牙识别、串口边界和 HTTP/WS 生命周期
-- `MavlinkBridge.test.ts`：framing、签名、目标选择、命令、参数和遥测语义
-- `npm run typecheck`：共享 union、前后端 dispatch 与严格 TypeScript 约束
-- `npm run build`：前端生产构建和静态资源集成
-- HIL：真实 PX4、USB/Bluetooth、签名互通及所有安全关键操作
-
-自动化测试不替代 HIL。建议的硬件验证矩阵见 [OPEN_SOURCE_CHECKLIST.md](OPEN_SOURCE_CHECKLIST.md)。
+新增协议消息时通常需要更新 shared union、运行时校验、服务端 handler/emit、`useWebSocket` dispatch、store 与回归测试。

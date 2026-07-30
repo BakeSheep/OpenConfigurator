@@ -133,6 +133,9 @@ async function run(): Promise<void> {
     )
     assert.deepEqual(t.availableChannels, [20, 21])
     await t.close('done')
+    const releases = bridge.sent.slice(1)
+    assert.deepEqual(releases.map((frame) => frame.device), [20, 21])
+    assert.ok(releases.every((frame) => frame.flags === 0 && frame.count === 0), 'close releases exclusive access')
   }
 
   // Init send failure surfaces link_unavailable and unsubscribes.

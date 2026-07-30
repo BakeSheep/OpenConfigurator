@@ -1,7 +1,6 @@
 import { isIP } from 'node:net'
 import {
   BAUD_RATES,
-  ESC_SERIAL_BAUD_RATE,
   FTP_MAX_PATH_BYTES,
   MAVLINK_COMMANDS,
   PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
@@ -27,6 +26,7 @@ export type BoundaryClientMessage = ClientMessage
 const CLIENT_DENIED_COMMANDS = new Set<string>([
   'MAV_CMD_DO_SET_MODE',
   'MAV_CMD_PREFLIGHT_CALIBRATION',
+  'MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN',
   'MAV_CMD_DO_MOTOR_TEST',
   'MAV_CMD_ACTUATOR_TEST',
   'MAV_CMD_DO_SET_SERVO',
@@ -319,6 +319,16 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
     case 'param_request_list':
       return withRequestId({ type: 'param_request_list' }, id) as BoundaryClientMessage
 
+    case 'reboot_vehicle':
+      if (id === undefined) fail('missing_request_id', 'reboot_vehicle 必须携带 requestId', 'requestId')
+      if (input.safetyConfirmation !== 'reboot_flight_controller') {
+        fail('safety_confirmation_required', '重启飞控必须显式确认 reboot_flight_controller', 'safetyConfirmation')
+      }
+      return withRequestId({
+        type: 'reboot_vehicle',
+        safetyConfirmation: 'reboot_flight_controller' as const,
+      }, id) as BoundaryClientMessage
+
     case 'set_flight_mode': {
       const data = record(input.data, 'data')
       // Only the profile mode id crosses the boundary; the server encodes the
@@ -469,18 +479,9 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         }, id) as BoundaryClientMessage
       }
       if (mode === 'direct') {
-        const port = text(data.port, 'data.port', {
-          minBytes: 1,
-          maxBytes: PORT_NAME_MAX_BYTES,
-          pattern: /^[^\0-\x1f\x7f]+$/,
-        }).trim()
-        if (!port) fail('invalid_format', 'data.port 不得为空', 'data.port')
-        if (data.baudRate !== undefined && data.baudRate !== ESC_SERIAL_BAUD_RATE) {
-          fail('unsupported_baud_rate', `直连仅支持 ${ESC_SERIAL_BAUD_RATE} 波特`, 'data.baudRate')
-        }
         return withRequestId({
           type: 'esc_session_start',
-          data: { mode: 'direct', port, baudRate: ESC_SERIAL_BAUD_RATE },
+          data: { mode: 'direct' },
         }, id) as BoundaryClientMessage
       }
       return fail('unsupported_esc_mode', `不支持的 ESC 连接模式：${mode}`, 'data.mode')
@@ -530,58 +531,6 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           sessionId: escSessionId(data.sessionId),
           targets: escTargets(data.targets),
           values: escValues(data.values),
-        },
-      }, id) as BoundaryClientMessage
-    }
-
-    case 'esc_flash_start': {
-      const data = record(input.data, 'data')
-      if (data.safetyConfirmation !== 'flash_esc_props_removed') {
-        fail(
-          'safety_confirmation_required',
-          '刷写 ESC 必须显式确认 flash_esc_props_removed',
-          'data.safetyConfirmation',
-        )
-      }
-      return withRequestId({
-        type: 'esc_flash_start',
-        data: {
-          sessionId: escSessionId(data.sessionId),
-          targets: escTargets(data.targets),
-          assetId: text(data.assetId, 'data.assetId', { minBytes: 1, maxBytes: 128, pattern: /^[A-Za-z0-9_-]+$/ }),
-          safetyConfirmation: 'flash_esc_props_removed' as const,
-        },
-      }, id) as BoundaryClientMessage
-    }
-
-    case 'esc_flash_cancel': {
-      const data = record(input.data, 'data')
-      return withRequestId({
-        type: 'esc_flash_cancel',
-        data: { sessionId: escSessionId(data.sessionId), jobId: escJobId(data.jobId) },
-      }, id) as BoundaryClientMessage
-    }
-
-    case 'esc_flash_decide': {
-      const data = record(input.data, 'data')
-      const decision = text(data.decision, 'data.decision', { minBytes: 1, maxBytes: 16, pattern: /^[a-z_]+$/ })
-      if (decision !== 'retry_current' && decision !== 'skip_current' && decision !== 'exit') {
-        fail('invalid_params', 'data.decision 无效', 'data.decision')
-      }
-      return withRequestId({
-        type: 'esc_flash_decide',
-        data: { sessionId: escSessionId(data.sessionId), jobId: escJobId(data.jobId), decision },
-      }, id) as BoundaryClientMessage
-    }
-
-    case 'esc_melody_write': {
-      const data = record(input.data, 'data')
-      return withRequestId({
-        type: 'esc_melody_write',
-        data: {
-          sessionId: escSessionId(data.sessionId),
-          targets: escTargets(data.targets),
-          rtttl: text(data.rtttl, 'data.rtttl', { minBytes: 1, maxBytes: 1024 }),
         },
       }, id) as BoundaryClientMessage
     }

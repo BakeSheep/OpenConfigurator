@@ -1,22 +1,11 @@
 # 变更记录
 
-本项目采用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，并计划在稳定发布后遵循[语义化版本](https://semver.org/lang/zh-CN/)。
+## Unreleased
 
-## [Unreleased]
+- 支持 PX4 与 ArduPilot 自动识别及 profile 化能力门控。
+- 完成 ArduCopter 配置、飞行操作与 DataFlash 日志下载/分析。
+- 集成 AM32 ESC 参数读取、编辑、批量写入与读回校验。
+- 将界面收敛为总览、飞行操作、飞行器设置、调参与诊断四个工作区。
+- 更新项目文档，移除已完成的路线图、实现计划和阶段验收快照。
 
-### Added
-
-- 开源项目 README（中文与英文）
-- 贡献指南、安全策略、行为准则、架构与部署文档
-- 路线图与开源发布检查清单
-- MIT License、Windows/Linux 基础 CI 与结构化 Bug 报告模板
-- PX4/USB/Bluetooth SPP 兼容性及硬件验证矩阵
-- 由 COMMAND_ACK 与飞控状态消息驱动的分步传感器校准向导
-
-### Changed
-
-- 尚无已发布版本。
-
-## 版本链接
-
-首个版本发布后在此补充比较链接。
+项目尚未发布稳定版本。

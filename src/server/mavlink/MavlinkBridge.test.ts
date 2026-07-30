@@ -720,6 +720,20 @@ const uncorrelatedMotorAck = findLast(
 )
 assert.equal(uncorrelatedMotorAck.data.requestId, undefined)
 
+// Reboot is a semantic, disarmed-only command encoded as PREFLIGHT_REBOOT_SHUTDOWN.
+const rebootFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 76).length
+bridge.handleClientMessage({
+  type: 'reboot_vehicle',
+  requestId: 'reboot-1',
+  safetyConfirmation: 'reboot_flight_controller',
+})
+const rebootFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
+assert.equal(rebootFrames.length, rebootFramesBefore + 1)
+const rebootPayload = framePayload(rebootFrames[rebootFrames.length - 1])
+assert.equal(rebootPayload.readUInt16LE(28), 246)
+assert.equal(rebootPayload.readFloatLE(0), 1)
+inject(bridge, 77, commandAckPayload(246, 0))
+
 // Malformed PARAM_VALUE packets never reach the cache or transaction layer.
 const paramMessagesBeforeMalformed = messages.filter((message) => message.type === 'param').length
 inject(bridge, 22, Buffer.alloc(24))
@@ -754,6 +768,8 @@ const paramResultsBeforeMismatch = messages.filter(
   (message) => message.type === 'param_set_result',
 ).length
 inject(bridge, 22, paramValuePayload('TEST_PARAM', 11.5))
+assert.equal(bridge.getParameterValue('TEST_PARAM'), 11.5)
+assert.equal(bridge.getParameterValue('BAD_VALUE'), null)
 assert.equal(
   messages.filter((message) => message.type === 'param_set_result').length,
   paramResultsBeforeMismatch,

@@ -4,6 +4,7 @@
 
 export type EscErrorCode =
   | 'not_supported'
+  | 'unsupported_vehicle_profile'
   | 'busy'
   | 'invalid_state'
   | 'not_owner'

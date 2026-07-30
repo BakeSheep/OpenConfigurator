@@ -6,7 +6,10 @@
 // docs/ESC-PROTOCOL-SOURCES.md. Independent implementation.
 import { crc16Xmodem, EscError } from '../../shared/esc'
 
-export const FOUR_WAY_START = 0x2f
+/** Host-to-interface request marker (`cmd_Local_Escape`, '/'). */
+export const FOUR_WAY_REQUEST_START = 0x2f
+/** Interface-to-host response marker (`cmd_Remote_Escape`, '.'). */
+export const FOUR_WAY_RESPONSE_START = 0x2e
 
 export const FOUR_WAY_COMMANDS = {
   InterfaceTestAlive: 0x30,
@@ -34,6 +37,7 @@ export const FOUR_WAY_ACK = {
   InvalidChannel: 0x08,
   InvalidParam: 0x09,
   Timeout: 0x0a,
+  GeneralError: 0x0f,
 } as const
 
 const ACK_MESSAGES: Record<number, string> = {
@@ -45,13 +49,16 @@ const ACK_MESSAGES: Record<number, string> = {
   [FOUR_WAY_ACK.InvalidChannel]: '无效通道',
   [FOUR_WAY_ACK.InvalidParam]: '无效参数',
   [FOUR_WAY_ACK.Timeout]: '超时',
+  [FOUR_WAY_ACK.GeneralError]: 'ESC 设备通讯失败',
 }
 
 /** Map a non-OK ACK code to an EscError. */
 export function ackToError(ack: number): EscError | null {
   if (ack === FOUR_WAY_ACK.OK) return null
   const message = ACK_MESSAGES[ack] ?? `未知 ACK 0x${ack.toString(16)}`
-  const retryable = ack === FOUR_WAY_ACK.Timeout || ack === FOUR_WAY_ACK.UnknownError
+  const retryable = ack === FOUR_WAY_ACK.Timeout
+    || ack === FOUR_WAY_ACK.UnknownError
+    || ack === FOUR_WAY_ACK.GeneralError
   return new EscError('nack', `4-way ACK: ${message}`, { retryable })
 }
 
@@ -60,13 +67,13 @@ export function ackToError(ack: number): EscError | null {
  * commands it is typically a single length byte, for writes the data bytes.
  * A params length of 256 is encoded as the wire value 0.
  */
-export function encodeFourWay(command: number, address: number, params: Uint8Array = new Uint8Array(0)): Uint8Array {
-  if (params.length > 256) {
-    throw new EscError('validation_failed', '4-way 参数不能超过 256 字节')
+export function encodeFourWay(command: number, address: number, params: Uint8Array): Uint8Array {
+  if (params.length < 1 || params.length > 256) {
+    throw new EscError('validation_failed', '4-way 参数长度必须在 1..256 字节')
   }
   const paramLen = params.length === 256 ? 0 : params.length
   const frame = new Uint8Array(5 + params.length + 2)
-  frame[0] = FOUR_WAY_START
+  frame[0] = FOUR_WAY_REQUEST_START
   frame[1] = command & 0xff
   frame[2] = (address >> 8) & 0xff
   frame[3] = address & 0xff
@@ -88,11 +95,11 @@ export interface FourWayResponse {
 /**
  * Frame-length probe for a 4-way response buffer. Response layout mirrors the
  * request but with an ACK byte inserted before the CRC:
- *   0x2F cmd addr_hi addr_lo param_len param[...] ack crc_hi crc_lo
+ *   0x2E cmd addr_hi addr_lo param_len param[...] ack crc_hi crc_lo
  */
 export function fourWayFrameLength(buffered: Uint8Array): number | null {
   if (buffered.length < 1) return null
-  if (buffered[0] !== FOUR_WAY_START) {
+  if (buffered[0] !== FOUR_WAY_RESPONSE_START) {
     throw new EscError('crc_mismatch', '4-way 帧起始字节错误')
   }
   if (buffered.length < 5) return null
@@ -103,7 +110,7 @@ export function fourWayFrameLength(buffered: Uint8Array): number | null {
 /** Decode and CRC-check a complete 4-way response frame. */
 export function decodeFourWay(frame: Uint8Array): FourWayResponse {
   if (frame.length < 8) throw new EscError('crc_mismatch', '4-way 帧过短')
-  if (frame[0] !== FOUR_WAY_START) {
+  if (frame[0] !== FOUR_WAY_RESPONSE_START) {
     throw new EscError('crc_mismatch', '4-way 帧起始字节错误')
   }
   const command = frame[1]

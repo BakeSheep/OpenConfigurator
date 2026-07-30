@@ -8,6 +8,7 @@
 // classification is therefore conservative and never enables writes on its own.
 import {
   EscError,
+  toEscError,
   type EscDeviceInfo,
   type EscFirmwareKind,
 } from '../../shared/esc'
@@ -32,11 +33,15 @@ import {
 const FOUR_WAY_TIMEOUTS = {
   default: 1000,
   initFlash: 3000,
+  write: 3000,
   reset: 2000,
   exit: 1000,
 } as const
 
 const MSP_TIMEOUT_MS = 1500
+const MSP_PASSTHROUGH_TIMEOUT_MS = 5000
+const ESC_INIT_MAX_ATTEMPTS = 5
+const ESC_INIT_RETRY_DELAY_MS = 250
 
 /** 4-way interface mode reported by DeviceInitFlash (Pending offsets). */
 export const FOUR_WAY_INTERFACE_MODE = {
@@ -55,10 +60,11 @@ export class MspClient {
     command: number,
     payload: Uint8Array,
     signal: AbortSignal,
+    timeoutMs = MSP_TIMEOUT_MS,
   ): Promise<MspResponse> {
     const frame = await this.transport.transact(
       encodeMspRequest(command, payload),
-      { timeoutMs: MSP_TIMEOUT_MS, frameLength: mspFrameLength, label: `msp:${command}` },
+      { timeoutMs, frameLength: mspFrameLength, label: `msp:${command}` },
       signal,
     )
     const response = decodeMspResponse(frame)
@@ -75,7 +81,14 @@ export class MspClient {
 
   /** Enter BLHeli passthrough (returns the reported ESC count when present). */
   async setPassthrough(signal: AbortSignal): Promise<number | null> {
-    const response = await this.request(MSP_COMMANDS.SET_PASSTHROUGH, new Uint8Array(0), signal)
+    // ArduPilot deliberately delays while configuring the BLHeli output at
+    // 19200 baud, so command 245 needs a wider timeout than ordinary MSP.
+    const response = await this.request(
+      MSP_COMMANDS.SET_PASSTHROUGH,
+      new Uint8Array(0),
+      signal,
+      MSP_PASSTHROUGH_TIMEOUT_MS,
+    )
     return response.payload.length >= 1 ? response.payload[0] : null
   }
 }
@@ -97,6 +110,9 @@ export class FourWayClient {
       signal,
     )
     const response = decodeFourWay(frame)
+    if (response.command !== command || response.address !== (address & 0xffff)) {
+      throw new EscError('target_mismatch', '4-way 响应与请求命令或地址不匹配')
+    }
     const ackError = ackToError(response.ack)
     if (ackError) throw ackError
     return response
@@ -137,6 +153,20 @@ export class FourWayClient {
     )
   }
 
+  /** Write 1..256 bytes to the currently initialized ESC address. */
+  write(address: number, data: Uint8Array, signal: AbortSignal): Promise<FourWayResponse> {
+    if (data.length < 1 || data.length > 256) {
+      throw new EscError('validation_failed', '4-way 写入长度必须在 1..256')
+    }
+    return this.command(
+      FOUR_WAY_COMMANDS.DeviceWrite,
+      address,
+      data,
+      FOUR_WAY_TIMEOUTS.write,
+      signal,
+    )
+  }
+
   reset(channel: number, signal: AbortSignal): Promise<FourWayResponse> {
     return this.command(FOUR_WAY_COMMANDS.DeviceReset, 0, Uint8Array.of(channel & 0xff), FOUR_WAY_TIMEOUTS.reset, signal)
   }
@@ -154,11 +184,11 @@ export interface DeviceInitInfo {
 
 /**
  * Extract identity fields from a DeviceInitFlash response. Layout is Pending:
- * params = [signature_hi, signature_lo, boot_pages?, interface_mode].
+ * params = [signature_lo, signature_hi, boot_pages?, interface_mode].
  */
 export function parseDeviceInitInfo(response: FourWayResponse): DeviceInitInfo {
   const { params } = response
-  const signature = params.length >= 2 ? (params[0] << 8) | params[1] : null
+  const signature = params.length >= 2 ? params[0] | (params[1] << 8) : null
   const interfaceMode = params.length >= 4 ? params[3] : null
   return { interfaceMode, signature }
 }
@@ -186,11 +216,15 @@ export async function detectEscs(
   fourWay: FourWayClient,
   channelCount: number,
   signal: AbortSignal,
+  onProbeError?: (index: number, error: EscError) => void,
 ): Promise<EscDeviceInfo[]> {
-  await fourWay.testAlive(signal)
+  // InterfaceTestAlive asks the already-selected ESC bootloader for a
+  // keepalive and ArduPilot returns ACK_D_GENERAL_ERROR before any channel has
+  // been initialized. Probe the FC-side 4-way interface itself first.
+  await fourWay.protocolVersion(signal)
   const escs: EscDeviceInfo[] = []
   for (let index = 0; index < channelCount; index++) {
-    escs.push(await detectOne(fourWay, index, signal))
+    escs.push(await detectOne(fourWay, index, signal, onProbeError))
   }
   return escs
 }
@@ -199,41 +233,67 @@ async function detectOne(
   fourWay: FourWayClient,
   index: number,
   signal: AbortSignal,
+  onProbeError?: (index: number, error: EscError) => void,
 ): Promise<EscDeviceInfo> {
-  try {
-    const response = await fourWay.initFlash(index, signal)
-    const { interfaceMode, signature } = parseDeviceInitInfo(response)
-    const firmwareKind = firmwareKindFromInterfaceMode(interfaceMode)
-    return {
-      index,
-      interfaceMode,
-      firmwareKind,
-      firmwareName: null,
-      firmwareVersion: null,
-      mcuSignature: signature,
-      mcuName: null,
-      bootloaderVersion: null,
-      layoutRevision: null,
-      // Writes require a hardware-validated layout (Task 10+); detection
-      // alone never marks a device writable.
-      writable: false,
-      reason: firmwareKind === 'unknown' ? 'unsupported_signature_or_layout' : 'not_validated',
-    }
-  } catch (error) {
-    // A single ESC failing to init must not abort discovery of the others.
-    void error
-    return {
-      index,
-      interfaceMode: null,
-      firmwareKind: 'unknown',
-      firmwareName: null,
-      firmwareVersion: null,
-      mcuSignature: null,
-      mcuName: null,
-      bootloaderVersion: null,
-      layoutRevision: null,
-      writable: false,
-      reason: 'detect_failed',
+  let lastError: EscError | null = null
+  for (let attempt = 1; attempt <= ESC_INIT_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fourWay.initFlash(index, signal)
+      const { interfaceMode, signature } = parseDeviceInitInfo(response)
+      const firmwareKind = firmwareKindFromInterfaceMode(interfaceMode)
+      return {
+        index,
+        interfaceMode,
+        firmwareKind,
+        firmwareName: null,
+        firmwareVersion: null,
+        mcuSignature: signature,
+        mcuName: null,
+        bootloaderVersion: null,
+        layoutRevision: null,
+        // Writes require a hardware-validated layout (Task 10+); detection
+        // alone never marks a device writable.
+        writable: false,
+        reason: firmwareKind === 'unknown' ? 'unsupported_signature_or_layout' : 'not_validated',
+      }
+    } catch (error) {
+      lastError = toEscError(error)
+      if (lastError.code === 'cancelled' || lastError.code === 'link_lost') throw lastError
+      if (!lastError.retryable || attempt === ESC_INIT_MAX_ATTEMPTS) break
+      await abortableDelay(ESC_INIT_RETRY_DELAY_MS, signal)
     }
   }
+
+  // A single ESC exhausting its retry budget must not abort discovery of the
+  // remaining channels, but preserve the final FC/transport error in the log.
+  onProbeError?.(index, lastError ?? new EscError('internal', 'ESC 探测失败'))
+  return {
+    index,
+    interfaceMode: null,
+    firmwareKind: 'unknown',
+    firmwareName: null,
+    firmwareVersion: null,
+    mcuSignature: null,
+    mcuName: null,
+    bootloaderVersion: null,
+    layoutRevision: null,
+    writable: false,
+    reason: 'detect_failed',
+  }
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new EscError('cancelled', 'ESC 扫描已取消'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(new EscError('cancelled', 'ESC 扫描已取消'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }

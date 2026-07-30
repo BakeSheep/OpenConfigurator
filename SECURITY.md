@@ -13,7 +13,7 @@ OpenConfigurator 目前处于 pre-release 阶段。在首个稳定版本发布�
 报告建议包含：
 
 - 受影响的提交或版本、操作系统、Node.js 版本和浏览器
-- 连接方式、PX4/固件版本与是否使用 MAVLink signing
+- 连接方式、飞控类型与固件版本、是否使用 MAVLink signing
 - 最小复现步骤、预期与实际结果
 - 影响评估，以及是否可能导致未授权控制或安全保护绕过
 - 已做的脱敏说明；不要附带真实 token、signing key 或未脱敏飞行日志

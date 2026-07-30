@@ -8,16 +8,24 @@ import {
   encodeFourWay,
   FOUR_WAY_ACK,
   FOUR_WAY_COMMANDS,
-  FOUR_WAY_START,
+  FOUR_WAY_REQUEST_START,
+  FOUR_WAY_RESPONSE_START,
   fourWayFrameLength,
 } from './fourWay'
 
 // Request framing: 0x2F cmd addr_hi addr_lo param_len param[...] crc_hi crc_lo.
 {
-  const frame = encodeFourWay(FOUR_WAY_COMMANDS.InterfaceTestAlive, 0)
-  const body = Uint8Array.of(FOUR_WAY_START, 0x30, 0x00, 0x00, 0x00)
+  const frame = encodeFourWay(FOUR_WAY_COMMANDS.InterfaceTestAlive, 0, Uint8Array.of(0))
+  const body = Uint8Array.of(FOUR_WAY_REQUEST_START, 0x30, 0x00, 0x00, 0x01, 0x00)
   const crc = crc16Xmodem(body)
   assert.deepEqual([...frame], [...body, (crc >> 8) & 0xff, crc & 0xff])
+}
+{
+  assert.throws(
+    () => encodeFourWay(FOUR_WAY_COMMANDS.InterfaceTestAlive, 0, new Uint8Array(0)),
+    (e: unknown) => e instanceof EscError && e.code === 'validation_failed',
+    'zero params are ambiguous because wire length 0 means 256',
+  )
 }
 {
   // DeviceRead of 0x0000 for 256 bytes: param_len encoded as 0.
@@ -35,11 +43,16 @@ import {
 
 // Response framing probe.
 {
-  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_START)), null)
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START)), null)
   // cmd,addr,addr,param_len=3 -> 5 + 3 + 1(ack) + 2(crc) = 11
-  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_START, 0x3a, 0, 0, 3)), 11)
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 3)), 11)
   // param_len sentinel 0 -> 256 bytes.
-  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_START, 0x3a, 0, 0, 0)), 5 + 256 + 3)
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 0)), 5 + 256 + 3)
+  assert.throws(
+    () => fourWayFrameLength(Uint8Array.of(FOUR_WAY_REQUEST_START)),
+    (e: unknown) => e instanceof EscError,
+    'a local/request escape byte is not a response prefix',
+  )
   assert.throws(
     () => fourWayFrameLength(Uint8Array.of(0x00)),
     (e: unknown) => e instanceof EscError,
@@ -51,7 +64,7 @@ import {
 function buildResponse(command: number, address: number, params: number[], ack: number): Uint8Array {
   const paramLen = params.length === 256 ? 0 : params.length
   const head = Uint8Array.of(
-    FOUR_WAY_START,
+    FOUR_WAY_RESPONSE_START,
     command,
     (address >> 8) & 0xff,
     address & 0xff,

@@ -1,49 +1,46 @@
 import { PageHeader } from '../components/ui/PageFrame'
 import EscConnectPanel from '../components/esc/EscConnectPanel'
-import EscDeviceCard from '../components/esc/EscDeviceCard'
+import EscSettingsWorkbench from '../components/esc/EscSettingsWorkbench'
 import EscLogConsole from '../components/esc/EscLogConsole'
 import Icon from '../components/ui/Icon'
 import { useEscStore } from '../stores/escStore'
 
-/**
- * ESC configuration workspace. First milestone is read-only: connect through a
- * passthrough/direct session, discover ESCs and show their identity. Settings
- * editing and flashing arrive in later milestones behind capability gates.
- */
+/** ESC configuration workspace, embedded directly in the vehicle settings page. */
 export default function EscPage({ embedded = false }: { embedded?: boolean }) {
   const session = useEscStore((state) => state.session)
   const devices = useEscStore((state) => state.devices)
   const lastError = useEscStore((state) => state.lastError)
   const active = session !== null && session.state !== 'idle'
+  const scanFailed = lastError?.operation === 'esc_devices_scan'
 
   const content = (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div className="mc-esc-page">
       <EscConnectPanel />
 
       {lastError && (
-        <div className="mc-card" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--danger)' }}>
-          <Icon name="warning" size={16} />
-          <span style={{ fontSize: 13 }}>{lastError.message}</span>
+        <div className="mc-card mc-esc-alert" role="alert">
+          <Icon name="warning" size={17} />
+          <div>
+            <strong>ESC 通讯失败</strong>
+            <span>{lastError.message}</span>
+          </div>
         </div>
       )}
 
       {active && (
         devices.length > 0 ? (
-          <div
-            style={{
-              display: 'grid',
-              gap: 12,
-              gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-            }}
-          >
-            {devices.map((esc) => (
-              <EscDeviceCard key={esc.index} esc={esc} />
-            ))}
-          </div>
+          <EscSettingsWorkbench />
         ) : (
-          <div className="mc-card" style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-            正在扫描电调……若长时间无结果，请检查连接方式与前置条件。
-          </div>
+          <section className="mc-esc-scan-stage" aria-live="polite">
+            {!scanFailed && <span className="mc-esc-scan-status__pulse" />}
+            <div>
+              <span className="mc-eyebrow">DISCOVERY</span>
+              <strong>{scanFailed ? '没有完成电调扫描' : '正在建立参数工作区'}</strong>
+              <p>{scanFailed
+                ? '检查 ESC 供电、DShot 输出和直通参数后重新扫描。'
+                : '正在识别 MCU 与 AM32 EEPROM 布局，完成后将自动载入全部参数。'}</p>
+            </div>
+          </section>
         )
       )}
 
@@ -55,7 +52,7 @@ export default function EscPage({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className="mc-workspace mc-workspace--wide mc-fade-in">
-      <PageHeader title="电调配置" description="通过飞控直通或 USB 直连读取电调信息、配置与刷写固件。" />
+      <PageHeader title="电调配置" description="读取、比较并安全写入 AM32 电调参数。" />
       {content}
     </div>
   )

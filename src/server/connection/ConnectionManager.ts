@@ -405,6 +405,7 @@ export class ConnectionManager extends EventEmitter {
         if (this.rawSession !== state || !state.active) return
         state.active = false
         this.rawSession = null
+        this.emit('rawSessionChange', false)
         // Restore the MAVLink heartbeat monitor but keep vehicleReady false:
         // only a freshly validated autopilot heartbeat may raise it (ADR-005).
         if (this.link && this._transportOpen && this._status === 'connected') {
@@ -416,6 +417,7 @@ export class ConnectionManager extends EventEmitter {
     this.rawSession = state
     this.stopHeartbeatMonitor()
     this.setVehicleReady(false)
+    this.emit('rawSessionChange', true)
     return handle
   }
 
@@ -441,6 +443,7 @@ export class ConnectionManager extends EventEmitter {
     if (!state || !state.active) return
     state.active = false
     this.rawSession = null
+    this.emit('rawSessionChange', false)
     for (const listener of [...state.abortedListeners]) {
       try {
         listener(reason)

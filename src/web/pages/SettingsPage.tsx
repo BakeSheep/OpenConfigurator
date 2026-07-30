@@ -18,7 +18,7 @@ const sections: Array<{ id: SetupSection; label: string; description: string; ic
   { id: 'airframe', label: '机架', description: '识别当前飞行器配置', icon: 'flight' },
   { id: 'sensors', label: '传感器', description: '监控与校准', icon: 'sensor' },
   { id: 'actuators', label: '执行器', description: '输出映射与电机测试', icon: 'motor' },
-  { id: 'esc', label: '电调', description: '直通配置与固件刷写', icon: 'motor' },
+  { id: 'esc', label: '电调', description: 'AM32 参数读取与配置', icon: 'motor' },
   { id: 'receiver', label: '遥控器', description: '通道监控', icon: 'receiver' },
   { id: 'joystick', label: '游戏手柄', description: '轴、按钮与响应曲线', icon: 'gamepad' },
   { id: 'ports', label: '端口', description: 'MAVLink 串口实例', icon: 'plug' },
@@ -43,7 +43,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mc-workspace mc-workspace--wide mc-fade-in">
+    <div className="mc-workspace mc-workspace--full mc-fade-in">
       <PageHeader title="飞行器设置" description="按硬件配置流程组织机架、传感器、执行器与控制输入。" />
       <div className="mc-subworkspace">
         <CollapsibleSubnav ariaLabel="飞行器设置" storageKey="oc-settings-subnav-collapsed">

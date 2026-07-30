@@ -99,7 +99,7 @@ async function run(): Promise<void> {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
     bridge.armedState = true
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await expectEscError(t.open(AP_TARGET, new AbortController().signal), 'armed', 'armed open')
     assert.equal(bridge.pauseCalls.length, 0, 'must not pause when armed')
     assert.equal(conn.beginCalls, 0)
@@ -108,7 +108,7 @@ async function run(): Promise<void> {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
     bridge.armedState = null
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await expectEscError(
       t.open(AP_TARGET, new AbortController().signal),
       'arming_state_unknown',
@@ -119,13 +119,29 @@ async function run(): Promise<void> {
     const conn = new FakeRawSession()
     conn.vehicleReady = false
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await expectEscError(
       t.open(AP_TARGET, new AbortController().signal),
       'precondition_failed',
       'stale heartbeat',
     )
     assert.equal(bridge.pauseCalls.length, 0)
+  }
+
+  // Direct USB reuse borrows the same raw link without requiring a MAVLink
+  // heartbeat or arming state from a directly attached ESC.
+  {
+    const conn = new FakeRawSession()
+    conn.vehicleReady = false
+    const bridge = new FakeBridge()
+    bridge.armedState = true
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, targetMode: 'direct' })
+    await t.open({ mode: 'direct', port: 'COM9', baudRate: 19200 }, new AbortController().signal)
+    assert.equal(t.kind, 'direct')
+    assert.equal(conn.beginCalls, 1)
+    await t.close('done')
+    assert.equal(conn.released, 1)
+    assert.equal(bridge.resumeCalls, 1)
   }
 
   // Rejects when the link is busy with a conflicting MAVLink operation.
@@ -145,7 +161,7 @@ async function run(): Promise<void> {
   {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await t.open(AP_TARGET, new AbortController().signal)
     assert.deepEqual(bridge.pauseCalls, ['esc_session'])
     assert.equal(conn.beginCalls, 1)
@@ -177,7 +193,7 @@ async function run(): Promise<void> {
     const conn = new FakeRawSession()
     conn.throwOnBegin = new Error('serial busy')
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await expectEscError(
       t.open(AP_TARGET, new AbortController().signal),
       'link_unavailable',
@@ -191,7 +207,7 @@ async function run(): Promise<void> {
   {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await t.open(AP_TARGET, new AbortController().signal)
     await expectEscError(
       t.transact(Uint8Array.of(0x2f), { timeoutMs: 20, frameLength: fixedFrame(4) }, new AbortController().signal),
@@ -205,7 +221,7 @@ async function run(): Promise<void> {
   {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await t.open(AP_TARGET, new AbortController().signal)
     const pending = t.transact(Uint8Array.of(0x2f), { timeoutMs: 200, frameLength: fixedFrame(3) }, new AbortController().signal)
     await wait(5)
@@ -218,7 +234,7 @@ async function run(): Promise<void> {
   {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await t.open(AP_TARGET, new AbortController().signal)
     const ac = new AbortController()
     const pending = t.transact(Uint8Array.of(0x2f), { timeoutMs: 500, frameLength: fixedFrame(4) }, ac.signal)
@@ -232,7 +248,7 @@ async function run(): Promise<void> {
   {
     const conn = new FakeRawSession()
     const bridge = new FakeBridge()
-    const t = new ArduPilotRawTransport({ connManager: conn, bridge })
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
     await t.open(AP_TARGET, new AbortController().signal)
     const aborts: EscError[] = []
     t.onAborted((error) => aborts.push(error))
