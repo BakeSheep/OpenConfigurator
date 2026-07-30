@@ -132,6 +132,14 @@ const MSG: MsgDef = {
   format: 'QZ',
   columns: ['TimeUS', 'Message'],
 }
+// Include a non-zero I contribution to ensure it is not mistaken for an
+// instance selector (PID logs use I for the integral term).
+const PIDR: MsgDef = {
+  type: 45,
+  name: 'PIDR',
+  format: 'Qffffff',
+  columns: ['TimeUS', 'Tar', 'Act', 'Err', 'P', 'I', 'D'],
+}
 
 const GPS_WEEK = 2308
 const GPS_MS = 3_600_000
@@ -141,7 +149,7 @@ const LNG = 8.545594
 function buildLog(): Buffer {
   const parts: Buffer[] = []
   // All FMT definitions first.
-  parts.push(fmtFrame(ATT), fmtFrame(MODE), fmtFrame(EV), fmtFrame(GPS), fmtFrame(PARM), fmtFrame(MSG))
+  parts.push(fmtFrame(ATT), fmtFrame(MODE), fmtFrame(EV), fmtFrame(GPS), fmtFrame(PARM), fmtFrame(MSG), fmtFrame(PIDR))
   // Firmware banner (sets vehicle class = copter) and a parameter.
   parts.push(dataFrame(MSG, { TimeUS: 500_000, Message: 'ArduCopter V4.7.0 (1511f271)' }))
   parts.push(dataFrame(PARM, { TimeUS: 600_000, Name: 'FRAME_CLASS', Value: 1 }))
@@ -155,6 +163,9 @@ function buildLog(): Buffer {
   }))
   parts.push(dataFrame(ATT, {
     TimeUS: 2_100_000, DesRoll: 1, Roll: 1.2, DesPitch: -2, Pitch: -1.8, DesYaw: 90, Yaw: 89, AEKF: 1,
+  }))
+  parts.push(dataFrame(PIDR, {
+    TimeUS: 2_200_000, Tar: 10, Act: 9.5, Err: 0.5, P: 0.3, I: 0.2, D: 0.1,
   }))
   parts.push(dataFrame(GPS, {
     TimeUS: 2_300_000, Status: 3, GMS: GPS_MS + 300, GWk: GPS_WEEK, NSats: 12,
@@ -207,6 +218,14 @@ function buildLog(): Buffer {
   // Attitude series decoded (float fields).
   const roll = dataset.attitude.find((series) => series.label === '横滚')
   assert.ok(roll && roll.values.some((value) => Math.abs(value - 1.2) < 1e-4))
+
+  // PIDR Tar/Act/Err feed the roll PID loop; loops without data are dropped.
+  assert.deepEqual(dataset.pidLoops.map((loop) => loop.id), ['roll'])
+  const rollLoop = dataset.pidLoops[0]
+  const target = rollLoop.series.find((series) => series.label === 'Roll 目标')
+  const error = rollLoop.series.find((series) => series.label === 'Roll 误差')
+  assert.ok(target && target.values.some((value) => Math.abs(value - 10) < 1e-4))
+  assert.ok(error && error.values.some((value) => Math.abs(value - 0.5) < 1e-4))
 
   // Parameter captured.
   assert.deepEqual(dataset.params, [{ name: 'FRAME_CLASS', value: 1 }])

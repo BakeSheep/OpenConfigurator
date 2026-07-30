@@ -90,11 +90,6 @@ export default function StatusBar() {
               CPU {cpuLoad.toFixed(0)}%
             </span>
           )}
-          {escBanner && (
-            <span className="mc-statusbar__chip" style={{ color: 'var(--accent)' }}>
-              {escBanner}
-            </span>
-          )}
           {avgTemp !== null && (
             <span
               role="button"
@@ -106,6 +101,11 @@ export default function StatusBar() {
               onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(false); setTempOpen((current) => !current) } }}
             >
               均温 {avgTemp.toFixed(1)}°C
+            </span>
+          )}
+          {escBanner && (
+            <span className="mc-statusbar__chip" style={{ color: 'var(--accent)' }}>
+              {escBanner}
             </span>
           )}
         </span>

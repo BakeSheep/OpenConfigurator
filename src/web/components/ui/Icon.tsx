@@ -8,7 +8,7 @@ export type IconName =
   | 'search' | 'battery' | 'satellite' | 'altitude' | 'check' | 'warning'
   | 'pause' | 'trash' | 'folder' | 'upload' | 'download' | 'grid' | 'list'
   | 'arrowLeft' | 'arrowRight' | 'arrowUp' | 'file' | 'play' | 'close'
-  | 'copy' | 'maximize' | 'stretch' | 'github'
+  | 'copy' | 'maximize' | 'stretch' | 'github' | 'actuator' | 'tune'
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'children'> {
   name: IconName
@@ -57,6 +57,13 @@ export default function Icon({ name, size = 20, strokeWidth = 1.8, ...props }: I
       return <svg {...shared}><path d="M7 8h10a4 4 0 0 1 3.8 3l1 3.5A3.3 3.3 0 0 1 18.6 19a3.3 3.3 0 0 1-2.4-1l-1.5-1.7h-5.4L7.8 18A3.3 3.3 0 0 1 5.4 19a3.3 3.3 0 0 1-3.2-4.5l1-3.5A4 4 0 0 1 7 8Z" /><path d="M7 12v4M5 14h4M16 13h.01M18.5 15.5h.01" /></svg>
     case 'motor':
       return <svg {...shared}><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+    case 'actuator':
+      // PWM output waveform: distinguishes actuator mapping from the
+      // sensor dial and ESC chip icons.
+      return <svg {...shared}><path d="M2.5 17.5H5v-10h5v10h4v-10h5v10h2.5" /></svg>
+    case 'tune':
+      // PID step response: damped oscillation settling on a dashed setpoint.
+      return <svg {...shared}><path d="M3 11h18" strokeDasharray="2.5 3" opacity=".55" /><path d="M3 19c3 0 3.4-13 6-13s2.6 9 4.7 9 2-3.6 3.6-3.6H21" /></svg>
     case 'receiver':
       return <svg {...shared}><rect x="3" y="6" width="18" height="12" rx="3" /><path d="M8 12h4M10 10v4M16.5 10.5h.01M18.5 13.5h.01" /></svg>
     case 'plug':

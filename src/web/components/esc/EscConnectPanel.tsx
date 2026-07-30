@@ -179,9 +179,7 @@ export default function EscConnectPanel() {
         <div className="mc-esc-connect__cards">
           <section className="mc-esc-connect-card" aria-labelledby="esc-preconditions-title">
             <header>
-              <span className="mc-eyebrow">01 · 检查</span>
               <h3 id="esc-preconditions-title">连接前置条件</h3>
-              <p>所有条件满足后，才能安全进入 ESC 参数会话。</p>
             </header>
 
             {effectiveMode === 'ardupilot_passthrough' && (
@@ -211,9 +209,7 @@ export default function EscConnectPanel() {
 
           <section className="mc-esc-connect-card mc-esc-connect-card--actions" aria-labelledby="esc-actions-title">
             <header>
-              <span className="mc-eyebrow">02 · 操作</span>
               <h3 id="esc-actions-title">直通与 ESC 配置</h3>
-              <p>先确认直通参数，再建立独占的 ESC 配置会话。</p>
             </header>
 
             {effectiveMode !== 'direct' && (

@@ -3,7 +3,7 @@ import Icon, { type IconName } from './Icon'
 
 interface PageHeaderProps {
   title: string
-  description: string
+  description?: string
   actions?: ReactNode
 }
 
@@ -12,7 +12,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
     <header className="mc-page-header">
       <div>
         <h1 className="mc-page-title">{title}</h1>
-        <p className="mc-page-subtitle">{description}</p>
+        {description && <p className="mc-page-subtitle">{description}</p>}
       </div>
       {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
     </header>

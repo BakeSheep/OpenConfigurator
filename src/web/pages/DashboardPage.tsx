@@ -37,10 +37,6 @@ function readDashboardSnapshot() {
     attitude: telemetry.attitude,
     gps: telemetry.gps,
     battery: telemetry.battery,
-    relativeAlt: telemetry.relativeAlt,
-    heading: telemetry.heading,
-    mode: telemetry.status?.mode,
-    armed: telemetry.status?.armed ?? false,
     isStale: telemetry.isStale,
     sensorHealth: sensors.sensorHealth,
     imu: sensors.imu,
@@ -215,7 +211,7 @@ export default function DashboardPage() {
   }, [])
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const {
-    attitude, gps, battery, relativeAlt, heading, mode, armed, isStale,
+    attitude, gps, battery, isStale,
     sensorHealth, imu, magData, baro, opticalFlow, distanceSensor,
     rcChannels, motorOutputs,
   } = snapshot
@@ -237,11 +233,21 @@ export default function DashboardPage() {
     .map((value, index) => ({ label: `M${index + 1}`, value }))
     .filter((bar, index) => bar.value !== null || index < 8)
 
+  // Battery summary: voltage / current / power (V×I) / remaining, skipping
+  // fields the current BATTERY_STATUS instance does not report.
+  const batteryValue = battery
+    ? [
+        battery.voltage != null ? `${battery.voltage.toFixed(1)} V` : null,
+        battery.current != null ? `${battery.current.toFixed(1)} A` : null,
+        battery.voltage != null && battery.current != null ? `${(battery.voltage * battery.current).toFixed(0)} W` : null,
+        battery.remaining != null ? `${battery.remaining}%` : null,
+      ].filter((part) => part !== null).join(' · ') || '—'
+    : '—'
+
   return (
     <div className="mc-workspace mc-workspace--full mc-fade-in">
       <PageHeader
         title="飞行总览"
-        description={vehicleReady ? `${armed ? '已解锁' : '已上锁'} · ${mode ?? '模式未知'} · 高度 ${relativeAlt.toFixed(1)} m · 航向 ${heading.toFixed(0)}°` : '连接飞控后显示实时姿态、定位和传感器健康。'}
         actions={<NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />进入飞行操作</NavLink>}
       />
       <section className="mc-dashboard-primary-grid">
@@ -263,7 +269,7 @@ export default function DashboardPage() {
             <HealthRow label="GPS" value={gps ? `${gps.satellites_visible} SAT · Fix ${gps.fix_type}` : '—'} ok={sensorHealth.gps === 'ok'} />
             <HealthRow label="光流" value={opticalFlow ? `Q ${opticalFlow.quality}/255` : '—'} ok={sensorHealth.opticalFlow === 'ok'} />
             <HealthRow label="测距" value={distanceSensor ? `${distanceSensor.current_distance} cm` : '—'} ok={sensorHealth.rangefinder === 'ok'} />
-            <HealthRow label="电池" value={battery ? `${battery.voltage?.toFixed(1) ?? '—'} V · ${battery.remaining ?? '—'}%` : '—'} ok={Boolean(vehicleReady && battery)} />
+            <HealthRow label="电池" value={batteryValue} ok={Boolean(vehicleReady && battery)} />
           </div>
         </aside>
         <VerticalBarsCard title="遥控输入" subtitle="RC_CHANNELS · µs" live={rcLive} bars={rcBars} />

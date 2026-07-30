@@ -14,7 +14,7 @@ type DiagnosticSection = 'parameters' | 'pid' | 'ekf' | 'waveforms' | 'messages'
 
 const sections: Array<{ id: DiagnosticSection; label: string; description: string; icon: IconName }> = [
   { id: 'parameters', label: '完整参数', description: '同步、搜索和写入', icon: 'parameters' },
-  { id: 'pid', label: 'PID 调参', description: '姿态与角速度控制', icon: 'waveform' },
+  { id: 'pid', label: 'PID 调参', description: '姿态与角速度控制', icon: 'tune' },
   { id: 'ekf', label: 'EKF 融合', description: '状态估计数据源', icon: 'settings' },
   { id: 'waveforms', label: '实时波形', description: '多通道趋势观察', icon: 'waveform' },
   { id: 'messages', label: 'MAVLink 消息', description: '数据流与状态文本', icon: 'message' },

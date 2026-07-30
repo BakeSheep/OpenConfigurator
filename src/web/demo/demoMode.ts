@@ -70,6 +70,8 @@ const DEMO_PARAMS: Array<[string, number, number]> = [
   ['THR_MDL_FAC', 0.3, 9],
   // System / MAVLink
   ['MAV_SYS_ID', 1, 6], ['MAV_COMP_ID', 1, 6], ['MAV_TYPE', 2, 6], ['MAV_PROTO_VER', 2, 6],
+  ['MAV_0_CONFIG', 101, 6], ['MAV_0_MODE', 0, 6], ['MAV_0_RATE', 1200, 6], ['MAV_0_RADIO_CTL', 1, 6], ['MAV_0_FORWARD', 1, 6],
+  ['MAV_1_CONFIG', 102, 6], ['MAV_1_MODE', 2, 6], ['MAV_1_RATE', 0, 6], ['MAV_1_RADIO_CTL', 0, 6], ['MAV_1_FORWARD', 0, 6],
   ['SER_TEL1_BAUD', 57600, 6], ['SER_TEL2_BAUD', 921600, 6], ['SYS_AUTOSTART', 4001, 6], ['SYS_HAS_MAG', 1, 6],
   ['SDLOG_MODE', 0, 6], ['SDLOG_PROFILE', 1, 6], ['PASSTHRU_EN', 0, 6],
 ]

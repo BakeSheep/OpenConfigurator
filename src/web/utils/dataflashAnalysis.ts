@@ -8,6 +8,7 @@ import {
   EnvelopeCollector,
   VibrationAnalyzer,
   buildSegments,
+  type PidLoopData,
   type SeriesData,
   type UlogAnalysisDataset,
   type UlogEvent,
@@ -163,6 +164,15 @@ const FIRMWARE_CLASS_PATTERNS: Array<[RegExp, VehicleClass]> = [
  */
 const INSTANCE_COLUMNS = ['I', 'Inst', 'Instance', 'IMU']
 
+// AC_PID logging messages -> loop identity. Tar/Act/Err are logged directly
+// in each loop's native units (rate loops in rad/s on recent firmwares).
+const PID_LOOP_DEFS = [
+  { msg: 'PIDR', id: 'roll', label: 'Roll' },
+  { msg: 'PIDP', id: 'pitch', label: 'Pitch' },
+  { msg: 'PIDY', id: 'yaw', label: 'Yaw' },
+  { msg: 'PIDA', id: 'accz', label: 'AccZ' },
+] as const
+
 /**
  * Parse a complete DataFlash .bin buffer into the shared analysis dataset.
  * Corrupt bytes trigger a one-byte resync; a truncated final frame is
@@ -214,6 +224,11 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
     y: makeRaw('Vibe Y (m/s²)'),
     z: makeRaw('Vibe Z (m/s²)'),
   }
+  const pidCollectors = new Map(PID_LOOP_DEFS.map((def) => [def.msg, {
+    tar: makeRaw(`${def.label} 目标`),
+    act: makeRaw(`${def.label} 实际`),
+    err: makeRaw(`${def.label} 误差`),
+  }]))
   const motorEnvelopes: EnvelopeCollector[] = []
   const motorIndices: number[] = []
   let motorSampleCount = 0
@@ -457,6 +472,17 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
       }
     },
   }
+  for (const def of PID_LOOP_DEFS) {
+    const collectors = pidCollectors.get(def.msg)!
+    handlers[def.msg] = (fields, timeSec) => {
+      // PID records use `I` for the integral contribution, not an instance
+      // selector. Applying firstInstanceOnly() here would discard every sample
+      // whose integral term is non-zero.
+      pushRaw(collectors.tar, timeSec, numField(fields, 'Tar'))
+      pushRaw(collectors.act, timeSec, numField(fields, 'Act'))
+      pushRaw(collectors.err, timeSec, numField(fields, 'Err'))
+    }
+  }
 
   // Message ids we decode (handlers above); everything else is skipped fast.
   const handledIds = new Map<number, MessageFormat>()
@@ -567,6 +593,15 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
       rates.pitch, rates.pitchSp,
       rates.yaw, rates.yawSp,
     ].map(finishRaw).filter((series) => series.times.length > 0),
+    pidLoops: PID_LOOP_DEFS.map((def): PidLoopData => {
+      const collectors = pidCollectors.get(def.msg)!
+      return {
+        id: def.id,
+        label: def.label,
+        series: [collectors.tar, collectors.act, collectors.err]
+          .map(finishRaw).filter((series) => series.times.length > 0),
+      }
+    }).filter((loop) => loop.series.length > 0),
     actuators: motorSeries,
     actuatorSaturation: motorSeries.length > 0
       ? {

@@ -187,7 +187,7 @@ export default function FlightControlPage() {
           <div className="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
             {modeOptions.length === 0 && (
               <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-                当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+                {connected ? '该机型暂不支持模式切换' : '连接飞控后显示可用模式'}
               </p>
             )}
             {modeOptions.map((mode) => (

@@ -35,6 +35,21 @@ const MODE_OPTIONS = [
 const RADIO_OPTIONS = [[0, 'Disabled'], [1, 'Enabled'], [2, 'Auto-detected']] as const
 const FORWARD_OPTIONS = [[0, 'Disabled'], [1, 'Enabled']] as const
 
+// Common PX4 SER_*_BAUD values (8N1). 0 keeps the firmware's auto baud.
+const PX4_BAUD_OPTIONS = [
+  [0, 'Auto'],
+  [9600, '9600 8N1'],
+  [19200, '19200 8N1'],
+  [38400, '38400 8N1'],
+  [57600, '57600 8N1'],
+  [115200, '115200 8N1'],
+  [230400, '230400 8N1'],
+  [460800, '460800 8N1'],
+  [921600, '921600 8N1'],
+  [1500000, '1500000 8N1'],
+  [3000000, '3000000 8N1'],
+] as const
+
 const BAUD_PARAMS: Record<number, string> = {
   101: 'SER_TEL1_BAUD',
   102: 'SER_TEL2_BAUD',
@@ -118,8 +133,7 @@ export default function PortSettingsPage() {
     const prefix = `MAV_${instance}`
     const portValue = params.get(`${prefix}_CONFIG`)?.value
     const baudParam = baudParamForPort(portValue)
-    const baudValue = baudParam ? params.get(baudParam)?.value : undefined
-    return { instance, prefix, baudValue }
+    return { instance, prefix, baudParam }
   })
 
   return (
@@ -144,13 +158,17 @@ export default function PortSettingsPage() {
             <span>实例</span><span>端口</span><span>波特率</span><span>模式</span>
             <span>速率</span><span>流控</span><span>转发</span><span>高级</span>
           </div>
-          {rows.map(({ instance, prefix, baudValue }) => (
+          {rows.map(({ instance, prefix, baudParam }) => (
             <div className="mc-port-row" key={instance}>
               <strong className="mc-port-instance">MAV{instance}</strong>
               <ParamSelect id={`${prefix}_CONFIG`} options={PORT_OPTIONS} writable={serialWritable} />
-              <div className="mc-port-baud mc-mono">
-                {baudValue ? `${Math.round(baudValue)} 8N1` : instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? '无波特率参数' : '—'}
-              </div>
+              {baudParam ? (
+                <ParamSelect id={baudParam} options={PX4_BAUD_OPTIONS} writable={serialWritable} />
+              ) : (
+                <div className="mc-port-baud mc-mono">
+                  {instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? '无波特率参数' : '—'}
+                </div>
+              )}
               <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} writable={serialWritable} />
               <RateInput id={`${prefix}_RATE`} writable={serialWritable} />
               <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} writable={serialWritable} />

@@ -59,6 +59,60 @@ function getBusProtocol(params: Map<string, ParamData>, prefix: string) {
   return protocolLabel(values[0])
 }
 
+// ArduPilot exposes one global protocol parameter. PX4 PWM_*_TIMx groups are
+// board-specific and cannot be mapped safely to an output row without board
+// metadata, so PX4 remains read-only here.
+const ARDUPILOT_PROTOCOL_OPTIONS: ReadonlyArray<readonly [number, string]> = [
+  [0, 'Normal PWM'], [1, 'OneShot'], [2, 'OneShot125'], [3, 'Brushed'],
+  [4, 'DShot150'], [5, 'DShot300'], [6, 'DShot600'], [7, 'DShot1200'], [8, 'PWMRange'],
+]
+
+function EscProtocolSelect({ family, params, fallbackLabel, canWrite, ariaLabel }: {
+  family: string
+  params: Map<string, ParamData>
+  fallbackLabel: string
+  canWrite: boolean
+  ariaLabel: string
+}) {
+  if (family === 'ardupilot') {
+    const param = params.get('MOT_PWM_TYPE')
+    if (!param) return <span className="mc-motor-protocol">{fallbackLabel}</span>
+    const value = Math.round(param.value)
+    const known = ARDUPILOT_PROTOCOL_OPTIONS.some(([option]) => option === value)
+    return (
+      <select
+        className="mc-select"
+        aria-label={ariaLabel}
+        title="写入 MOT_PWM_TYPE（全局），重启飞控后生效"
+        value={value}
+        disabled={!canWrite}
+        onChange={(event) => sendClientMessage({
+          type: 'param_set',
+          data: { id: 'MOT_PWM_TYPE', value: Number(event.target.value), paramType: param.type },
+        })}
+      >
+        {/* Preserve an unknown protocol value verbatim, never drop it. */}
+        {!known && <option value={value}>值 {value}</option>}
+        {ARDUPILOT_PROTOCOL_OPTIONS.map(([option, label]) => (
+          <option key={option} value={option}>{label}</option>
+        ))}
+      </select>
+    )
+  }
+  if (family === 'px4') {
+    return (
+      <span
+        className="mc-motor-protocol"
+        aria-label={ariaLabel}
+        title="PX4 输出协议由板级 PWM_*_TIMx 分组控制，此处仅显示当前总线状态"
+      >
+        {fallbackLabel}
+      </span>
+    )
+  }
+  return <span className="mc-motor-protocol">{fallbackLabel}</span>
+}
+
 function getFallbackRotor(index: number, count: number) {
   if (count === 4) return fallbackQuad[index]
   const angle = Math.PI / 2 - index * Math.PI * 2 / count
@@ -214,15 +268,14 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
   return (
     <div className={embedded ? 'mc-fade-in mc-motor-page' : 'mc-workspace mc-fade-in mc-motor-page'}>
-      <div className="flex items-center gap-3 mb-4">
-        <span className="mc-motor-param-status" data-loading={loading}>
-          <i />
-          {loading ? `参数读取中 ${receivedCount}/${totalCount || '…'}` : `${params.size} 个参数已同步`}
-        </span>
-      </div>
-
       <div className="mc-motor-toolbar">
-        <strong>执行器输出与无桨测试</strong>
+        <div className="mc-motor-toolbar__title">
+          <strong>执行器输出与无桨测试</strong>
+          <span className="mc-motor-param-status" data-loading={loading}>
+            <i />
+            {loading ? `参数读取中 ${receivedCount}/${totalCount || '…'}` : `${params.size} 个参数已同步`}
+          </span>
+        </div>
         <p>输出功能来自飞控参数；修改下拉框会直接写入对应的 <span className="mc-mono">*_FUNCx</span> 参数。</p>
       </div>
 
@@ -261,11 +314,18 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                 : frameView?.protocolLabel ?? '未知'
               return (
                 <div className="mc-motor-output-row" key={output.paramId}>
-                  <span className="mc-motor-channel" data-assigned={output.motorInstance !== null}>
+                  <span className="mc-motor-channel" data-assigned={output.motorInstance !== null} title={`PORT ${output.port}`}>
                     <strong>{output.label}</strong>
-                    <small>PORT {output.port}</small>
                   </span>
-                  <span className="mc-motor-live-value">{liveValue == null ? '—' : liveValue}</span>
+                  <span className="mc-motor-live-value" title={liveValue == null ? undefined : `${liveValue} µs`}>
+                    {liveValue != null && (
+                      <i
+                        className="mc-motor-live-value__fill"
+                        style={{ width: `${(Math.max(0, Math.min(1, (liveValue - 1000) / 1000)) * 100).toFixed(1)}%` }}
+                      />
+                    )}
+                    <span>{liveValue == null ? '—' : liveValue}</span>
+                  </span>
                   <select
                     className="mc-select"
                     value={functionValue}
@@ -279,7 +339,13 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                       <option value={option.value} key={option.value}>{option.label}</option>
                     ))}
                   </select>
-                  <span className="mc-motor-protocol">{protocol}</span>
+                  <EscProtocolSelect
+                    family={vehicleIdentity?.family ?? 'unknown'}
+                    params={params}
+                    fallbackLabel={protocol}
+                    canWrite={connected && actuatorWritesSupported}
+                    ariaLabel={`${output.label} 电调协议`}
+                  />
                   <span className="mc-motor-param-name">{output.paramId}</span>
                 </div>
               )

@@ -77,6 +77,14 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     pitchSp: makeRaw('俯仰速率设定'),
     yawSp: makeRaw('偏航速率设定'),
   }
+  // PX4 logs no per-loop PID error topic; hold the latest rate setpoint and
+  // subtract each angular-velocity sample from it (both already in deg/s).
+  const pidError = {
+    roll: makeRaw('Roll 误差'),
+    pitch: makeRaw('Pitch 误差'),
+    yaw: makeRaw('Yaw 误差'),
+  }
+  const lastRatesSp: { value: { roll: number; pitch: number; yaw: number } | null } = { value: null }
   const battery = {
     voltage: makeRaw('电压 (V)'),
     current: makeRaw('电流 (A)'),
@@ -219,11 +227,23 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       pushRaw(rates.roll, timeSec, xyz[0] * RAD_TO_DEG)
       pushRaw(rates.pitch, timeSec, xyz[1] * RAD_TO_DEG)
       pushRaw(rates.yaw, timeSec, xyz[2] * RAD_TO_DEG)
+      const sp = lastRatesSp.value
+      if (sp) {
+        pushRaw(pidError.roll, timeSec, sp.roll - xyz[0] * RAD_TO_DEG)
+        pushRaw(pidError.pitch, timeSec, sp.pitch - xyz[1] * RAD_TO_DEG)
+        pushRaw(pidError.yaw, timeSec, sp.yaw - xyz[2] * RAD_TO_DEG)
+      }
     },
     vehicle_rates_setpoint: (value, timeSec) => {
       pushRaw(rates.rollSp, timeSec, num(value.roll) * RAD_TO_DEG)
       pushRaw(rates.pitchSp, timeSec, num(value.pitch) * RAD_TO_DEG)
       pushRaw(rates.yawSp, timeSec, num(value.yaw) * RAD_TO_DEG)
+      const roll = num(value.roll) * RAD_TO_DEG
+      const pitch = num(value.pitch) * RAD_TO_DEG
+      const yaw = num(value.yaw) * RAD_TO_DEG
+      if (Number.isFinite(roll) && Number.isFinite(pitch) && Number.isFinite(yaw)) {
+        lastRatesSp.value = { roll, pitch, yaw }
+      }
     },
     actuator_motors: (value, timeSec) => {
       const controls = numArray(value.control)
@@ -405,6 +425,22 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       rates.pitch, rates.pitchSp,
       rates.yaw, rates.yawSp,
     ].map(finishRaw).filter((series) => series.times.length > 0),
+    // Rate-loop PID tracking: target = setpoint, actual = angular velocity,
+    // error streamed above. Loops without any data are dropped.
+    pidLoops: [
+      { id: 'roll', label: 'Roll', tar: rates.rollSp, act: rates.roll, err: pidError.roll },
+      { id: 'pitch', label: 'Pitch', tar: rates.pitchSp, act: rates.pitch, err: pidError.pitch },
+      { id: 'yaw', label: 'Yaw', tar: rates.yawSp, act: rates.yaw, err: pidError.yaw },
+    ].map((loop) => ({
+      id: loop.id,
+      label: loop.label,
+      unit: '°/s',
+      series: [
+        { ...finishRaw(loop.tar), label: `${loop.label} 目标` },
+        { ...finishRaw(loop.act), label: `${loop.label} 实际` },
+        { ...finishRaw(loop.err), label: `${loop.label} 误差` },
+      ].filter((series) => series.times.length > 0),
+    })).filter((loop) => loop.series.length > 0),
     actuators: motorSeries,
     actuatorSaturation: motorSeries.length > 0
       ? {

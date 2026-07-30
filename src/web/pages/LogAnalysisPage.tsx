@@ -169,6 +169,7 @@ function ChartPanel({
   wide = false,
   secondaryScaleLabels,
   selectionGroups,
+  selectionMode = 'multi',
   headerAside,
   children,
   onCursorTimeChange,
@@ -181,6 +182,8 @@ function ChartPanel({
   wide?: boolean
   secondaryScaleLabels?: string[]
   selectionGroups?: SeriesSelectionGroup[]
+  /** 'single': the groups behave as an exclusive loop switch. */
+  selectionMode?: 'multi' | 'single'
   headerAside?: React.ReactNode
   onCursorTimeChange?: (timeSec: number) => void
   children?: React.ReactNode
@@ -188,8 +191,24 @@ function ChartPanel({
   const [expanded, setExpanded] = useState(false)
   const [stretched, setStretched] = useState(false)
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(
-    () => new Set(selectionGroups?.map((group) => group.id) ?? []),
+    () => selectionMode === 'single'
+      ? new Set(selectionGroups?.slice(0, 1).map((group) => group.id) ?? [])
+      : new Set(selectionGroups?.map((group) => group.id) ?? []),
   )
+  useEffect(() => {
+    setSelectedGroups((current) => {
+      const availableIds = new Set(selectionGroups?.map((group) => group.id) ?? [])
+      if (selectionMode === 'single') {
+        const selectedId = [...current].find((id) => availableIds.has(id))
+          ?? selectionGroups?.[0]?.id
+        if (selectedId && current.size === 1 && current.has(selectedId)) return current
+        return selectedId ? new Set([selectedId]) : new Set()
+      }
+      const next = new Set([...current].filter((id) => availableIds.has(id)))
+      if (next.size === current.size) return current
+      return next
+    })
+  }, [selectionGroups, selectionMode])
   const visibleSeries = useMemo(() => {
     const indexed = series?.map((entry, index) => ({
       ...entry,
@@ -233,6 +252,29 @@ function ChartPanel({
     </div>
   )
 
+  // Shared by the panel header and the fullscreen dialog, so the loop/series
+  // switch stays available after expanding.
+  const seriesToggles = selectionGroups && (
+    <div className="mc-analysis-series-toggles" aria-label={`${title}曲线选择`}>
+      {selectionGroups.map((group) => (
+        <button
+          key={group.id}
+          type="button"
+          aria-pressed={selectedGroups.has(group.id)}
+          onClick={() => setSelectedGroups((current) => {
+            if (selectionMode === 'single') return new Set([group.id])
+            const next = new Set(current)
+            if (next.has(group.id)) next.delete(group.id)
+            else next.add(group.id)
+            return next
+          })}
+        >
+          {group.label}
+        </button>
+      ))}
+    </div>
+  )
+
   return (
     <Fragment>
       <section className={`mc-card mc-analysis-panel${wide || stretched ? ' mc-analysis-panel--wide' : ''}`}>
@@ -242,25 +284,7 @@ function ChartPanel({
             {headerAside}
           </div>
           <div className="mc-analysis-panel__actions">
-            {selectionGroups && (
-              <div className="mc-analysis-series-toggles" aria-label={`${title}曲线选择`}>
-                {selectionGroups.map((group) => (
-                  <button
-                    key={group.id}
-                    type="button"
-                    aria-pressed={selectedGroups.has(group.id)}
-                    onClick={() => setSelectedGroups((current) => {
-                      const next = new Set(current)
-                      if (next.has(group.id)) next.delete(group.id)
-                      else next.add(group.id)
-                      return next
-                    })}
-                  >
-                    {group.label}
-                  </button>
-                ))}
-              </div>
-            )}
+            {seriesToggles}
             {series && (
               <button
                 type="button"
@@ -315,16 +339,19 @@ function ChartPanel({
                 <span className="mc-analysis-chart-dialog__eyebrow">曲线详细视图</span>
                 <h2>{title}</h2>
               </div>
-              <button
-                type="button"
-                className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label="关闭放大图表"
-                title="关闭（Esc）"
-                autoFocus
-                onClick={() => setExpanded(false)}
-              >
-                <Icon name="close" size={15} />
-              </button>
+              <div className="mc-analysis-panel__actions">
+                {seriesToggles}
+                <button
+                  type="button"
+                  className="mc-icon-btn mc-icon-btn--bordered"
+                  aria-label="关闭放大图表"
+                  title="关闭（Esc）"
+                  autoFocus
+                  onClick={() => setExpanded(false)}
+                >
+                  <Icon name="close" size={15} />
+                </button>
+              </div>
             </header>
             {legend}
             <div className="mc-analysis-chart-dialog__plot">
@@ -589,6 +616,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const [dragOver, setDragOver] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [paramFilter, setParamFilter] = useState('')
+  const [eventsOpen, setEventsOpen] = useState(false)
   const [chartCursorTimeSec, setChartCursorTimeSec] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
@@ -609,6 +637,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
   useEffect(() => {
     setChartCursorTimeSec(null)
+    // Each new analysis starts with the event list collapsed.
+    setEventsOpen(false)
   }, [dataset])
 
   const analyzeBuffer = useCallback((
@@ -783,6 +813,23 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     }))
   }, [dataset])
 
+  // PID loop tracking: all loops flattened; the panel's single-select groups
+  // show exactly one loop's target/actual/error at a time. Fixed colorIndex
+  // per role keeps colors stable across loop switches.
+  const pidSeries = useMemo<SeriesData[]>(
+    () => dataset?.pidLoops.flatMap((loop) =>
+      loop.series.map((entry, index) => ({ ...entry, colorIndex: index }))) ?? [],
+    [dataset],
+  )
+  const pidGroups = useMemo<SeriesSelectionGroup[]>(
+    () => dataset?.pidLoops.map((loop) => ({
+      id: loop.id,
+      label: loop.label,
+      labels: loop.series.map((entry) => entry.label),
+    })) ?? [],
+    [dataset],
+  )
+
   return (
     <div
       className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}
@@ -855,7 +902,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
           role="button"
           tabIndex={0}
         >
-          <Icon name="log" size={34} style={{ color: 'var(--accent)' }} />
+          <Icon name="log" size={34} style={{ margin: '0 auto', color: 'var(--accent)' }} />
           <p style={{ margin: '12px 0 4px', fontSize: 15, color: 'var(--text-primary)' }}>
             拖入 .ulg / .bin 日志文件，或点击选择本地文件
           </p>
@@ -938,23 +985,34 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             )}
             {dataset.events.length > 0 && (
               <>
-                <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--text-secondary)' }}>
-                  事件与消息（{dataset.events.length}）
-                </p>
-                <ul className="mc-analysis-events">
-                  {dataset.events.map((event, index) => {
-                    const level = LOG_LEVEL_LABELS[event.level] ?? LOG_LEVEL_LABELS[6]
-                    return (
-                      <li key={index}>
-                        <time>{event.timeSec.toFixed(1)}s</time>
-                        <span className="mc-mono" style={{ color: level.color, flexShrink: 0 }}>
-                          {level.label}
-                        </span>
-                        <span>{event.message}</span>
-                      </li>
-                    )
-                  })}
-                </ul>
+                <button
+                  type="button"
+                  className="mc-analysis-events-toggle"
+                  aria-expanded={eventsOpen}
+                  onClick={() => setEventsOpen((current) => !current)}
+                >
+                  <Icon name="message" size={15} />
+                  <strong>事件与消息</strong>
+                  <span className="mc-analysis-events-count">{dataset.events.length}</span>
+                  <em>{eventsOpen ? '收起' : '展开查看'}</em>
+                  <Icon name="chevronDown" size={14} style={{ transform: eventsOpen ? 'rotate(180deg)' : undefined, transition: 'transform 160ms ease' }} />
+                </button>
+                {eventsOpen && (
+                  <ul className="mc-analysis-events">
+                    {dataset.events.map((event, index) => {
+                      const level = LOG_LEVEL_LABELS[event.level] ?? LOG_LEVEL_LABELS[6]
+                      return (
+                        <li key={index}>
+                          <time>{event.timeSec.toFixed(1)}s</time>
+                          <span className="mc-mono" style={{ color: level.color, flexShrink: 0 }}>
+                            {level.label}
+                          </span>
+                          <span>{event.message}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
               </>
             )}
           </section>
@@ -990,6 +1048,17 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             bands={dataset.armedSegments}
             selectionGroups={RATE_GROUPS}
           />
+
+          {/* PID loop tracking: one loop (target/actual/error) at a time. */}
+          {pidSeries.length > 0 && (
+            <ChartPanel
+              title="PID 环跟踪（目标 / 实际 / 误差）"
+              series={pidSeries}
+              bands={dataset.armedSegments}
+              selectionGroups={pidGroups}
+              selectionMode="single"
+            />
+          )}
 
           {/* 4. Actuators */}
           <ChartPanel

@@ -64,6 +64,19 @@ export interface ActuatorSaturationInfo {
   motorCount: number
 }
 
+/**
+ * One PID loop's tracking curves (target / actual / error). Series labels
+ * are prefixed with the loop label so charts can filter loops by label.
+ */
+export interface PidLoopData {
+  id: string
+  /** Loop switch label, e.g. 'Roll'. */
+  label: string
+  /** Native unit of the loop's values, when known. */
+  unit?: string
+  series: SeriesData[]
+}
+
 export interface UlogAnalysisDataset {
   overview: UlogOverview
   modeSegments: SegmentInfo[]
@@ -71,6 +84,8 @@ export interface UlogAnalysisDataset {
   events: UlogEvent[]
   attitude: SeriesData[]
   rates: SeriesData[]
+  /** Rate-loop PID tracking; one entry per loop, empty when not logged. */
+  pidLoops: PidLoopData[]
   actuators: SeriesData[]
   actuatorSaturation: ActuatorSaturationInfo | null
   battery: SeriesData[]

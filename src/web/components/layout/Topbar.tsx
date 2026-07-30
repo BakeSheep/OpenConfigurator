@@ -356,8 +356,8 @@ export default function Topbar() {
               <header><div><strong>飞行模式</strong><small>{vehicleReady && canControl ? '选择后立即向飞控发送模式切换指令' : '飞控未就绪或当前没有控制权'}</small></div></header>
               <div role="menu">
                 {availableModes(vehicleIdentity).length === 0 && (
-                  <p className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-                    当前飞控类型尚未适配模式切换（仅支持 PX4 与 ArduCopter）。
+                  <p className="px-3 py-2 text-[11px]" style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)' }}>
+                    {vehicleReady ? '该机型暂不支持模式切换' : '连接飞控后显示可用模式'}
                   </p>
                 )}
                 {availableModes(vehicleIdentity).map((mode) => (
