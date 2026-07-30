@@ -1,5 +1,13 @@
 import { isIP } from 'node:net'
-import { BAUD_RATES, FTP_MAX_PATH_BYTES, MAVLINK_COMMANDS } from '../shared/constants'
+import {
+  BAUD_RATES,
+  ESC_SERIAL_BAUD_RATE,
+  FTP_MAX_PATH_BYTES,
+  MAVLINK_COMMANDS,
+  PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
+  PX4_ESC_SERIAL_CONTROL_DEVICE_MIN,
+} from '../shared/constants'
+import { ESC_MAX_TARGETS } from '../shared/esc/types'
 import type { ClientMessage, ConnectionConfig } from '../shared/types'
 
 const MAX_FLOAT32 = 3.4028234663852886e38
@@ -138,6 +146,74 @@ function devicePath(value: unknown, path: string): string {
     fail('invalid_format', `${path} 不得包含 .. 路径段`, path)
   }
   return parsed
+}
+
+// -- ESC validation helpers -------------------------------------------------
+
+function escSessionId(value: unknown): string {
+  return text(value, 'data.sessionId', {
+    minBytes: 8,
+    maxBytes: 64,
+    pattern: /^[0-9a-fA-F-]+$/,
+  })
+}
+
+function escJobId(value: unknown): string {
+  return text(value, 'data.jobId', {
+    minBytes: 8,
+    maxBytes: 64,
+    pattern: /^[0-9a-fA-F-]+$/,
+  })
+}
+
+/** Validate an ESC target index list: 1..ESC_MAX_TARGETS unique 0-based indices. */
+function escTargets(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > ESC_MAX_TARGETS) {
+    fail('invalid_params', `data.targets 必须是 1..${ESC_MAX_TARGETS} 项的数组`, 'data.targets')
+  }
+  const seen = new Set<number>()
+  const targets = value.map((item, index) => {
+    const target = finiteNumber(item, `data.targets[${index}]`, {
+      min: 0,
+      max: ESC_MAX_TARGETS - 1,
+      integer: true,
+    })
+    if (seen.has(target)) fail('invalid_params', 'data.targets 不得重复', 'data.targets')
+    seen.add(target)
+    return target
+  })
+  return targets
+}
+
+/** Validate PX4 SERIAL_CONTROL ESC channel ids (20..27). */
+function escChannels(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > ESC_MAX_TARGETS) {
+    fail('invalid_params', `data.channels 必须是 1..${ESC_MAX_TARGETS} 项的数组`, 'data.channels')
+  }
+  return value.map((item, index) =>
+    finiteNumber(item, `data.channels[${index}]`, {
+      min: PX4_ESC_SERIAL_CONTROL_DEVICE_MIN,
+      max: PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
+      integer: true,
+    })
+  )
+}
+
+/** Validate a settings write map: bounded key count, finite numeric values. */
+function escValues(value: unknown): Record<string, number> {
+  const map = record(value, 'data.values')
+  const keys = Object.keys(map)
+  if (keys.length < 1 || keys.length > 128) {
+    fail('invalid_params', 'data.values 必须包含 1..128 个字段', 'data.values')
+  }
+  const result: Record<string, number> = {}
+  for (const key of keys) {
+    if (!/^[A-Za-z0-9_]{1,32}$/.test(key)) {
+      fail('invalid_params', `data.values 键名无效：${key}`, 'data.values')
+    }
+    result[key] = finiteNumber(map[key], `data.values.${key}`, { min: -MAX_FLOAT32, max: MAX_FLOAT32 })
+  }
+  return result
 }
 
 export function parseClientMessage(value: unknown): BoundaryClientMessage {
@@ -373,6 +449,140 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         type: 'fs_delete',
         data: { entries },
         safetyConfirmation: 'delete_files' as const,
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_session_start': {
+      const data = record(input.data, 'data')
+      const mode = text(data.mode, 'data.mode', { minBytes: 1, maxBytes: 32, pattern: /^[a-z0-9_]+$/ })
+      if (mode === 'ardupilot_passthrough') {
+        return withRequestId({
+          type: 'esc_session_start',
+          data: { mode: 'ardupilot_passthrough' },
+        }, id) as BoundaryClientMessage
+      }
+      if (mode === 'px4_serial_control') {
+        const channels = escChannels(data.channels)
+        return withRequestId({
+          type: 'esc_session_start',
+          data: { mode: 'px4_serial_control', channels },
+        }, id) as BoundaryClientMessage
+      }
+      if (mode === 'direct') {
+        const port = text(data.port, 'data.port', {
+          minBytes: 1,
+          maxBytes: PORT_NAME_MAX_BYTES,
+          pattern: /^[^\0-\x1f\x7f]+$/,
+        }).trim()
+        if (!port) fail('invalid_format', 'data.port 不得为空', 'data.port')
+        if (data.baudRate !== undefined && data.baudRate !== ESC_SERIAL_BAUD_RATE) {
+          fail('unsupported_baud_rate', `直连仅支持 ${ESC_SERIAL_BAUD_RATE} 波特`, 'data.baudRate')
+        }
+        return withRequestId({
+          type: 'esc_session_start',
+          data: { mode: 'direct', port, baudRate: ESC_SERIAL_BAUD_RATE },
+        }, id) as BoundaryClientMessage
+      }
+      return fail('unsupported_esc_mode', `不支持的 ESC 连接模式：${mode}`, 'data.mode')
+    }
+
+    case 'esc_session_reclaim': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'esc_session_reclaim',
+        data: {
+          sessionId: escSessionId(data.sessionId),
+          recoveryToken: text(data.recoveryToken, 'data.recoveryToken', {
+            minBytes: 16,
+            maxBytes: 128,
+            pattern: /^[A-Za-z0-9_-]+$/,
+          }),
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_session_exit':
+      return withRequestId({
+        type: 'esc_session_exit',
+        data: { sessionId: escSessionId(record(input.data, 'data').sessionId) },
+      }, id) as BoundaryClientMessage
+
+    case 'esc_devices_scan':
+      return withRequestId({
+        type: 'esc_devices_scan',
+        data: { sessionId: escSessionId(record(input.data, 'data').sessionId) },
+      }, id) as BoundaryClientMessage
+
+    case 'esc_settings_read': {
+      const data = record(input.data, 'data')
+      const targets = data.targets === 'all' ? 'all' as const : escTargets(data.targets)
+      return withRequestId({
+        type: 'esc_settings_read',
+        data: { sessionId: escSessionId(data.sessionId), targets },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_settings_write': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'esc_settings_write',
+        data: {
+          sessionId: escSessionId(data.sessionId),
+          targets: escTargets(data.targets),
+          values: escValues(data.values),
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_flash_start': {
+      const data = record(input.data, 'data')
+      if (data.safetyConfirmation !== 'flash_esc_props_removed') {
+        fail(
+          'safety_confirmation_required',
+          '刷写 ESC 必须显式确认 flash_esc_props_removed',
+          'data.safetyConfirmation',
+        )
+      }
+      return withRequestId({
+        type: 'esc_flash_start',
+        data: {
+          sessionId: escSessionId(data.sessionId),
+          targets: escTargets(data.targets),
+          assetId: text(data.assetId, 'data.assetId', { minBytes: 1, maxBytes: 128, pattern: /^[A-Za-z0-9_-]+$/ }),
+          safetyConfirmation: 'flash_esc_props_removed' as const,
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_flash_cancel': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'esc_flash_cancel',
+        data: { sessionId: escSessionId(data.sessionId), jobId: escJobId(data.jobId) },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_flash_decide': {
+      const data = record(input.data, 'data')
+      const decision = text(data.decision, 'data.decision', { minBytes: 1, maxBytes: 16, pattern: /^[a-z_]+$/ })
+      if (decision !== 'retry_current' && decision !== 'skip_current' && decision !== 'exit') {
+        fail('invalid_params', 'data.decision 无效', 'data.decision')
+      }
+      return withRequestId({
+        type: 'esc_flash_decide',
+        data: { sessionId: escSessionId(data.sessionId), jobId: escJobId(data.jobId), decision },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'esc_melody_write': {
+      const data = record(input.data, 'data')
+      return withRequestId({
+        type: 'esc_melody_write',
+        data: {
+          sessionId: escSessionId(data.sessionId),
+          targets: escTargets(data.targets),
+          rtttl: text(data.rtttl, 'data.rtttl', { minBytes: 1, maxBytes: 1024 }),
+        },
       }, id) as BoundaryClientMessage
     }
 

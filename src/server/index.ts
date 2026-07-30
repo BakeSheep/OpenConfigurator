@@ -30,6 +30,7 @@ import type {
 } from '../shared/types'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
+import { EscService } from './esc/EscService'
 import {
   InputValidationError,
   isAllowedOrigin,
@@ -222,6 +223,12 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
 
 function requiresReadyTarget(message: BoundaryClientMessage): boolean {
   return message.type !== 'release_control'
+}
+
+type EscBoundaryMessage = Extract<BoundaryClientMessage, { type: `esc_${string}` }>
+
+function isEscClientMessage(message: BoundaryClientMessage): message is EscBoundaryMessage {
+  return message.type.startsWith('esc_')
 }
 
 function messageRequestId(message: BoundaryClientMessage): string | undefined {
@@ -781,6 +788,16 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     broadcast(connectionMessage())
   }
 
+  const escService = new EscService({
+    connManager: connManager as ConnectionManager,
+    bridge: mavlinkBridge as unknown as MavlinkBridge,
+    emit: (message) => broadcast(message),
+    pinController: pinControllerToEscSession,
+    releaseController: releaseEscSessionController,
+    isLinkBusy: () => (parameterSync ? 'parameter_sync' : null),
+    logger,
+  })
+
   mavlinkBridge.on('message', onBridgeMessage)
   connManager.on('statusChange', onStatusChange)
   connManager.on('connectionError', onConnectionError)
@@ -1085,9 +1102,44 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
 
     const requestId = messageRequestId(message)
     if (message.type === 'release_control') {
+      if (escService.blocksControllerRelease()) {
+        sendClientError(ws, 'esc_session_active', 'ESC 会话进行中，暂不能释放控制权', requestId)
+        return
+      }
       if (!releaseController(context, 'released')) {
         sendClientError(ws, 'not_controller', '当前客户端未持有控制权', requestId)
       }
+      return
+    }
+
+    // ESC messages are routed to the ESC service before the generic
+    // ready-target gate: direct-mode sessions have no MAVLink target, and
+    // subsequent commands are governed by the session's own ownership state.
+    if (isEscClientMessage(message)) {
+      if (message.type === 'esc_session_start' && EscService.startRequiresReadyTarget(message)) {
+        if (
+          connManager.status !== 'connected'
+          || connManager.transportOpen === false
+          || connManager.vehicleReady === false
+        ) {
+          sendClientError(ws, 'target_not_ready', '飞控传输或已选目标尚未就绪', requestId, true)
+          return
+        }
+      }
+      // Reclaim transfers ownership to a new client, so it cannot require the
+      // lease (which is pinned to the disconnected owner). Every other ESC
+      // command requires the caller to hold the controller lease.
+      if (message.type !== 'esc_session_reclaim' && !ensureController(ws, context, requestId)) {
+        return
+      }
+      void escService.handleClientMessage(context.id, message)
+      return
+    }
+
+    // A non-direct ESC session owns the MAVLink link; refuse mutations that
+    // would collide with it (motor test, param writes, FTP, etc.).
+    if (escService.blocksMavlinkMutations() && isMutatingMessage(message)) {
+      sendClientError(ws, 'esc_session_active', 'ESC 直通会话进行中，暂不能执行该操作', requestId, true)
       return
     }
 
@@ -1159,6 +1211,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     })
     ws.on('close', () => {
       clientContexts.delete(ws)
+      escService.handleClientDisconnected(context.id)
       releaseController(context, 'disconnected')
       if (parameterSync?.ownerClientId === context.id) {
         cancelBridgeParameterDownload('owner_disconnected')
@@ -1181,6 +1234,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
           'connection-readiness',
           'structured-errors',
           'rest-control-token',
+          'esc-configurator',
         ],
         maxPayload: config.wsMaxPayload,
         controllerLeaseMs,
@@ -1313,6 +1367,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       const closeWsPromise = closeWebSocketServer(wss)
 
       const cleanupWork = Promise.allSettled([
+        Promise.resolve().then(() => escService.destroy()).catch((error) => {
+          logger.error('[Server] ESC service cleanup failed:', error)
+        }),
         Promise.resolve().then(() => mavlinkBridge.destroy()).catch((error) => {
           logger.error('[Server] MAVLink bridge cleanup failed:', error)
         }),
