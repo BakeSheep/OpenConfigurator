@@ -137,6 +137,7 @@ PX4 Flight Controller
 - 解锁需要二次点击或完整拖拽确认；不要移除或绕过这些保护。
 - 手柄 RC override 默认关闭，必须由操作者手动启用。
 - `transportOpen` 只代表串口已打开；只有 `vehicleReady` 才代表已收到目标飞控的有效心跳。
+- ESC（电调）配置与刷写前必须拆除全部螺旋桨；刷写过程中不得断开飞控或 ESC 供电，否则可能导致 ESC 无法启动。ESC 功能仅覆盖 [ESC 兼容性矩阵](docs/ESC-COMPATIBILITY.md)中已验证的组合，未验证组合的写入与刷写能力默认关闭。
 - 自动化测试通过不等于真实飞行验证通过。
 
 ## 参与贡献
@@ -147,7 +148,7 @@ PX4 Flight Controller
 
 OpenConfigurator 当前处于 **pre-release** 阶段，API、协议和界面可能变化。
 
-OpenConfigurator 采用 [MIT License](LICENSE)。硬件与 PX4 版本的已验证范围单独记录在[兼容性矩阵](docs/COMPATIBILITY.md)中；未列为“已验证”的组合不构成兼容性或飞行安全承诺。
+OpenConfigurator 采用 [MIT License](LICENSE)。硬件与 PX4 版本的已验证范围单独记录在[兼容性矩阵](docs/COMPATIBILITY.md)中；ESC 硬件的已验证范围另见 [ESC 兼容性矩阵](docs/ESC-COMPATIBILITY.md)。未列为“已验证”的组合不构成兼容性或飞行安全承诺。ESC 相关协议与固件资源的来源与许可记录见 [ESC-PROTOCOL-SOURCES](docs/ESC-PROTOCOL-SOURCES.md) 与 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md)。
 
 ## 致谢
 
