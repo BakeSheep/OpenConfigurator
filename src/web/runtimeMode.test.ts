@@ -52,3 +52,15 @@ test('enabled socket lifecycle invokes the connector once', () => {
   assert.equal(started, true)
   assert.equal(connectionAttempts, 1)
 })
+
+test('live runtime has no demo interceptor: sendClientMessage cannot fake delivery', async () => {
+  // Without startDemoMode (never called in live builds), no client-message
+  // interceptor is registered and no socket exists, so every send fails
+  // rather than being silently absorbed as a fake success.
+  const { sendClientMessage } = await import('./hooks/useWebSocket')
+  assert.equal(
+    sendClientMessage({ type: 'start_calibration', requestId: 'x', data: { kind: 'accel' } }),
+    false,
+  )
+  assert.equal(sendClientMessage({ type: 'param_request_list' }), false)
+})

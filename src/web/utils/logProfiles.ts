@@ -3,6 +3,7 @@
 // protocol. Unknown vehicles get nothing destructive or analyzable.
 import type { VehicleIdentity } from '../../shared/types'
 import { PX4_ULOG_LOG_DIRECTORY } from '../../shared/constants'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 
 export interface LogSupport {
   format: 'ulog' | 'dataflash' | 'unknown'
@@ -22,13 +23,14 @@ export interface LogSupport {
 }
 
 export function logSupport(identity: VehicleIdentity | null): LogSupport {
+  const writable = vehicleCapabilities(identity).writeOperations
   if (identity?.family === 'px4') {
     return {
       format: 'ulog',
       browse: true,
       analyze: true,
-      allowDelete: true,
-      deleteScope: 'per-file',
+      allowDelete: writable,
+      deleteScope: writable ? 'per-file' : 'none',
       logPath: PX4_ULOG_LOG_DIRECTORY,
     }
   }
@@ -39,8 +41,8 @@ export function logSupport(identity: VehicleIdentity | null): LogSupport {
       format: 'dataflash',
       browse: true,
       analyze: true,
-      allowDelete: true,
-      deleteScope: 'erase-all',
+      allowDelete: writable,
+      deleteScope: writable ? 'erase-all' : 'none',
       logPath: null,
     }
   }

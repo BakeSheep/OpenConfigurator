@@ -166,6 +166,7 @@ if (!px4UnknownMode.ok) assert.equal(px4UnknownMode.code, 'unknown_mode')
 // must never authorize a safety-critical command.
 // ---------------------------------------------------------------------------
 const px4Caps = vehicleCapabilities(px4Copter)
+assert.equal(px4Caps.writeOperations, true)
 assert.equal(px4Caps.setMode, true)
 assert.equal(px4Caps.arm, true)
 assert.equal(px4Caps.guidedTakeoff, true)
@@ -179,6 +180,7 @@ assert.equal(px4Caps.serialConfig, true)
 assert.equal(px4Caps.logFormat, 'ulog')
 
 const apCopterCaps = vehicleCapabilities(arducopter)
+assert.equal(apCopterCaps.writeOperations, true)
 assert.equal(apCopterCaps.setMode, true)
 assert.equal(apCopterCaps.arm, true)
 assert.equal(apCopterCaps.guidedTakeoff, true)
@@ -194,6 +196,7 @@ assert.equal(apCopterCaps.logFormat, 'dataflash')
 // ArduPlane/Rover/Sub/Tracker are explicit read-only profiles until tested.
 for (const typeId of [1, 10, 12, 5]) {
   const caps = vehicleCapabilities(buildVehicleIdentity(3, typeId))
+  assert.equal(caps.writeOperations, false)
   assert.equal(caps.setMode, false)
   assert.equal(caps.arm, false)
   assert.equal(caps.guidedTakeoff, false)
@@ -210,6 +213,7 @@ for (const typeId of [1, 10, 12, 5]) {
 // Unknown family / missing identity: every write capability defaults false.
 for (const identity of [unknownIdentity, null]) {
   const caps = vehicleCapabilities(identity)
+  assert.equal(caps.writeOperations, false)
   assert.equal(caps.setMode, false)
   assert.equal(caps.arm, false)
   assert.equal(caps.guidedTakeoff, false)
@@ -223,11 +227,35 @@ for (const identity of [unknownIdentity, null]) {
   assert.equal(caps.logFormat, 'unknown')
 }
 
+// Per-kind calibration matrix: explicit family × vehicleClass × kind. PX4
+// keeps its firmware-driven flows (no simple accel); ArduCopter gains the
+// interactive accel, simple accel, level and onboard mag flows.
+const ALL_CALIBRATION_KINDS = ['accel', 'accel_simple', 'gyro', 'mag', 'baro', 'level'] as const
+assert.equal(supportsCalibrationKind(px4Copter, 'accel'), true)
+assert.equal(supportsCalibrationKind(px4Copter, 'gyro'), true)
 assert.equal(supportsCalibrationKind(px4Copter, 'mag'), true)
-assert.equal(supportsCalibrationKind(arducopter, 'accel'), true)
-assert.equal(supportsCalibrationKind(arducopter, 'gyro'), true)
-assert.equal(supportsCalibrationKind(arducopter, 'baro'), true)
-assert.equal(supportsCalibrationKind(arducopter, 'mag'), false)
-assert.equal(supportsCalibrationKind(unknownIdentity, 'accel'), false)
+assert.equal(supportsCalibrationKind(px4Copter, 'baro'), true)
+assert.equal(supportsCalibrationKind(px4Copter, 'level'), true)
+// PX4 has no ArduPilot-style simple accel calibration (p5=4).
+assert.equal(supportsCalibrationKind(px4Copter, 'accel_simple'), false)
+// PX4 support is family-wide (any vehicle class).
+assert.equal(supportsCalibrationKind(buildVehicleIdentity(12, 1), 'accel'), true)
+for (const kind of ALL_CALIBRATION_KINDS) {
+  assert.equal(supportsCalibrationKind(arducopter, kind), true, `arducopter ${kind}`)
+}
+// Unimplemented ArduPilot vehicle classes stay fully read-only.
+for (const typeId of [1, 10, 12, 5]) {
+  for (const kind of ALL_CALIBRATION_KINDS) {
+    assert.equal(
+      supportsCalibrationKind(buildVehicleIdentity(3, typeId), kind),
+      false,
+      `ardupilot type ${typeId} ${kind}`,
+    )
+  }
+}
+for (const kind of ALL_CALIBRATION_KINDS) {
+  assert.equal(supportsCalibrationKind(unknownIdentity, kind), false, `unknown ${kind}`)
+  assert.equal(supportsCalibrationKind(null, kind), false, `null ${kind}`)
+}
 
 console.log('vehicleProfiles classification and mode decoding checks passed')

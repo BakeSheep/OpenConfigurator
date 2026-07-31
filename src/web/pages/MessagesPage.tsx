@@ -2,7 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
+import { DEFAULT_MESSAGE_RATES, MESSAGE_RATE_OPTIONS } from '../../shared/constants'
+import type { MessageRateConfig } from '../../shared/types'
+import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useMessageRateStore } from '../stores/messageRateStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
@@ -14,24 +18,37 @@ const tabs = [
 
 const streamRows = [
   { id: 0, name: 'HEARTBEAT', source: 'status', rate: '1 Hz' },
-  { id: 1, name: 'SYS_STATUS', source: 'sysStatus', rate: '1 Hz' },
-  { id: 24, name: 'GPS_RAW_INT', source: 'gps', rate: '1 Hz' },
-  { id: 26, name: 'SCALED_IMU', source: 'imu', rate: '实时' },
-  { id: 29, name: 'SCALED_PRESSURE', source: 'baro', rate: '实时' },
-  { id: 30, name: 'ATTITUDE', source: 'attitude', rate: '实时' },
-  { id: 36, name: 'SERVO_OUTPUT_RAW', source: 'motorOutputs', rate: '实时' },
-  { id: 74, name: 'VFR_HUD', source: 'vfrHud', rate: '实时' },
-  { id: 106, name: 'OPTICAL_FLOW_RAD', source: 'opticalFlow', rate: '实时' },
-  { id: 132, name: 'DISTANCE_SENSOR', source: 'distanceSensor', rate: '实时' },
-  { id: 147, name: 'BATTERY_STATUS', source: 'battery', rate: '实时' },
-  { id: 230, name: 'ESTIMATOR_STATUS', source: 'ekfStatus', rate: '1 Hz' },
+  { id: 1, name: 'SYS_STATUS', source: 'sysStatus', group: 'status' },
+  { id: 24, name: 'GPS_RAW_INT', source: 'gps', group: 'position' },
+  { id: 26, name: 'SCALED_IMU', source: 'imu', group: 'sensors' },
+  { id: 29, name: 'SCALED_PRESSURE', source: 'baro', group: 'sensors' },
+  { id: 30, name: 'ATTITUDE', source: 'attitude', group: 'attitude' },
+  { id: 36, name: 'SERVO_OUTPUT_RAW', source: 'motorOutputs', group: 'rc' },
+  { id: 74, name: 'VFR_HUD', source: 'vfrHud', group: 'hud' },
+  { id: 106, name: 'OPTICAL_FLOW_RAD', source: 'opticalFlow', group: 'auxiliary' },
+  { id: 132, name: 'DISTANCE_SENSOR', source: 'distanceSensor', group: 'auxiliary' },
+  { id: 147, name: 'BATTERY_STATUS', source: 'battery', group: 'auxiliary' },
+  { id: 230, name: 'ESTIMATOR_STATUS', source: 'ekfStatus', group: 'status' },
   { id: 253, name: 'STATUSTEXT', source: 'statusText', rate: '事件' },
+] satisfies Array<{ id: number; name: string; source: string; rate?: string; group?: keyof MessageRateConfig }>
+
+const rateRows: Array<{ key: keyof MessageRateConfig; label: string }> = [
+  { key: 'attitude', label: '姿态' },
+  { key: 'position', label: '位置' },
+  { key: 'sensors', label: '传感器' },
+  { key: 'rc', label: '遥控' },
+  { key: 'status', label: '状态' },
+  { key: 'hud', label: 'HUD' },
+  { key: 'auxiliary', label: '光流/电池/振动' },
 ]
 
 export default function MessagesPage({ embedded = false }: { embedded?: boolean }) {
   const [activeTab, setActiveTab] = useState('messages')
   const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
+  const canControl = useConnectionStore((state) => state.canControl)
+  const rates = useMessageRateStore((state) => state.rates)
+  const setRates = useMessageRateStore((state) => state.setRates)
   const lastUpdate = useTelemetryStore((state) => state.lastUpdate)
   const sensorUpdate = useSensorStore((state) => state.lastUpdate)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
@@ -50,8 +67,12 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
     const telemetryTime = lastUpdate[row.source as keyof typeof lastUpdate]
     const sensorTime = sensorUpdate[row.source as keyof typeof sensorUpdate]
     const time = telemetryTime ?? sensorTime ?? (row.source === 'statusText' ? statusLogs[0]?.time : 0) ?? 0
-    return { ...row, live: connected && time > 0 && nowTick - time < 4000 }
-  }), [connected, lastUpdate, sensorUpdate, statusLogs, nowTick])
+    return {
+      ...row,
+      rate: row.group ? `${rates[row.group]} Hz` : row.rate,
+      live: connected && time > 0 && nowTick - time < 4000,
+    }
+  }), [connected, lastUpdate, sensorUpdate, statusLogs, nowTick, rates])
 
   const [pausedRows, setPausedRows] = useState<typeof rows | null>(null)
   const [pausedLogs, setPausedLogs] = useState<typeof statusLogs | null>(null)
@@ -76,6 +97,15 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
     if (paused) setPausedLogs([])
   }
 
+  const applyRates = (next: MessageRateConfig) => {
+    if (!connected || !canControl) return
+    if (sendClientMessage({
+      type: 'message_rates_set',
+      requestId: `message-rates-${Date.now().toString(36)}`,
+      data: next,
+    })) setRates(next)
+  }
+
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
       <div className="flex items-center justify-end gap-2 mb-3">
@@ -97,6 +127,35 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
                 <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-disabled)' }}>{paused ? '暂停' : row.live ? row.rate : '0 Hz'}</span>
               </div>
             ))}
+          </section>
+
+          <section className="mc-card mc-rate-panel">
+            <h3>消息频率控制</h3>
+            <div className="mc-rate-panel__rows">
+              {rateRows.map((row) => (
+                <label key={row.key}>
+                  <span>{row.label}</span>
+                  <select
+                    className="mc-select mc-mono"
+                    aria-label={`${row.label}消息频率`}
+                    value={rates[row.key]}
+                    disabled={!connected || !canControl}
+                    onChange={(event) => applyRates({ ...rates, [row.key]: Number(event.target.value) })}
+                  >
+                    {MESSAGE_RATE_OPTIONS.map((rate) => <option key={rate} value={rate}>{rate}</option>)}
+                  </select>
+                  <small>Hz</small>
+                </label>
+              ))}
+            </div>
+            <footer>
+              <button
+                type="button"
+                className="mc-btn mc-btn-ghost"
+                disabled={!connected || !canControl}
+                onClick={() => applyRates({ ...DEFAULT_MESSAGE_RATES })}
+              >恢复默认</button>
+            </footer>
           </section>
 
           <section className="mc-card mc-link-stats">

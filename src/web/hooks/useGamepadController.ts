@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { availableModes } from '../../shared/vehicleProfiles'
+import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import type { ClientMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
@@ -9,6 +9,7 @@ import {
   type GamepadMapping,
 } from '../stores/gamepadStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { smoothGamepadThrottle } from './gamepadThrottle'
 
 // Gamepad actions map to semantic mode names per autopilot family; the id of
 // the resolved profile mode option is sent through set_flight_mode and the
@@ -35,12 +36,26 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
   const lastAxisSendRef = useRef(0)
   const lastButtonFireRef = useRef<Record<number, number>>({})
   const previousButtonsRef = useRef<boolean[]>([])
-  const smoothedThrottleRef = useRef(0)
+  // null means manual input has not produced an active frame yet. The first
+  // frame must start at the physical stick position rather than slewing from
+  // an arbitrary default, which could command a transient non-zero throttle.
+  const smoothedThrottleRef = useRef<number | null>(null)
   const sendRef = useRef(send)
   sendRef.current = send
 
   useEffect(() => useConnectionStore.subscribe((state) => {
     if ((!state.vehicleReady || !state.canControl) && useGamepadStore.getState().enabled) {
+      smoothedThrottleRef.current = null
+      useGamepadStore.getState().setEnabled(false)
+    }
+  }), [])
+
+  useEffect(() => useTelemetryStore.subscribe((state) => {
+    if (
+      !vehicleCapabilities(state.vehicleIdentity).writeOperations
+      && useGamepadStore.getState().enabled
+    ) {
+      smoothedThrottleRef.current = null
       useGamepadStore.getState().setEnabled(false)
     }
   }), [])
@@ -95,7 +110,10 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
     const pollGamepad = () => {
       const current = useGamepadStore.getState()
       const connection = useConnectionStore.getState()
-      const controllerConnected = connection.vehicleReady && connection.canControl
+      const profileWritable = vehicleCapabilities(
+        useTelemetryStore.getState().vehicleIdentity,
+      ).writeOperations
+      const controllerConnected = connection.vehicleReady && connection.canControl && profileWritable
       const gamepads = navigator.getGamepads()
       const gamepad = gamepads[0] || gamepads[1] || gamepads[2] || gamepads[3]
 
@@ -146,14 +164,14 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
             const toManualAxis = (value: number) => Math.round(Math.max(-1, Math.min(1, value)) * 1000)
             let throttle = -axis('throttle')
             if (current.advanced.throttleModeCenterZero) throttle = Math.max(0, throttle) * 2 - 1
-            if (current.advanced.throttleSmoothing) {
-              const maxStep = deltaSeconds
-              const difference = throttle - smoothedThrottleRef.current
-              smoothedThrottleRef.current += Math.max(-maxStep, Math.min(maxStep, difference))
-              throttle = smoothedThrottleRef.current
-            } else {
-              smoothedThrottleRef.current = throttle
-            }
+            const smoothedThrottle = smoothGamepadThrottle(
+              throttle,
+              smoothedThrottleRef.current,
+              deltaSeconds,
+              current.advanced.throttleSmoothing,
+            )
+            smoothedThrottleRef.current = smoothedThrottle.next
+            throttle = smoothedThrottle.output
             sendRef.current({
               type: 'manual_control',
               data: {
@@ -165,10 +183,15 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
               },
             })
           }
+        } else {
+          // A disable or loss of the FC controller lease ends this input
+          // stream. Re-enabling must initialize from the then-current stick.
+          smoothedThrottleRef.current = null
         }
         previousButtonsRef.current = rawButtons
-      } else if (current.connected) {
-        current.setConnected(false)
+      } else {
+        smoothedThrottleRef.current = null
+        if (current.connected) current.setConnected(false)
         previousButtonsRef.current = []
       }
       rafRef.current = requestAnimationFrame(pollGamepad)

@@ -13,6 +13,39 @@ export const MAVLINK_COMMANDS = {
   MAV_CMD_DO_SET_SERVO: 183,
   MAV_CMD_SET_MESSAGE_INTERVAL: 511,
   MAV_CMD_REQUEST_MESSAGE: 512,
+  // ArduPilot onboard compass calibration (ardupilotmega dialect commands).
+  MAV_CMD_DO_START_MAG_CAL: 42424,
+  MAV_CMD_DO_ACCEPT_MAG_CAL: 42425,
+  MAV_CMD_DO_CANCEL_MAG_CAL: 42426,
+  // ArduPilot interactive accel calibration position request/confirm.
+  MAV_CMD_ACCELCAL_VEHICLE_POS: 42429,
+} as const
+
+// ACCELCAL_VEHICLE_POS enum: positions 1..6 are requested by the FC during
+// the interactive six-position accel calibration; SUCCESS/FAILED are the
+// terminal sentinels carried in the same COMMAND_LONG param1 field.
+export const ACCELCAL_VEHICLE_POS = {
+  LEVEL: 1,
+  LEFT: 2,
+  RIGHT: 3,
+  NOSEDOWN: 4,
+  NOSEUP: 5,
+  BACK: 6,
+  SUCCESS: 16777215,
+  FAILED: 16777216,
+} as const
+
+// MAG_CAL_STATUS enum used by MAG_CAL_PROGRESS/MAG_CAL_REPORT. Values >= 5
+// are terminal failure states with a specific cause.
+export const MAG_CAL_STATUS = {
+  NOT_STARTED: 0,
+  WAITING_TO_START: 1,
+  RUNNING_STEP_ONE: 2,
+  RUNNING_STEP_TWO: 3,
+  SUCCESS: 4,
+  FAILED: 5,
+  BAD_ORIENTATION: 6,
+  BAD_RADIUS: 7,
 } as const
 
 export const PX4_MODES = {
@@ -72,6 +105,30 @@ export const HGT_REF_OPTIONS = [
 export const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] as const
 
 export const DEFAULT_BAUD_RATE = 57600
+
+/** Default live-telemetry rates used by the message-frequency control card. */
+export const DEFAULT_MESSAGE_RATES = Object.freeze({
+  attitude: 8,
+  position: 2,
+  sensors: 2,
+  rc: 2,
+  status: 1,
+  hud: 1,
+  auxiliary: 2,
+})
+
+export const MESSAGE_RATE_OPTIONS = Object.freeze([1, 2, 4, 8, 10, 20])
+
+/** MAVLink message ids controlled by each user-facing frequency group. */
+export const MESSAGE_RATE_GROUP_IDS = Object.freeze({
+  attitude: Object.freeze([30]),
+  position: Object.freeze([24, 33]),
+  sensors: Object.freeze([26, 27, 29, 105, 116, 129]),
+  rc: Object.freeze([36, 65]),
+  status: Object.freeze([1, 230, 245]),
+  hud: Object.freeze([74]),
+  auxiliary: Object.freeze([100, 106, 132, 147, 173, 241]),
+})
 
 // MAVLink FTP (FILE_TRANSFER_PROTOCOL, msg #110) protocol constants shared by
 // the backend client implementation and its protocol tests.

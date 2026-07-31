@@ -1,6 +1,6 @@
 // MAVLink message types and shared interfaces between frontend and backend
 
-import type { VehicleIdentity, AutopilotFamily, VehicleClass } from './vehicleProfiles'
+import type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind } from './vehicleProfiles'
 import type {
   EscSessionSnapshot,
   EscDeviceInfo,
@@ -11,7 +11,79 @@ import type {
 } from './esc/types'
 import type { EscOperationError } from './esc/errors'
 
-export type { VehicleIdentity, AutopilotFamily, VehicleClass }
+export type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind }
+
+// -- Sensor calibration sessions ---------------------------------------------
+
+export type CalibrationPhase =
+  | 'starting'
+  | 'running'
+  | 'waiting_position'
+  | 'awaiting_accept'
+  | 'accepted'
+  | 'done'
+  | 'failed'
+  | 'cancelled'
+
+/**
+ * How the terminal outcome was established. 'verified' requires independent
+ * protocol evidence ([cal] terminal line, 42429 sentinel, MAG_CAL_REPORT);
+ * 'ack_only' means the FC merely accepted the command and the physical result
+ * was never independently observed - the UI must not claim verified success.
+ */
+export type CalibrationVerification = 'verified' | 'ack_only' | 'not_applicable'
+
+/** ACCELCAL_VEHICLE_POS positions 1..6 (LEVEL/LEFT/RIGHT/NOSEDOWN/NOSEUP/BACK). */
+export type AccelCalibrationPosition = 1 | 2 | 3 | 4 | 5 | 6
+
+export type CalibrationSide = 'down' | 'up' | 'left' | 'right' | 'front' | 'back'
+export type CalibrationSideState = 'hidden' | 'pending' | 'active' | 'done'
+
+export interface CalibrationMagInstanceState {
+  id: number
+  pct: number
+  /** MAVLink MAG_CAL_STATUS value. */
+  status: number
+  attempt: number
+  report?: {
+    status: number
+    fitness: number
+    ofs: [number, number, number]
+    autosaved: boolean
+  }
+}
+
+/**
+ * Idempotent calibration session snapshot. seq is strictly increasing within
+ * one sessionId; clients must drop snapshots whose (sessionId, seq) is not
+ * newer than the last applied one.
+ */
+export interface CalibrationSnapshot {
+  sessionId: string
+  seq: number
+  ownerClientId: string | null
+  /** While set, the owner is disconnected and may reclaim until this time. */
+  recoverUntil: number | null
+  /** requestId of the original start_calibration message. */
+  requestId: string
+  family: 'px4' | 'ardupilot'
+  kind: CalibrationKind
+  phase: CalibrationPhase
+  verification: CalibrationVerification
+  progress: number | null
+  updatedAt: number
+  /** Unknown PX4 [cal] protocol version: side semantics disabled. */
+  protocolDegraded?: boolean
+  sides?: Record<CalibrationSide, CalibrationSideState>
+  requestedPosition?: AccelCalibrationPosition | null
+  /** MAG_CAL cal_mask of expected compass instances. */
+  expectedMagMask?: number
+  magInstances?: CalibrationMagInstanceState[]
+  failureCode?: string
+  failureReason?: string
+  rebootRequired: boolean
+  cancelSupported: boolean
+}
 
 export interface AttitudeData {
   roll: number
@@ -108,23 +180,25 @@ export interface BaroData {
 }
 
 export interface OpticalFlowData {
+  source?: 'OPTICAL_FLOW' | 'OPTICAL_FLOW_RAD'
   integration_time_us: number
   integrated_x_rad: number
   integrated_y_rad: number
-  integrated_xgyro_rad: number
-  integrated_ygyro_rad: number
-  integrated_zgyro_rad: number
+  /** Integrated sensor rotation in rad; null when the flow message reports NaN/unavailable. */
+  integrated_xgyro_rad: number | null
+  integrated_ygyro_rad: number | null
+  integrated_zgyro_rad: number | null
   temperature_c: number | null
   time_delta_distance_us: number
   distance_m: number | null
-  /** @deprecated Use integrated_x_rad. */
+  /** Native pixel displacement for OPTICAL_FLOW; compatibility alias for OPTICAL_FLOW_RAD. */
   flow_x: number
-  /** @deprecated Use integrated_y_rad. */
+  /** Native pixel displacement for OPTICAL_FLOW; compatibility alias for OPTICAL_FLOW_RAD. */
   flow_y: number
-  /** @deprecated Historical alias; use integrated_xgyro_rad. */
-  flow_comp_m_x: number
-  /** @deprecated Historical alias; use integrated_ygyro_rad. */
-  flow_comp_m_y: number
+  /** Compensated velocity for OPTICAL_FLOW; compatibility alias for OPTICAL_FLOW_RAD. */
+  flow_comp_m_x: number | null
+  /** Compensated velocity for OPTICAL_FLOW; compatibility alias for OPTICAL_FLOW_RAD. */
+  flow_comp_m_y: number | null
   quality: number
   /** @deprecated Use distance_m. */
   ground_distance: number | null
@@ -132,6 +206,7 @@ export interface OpticalFlowData {
 }
 
 export interface DistanceSensorData {
+  source?: 'DISTANCE_SENSOR' | 'RANGEFINDER'
   current_distance: number
   min_distance: number
   max_distance: number
@@ -252,6 +327,16 @@ export interface DataflashLogEntry {
   sizeBytes: number
 }
 
+export interface MessageRateConfig {
+  attitude: number
+  position: number
+  sensors: number
+  rc: number
+  status: number
+  hud: number
+  auxiliary: number
+}
+
 // WebSocket message types (server -> client)
 export type ServerMessage =
   | {
@@ -302,6 +387,7 @@ export type ServerMessage =
     }
   | { type: 'telemetry'; msgType: string; data: any }
   | { type: 'sensor'; msgType: string; data: any }
+  | { type: 'message_rates'; data: MessageRateConfig }
   | { type: 'param'; data: ParamData }
   | { type: 'param_batch'; generation?: number; data: ParamData[] }
   | { type: 'param_complete'; generation?: number; data: { count: number } }
@@ -510,6 +596,14 @@ export type ServerMessage =
   | { type: 'esc_job_done'; data: EscJobResult }
   | { type: 'esc_op_error'; data: EscOperationError & { requestId?: string } }
   | { type: 'esc_log'; data: { sessionId: string; entries: EscLogEntry[] } }
+  // -- Sensor calibration sessions -------------------------------------------
+  | { type: 'calibration_update'; data: CalibrationSnapshot }
+  | {
+      // Sent only to the session owner; recoveryToken must never be
+      // broadcast or logged.
+      type: 'calibration_session_started'
+      data: { sessionId: string; requestId: string; recoveryToken: string }
+    }
 
 // WebSocket message types (client -> server)
 export type ClientMessage =
@@ -522,6 +616,7 @@ export type ClientMessage =
     }
   | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
   | { type: 'param_request_list'; requestId?: string }
+  | { type: 'message_rates_set'; requestId?: string; data: MessageRateConfig }
   | { type: 'reboot_vehicle'; requestId: string; safetyConfirmation: 'reboot_flight_controller' }
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {
@@ -537,13 +632,41 @@ export type ClientMessage =
       // capability + armed checks.
       type: 'start_calibration'
       requestId: string
-      data: { kind: 'accel' | 'gyro' | 'mag' | 'baro' }
+      data: { kind: CalibrationKind }
+    }
+  | {
+      // Owner-only interaction with the active calibration session. cancel
+      // is the safety exit; confirm_position answers an ArduPilot 42429
+      // position request; accept_mag accepts a successful compass report.
+      type: 'calibration_action'
+      requestId: string
+      data:
+        | { sessionId: string; action: 'cancel' }
+        | { sessionId: string; action: 'confirm_position'; position: AccelCalibrationPosition }
+        | { sessionId: string; action: 'accept_mag' }
+    }
+  | {
+      // Reattach a disconnected owner to its running calibration session.
+      type: 'calibration_reclaim'
+      requestId: string
+      data: { sessionId: string; recoveryToken: string }
     }
   | {
       type: 'motor_test'
       requestId?: string
       data: {
         instance: number
+        throttle: number
+        duration: number
+        propsRemoved?: boolean
+      }
+    }
+  | {
+      /** One WS operation that fans out to multiple 1-based motor instances. */
+      type: 'motor_test_batch'
+      requestId?: string
+      data: {
+        instances: number[]
         throttle: number
         duration: number
         propsRemoved?: boolean

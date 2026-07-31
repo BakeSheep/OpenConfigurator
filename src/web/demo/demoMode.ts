@@ -10,6 +10,9 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useEscStore } from '../stores/escStore'
+import { useCalibrationStore } from '../stores/calibrationStore'
+import { setDemoClientMessageInterceptor } from '../hooks/useWebSocket'
+import { createCalibrationDemo } from './calibrationDemo'
 import type { ParamData } from '../../shared/types'
 
 const deg = Math.PI / 180
@@ -248,9 +251,9 @@ function pushFastTelemetry() {
     xgyro: 0.11 * Math.cos(time * 0.6),
     ygyro: 0.05 * Math.cos(time * 0.45),
     zgyro: 0.028,
-    xmag: 0.214 + 0.004 * Math.sin(time * 0.5),
-    ymag: -0.041 + 0.003 * Math.cos(time * 0.4),
-    zmag: 0.428,
+    xmag: 214 + 4 * Math.sin(time * 0.5),
+    ymag: -41 + 3 * Math.cos(time * 0.4),
+    zmag: 428,
   }
   s.setImu({ ...imuBase, temperature: 41.6 }, 0, 'SCALED_IMU')
   s.setImu({
@@ -394,6 +397,7 @@ function pushSlowTelemetry() {
     signal_quality: 94, type: 0, id: 0, orientation: 25,
   })
   s.setOpticalFlow({
+    source: 'OPTICAL_FLOW_RAD',
     integration_time_us: 32_000,
     integrated_x_rad: 0.0042 * Math.sin(time * 1.1),
     integrated_y_rad: 0.0038 * Math.cos(time * 0.9),
@@ -418,6 +422,20 @@ export function startDemoMode() {
   if (started) return
   started = true
   console.log('[Demo] Synthetic telemetry enabled - no flight controller is connected')
+  // Give the demo a stable client id so calibration ownership resolves; the
+  // read-only controller lease (armed, phantom owner) is unchanged.
+  useConnectionStore.getState().setClientId('demo-client')
+  // Local calibration simulation: intercept calibration client messages so
+  // they drive the calibrationStore without a socket. Registered ONLY here,
+  // so live builds never gain a handler and keep the no-socket safety.
+  const calibrationDemo = createCalibrationDemo({
+    applySnapshot: (snapshot) => useCalibrationStore.getState().applySnapshot(snapshot),
+    setRecovery: (recovery) => useCalibrationStore.getState().setRecovery(recovery),
+    family: () =>
+      useTelemetryStore.getState().vehicleIdentity?.family === 'ardupilot' ? 'ardupilot' : 'px4',
+    ownerClientId: () => useConnectionStore.getState().clientId ?? 'demo-client',
+  })
+  setDemoClientMessageInterceptor((msg) => calibrationDemo.handleClientMessage(msg))
   seedParams()
   seedStatics()
   seedEscConfigurator()

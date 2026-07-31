@@ -305,6 +305,62 @@ test('queued safety traffic overtakes normal frames while preserving FIFO per pr
   await connection.disconnect()
 })
 
+test('tagged motor starts coalesce per instance without disturbing other queued traffic', async () => {
+  const port = new FakeSerialPort()
+  port.writeResults = [false, true, true, true]
+  const connection = new SerialConnection({
+    portFactory: () => port,
+    maxQueuedFrames: 8,
+    maxQueuedBytes: 64,
+  })
+  const connecting = connection.connect('COM_TEST', 57600)
+  port.succeedOpen()
+  await connecting
+
+  connection.write(Buffer.from([0]), 'normal')
+  connection.write(Buffer.from([11]), 'high', 'motor-test-start:1')
+  connection.write(Buffer.from([21]), 'high', 'motor-test-start:2')
+  connection.write(Buffer.from([99]), 'high')
+  assert.equal(connection.cancelQueuedWrites('motor-test-start:1'), 1)
+  connection.write(Buffer.from([12]), 'high', 'motor-test-start:1')
+
+  port.drain()
+  assert.deepEqual(
+    port.writes.map((frame) => frame[0]),
+    [0, 21, 99, 12],
+    'only the stale start for instance 1 is replaced',
+  )
+  await connection.disconnect()
+})
+
+test('a motor stop cancels only its queued start before critical delivery', async () => {
+  const port = new FakeSerialPort()
+  port.writeResults = [false, true, true, true]
+  const connection = new SerialConnection({
+    portFactory: () => port,
+    maxQueuedFrames: 8,
+    maxQueuedBytes: 64,
+  })
+  const connecting = connection.connect('COM_TEST', 57600)
+  port.succeedOpen()
+  await connecting
+
+  connection.write(Buffer.from([0]), 'normal')
+  connection.write(Buffer.from([11]), 'high', 'motor-test-start:1')
+  connection.write(Buffer.from([21]), 'high', 'motor-test-start:2')
+  connection.write(Buffer.from([90]), 'critical')
+  assert.equal(connection.cancelQueuedWrites('motor-test-start:1'), 1)
+  connection.write(Buffer.from([10]), 'critical')
+
+  port.drain()
+  assert.deepEqual(
+    port.writes.map((frame) => frame[0]),
+    [0, 90, 10, 21],
+    'instance 1 cannot restart after its stop; unrelated critical and instance 2 survive',
+  )
+  await connection.disconnect()
+})
+
 test('a critical frame evicts lower-priority backlog instead of being dropped', async () => {
   const port = new FakeSerialPort()
   port.writeResults = [false, true, true]

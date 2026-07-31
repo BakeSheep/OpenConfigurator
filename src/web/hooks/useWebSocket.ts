@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { connectBackendIfEnabled } from '../runtimeMode'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useCalibrationStore } from '../stores/calibrationStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useLogTransferStore } from '../stores/logTransferStore'
 import { useEscStore } from '../stores/escStore'
+import { useMessageRateStore } from '../stores/messageRateStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
@@ -24,6 +26,8 @@ let lastVehicleReady = false
 let activeParamGeneration: number | null = null
 let restControlToken: string | null = null
 let escReclaimAttempt: string | null = null
+// Same one-shot guard for calibration session reclaim after an owner reconnect.
+let calibrationReclaimAttempt: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -169,6 +173,10 @@ function handleMessage(msg: ServerMessage) {
         useFileExplorerStore.getState().reset()
         useLogTransferStore.getState().reset()
         useEscStore.getState().reset()
+        // A calibration session is bound to the dropped FC link. Unlike a
+        // transient WS disconnect, this permanently invalidates recovery.
+        useCalibrationStore.getState().clearRecovery()
+        useCalibrationStore.getState().reset()
       }
       lastVehicleReady = vehicleReadyNow
       break
@@ -178,6 +186,9 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'sensor':
       handleSensor(msg.msgType, msg.data)
+      break
+    case 'message_rates':
+      useMessageRateStore.getState().setRates(msg.data)
       break
     case 'status':
       telemetryStore.setStatus(msg.data)
@@ -341,6 +352,10 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'operation_error':
       telemetryStore.setOperationError(msg.data)
+      if (msg.data.operation === 'calibration_reclaim' && msg.data.code === 'reclaim_denied') {
+        useCalibrationStore.getState().clearRecovery()
+        calibrationReclaimAttempt = null
+      }
       console.warn('[WS] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
       telemetryStore.addStatusLog(3, `${msg.data.operation} 操作失败：${msg.data.message}`)
       break
@@ -433,6 +448,37 @@ function handleMessage(msg: ServerMessage) {
     case 'esc_log':
       useEscStore.getState().appendLog(msg.data.sessionId, msg.data.entries)
       break
+    case 'calibration_update': {
+      const calStore = useCalibrationStore.getState()
+      calStore.applySnapshot(msg.data)
+      const recovery = useCalibrationStore.getState().recovery
+      // Auto-reclaim once when our owned session is recoverable after a
+      // reconnect. On success the server re-sends calibration_session_started.
+      if (
+        msg.data.ownerClientId === null
+        && msg.data.recoverUntil !== null
+        && recovery?.sessionId === msg.data.sessionId
+      ) {
+        const attemptKey = recovery.sessionId + ':' + (msg.data.recoverUntil ?? 0)
+        if (calibrationReclaimAttempt !== attemptKey && sendToServer({
+          type: 'calibration_reclaim',
+          requestId: 'cal-reclaim-' + Date.now().toString(36),
+          data: recovery,
+        })) {
+          calibrationReclaimAttempt = attemptKey
+        }
+      } else if (msg.data.ownerClientId !== null) {
+        calibrationReclaimAttempt = null
+      }
+      break
+    }
+    case 'calibration_session_started':
+      calibrationReclaimAttempt = null
+      useCalibrationStore.getState().setRecovery({
+        sessionId: msg.data.sessionId,
+        recoveryToken: msg.data.recoveryToken,
+      })
+      break
     default:
       console.warn('[WS] Unhandled server message type:', (msg as { type?: string }).type)
       break
@@ -493,9 +539,11 @@ function handleSensor(msgType: string, data: any) {
     case 'HIGHRES_IMU_PRESSURE':
       sensorStore.setBaro(data, msgType)
       break
+    case 'OPTICAL_FLOW':
     case 'OPTICAL_FLOW_RAD':
       sensorStore.setOpticalFlow(data)
       break
+    case 'RANGEFINDER':
     case 'DISTANCE_SENSOR':
       sensorStore.setDistanceSensor(data)
       break
@@ -551,6 +599,8 @@ function connectSocket() {
       useParameterStore.getState().clear()
       useLogTransferStore.getState().reset()
       useEscStore.getState().reset()
+      useCalibrationStore.getState().reset()
+      calibrationReclaimAttempt = null
     }
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return
@@ -570,8 +620,21 @@ function connectSocket() {
 
 /** Send through the App-owned socket without mounting another socket lifecycle. */
 export function sendClientMessage(msg: ClientMessage): boolean {
+  // Demo runtime installs an interceptor (via startDemoMode) that fully
+  // handles messages without a socket. It is NEVER registered in live mode,
+  // so the no-socket safety property below is preserved for real links.
+  if (demoClientMessageInterceptor) return demoClientMessageInterceptor(msg)
   if (msg.type === 'param_request_list') autoParamRequestPending = false
   return sendToServer(msg)
+}
+
+// Demo-only client message interceptor. Registered exclusively by
+// startDemoMode(); its lifecycle is owned by the demo module.
+type DemoClientMessageInterceptor = (msg: ClientMessage) => boolean
+let demoClientMessageInterceptor: DemoClientMessageInterceptor | null = null
+
+export function setDemoClientMessageInterceptor(interceptor: DemoClientMessageInterceptor | null): void {
+  demoClientMessageInterceptor = interceptor
 }
 
 // Stable stub for disabled (demo) mode: always reports failure, and stays

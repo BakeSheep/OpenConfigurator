@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import type { ParamData } from '../../shared/types'
 import { buildVehicleIdentity } from '../../shared/vehicleProfiles'
-import { buildFrameConfigView, motorFunctionOptions, type FrameOutputChannel } from './vehicleConfig'
+import {
+  buildFrameConfigView,
+  motorFunctionOptions,
+  normalizeAuthoritativeMotorCount,
+  type FrameOutputChannel,
+} from './vehicleConfig'
 
 function params(values: Record<string, number>): Map<string, ParamData> {
   const map = new Map<string, ParamData>()
@@ -15,6 +20,12 @@ function params(values: Record<string, number>): Map<string, ParamData> {
 
 const arducopter = buildVehicleIdentity(3, 2)
 const px4 = buildVehicleIdentity(12, 2)
+
+assert.equal(normalizeAuthoritativeMotorCount(1), 1)
+assert.equal(normalizeAuthoritativeMotorCount(12), 12)
+for (const invalid of [null, undefined, 0, 13, 4.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assert.equal(normalizeAuthoritativeMotorCount(invalid), null)
+}
 
 // ---------------------------------------------------------------------------
 // ArduCopter Quad/X: FRAME_CLASS/FRAME_TYPE + SERVOx_FUNCTION + MOT_PWM_TYPE.

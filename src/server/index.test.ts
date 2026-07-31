@@ -4,17 +4,20 @@ import { createServer as createHttpServer } from 'node:http'
 import test from 'node:test'
 import { WebSocket } from 'ws'
 import type {
+  CalibrationSnapshot,
   ClientMessage,
   ConnectionConfig,
   ConnectionStatus,
   PortInfo,
 } from '../shared/types'
 import {
+  handleDownloadError,
   startServer,
   type BackendRuntime,
   type ConnectionManagerBoundary,
   type MavlinkBridgeBoundary,
 } from './index'
+import type { CalibrationStartRequest } from './mavlink/CalibrationSessionManager'
 import {
   InputValidationError,
   isAllowedOrigin,
@@ -45,6 +48,7 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
     timestamp: number
   } | null = null
   disconnectCalls = 0
+  expectedRebootCalls = 0
   connectError: Error | null = null
   disconnectWait: Promise<void> | null = null
 
@@ -75,10 +79,96 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
     this.status = 'disconnected'
     this.emit('statusChange', this.status)
   }
+
+  expectVehicleReboot(): boolean {
+    this.expectedRebootCalls += 1
+    return true
+  }
+}
+
+class FakeCalibrationSession {
+  terminal = false
+  cancelSupported = true
+  owner: string | null
+  recoverUntil: number | null = null
+  cancelCalls = 0
+  terminateCodes: string[] = []
+  private seq = 0
+  private phase: CalibrationSnapshot['phase'] = 'starting'
+  private failureCode: string | undefined
+
+  constructor(readonly request: CalibrationStartRequest) {
+    this.owner = request.ownerClientId
+  }
+
+  get sessionId(): string {
+    return this.request.sessionId
+  }
+
+  start(): void {
+    this.emit()
+  }
+
+  cancel(): { ok: true } {
+    this.cancelCalls += 1
+    return { ok: true }
+  }
+
+  terminate(code: string, _reason: string): void {
+    if (this.terminal) return
+    this.terminal = true
+    this.terminateCodes.push(code)
+    this.phase = 'failed'
+    this.failureCode = code
+    this.emit()
+  }
+
+  setOwner(ownerClientId: string | null, recoverUntil: number | null): void {
+    this.owner = ownerClientId
+    this.recoverUntil = recoverUntil
+    this.emit()
+  }
+
+  /** Test helper: drive the session to a terminal phase via its emit path. */
+  finish(phase: CalibrationSnapshot['phase']): void {
+    if (this.terminal) return
+    this.terminal = true
+    this.phase = phase
+    this.emit()
+  }
+
+  snapshot(): CalibrationSnapshot {
+    return this.build()
+  }
+
+  private emit(): void {
+    this.seq += 1
+    this.request.emitSnapshot(this.build())
+  }
+
+  private build(): CalibrationSnapshot {
+    return {
+      sessionId: this.request.sessionId,
+      seq: this.seq,
+      ownerClientId: this.owner,
+      recoverUntil: this.recoverUntil,
+      requestId: this.request.requestId,
+      family: 'px4',
+      kind: this.request.kind,
+      phase: this.phase,
+      verification: 'not_applicable',
+      progress: null,
+      updatedAt: Date.now(),
+      ...(this.failureCode ? { failureCode: this.failureCode } : {}),
+      rebootRequired: false,
+      cancelSupported: this.cancelSupported,
+    }
+  }
 }
 
 class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   readonly messages: ClientMessage[] = []
+  readonly calibrationSessions: FakeCalibrationSession[] = []
   currentParamRunId = 0
   destroyed = false
   parameterCancellationCalls = 0
@@ -92,6 +182,12 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   handleClientMessage(message: ClientMessage): void {
     this.messages.push(message)
     if (message.type === 'param_request_list') this.currentParamRunId += 1
+  }
+
+  createCalibrationSession(request: CalibrationStartRequest): FakeCalibrationSession {
+    const session = new FakeCalibrationSession(request)
+    this.calibrationSessions.push(session)
+    return session
   }
 
   cancelParameterDownload(): void {
@@ -313,6 +409,51 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     }),
     (error) => error instanceof InputValidationError && error.path === 'data.instance',
   )
+
+  assert.deepEqual(
+    parseClientMessage({
+      type: 'motor_test_batch',
+      requestId: 'motor-all-start',
+      data: {
+        instances: [1, 2, 3, 4],
+        throttle: 10,
+        duration: 2,
+        propsRemoved: true,
+      },
+    }),
+    {
+      type: 'motor_test_batch',
+      requestId: 'motor-all-start',
+      data: {
+        instances: [1, 2, 3, 4],
+        throttle: 10,
+        duration: 2,
+        propsRemoved: true,
+      },
+    },
+  )
+  assert.deepEqual(
+    parseClientMessage({
+      type: 'motor_test_batch',
+      data: { instances: [1, 12], throttle: 0, duration: 0 },
+    }),
+    {
+      type: 'motor_test_batch',
+      data: { instances: [1, 12], throttle: 0, duration: 0 },
+    },
+  )
+  for (const data of [
+    { instances: [], throttle: 0, duration: 0 },
+    { instances: [1, 1], throttle: 0, duration: 0 },
+    { instances: [0], throttle: 0, duration: 0 },
+    { instances: [13], throttle: 0, duration: 0 },
+    { instances: [1, 2], throttle: 10, duration: 2 },
+  ]) {
+    assert.throws(
+      () => parseClientMessage({ type: 'motor_test_batch', data }),
+      (error) => error instanceof InputValidationError,
+    )
+  }
 
   const bluetoothConfig = parseConnectionConfig({
     type: 'bluetooth',
@@ -903,6 +1044,321 @@ test('expired controller leases allow a waiting observer to become controller', 
   }
 })
 
+test('calibration sessions pin the lease, isolate mutations and support reclaim', async () => {
+  const started = await startTestServer(testConfig(), { controllerLeaseMs: 300 })
+  const owner = await connectWs(started.wsUrl)
+  const observer = await connectWs(started.wsUrl)
+  try {
+    const ownerHello = await owner.waitFor('hello')
+    const observerHello = await observer.waitFor('hello')
+    assert.ok(ownerHello.data && observerHello.data)
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    // Owner starts a calibration session: lease claimed, owner-only token.
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-own',
+      data: { kind: 'accel' },
+    }))
+    await owner.waitFor('controller', (message) => message.data?.reason === 'claimed')
+    const sessionStarted = await owner.waitFor('calibration_session_started')
+    const sessionId = sessionStarted.data?.sessionId as string
+    const recoveryToken = sessionStarted.data?.recoveryToken as string
+    assert.ok(sessionId && recoveryToken)
+    assert.equal(started.bridge.calibrationSessions.length, 1)
+    const session = started.bridge.calibrationSessions[0]
+    await observer.waitFor(
+      'calibration_update',
+      (message) => message.data?.phase === 'starting',
+    )
+    // The observer must never see the recovery token.
+    assert.equal(
+      observer.messages.some((message) => JSON.stringify(message).includes(recoveryToken)),
+      false,
+    )
+
+    // Observer actions are refused by the pinned lease and never reach the session.
+    observer.ws.send(JSON.stringify({
+      type: 'calibration_action',
+      requestId: 'obs-act',
+      data: { sessionId, action: 'cancel' },
+    }))
+    const conflict = await observer.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'obs-act',
+    )
+    assert.equal(conflict.data?.code, 'controller_conflict')
+    assert.equal(session.cancelCalls, 0)
+
+    // Reboot is an exit path only for the pinned session owner. An observer
+    // cannot use it to interrupt someone else's calibration.
+    observer.ws.send(JSON.stringify({
+      type: 'reboot_vehicle',
+      requestId: 'obs-reboot',
+      safetyConfirmation: 'reboot_flight_controller',
+    }))
+    const rebootConflict = await observer.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'obs-reboot',
+    )
+    assert.equal(rebootConflict.data?.code, 'controller_conflict')
+    assert.equal(session.terminal, false)
+
+    // The pinned lease never expires even past controllerLeaseMs.
+    await new Promise((resolve) => setTimeout(resolve, 450))
+    assert.equal(
+      owner.messages.some((message) =>
+        message.type === 'controller' && message.data?.reason === 'expired'),
+      false,
+      'pinned lease must not expire',
+    )
+
+    // Other MAVLink mutations are isolated during the session - owner included.
+    owner.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'mode-during-cal',
+      data: { modeId: 1 },
+    }))
+    const isolated = await owner.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'mode-during-cal',
+    )
+    assert.equal(isolated.data?.code, 'calibration_session_active')
+    assert.equal(started.bridge.messages.length, 0)
+
+    // release_control is refused while the session runs.
+    owner.ws.send(JSON.stringify({ type: 'release_control', requestId: 'rel-1' }))
+    const releaseRefused = await owner.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'rel-1',
+    )
+    assert.equal(releaseRefused.data?.code, 'calibration_session_active')
+
+    // ESC sessions are mutually exclusive with calibration.
+    owner.ws.send(JSON.stringify({
+      type: 'esc_session_start',
+      requestId: 'esc-1',
+      data: { mode: 'direct' },
+    }))
+    const escRefused = await owner.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'esc-1',
+    )
+    assert.equal(escRefused.data?.code, 'calibration_session_active')
+
+    // A second start by the owner is deduplicated by the manager.
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-again',
+      data: { kind: 'gyro' },
+    }))
+    const busy = await owner.waitFor(
+      'operation_error',
+      (message) => message.data?.requestId === 'cal-again',
+    )
+    assert.equal(busy.data?.code, 'calibration_busy')
+    assert.equal(started.bridge.calibrationSessions.length, 1)
+
+    // Emergency disarm is the only generic passthrough and interrupts the run.
+    owner.ws.send(JSON.stringify({
+      type: 'command',
+      requestId: 'disarm-1',
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [0, 0],
+      safetyConfirmation: 'disarm',
+    }))
+    await owner.waitFor(
+      'calibration_update',
+      (message) => message.data?.failureCode === 'interrupted_by_disarm',
+    )
+    assert.equal(started.bridge.messages.length, 1)
+    assert.equal(started.bridge.messages[0].type, 'command')
+
+    // Terminal session releases the pin: mutations work again for the owner.
+    owner.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'mode-after-cal',
+      data: { modeId: 1 },
+    }))
+    for (let i = 0; i < 20 && started.bridge.messages.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal(started.bridge.messages.length, 2)
+    assert.equal(started.bridge.messages[1].type, 'set_flight_mode')
+
+    // Reboot is a deliberate calibration exit: the owner may pass it through,
+    // and the session is terminated so it cannot remain pinned after restart.
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-before-reboot',
+      data: { kind: 'accel' },
+    }))
+    await owner.waitFor(
+      'calibration_session_started',
+      (message) => message.data?.requestId === 'cal-before-reboot',
+    )
+    owner.ws.send(JSON.stringify({
+      type: 'reboot_vehicle',
+      requestId: 'reboot-during-cal',
+      safetyConfirmation: 'reboot_flight_controller',
+    }))
+    await owner.waitFor(
+      'calibration_update',
+      (message) => message.data?.failureCode === 'interrupted_by_reboot',
+    )
+    assert.equal(started.bridge.messages.length, 3)
+    assert.equal(started.bridge.messages[2].type, 'reboot_vehicle')
+    assert.equal(started.connManager.expectedRebootCalls, 1)
+  } finally {
+    await closeWs(observer)
+    await closeWs(owner)
+    await started.runtime.shutdown()
+  }
+})
+
+test('calibration owner disconnect enters recovery and reclaim transfers ownership', async () => {
+  const started = await startTestServer(testConfig(), { controllerLeaseMs: 300 })
+  const owner = await connectWs(started.wsUrl)
+  const observer = await connectWs(started.wsUrl)
+  try {
+    await owner.waitFor('hello')
+    const observerHello = await observer.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-own',
+      data: { kind: 'accel' },
+    }))
+    const sessionStarted = await owner.waitFor('calibration_session_started')
+    const sessionId = sessionStarted.data?.sessionId as string
+    const recoveryToken = sessionStarted.data?.recoveryToken as string
+    const session = started.bridge.calibrationSessions[0]
+
+    // Owner drops: the snapshot enters the recoverable state.
+    await closeWs(owner)
+    await observer.waitFor(
+      'calibration_update',
+      (message) => message.data?.ownerClientId === null && message.data?.recoverUntil !== null,
+    )
+
+    // Wrong token is rejected; the session stays orphaned.
+    observer.ws.send(JSON.stringify({
+      type: 'calibration_reclaim',
+      requestId: 'rec-bad',
+      data: { sessionId, recoveryToken: 'wrong-token-0123456789abcdef' },
+    }))
+    const deniedReclaim = await observer.waitFor(
+      'operation_error',
+      (message) => message.data?.requestId === 'rec-bad',
+    )
+    assert.equal(deniedReclaim.data?.code, 'reclaim_denied')
+
+    // Correct token transfers ownership to the observer.
+    observer.ws.send(JSON.stringify({
+      type: 'calibration_reclaim',
+      requestId: 'rec-good',
+      data: { sessionId, recoveryToken },
+    }))
+    await observer.waitFor('calibration_session_started')
+    await observer.waitFor(
+      'calibration_update',
+      (message) => message.data?.ownerClientId === observerHello.data?.clientId,
+    )
+
+    // The new owner can act on the session.
+    observer.ws.send(JSON.stringify({
+      type: 'calibration_action',
+      requestId: 'act-new-owner',
+      data: { sessionId, action: 'cancel' },
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(session.cancelCalls, 1)
+
+    // Link drop terminates the session.
+    started.connManager.status = 'disconnected'
+    started.connManager.transportOpen = false
+    started.connManager.vehicleReady = false
+    started.connManager.emit('statusChange', 'disconnected')
+    await observer.waitFor(
+      'calibration_update',
+      (message) => message.data?.failureCode === 'link_lost',
+    )
+    assert.deepEqual(session.terminateCodes, ['link_lost'])
+  } finally {
+    await closeWs(observer)
+    await closeWs(owner)
+    await started.runtime.shutdown()
+  }
+})
+
+test('a successful calibration triggers exactly one post-cal parameter sync', async () => {
+  const started = await startTestServer(testConfig(), { controllerLeaseMs: 500 })
+  const owner = await connectWs(started.wsUrl)
+  const observer = await connectWs(started.wsUrl)
+  try {
+    await owner.waitFor('hello')
+    await observer.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-own',
+      data: { kind: 'accel' },
+    }))
+    await owner.waitFor('calibration_session_started')
+    const session = started.bridge.calibrationSessions[0]
+    assert.equal(started.bridge.messages.length, 0)
+
+    // Drive the session to a successful terminal state; both clients see done.
+    session.finish('done')
+    await observer.waitFor('calibration_update', (message) => message.data?.phase === 'done')
+
+    // Exactly one PARAM_REQUEST_LIST reached the bridge, and a param_sync
+    // 'started' was broadcast for the owner.
+    const paramRequests = started.bridge.messages.filter((message) => message.type === 'param_request_list')
+    assert.equal(paramRequests.length, 1)
+    const sync = await owner.waitFor('param_sync', (message) => message.data?.status === 'started')
+    assert.equal(sync.data?.ownerClientId, (await owner.waitFor('hello')).data?.clientId)
+
+    // A repeated terminal snapshot for the same session must not re-trigger.
+    session.finish('done')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(
+      started.bridge.messages.filter((message) => message.type === 'param_request_list').length,
+      1,
+    )
+
+    // Starting the next calibration supersedes the best-effort post-cal
+    // parameter refresh instead of being rejected as link_busy.
+    owner.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-next-gyro',
+      data: { kind: 'gyro' },
+    }))
+    const nextSession = await owner.waitFor(
+      'calibration_session_started',
+      (message) => message.data?.requestId === 'cal-next-gyro',
+    )
+    assert.ok(nextSession.data?.sessionId)
+    assert.equal(started.bridge.parameterCancellationCalls, 1)
+    assert.equal(started.bridge.calibrationSessions[1]?.request.kind, 'gyro')
+  } finally {
+    await closeWs(observer)
+    await closeWs(owner)
+    await started.runtime.shutdown()
+  }
+})
+
 test('listen failures clean up injected services instead of leaking a runtime', async () => {
   const occupied = createHttpServer()
   occupied.listen(0, '127.0.0.1')
@@ -981,6 +1437,11 @@ test('log download endpoint validates ids and streams registered files', async (
       fileName: '10_30_00.ulg',
       sizeBytes: 12,
     })
+    started.bridge.ftpDownloads.set('0011223344556677', {
+      filePath: join(dir, 'missing.ulg'),
+      fileName: 'missing.ulg',
+      sizeBytes: 12,
+    })
 
     // Path metacharacters and wrong lengths never reach the filesystem.
     for (const bad of ['..%2F..%2Fetc', 'AABBCCDDEEFF0011', 'aabb', 'aabbccddeeff001122']) {
@@ -994,6 +1455,15 @@ test('log download endpoint validates ids and streams registered files', async (
     const unknown = await fetch(`${started.httpUrl}/api/logs/downloads/0123456789abcdef`)
     assert.equal(unknown.status, 404)
 
+    // A registered file that disappeared before headers are sent retains the
+    // structured 404 response instead of falling through to a generic error.
+    const missing = await fetch(`${started.httpUrl}/api/logs/downloads/0011223344556677`)
+    assert.equal(missing.status, 404)
+    assert.equal(
+      (await missing.json() as { error: { code: string } }).error.code,
+      'download_not_found',
+    )
+
     // Registered id streams the file with a download disposition.
     const ok = await fetch(`${started.httpUrl}/api/logs/downloads/aabbccddeeff0011`)
     assert.equal(ok.status, 200)
@@ -1004,4 +1474,56 @@ test('log download endpoint validates ids and streams registered files', async (
     await started.runtime.shutdown('test_complete')
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('WebSocket boundary validates and forwards grouped message-rate settings', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+
+    client.ws.send(JSON.stringify({
+      type: 'message_rates_set',
+      requestId: 'rates-boundary',
+      data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
+    }))
+    await client.waitFor('controller', (message) => message.data?.reason === 'claimed')
+    assert.equal(started.bridge.messages.length, 1)
+    assert.deepEqual(started.bridge.messages[0], {
+      type: 'message_rates_set',
+      requestId: 'rates-boundary',
+      data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
+    })
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('download errors after headers are sent are forwarded for stream termination', () => {
+  const transferError = new Error('stream failed after partial response')
+  let forwarded: unknown
+  let statusCalls = 0
+  const response = {
+    headersSent: true,
+    status() {
+      statusCalls++
+      return this
+    },
+    json() {
+      assert.fail('must not attempt a second response after headers are sent')
+    },
+  } as unknown as Parameters<typeof handleDownloadError>[1]
+  const next = ((error?: unknown) => {
+    forwarded = error
+  }) as Parameters<typeof handleDownloadError>[2]
+
+  handleDownloadError(transferError, response, next)
+
+  assert.equal(forwarded, transferError)
+  assert.equal(statusCalls, 0)
 })

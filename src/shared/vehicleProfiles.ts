@@ -6,7 +6,7 @@ import { PX4_MODES } from './constants'
 
 export type AutopilotFamily = 'px4' | 'ardupilot' | 'unknown'
 export type VehicleClass = 'copter' | 'plane' | 'rover' | 'sub' | 'tracker' | 'unknown'
-export type CalibrationKind = 'accel' | 'gyro' | 'mag' | 'baro'
+export type CalibrationKind = 'accel' | 'accel_simple' | 'gyro' | 'mag' | 'baro' | 'level'
 
 export interface VehicleIdentity {
   /** Raw MAV_AUTOPILOT value from HEARTBEAT. */
@@ -238,6 +238,8 @@ export function encodeModeCommand(
  * parameters may be stale or shared across stacks.
  */
 export interface VehicleCapabilities {
+  /** Any operation that mutates the selected flight controller. */
+  writeOperations: boolean
   setMode: boolean
   arm: boolean
   guidedTakeoff: boolean
@@ -252,6 +254,7 @@ export interface VehicleCapabilities {
 }
 
 const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
+  writeOperations: false,
   setMode: false,
   arm: false,
   guidedTakeoff: false,
@@ -270,6 +273,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
   if (identity.family === 'px4') {
     // Existing, regression-covered PX4 behavior across all vehicle types.
     return {
+      writeOperations: true,
       setMode: true,
       arm: true,
       guidedTakeoff: true,
@@ -286,6 +290,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
   if (identity.family === 'ardupilot') {
     if (identity.vehicleClass === 'copter') {
       return {
+        writeOperations: true,
         setMode: true,
         arm: true,
         guidedTakeoff: true,
@@ -306,10 +311,22 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
   return { ...READ_ONLY_CAPABILITIES }
 }
 
+// Explicit family × vehicleClass × kind calibration matrix. PX4 flows are
+// firmware-driven via MAV_CMD_PREFLIGHT_CALIBRATION and cover every vehicle
+// class; 'accel_simple' is ArduPilot-only (241 p5=4). ArduCopter additionally
+// gets the interactive six-position accel (42429) and onboard mag flows
+// (42424/42425/42426). Everything else stays read-only.
+const PX4_CALIBRATION_KINDS: ReadonlySet<CalibrationKind> =
+  new Set(['accel', 'gyro', 'mag', 'baro', 'level'])
+const ARDUCOPTER_CALIBRATION_KINDS: ReadonlySet<CalibrationKind> =
+  new Set(['accel', 'accel_simple', 'gyro', 'mag', 'baro', 'level'])
+
 /** Per-kind calibration gate shared by the browser and command encoder. */
 export function supportsCalibrationKind(identity: VehicleIdentity | null, kind: CalibrationKind): boolean {
-  if (!vehicleCapabilities(identity).calibrate) return false
-  // ArduPilot compass calibration uses MAV_CMD_DO_START_MAG_CAL and needs a
-  // dedicated multi-step flow that is not implemented yet.
-  return identity?.family !== 'ardupilot' || kind !== 'mag'
+  if (!identity || !vehicleCapabilities(identity).calibrate) return false
+  if (identity.family === 'px4') return PX4_CALIBRATION_KINDS.has(kind)
+  if (identity.family === 'ardupilot' && identity.vehicleClass === 'copter') {
+    return ARDUCOPTER_CALIBRATION_KINDS.has(kind)
+  }
+  return false
 }

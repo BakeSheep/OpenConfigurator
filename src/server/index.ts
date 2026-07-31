@@ -31,6 +31,11 @@ import type {
 import type { VehicleIdentity } from '../shared/vehicleProfiles'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
+import {
+  CalibrationSessionManager,
+  type CalibrationSessionHandle,
+  type CalibrationStartRequest,
+} from './mavlink/CalibrationSessionManager'
 import { EscService } from './esc/EscService'
 import {
   InputValidationError,
@@ -42,6 +47,7 @@ import {
   type BoundaryClientMessage,
   type ServerConfig,
 } from './validation'
+import { MessageRateLimiter } from './messageRateLimiter'
 
 const modulePath = fileURLToPath(import.meta.url)
 const moduleDir = path.dirname(modulePath)
@@ -86,6 +92,7 @@ export interface ConnectionManagerBoundary extends EventEmitter {
   readonly transportOpen?: boolean
   readonly vehicleReady?: boolean
   readonly rawSessionActive?: boolean
+  expectVehicleReboot?(): boolean
   readonly lastError?: ConnectionErrorDetail | null
   scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }>
   connect(config: ConnectionConfig): Promise<void>
@@ -98,8 +105,15 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   readonly currentParamRunId?: number
   /** Cached one-shot autopilot_version message for late-joining WS clients. */
   getAutopilotVersionMessage?(): ServerMessage | null
+  getMessageRatesMessage?(): Extract<ServerMessage, { type: 'message_rates' }>
   readonly vehicleIdentity?: VehicleIdentity | null
   getParameterValue?(id: string): number | null
+  /**
+   * Create (but not start) a calibration session after bridge-side gates
+   * (identity, capability, armed). Returns null after emitting its own
+   * operation_error when the request is rejected.
+   */
+  createCalibrationSession?(request: CalibrationStartRequest): CalibrationSessionHandle | null
   getFtpDownload?(downloadId: string): {
     filePath: string
     fileName: string
@@ -169,6 +183,29 @@ class HttpBoundaryError extends Error {
   }
 }
 
+type DownloadErrorResponse = Pick<Response, 'headersSent' | 'status' | 'json'>
+
+/**
+ * Complete response.download's callback contract. Once headers are on the
+ * wire, Express must receive the error so its final handler can close the
+ * partial response instead of leaving the client waiting indefinitely.
+ */
+export function handleDownloadError(
+  error: Error | undefined,
+  response: DownloadErrorResponse,
+  next: NextFunction,
+): void {
+  if (!error) return
+  if (response.headersSent) {
+    next(error)
+    return
+  }
+  response.status(404).json({
+    success: false,
+    error: { code: 'download_not_found', message: '下载文件不存在或已过期' },
+  })
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -213,10 +250,16 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
     || message.type === 'reboot_vehicle'
     || message.type === 'set_flight_mode'
     || message.type === 'start_calibration'
+    // calibration_action mutates the active calibration session; reclaim is
+    // deliberately NOT here: like esc_session_reclaim it transfers ownership
+    // to a new client and must not be blocked by the old owner's pinned lease.
+    || message.type === 'calibration_action'
     || message.type === 'param_set'
     || message.type === 'param_request_list'
+    || message.type === 'message_rates_set'
     || message.type === 'manual_control'
     || message.type === 'motor_test'
+    || message.type === 'motor_test_batch'
     || message.type === 'select_target'
     || message.type === 'fs_download'
     || message.type === 'fs_download_cancel'
@@ -360,6 +403,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   // ESC session lease pin (ADR-004): while set, the lease belongs to the
   // session owner and cannot expire or be taken over.
   let escControllerPin: { clientId: string; sessionId: string } | null = null
+  // Calibration session lease pin: same semantics as the ESC pin. The two
+  // are mutually exclusive because ESC sessions and calibration sessions
+  // refuse to start while the other is active.
+  let calControllerPin: { clientId: string; sessionId: string } | null = null
   let parameterSync: ParamSyncState | null = null
   let parameterSyncTimer: ReturnType<typeof setTimeout> | null = null
   let nextParameterGeneration = 0
@@ -484,10 +531,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   }
 
   function expireController(now = Date.now()): void {
-    // While an ESC session pins the lease, it never expires and stays with
-    // the session owner (ADR-004); it is released via the session lifecycle.
-    if (escControllerPin) {
-      if (controllerLease?.clientId === escControllerPin.clientId) {
+    // While an ESC or calibration session pins the lease, it never expires
+    // and stays with the session owner; it is released via the session
+    // lifecycle.
+    const pin = escControllerPin ?? calControllerPin
+    if (pin) {
+      if (controllerLease?.clientId === pin.clientId) {
         controllerLease.expiresAt = now + controllerLeaseMs
       }
       return
@@ -520,6 +569,25 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     expireController()
   }
 
+  /** Pin the controller lease to the calibration session owner. */
+  function pinControllerToCalibrationSession(ownerClientId: string, sessionId: string): void {
+    calControllerPin = { clientId: ownerClientId, sessionId }
+    const now = Date.now()
+    if (!controllerLease || controllerLease.clientId !== ownerClientId) {
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      broadcast(controllerMessage('claimed'))
+    } else {
+      controllerLease.expiresAt = now + controllerLeaseMs
+    }
+  }
+
+  /** Drop the calibration pin when its session ends; normal expiry resumes. */
+  function releaseCalibrationSessionController(sessionId: string): void {
+    if (calControllerPin?.sessionId !== sessionId) return
+    calControllerPin = null
+    expireController()
+  }
+
   function ensureController(ws: WebSocket, context: ClientContext, requestId?: string): boolean {
     const now = Date.now()
     expireController(now)
@@ -528,6 +596,17 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         ws,
         'controller_conflict',
         'ESC 会话所有者当前持有飞控控制权',
+        requestId,
+        true,
+        { expiresAt: controllerLease?.expiresAt ?? null },
+      )
+      return false
+    }
+    if (calControllerPin && calControllerPin.clientId !== context.id) {
+      sendClientError(
+        ws,
+        'controller_conflict',
+        '校准会话所有者当前持有飞控控制权',
         requestId,
         true,
         { expiresAt: controllerLease?.expiresAt ?? null },
@@ -557,9 +636,11 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   function releaseController(context: ClientContext, reason: 'released' | 'disconnected'): boolean {
     expireController()
     if (controllerLease?.clientId !== context.id) return false
-    // The lease of an ESC session owner survives WS disconnects so an
-    // orphaned session can be reclaimed; the session lifecycle releases it.
+    // The lease of an ESC/calibration session owner survives WS disconnects
+    // so an orphaned session can be reclaimed; the session lifecycle
+    // releases it.
     if (escControllerPin?.clientId === context.id) return false
+    if (calControllerPin?.clientId === context.id) return false
     controllerLease = null
     broadcast(controllerMessage(reason))
     return true
@@ -695,6 +776,39 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     return true
   }
 
+  /**
+   * Server-initiated one-shot parameter refresh after a successful calibration.
+   * Runs as the session owner and reuses the exact param-sync pipeline used by
+   * a client param_request_list, so batching, generation and timeout behave
+   * identically. No-op when the owner has disconnected or a sync is active.
+   */
+  function beginPostCalibrationParameterSync(ownerClientId: string | null): void {
+    if (!ownerClientId) return
+    if (parameterSync) return
+    const entry = [...clientContexts.entries()].find(([, ctx]) => ctx.id === ownerClientId)
+    if (!entry) {
+      logger.log('[Calibration] post-cal parameter refresh skipped: owner disconnected')
+      return
+    }
+    const [ws, context] = entry
+    if (!beginParameterSync(ws, context)) return
+    try {
+      mavlinkBridge.handleClientMessage({ type: 'param_request_list' } as ClientMessage)
+      recordCurrentParamRunId()
+    } catch (error) {
+      clearParamBatch()
+      finishParameterSync('failed', 'bridge_exception')
+      logger.error('[Calibration] post-cal parameter refresh failed:', error)
+    }
+  }
+
+  /** Attach the bridge's current download run id to the active sync, if any. */
+  function recordCurrentParamRunId(): void {
+    if (parameterSync) parameterSync.runId = mavlinkBridge.currentParamRunId
+  }
+
+  const messageRateLimiter = new MessageRateLimiter()
+
   const onBridgeMessage = (rawMessage: unknown): void => {
     if (typeof rawMessage !== 'object' || rawMessage === null) {
       logger.warn('[MAVLink] Ignoring non-object bridge message')
@@ -705,6 +819,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       data?: unknown
       generation?: number
       paramRunId?: number
+    }
+
+    if (message.type === 'message_rates') {
+      messageRateLimiter.setRates(message.data)
+    } else if (!messageRateLimiter.shouldForward(message)) {
+      return
     }
 
     const runId = message.paramRunId
@@ -772,11 +892,15 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   }
 
   const onStatusChange = (status: ConnectionStatus): void => {
+    if (status !== 'connected') messageRateLimiter.reset()
     escService.handleMavlinkStatus(status)
     if (status === 'connecting' || status === 'connected') {
       lastConnectionError = null
     }
     if (status !== 'connected') {
+      // Terminate first so the session releases its lease pin before the
+      // generic lease reset below.
+      calibrationManager.handleLinkDown()
       if (controllerLease) {
         controllerLease = null
         broadcast(controllerMessage('connection_changed'))
@@ -810,11 +934,47 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     bridge: mavlinkBridge as unknown as MavlinkBridge,
     emit: (message) => broadcast(message),
     emitToClient: (clientId, message) => sendToClientId(clientId, message),
-    getVehicleFamily: () => mavlinkBridge.vehicleIdentity?.family ?? 'unknown',
+    getVehicleIdentity: () => mavlinkBridge.vehicleIdentity ?? null,
     getParameterValue: (id) => mavlinkBridge.getParameterValue?.(id) ?? null,
     pinController: pinControllerToEscSession,
     releaseController: releaseEscSessionController,
     isLinkBusy: () => (parameterSync ? 'parameter_sync' : null),
+    logger,
+  })
+
+  const calibrationManager = new CalibrationSessionManager({
+    createSession: (request) => {
+      // The real bridge gains createCalibrationSession in the bridge wiring
+      // task; injected fakes may omit it, hence the boundary-typed access.
+      const factory = (mavlinkBridge as MavlinkBridgeBoundary).createCalibrationSession
+      if (!factory) {
+        sendToClientId(request.ownerClientId, {
+          type: 'operation_error',
+          data: {
+            requestId: request.requestId,
+            operation: 'start_calibration',
+            code: 'unsupported_operation',
+            message: '当前后端不支持校准会话',
+            retryable: false,
+          },
+        })
+        return null
+      }
+      return factory.call(mavlinkBridge, request)
+    },
+    broadcast: (message) => broadcast(message),
+    emitToClient: (clientId, message) => sendToClientId(clientId, message),
+    pinController: pinControllerToCalibrationSession,
+    releaseController: releaseCalibrationSessionController,
+    onTerminalSuccess: (_sessionId, ownerClientId) =>
+      beginPostCalibrationParameterSync(ownerClientId),
+    isLinkBusy: () => (
+      parameterSync
+        ? 'parameter_sync'
+        : escService.blocksMavlinkMutations()
+          ? 'esc_session'
+          : null
+    ),
     logger,
   })
 
@@ -964,7 +1124,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     })
   })
 
-  app.get('/api/logs/downloads/:downloadId', (request, response) => {
+  app.get('/api/logs/downloads/:downloadId', (request, response, next) => {
     const { downloadId } = request.params
     // Download ids are 8 random bytes hex-encoded by the FTP client; anything
     // else (including path metacharacters) is rejected before touching disk.
@@ -979,12 +1139,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
     response.download(download.filePath, download.fileName, (error) => {
-      if (error && !response.headersSent) {
-        response.status(404).json({
-          success: false,
-          error: { code: 'download_not_found', message: '下载文件不存在或已过期' },
-        })
-      }
+      handleDownloadError(error, response, next)
     })
   })
 
@@ -1014,8 +1169,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     error: unknown,
     _request: Request,
     response: Response,
-    _next: NextFunction,
+    next: NextFunction,
   ) => {
+    if (response.headersSent) {
+      next(error)
+      return
+    }
     if (error instanceof HttpBoundaryError) {
       response.status(error.status).json({
         success: false,
@@ -1127,6 +1286,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         sendClientError(ws, 'esc_session_active', 'ESC 会话进行中，暂不能释放控制权', requestId)
         return
       }
+      if (calibrationManager.blocksControllerRelease()) {
+        sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能释放控制权', requestId)
+        return
+      }
       if (!releaseController(context, 'released')) {
         sendClientError(ws, 'not_controller', '当前客户端未持有控制权', requestId)
       }
@@ -1137,6 +1300,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // ready-target gate: direct-mode sessions have no MAVLink target, and
     // subsequent commands are governed by the session's own ownership state.
     if (isEscClientMessage(message)) {
+      if (message.type === 'esc_session_start' && calibrationManager.blocksMavlinkMutations()) {
+        sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能启动 ESC 会话', requestId, true)
+        return
+      }
       if (message.type === 'esc_session_start' && EscService.startRequiresReadyTarget(message)) {
         if (
           connManager.status !== 'connected'
@@ -1164,6 +1331,28 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
+    // An active calibration session isolates every other MAVLink mutation.
+    // calibration_action targets the session itself and start_calibration is
+    // deduplicated by the manager; the only generic passthrough is an
+    // emergency disarm and a controller-owned vehicle reboot. Both also mark
+    // the calibration as interrupted so no stale session survives the exit.
+    if (
+      calibrationManager.blocksMavlinkMutations()
+      && isMutatingMessage(message)
+      && message.type !== 'calibration_action'
+      && message.type !== 'start_calibration'
+    ) {
+      const emergencyDisarm = message.type === 'command'
+        && message.cmd === 'MAV_CMD_COMPONENT_ARM_DISARM'
+        && (message.params[0] ?? 0) < 0.5
+      const vehicleReboot = message.type === 'reboot_vehicle'
+      if (!emergencyDisarm && !vehicleReboot) {
+        sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能执行该操作', requestId, true)
+        return
+      }
+      if (emergencyDisarm) calibrationManager.notifyEmergencyDisarm()
+    }
+
     if (
       requiresReadyTarget(message)
       && (
@@ -1182,6 +1371,13 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
+    // Ownership transfer entry point: validated token replaces the lease
+    // gate, mirroring esc_session_reclaim.
+    if (message.type === 'calibration_reclaim') {
+      calibrationManager.reclaim(context.id, message.data, message.requestId)
+      return
+    }
+
     if (message.type === 'param_request_list') {
       // Report an in-flight parameter generation before controller ownership:
       // observers need the more actionable generation conflict and must not be
@@ -1191,8 +1387,31 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
+    // Calibration session messages route to the manager, never the bridge.
+    if (message.type === 'start_calibration') {
+      // A successful calibration starts a best-effort parameter refresh. A
+      // deliberate next calibration from the same controller takes priority;
+      // otherwise the refresh rejects the new request and leaves the previous
+      // result on screen, which looks like the old calibration restarted.
+      if (parameterSync?.ownerClientId === context.id) {
+        cancelBridgeParameterDownload('superseded_by_calibration')
+        clearParamBatch()
+        finishParameterSync('cancelled', 'superseded_by_calibration')
+      }
+      calibrationManager.requestStart(context.id, message)
+      return
+    }
+    if (message.type === 'calibration_action') {
+      calibrationManager.handleAction(context.id, message)
+      return
+    }
+
     try {
       mavlinkBridge.handleClientMessage(message as ClientMessage)
+      if (message.type === 'reboot_vehicle') {
+        connManager.expectVehicleReboot?.()
+        calibrationManager.notifyVehicleReboot()
+      }
       // Record which bridge download run belongs to this generation. If the
       // bridge rejected the request synchronously the sync is already
       // finished (parameterSync === null) and nothing is recorded.
@@ -1233,6 +1452,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     ws.on('close', () => {
       clientContexts.delete(ws)
       escService.handleClientDisconnected(context.id)
+      calibrationManager.handleClientDisconnected(context.id)
       releaseController(context, 'disconnected')
       if (parameterSync?.ownerClientId === context.id) {
         cancelBridgeParameterDownload('owner_disconnected')
@@ -1256,6 +1476,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
           'structured-errors',
           'rest-control-token',
           'esc-configurator',
+          'calibration-session',
         ],
         maxPayload: config.wsMaxPayload,
         controllerLeaseMs,
@@ -1266,7 +1487,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // Replay one-shot state for late-joining or reconnected clients.
     const versionSnapshot = mavlinkBridge.getAutopilotVersionMessage?.() ?? null
     if (versionSnapshot) safeSend(ws, versionSnapshot)
+    const messageRatesSnapshot = mavlinkBridge.getMessageRatesMessage?.() ?? null
+    if (messageRatesSnapshot) safeSend(ws, messageRatesSnapshot)
     safeSend(ws, { type: 'esc_session', data: escService.snapshot() })
+    // Replay the active or recently finished calibration session so page
+    // remounts and late joiners can render the wizard state.
+    calibrationManager.replayTo((message) => safeSend(ws, message))
     if (parameterSync) {
       safeSend(ws, {
         type: 'param_sync',
@@ -1388,6 +1614,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       const closeWsPromise = closeWebSocketServer(wss)
 
       const cleanupWork = Promise.allSettled([
+        Promise.resolve().then(() => calibrationManager.destroy()).catch((error) => {
+          logger.error('[Server] Calibration manager cleanup failed:', error)
+        }),
         Promise.resolve().then(() => escService.destroy()).catch((error) => {
           logger.error('[Server] ESC service cleanup failed:', error)
         }),

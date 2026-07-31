@@ -4,6 +4,7 @@ import {
   common,
   minimal,
   standard,
+  ardupilotmega,
   decode,
   MavlinkCodecSession,
   codecOptionsFromEnvironment,
@@ -12,7 +13,10 @@ import {
 } from './codec'
 import type { MavLinkData } from 'node-mavlink'
 import { ConnectionManager } from '../connection/ConnectionManager'
-import type { SerialWritePriority } from '../connection/SerialConnection'
+import type {
+  SerialWritePriority,
+  SerialWriteQueueTag,
+} from '../connection/SerialConnection'
 import { MavlinkFtp, type FtpDownloadRecord } from './MavlinkFtp'
 import {
   MavlinkLogTransfer,
@@ -20,6 +24,8 @@ import {
 } from './MavlinkLogTransfer'
 import {
   FTP_MESSAGE_ID,
+  DEFAULT_MESSAGE_RATES,
+  MESSAGE_RATE_GROUP_IDS,
   LOG_DATA_MESSAGE_ID,
   LOG_ENTRY_MESSAGE_ID,
   MAVLINK_COMMANDS,
@@ -31,9 +37,12 @@ import {
   formatFirmwareLabel,
   vehicleCapabilities,
   supportsCalibrationKind,
+  type CalibrationKind,
   type VehicleIdentity,
 } from '../../shared/vehicleProfiles'
-import type { ServerMessage, ClientMessage, ManualControlData, RcChannelsData } from '../../shared/types'
+import type { ServerMessage, ClientMessage, ManualControlData, MessageRateConfig, RcChannelsData } from '../../shared/types'
+import { CalibrationSession } from './CalibrationSession'
+import type { CalibrationStartRequest } from './CalibrationSessionManager'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
 const BLUETOOTH_PARAM_STALL_TIMEOUT_MS = 3500
@@ -69,17 +78,32 @@ const VERSION_MAX_ATTEMPTS = 3
 // dropped frame must not silently degrade the whole session to the legacy
 // stream path, so the batch is re-sent a bounded number of times.
 const MESSAGE_INTERVAL_MAX_SEND_ATTEMPTS = 3
+// Read-only sensor peripherals commonly publish under their own component ID
+// while sharing the selected autopilot's system ID. Keep every mutation and
+// protocol transaction scoped to the exact selected component, but admit this
+// narrow telemetry allow-list from sibling components in the same system.
+const SENSOR_COMPONENT_MESSAGE_IDS = new Set([100, 106, 132, 173])
 // An ATTITUDE time_boot_ms regression larger than this margin means the FC
 // rebooted (its SET_MESSAGE_INTERVAL configuration is gone).
 const FC_REBOOT_DETECTION_MARGIN_MS = 10_000
+const motorTestStartQueueTag = (instance: number): SerialWriteQueueTag =>
+  `motor-test-start:${instance}`
+const ALL_MOTOR_TEST_INSTANCES = Object.freeze(
+  Array.from({ length: 12 }, (_, index) => index + 1),
+)
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 246, 310, 400])
 const HANDLED_MESSAGE_IDS = new Set([
-  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 77, 105, 106, 110, 116, 118,
-  120, 126, 129, 132, 147, 148, 230, 245, 253,
+  1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 76, 77, 100, 105, 106, 110, 116, 118,
+  120, 126, 129, 132, 147, 148, 173, 191, 192, 230, 245, 253,
 ])
 type ParamEncoding = 'bytewise' | 'c-cast'
 type TelemetryProfile = 'normal' | 'parameter-sync'
 type MessageIntervalSupport = 'unknown' | 'supported' | 'unsupported'
+type MessageRateGroup = keyof MessageRateConfig
+const MESSAGE_RATE_GROUP_BY_ID = new Map<number, MessageRateGroup>(
+  (Object.entries(MESSAGE_RATE_GROUP_IDS) as Array<[MessageRateGroup, readonly number[]]>)
+    .flatMap(([group, ids]) => ids.map((id) => [id, group] as const)),
+)
 
 export interface MavlinkBridgeOptions {
   codec?: MavlinkCodecSessionOptions
@@ -213,6 +237,9 @@ export class MavlinkBridge extends EventEmitter {
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
+  private messageRates: MessageRateConfig = { ...DEFAULT_MESSAGE_RATES }
+  /** Components actually observed emitting each configurable message id. */
+  private readonly observedMessageComponents = new Map<number, Set<number>>()
   private lastAttitudeBootMs: number | null = null
   private readonly pendingCommands = new Map<number, PendingCommand>()
   private readonly uncertainCommands = new Set<number>()
@@ -221,6 +248,11 @@ export class MavlinkBridge extends EventEmitter {
   private readonly parameterValues = new Map<string, number>()
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
+  // Active calibration session, if any. Owned lifecycle-wise by the server's
+  // CalibrationSessionManager; the bridge feeds it protocol inputs (parsed
+  // [cal] text, command ACKs, ACCELCAL_VEHICLE_POS and MAG_CAL_* messages)
+  // and clears the reference when the session reaches a terminal snapshot.
+  private activeCalibration: CalibrationSession | null = null
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
@@ -432,6 +464,98 @@ export class MavlinkBridge extends EventEmitter {
     return false
   }
 
+  private isSelectedSensorComponentSource(msg: Pick<MavlinkMessage, 'msgId' | 'sysId'>): boolean {
+    return this.targetSysId !== null
+      && msg.sysId === this.targetSysId
+      && SENSOR_COMPONENT_MESSAGE_IDS.has(msg.msgId)
+  }
+
+  private effectiveMessageRate(group: MessageRateGroup): number {
+    const requestedHz = this.messageRates[group]
+    return this.telemetryProfile === 'parameter-sync' ? Math.min(requestedHz, 2) : requestedHz
+  }
+
+  private sendMessageIntervalRequest(
+    messageId: number,
+    group: MessageRateGroup,
+    targetComponent: number,
+  ): void {
+    const setIntervalCommand =
+      (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_SET_MESSAGE_INTERVAL
+    if (setIntervalCommand === undefined || this.messageIntervalSupport === 'unsupported') return
+    const intervalUs = Math.round(1_000_000 / this.effectiveMessageRate(group))
+    this.sendInternalCommand(
+      setIntervalCommand,
+      [messageId, intervalUs, 0, 0, 0, 0, 0],
+      targetComponent,
+    )
+  }
+
+  private observeMessageComponent(msg: Pick<MavlinkMessage, 'msgId' | 'compId'>): void {
+    const group = MESSAGE_RATE_GROUP_BY_ID.get(msg.msgId)
+    if (!group) return
+    let components = this.observedMessageComponents.get(msg.msgId)
+    if (!components) {
+      components = new Set<number>()
+      this.observedMessageComponents.set(msg.msgId, components)
+    }
+    if (components.has(msg.compId)) return
+    components.add(msg.compId)
+    // A routed sensor can retain its own component id. Targeting only the
+    // autopilot component then produces an accepted ACK without changing the
+    // real emitter. Send the same interval request directly to a newly seen
+    // sibling component once; unsupported components simply ignore it.
+    if (
+      msg.compId !== this.targetCompId
+      && this.telemetryProfile !== null
+      && this.connManager.status === 'connected'
+    ) {
+      this.sendMessageIntervalRequest(msg.msgId, group, msg.compId)
+    }
+  }
+
+  private vehicleWriteCapabilityError(): string | null {
+    return vehicleCapabilities(this.selectedIdentity).writeOperations
+      ? null
+      : '当前飞控类型为只读配置，尚未开放写操作'
+  }
+
+  private requireWritableVehicle(operation: string, requestId?: string): boolean {
+    const message = this.vehicleWriteCapabilityError()
+    if (!message) return true
+    this.emitOperationError(
+      operation,
+      'unsupported_vehicle_profile',
+      message,
+      requestId,
+    )
+    return false
+  }
+
+  private requireWritableFilesystem(requestId?: string): boolean {
+    const message = this.vehicleWriteCapabilityError()
+    if (!message) return true
+    this.emitFsOpError(
+      'delete',
+      'unsupported_vehicle_profile',
+      message,
+      requestId,
+    )
+    return false
+  }
+
+  private requireWritableLogs(requestId?: string): boolean {
+    const message = this.vehicleWriteCapabilityError()
+    if (!message) return true
+    this.emitLogOpError(
+      'erase',
+      'unsupported_vehicle_profile',
+      message,
+      requestId,
+    )
+    return false
+  }
+
   /**
    * Capability gate for client-issued MAVLink commands. Returns the blocking
    * explanation, or null when the selected profile supports the command.
@@ -439,6 +563,8 @@ export class MavlinkBridge extends EventEmitter {
    */
   private commandCapabilityError(cmd: string): string | null {
     const caps = vehicleCapabilities(this.selectedIdentity)
+    const writeError = this.vehicleWriteCapabilityError()
+    if (writeError) return writeError
     switch (cmd) {
       case 'MAV_CMD_COMPONENT_ARM_DISARM':
         return caps.arm ? null : '当前飞控类型尚未适配解锁/上锁操作'
@@ -458,11 +584,13 @@ export class MavlinkBridge extends EventEmitter {
   private writeMessage(
     message: MavLinkData,
     priority: SerialWritePriority = 'normal',
+    queueTag?: SerialWriteQueueTag,
   ): boolean {
     try {
       const result = this.connManager.write(
         this.codec.serialize(message),
         priority,
+        queueTag,
       ) as boolean | void
       return result !== false
     } catch (error) {
@@ -471,7 +599,21 @@ export class MavlinkBridge extends EventEmitter {
     }
   }
 
+  private cancelQueuedMotorTestStarts(instances: Iterable<number>): void {
+    for (const instance of instances) {
+      this.connManager.cancelQueuedWrites(motorTestStartQueueTag(instance))
+    }
+  }
+
   private resetTargetState(clearDiscovery: boolean): void {
+    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
+    // A target switch/reset invalidates any calibration session bound to the
+    // previous selected autopilot; terminate it once and drop the reference.
+    if (this.activeCalibration) {
+      const session = this.activeCalibration
+      this.activeCalibration = null
+      session.terminate('target_reset', '已选飞控目标已变更或复位，校准会话终止')
+    }
     this.targetSysId = null
     this.targetCompId = null
     this.selectedHeartbeatReady = false
@@ -489,6 +631,7 @@ export class MavlinkBridge extends EventEmitter {
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
+    this.observedMessageComponents.clear()
     if (this.messageIntervalFallbackTimer) {
       clearTimeout(this.messageIntervalFallbackTimer)
       this.messageIntervalFallbackTimer = null
@@ -558,6 +701,7 @@ export class MavlinkBridge extends EventEmitter {
       this.emitTarget('selected')
       return
     }
+    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
     this.cancelProtocolOperations(false, 'target_switched')
     this.targetSysId = systemId
     this.targetCompId = componentId
@@ -644,17 +788,20 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleMessage(msg: MavlinkMessage) {
-    // Discovery is the only cross-source operation. Once selected, every
-    // other protocol service is scoped to the exact system/component pair.
+    // Discovery is the only broadly cross-source operation. Once selected,
+    // commands and state stay scoped to the exact system/component pair; only
+    // the sensor telemetry allow-list may arrive from sibling components in
+    // the same MAVLink system.
     if (msg.msgId === 0) {
       this.handleHeartbeat(msg)
       return
     }
-    if (!this.isSelectedSource(msg)) return
+    if (!this.isSelectedSource(msg) && !this.isSelectedSensorComponentSource(msg)) return
     // The codec has already validated framing, CRC and (when configured)
     // signatures. Every such frame from the selected autopilot is proof that
     // the link is alive, even when OpenConfigurator has no handler for that message id.
     this.connManager.notifyAutopilotActivity()
+    this.observeMessageComponent(msg)
     if (!HANDLED_MESSAGE_IDS.has(msg.msgId)) return
 
     switch (msg.msgId) {
@@ -695,14 +842,23 @@ export class MavlinkBridge extends EventEmitter {
       case 74: // VFR_HUD
         this.handleVfrHud(msg)
         break
+      case 76: // COMMAND_LONG (FC -> GCS; used by ACCELCAL_VEHICLE_POS)
+        this.handleInboundCommandLong(msg)
+        break
       case 77: // COMMAND_ACK
         this.handleCommandAck(msg)
+        break
+      case 100: // OPTICAL_FLOW (legacy/non-integrating sensors)
+        this.handleOpticalFlowLegacy(msg)
         break
       case 106: // OPTICAL_FLOW_RAD
         this.handleOpticalFlow(msg)
         break
       case 132: // DISTANCE_SENSOR
         this.handleDistanceSensor(msg)
+        break
+      case 173: // RANGEFINDER (ardupilotmega legacy fallback)
+        this.handleRangefinder(msg)
         break
       case 110: // FILE_TRANSFER_PROTOCOL
         this.handleFileTransferProtocol(msg)
@@ -724,6 +880,12 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 245: // EXTENDED_SYS_STATE
         this.handleExtendedSysState(msg)
+        break
+      case 191: // MAG_CAL_PROGRESS (ardupilotmega)
+        this.handleMagCalProgress(msg)
+        break
+      case 192: // MAG_CAL_REPORT
+        this.handleMagCalReport(msg)
         break
       case 126: // SERIAL_CONTROL (PX4 ESC passthrough)
         this.handleSerialControl(msg)
@@ -768,6 +930,20 @@ export class MavlinkBridge extends EventEmitter {
     const identityChanged = this.selectedIdentity === null
       || this.selectedIdentity.autopilotId !== identity.autopilotId
       || this.selectedIdentity.vehicleTypeId !== identity.vehicleTypeId
+    const armed = (hb.baseMode & 0x80) !== 0
+    const becameArmed = armed && this.lastArmedState !== true
+    if (identityChanged || becameArmed) {
+      this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
+    }
+    if (becameArmed) {
+      // Arming may come from another GCS. Calibration is a disarmed-only
+      // workflow, so terminate immediately before any later owner action can
+      // send a position confirmation or compass-accept command.
+      this.activeCalibration?.terminate(
+        'vehicle_armed',
+        '检测到飞行器已解锁，校准会话已终止',
+      )
+    }
     this.selectedIdentity = identity
     this.connManager.notifyAutopilotHeartbeat()
     if (becameReady || identityChanged) this.emitTarget('selected')
@@ -778,7 +954,6 @@ export class MavlinkBridge extends EventEmitter {
     }
     if (this.versionAttempt === 0) this.requestAutopilotVersion()
 
-    const armed = (hb.baseMode & 0x80) !== 0
     this.lastArmedState = armed
     const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
     this.emit('message', {
@@ -1126,27 +1301,25 @@ export class MavlinkBridge extends EventEmitter {
         )
       )
     ) return
+    // Let an active calibration session observe the ACK first (its start and
+    // follow-up commands bypass pendingCommands, so the generic transaction
+    // logic below would otherwise treat them as orphaned). The session only
+    // reacts to its own command id.
+    this.activeCalibration?.handleCommandAck(d.command as number, d.result)
     if (d.command === (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_SET_MESSAGE_INTERVAL) {
       if (d.result === MAV_RESULT_ACCEPTED) {
-        // A terminal ACCEPTED is the only positive capability signal.
-        // Keep a previous terminal failure sticky for this target session: the
-        // several interval requests share one command id and cannot otherwise
-        // be correlated to individual message ids.
-        if (this.messageIntervalSupport !== 'unsupported') {
-          this.messageIntervalSupport = 'supported'
-          if (this.messageIntervalFallbackTimer) {
-            clearTimeout(this.messageIntervalFallbackTimer)
-            this.messageIntervalFallbackTimer = null
-          }
+        // Requests for different message ids share one command id. Some ids
+        // may be unavailable on a given airframe, so any accepted request is
+        // sufficient proof that SET_MESSAGE_INTERVAL itself is supported.
+        this.messageIntervalSupport = 'supported'
+        if (this.messageIntervalFallbackTimer) {
+          clearTimeout(this.messageIntervalFallbackTimer)
+          this.messageIntervalFallbackTimer = null
         }
-      } else if (
-        d.result !== MAV_RESULT_IN_PROGRESS
-        && d.result !== MAV_RESULT_TEMPORARILY_REJECTED
-      ) {
-        // DENIED / UNSUPPORTED / FAILED / CANCELLED (and any future terminal
-        // failure) must restore the broadly-supported legacy stream request.
-        this.useLegacyTelemetryStreams()
       }
+      // A failure may describe only the requested message id, not support for
+      // the command itself. With no accepted ACK the bounded retry timer below
+      // still falls back to REQUEST_DATA_STREAM.
     }
 
     const commandId = d.command as number
@@ -1205,14 +1378,21 @@ export class MavlinkBridge extends EventEmitter {
     const d = decode<common.OpticalFlowRad>(106, msg.payload)
     if (!d) return
     const distance = Number.isFinite(d.distance) && d.distance >= 0 ? d.distance : null
+    // MAVLink permits NaN for unavailable OPTICAL_FLOW_RAD gyro integrals.
+    // Normalize them before crossing the JSON boundary instead of relying on
+    // JSON.stringify(NaN) implicitly turning them into null.
+    const integratedXgyro = Number.isFinite(d.integratedXgyro) ? d.integratedXgyro : null
+    const integratedYgyro = Number.isFinite(d.integratedYgyro) ? d.integratedYgyro : null
+    const integratedZgyro = Number.isFinite(d.integratedZgyro) ? d.integratedZgyro : null
     const data = {
+      source: 'OPTICAL_FLOW_RAD' as const,
       sensor_id: d.sensorId,
       integration_time_us: d.integrationTimeUs,
       integrated_x_rad: d.integratedX,
       integrated_y_rad: d.integratedY,
-      integrated_xgyro_rad: d.integratedXgyro,
-      integrated_ygyro_rad: d.integratedYgyro,
-      integrated_zgyro_rad: d.integratedZgyro,
+      integrated_xgyro_rad: integratedXgyro,
+      integrated_ygyro_rad: integratedYgyro,
+      integrated_zgyro_rad: integratedZgyro,
       // OPTICAL_FLOW_RAD temperature is cdegC with 0 = no temperature sensor
       // (same convention as SCALED_IMU), so map 0 to null.
       temperature_c: d.temperature === 0 ? null : d.temperature / 100,
@@ -1222,12 +1402,43 @@ export class MavlinkBridge extends EventEmitter {
       // values while callers migrate to the correctly named fields above.
       flow_x: d.integratedX,
       flow_y: d.integratedY,
-      flow_comp_m_x: d.integratedXgyro,
-      flow_comp_m_y: d.integratedYgyro,
+      flow_comp_m_x: integratedXgyro,
+      flow_comp_m_y: integratedYgyro,
       quality: d.quality,
       ground_distance: distance,
     }
     this.emit('message', { type: 'sensor', msgType: 'OPTICAL_FLOW_RAD', data } as ServerMessage)
+  }
+
+  private handleOpticalFlowLegacy(msg: MavlinkMessage) {
+    const d = decode<common.OpticalFlow>(100, msg.payload)
+    if (!d) return
+    const distance = Number.isFinite(d.groundDistance) && d.groundDistance >= 0
+      ? d.groundDistance
+      : null
+    const data = {
+      source: 'OPTICAL_FLOW' as const,
+      sensor_id: d.sensorId,
+      // OPTICAL_FLOW reports pixel displacement and compensated velocity, not
+      // integrated radians. Keep the RAD-only fields neutral while preserving
+      // the native values in the compatibility fields used by the UI.
+      integration_time_us: 0,
+      integrated_x_rad: 0,
+      integrated_y_rad: 0,
+      integrated_xgyro_rad: 0,
+      integrated_ygyro_rad: 0,
+      integrated_zgyro_rad: 0,
+      temperature_c: null,
+      time_delta_distance_us: 0,
+      distance_m: distance,
+      flow_x: d.flowX,
+      flow_y: d.flowY,
+      flow_comp_m_x: d.flowCompMX,
+      flow_comp_m_y: d.flowCompMY,
+      quality: d.quality,
+      ground_distance: distance,
+    }
+    this.emit('message', { type: 'sensor', msgType: 'OPTICAL_FLOW', data } as ServerMessage)
   }
 
   private handleFileTransferProtocol(msg: MavlinkMessage) {
@@ -1460,6 +1671,7 @@ export class MavlinkBridge extends EventEmitter {
     const d = decode<common.DistanceSensor>(132, msg.payload)
     if (!d) return
     const data = {
+      source: 'DISTANCE_SENSOR' as const,
       min_distance: d.minDistance,
       max_distance: d.maxDistance,
       current_distance: d.currentDistance,
@@ -1471,6 +1683,26 @@ export class MavlinkBridge extends EventEmitter {
         : null,
     }
     this.emit('message', { type: 'sensor', msgType: 'DISTANCE_SENSOR', data } as ServerMessage)
+  }
+
+  private handleRangefinder(msg: MavlinkMessage) {
+    const d = decode<ardupilotmega.RangeFinder>(173, msg.payload)
+    if (!d || !Number.isFinite(d.distance) || d.distance < 0) return
+    // RANGEFINDER exposes only distance in metres. Normalize to the existing
+    // centimetre-based DistanceSensorData shape without inventing limits or
+    // signal quality; zero limits mean unspecified and are handled by the UI.
+    const currentDistance = Math.round(d.distance * 100)
+    const data = {
+      source: 'RANGEFINDER' as const,
+      min_distance: 0,
+      max_distance: 0,
+      current_distance: currentDistance,
+      type: 0,
+      id: 0,
+      orientation: 25,
+      signal_quality: null,
+    }
+    this.emit('message', { type: 'sensor', msgType: 'RANGEFINDER', data } as ServerMessage)
   }
 
   private handleBattery(msg: MavlinkMessage) {
@@ -1689,10 +1921,15 @@ export class MavlinkBridge extends EventEmitter {
 
   private emitStatustext(severity: number, bytes: Buffer): void {
     if (bytes.length === 0) return
+    const text = bytes.toString('utf8')
     this.emit('message', {
       type: 'statustext',
-      data: { severity, text: bytes.toString('utf8') },
+      data: { severity, text },
     } as ServerMessage)
+    // The full reassembled line is also fed to any active calibration session;
+    // the PX4 [cal] protocol lives entirely in STATUSTEXT. statustext
+    // broadcasting is unchanged so MessagesPage stays compatible.
+    this.activeCalibration?.handleStatustext(text)
   }
 
   private pruneStatustextAssemblies(): void {
@@ -1763,31 +2000,32 @@ export class MavlinkBridge extends EventEmitter {
         break
       }
       case 'start_calibration':
-        if (this.requireReadyTarget('start_calibration', msg.requestId)) {
-          this.sendCalibration(msg.data.kind, msg.requestId)
-        }
+        // Calibration is owned by the server's CalibrationSessionManager, which
+        // calls createCalibrationSession() directly; start_calibration never
+        // reaches the bridge through this path.
+        this.emitOperationError(
+          'start_calibration',
+          'unsupported_operation',
+          '校准请求必须经由校准会话管理器发起',
+          msg.requestId,
+        )
         break
       case 'param_set':
-        if (this.requireReadyTarget('param_set', msg.requestId)) {
+        if (
+          this.requireReadyTarget('param_set', msg.requestId)
+          && this.requireWritableVehicle('param_set', msg.requestId)
+        ) {
           this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)
         }
         break
       case 'reboot_vehicle':
         if (!this.requireReadyTarget('reboot_vehicle', msg.requestId)) break
+        if (!this.requireWritableVehicle('reboot_vehicle', msg.requestId)) break
         if (this.lastArmedState !== false) {
           this.emitOperationError(
             'reboot_vehicle',
             this.lastArmedState === true ? 'armed' : 'arming_state_unknown',
             this.lastArmedState === true ? '飞控已解锁，拒绝重启' : '飞控解锁状态未知，拒绝重启',
-            msg.requestId,
-          )
-          break
-        }
-        if (this.selectedIdentity?.family !== 'px4' && this.selectedIdentity?.family !== 'ardupilot') {
-          this.emitOperationError(
-            'reboot_vehicle',
-            'unsupported_vehicle_profile',
-            '当前飞控类型尚未适配远程重启',
             msg.requestId,
           )
           break
@@ -1816,7 +2054,10 @@ export class MavlinkBridge extends EventEmitter {
         }
         break
       case 'manual_control':
-        if (this.requireReadyTarget('manual_control', msg.requestId)) {
+        if (
+          this.requireReadyTarget('manual_control', msg.requestId)
+          && this.requireWritableVehicle('manual_control', msg.requestId)
+        ) {
           this.sendManualControl(msg.data)
         }
         break
@@ -1824,6 +2065,25 @@ export class MavlinkBridge extends EventEmitter {
         if (this.requireReadyTarget('motor_test', msg.requestId)) {
           this.sendMotorTest(
             msg.data.instance,
+            msg.data.throttle,
+            msg.data.duration,
+            msg.requestId,
+            msg.data.propsRemoved,
+          )
+        }
+        break
+      case 'message_rates_set':
+        if (this.requireReadyTarget('message_rates_set', msg.requestId)) {
+          this.messageRates = { ...msg.data }
+          this.messageIntervalAttempts = 0
+          this.sendTelemetryIntervalRequests()
+          this.emit('message', this.getMessageRatesMessage())
+        }
+        break
+      case 'motor_test_batch':
+        if (this.requireReadyTarget('motor_test_batch', msg.requestId)) {
+          this.sendMotorTestBatch(
+            msg.data.instances,
             msg.data.throttle,
             msg.data.duration,
             msg.requestId,
@@ -1868,6 +2128,7 @@ export class MavlinkBridge extends EventEmitter {
           )
         } else if (
           this.requireReadyTarget('fs_delete', msg.requestId)
+          && this.requireWritableFilesystem(msg.requestId)
           && this.requireFtpAvailable('delete', msg.requestId)
         ) {
           this.ftp.startDelete(msg.data.entries, msg.requestId)
@@ -1904,6 +2165,7 @@ export class MavlinkBridge extends EventEmitter {
           )
         } else if (
           this.requireReadyTarget('log_erase', msg.requestId)
+          && this.requireWritableLogs(msg.requestId)
           && this.requireLogTransferAvailable('erase', msg.requestId)
         ) {
           this.logTransfer.startErase(msg.requestId)
@@ -1995,7 +2257,12 @@ export class MavlinkBridge extends EventEmitter {
     this.enqueuePendingCommand(pending)
   }
 
-  private buildCommand(commandId: number, params: number[], confirmation = 0): common.CommandLong {
+  private buildCommand(
+    commandId: number,
+    params: number[],
+    confirmation = 0,
+    targetComponent = this.targetCompId ?? 0,
+  ): common.CommandLong {
     const command = new common.CommandLong()
     command._param1 = params[0] ?? 0
     command._param2 = params[1] ?? 0
@@ -2006,7 +2273,7 @@ export class MavlinkBridge extends EventEmitter {
     command._param7 = params[6] ?? 0
     command.command = commandId
     command.targetSystem = this.targetSysId ?? 0
-    command.targetComponent = this.targetCompId ?? 0
+    command.targetComponent = targetComponent
     command.confirmation = confirmation
     return command
   }
@@ -2142,8 +2409,8 @@ export class MavlinkBridge extends EventEmitter {
     )
   }
 
-  private sendInternalCommand(commandId: number, params: number[]): void {
-    this.writeMessage(this.buildCommand(commandId, params))
+  private sendInternalCommand(commandId: number, params: number[], targetComponent?: number): void {
+    this.writeMessage(this.buildCommand(commandId, params, 0, targetComponent))
   }
 
   private sendParamSet(id: string, value: number, paramType: number, requestId?: string) {
@@ -2358,6 +2625,10 @@ export class MavlinkBridge extends EventEmitter {
    */
   getAutopilotVersionMessage(): ServerMessage | null {
     return this.lastAutopilotVersionMessage
+  }
+
+  getMessageRatesMessage(): Extract<ServerMessage, { type: 'message_rates' }> {
+    return { type: 'message_rates', data: { ...this.messageRates } }
   }
 
   private requestAutopilotVersion(): void {
@@ -2596,40 +2867,31 @@ export class MavlinkBridge extends EventEmitter {
     const profile = this.telemetryProfile
     if (this.destroyed || profile === null || this.connManager.status !== 'connected') return
     this.messageIntervalAttempts += 1
-    const intervalUs = profile === 'parameter-sync' ? 500_000 : 50_000
-    const servoIntervalUs = profile === 'parameter-sync' ? 500_000 : 100_000
     const setIntervalCommand =
       (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_SET_MESSAGE_INTERVAL
     if (setIntervalCommand === undefined || this.messageIntervalSupport === 'unsupported') {
       this.useLegacyTelemetryStreams()
       return
     }
-    // SERVO_OUTPUT_RAW (#36) and RC_CHANNELS (#65) drive the dashboard
-    // input/output cards. Request both explicitly: some PX4 link profiles do
-    // not stream them by default (or stream slower than the UI's 1 s
-    // staleness threshold), which left the cards permanently OFFLINE.
-    for (const messageId of [36, 65]) {
-      this.sendInternalCommand(
-        setIntervalCommand,
-        [messageId, servoIntervalUs, 0, 0, 0, 0, 0],
-      )
-    }
-    // Barometer (SCALED_PRESSURE #29), optical flow and its companion
-    // rangefinder are not part of every PX4 default MAVLink stream profile.
-    // Request them explicitly so integrated sensors are visible even when
-    // the active profile does not publish them on its own.
-    for (const messageId of [26, 29, 105, 106, 116, 129, 132]) {
-      this.sendInternalCommand(
-        setIntervalCommand,
-        [messageId, intervalUs, 0, 0, 0, 0, 0],
-      )
+    for (const [group, messageIds] of Object.entries(MESSAGE_RATE_GROUP_IDS) as Array<
+      [MessageRateGroup, readonly number[]]
+    >) {
+      for (const messageId of messageIds) {
+        const targetComponents = new Set<number>([
+          this.targetCompId ?? 0,
+          ...(this.observedMessageComponents.get(messageId) ?? []),
+        ])
+        for (const targetComponent of targetComponents) {
+          this.sendMessageIntervalRequest(messageId, group, targetComponent)
+        }
+      }
     }
     if (this.messageIntervalSupport === 'unknown') {
       if (this.messageIntervalFallbackTimer) clearTimeout(this.messageIntervalFallbackTimer)
       this.messageIntervalFallbackTimer = setTimeout(() => {
         this.messageIntervalFallbackTimer = null
         if (this.messageIntervalSupport !== 'unknown') return
-        // Still no terminal ACK. Retry the whole batch before concluding the
+        // Still no accepted ACK. Retry the whole batch before concluding the
         // command is unsupported - the legacy REQUEST_DATA_STREAM fallback is
         // ignored by modern PX4, so a premature (sticky) downgrade would lose
         // every explicitly requested stream for the rest of the session.
@@ -2649,10 +2911,13 @@ export class MavlinkBridge extends EventEmitter {
       clearTimeout(this.messageIntervalFallbackTimer)
       this.messageIntervalFallbackTimer = null
     }
-    const rate = this.telemetryProfile === 'parameter-sync' ? 2 : 10
-    // MAV_DATA_STREAM_RAW_SENSORS / EXTENDED_STATUS / RC_CHANNELS /
-    // POSITION / EXTRA1 / EXTRA2 / EXTRA3.
-    for (const streamId of [1, 2, 3, 6, 10, 11, 12]) {
+    const configured: Array<[number, MessageRateGroup]> = [
+      [1, 'sensors'], [2, 'status'], [3, 'rc'], [6, 'position'],
+      [10, 'attitude'], [11, 'hud'], [12, 'auxiliary'],
+    ]
+    for (const [streamId, group] of configured) {
+      const requestedHz = this.messageRates[group]
+      const rate = this.telemetryProfile === 'parameter-sync' ? Math.min(requestedHz, 2) : requestedHz
       const request = new common.RequestDataStream()
       request.targetSystem = this.targetSysId
       request.targetComponent = this.targetCompId
@@ -2692,53 +2957,121 @@ export class MavlinkBridge extends EventEmitter {
   // ArduPilot mag) are rejected until modeled as explicit follow-up messages.
   // The request-scoped state on the client advances from COMMAND_ACK and
   // STATUSTEXT - never from a timer here.
-  private sendCalibration(kind: 'accel' | 'gyro' | 'mag' | 'baro', requestId: string) {
-    if (!vehicleCapabilities(this.selectedIdentity).calibrate) {
+  // Create (but do not start) a calibration session after bridge-side gates:
+  // ready target, recognized identity, capability, per-kind support and
+  // armed=false. Returns null after emitting an operation_error on rejection.
+  // The server's CalibrationSessionManager owns the returned session's
+  // lifecycle and ownership; the bridge only feeds it protocol inputs.
+  createCalibrationSession(request: CalibrationStartRequest): CalibrationSession | null {
+    if (!this.hasReadyTarget()) {
       this.emitOperationError(
-        'start_calibration',
-        'unsupported_vehicle_profile',
-        '当前飞控类型尚未适配校准流程',
-        requestId,
+        'start_calibration', 'target_not_ready',
+        '尚未收到已选飞控的有效心跳', request.requestId, true,
       )
-      return
+      return null
+    }
+    const identity = this.selectedIdentity
+    const family = identity?.family
+    if (!identity || (family !== 'px4' && family !== 'ardupilot')
+      || !vehicleCapabilities(identity).calibrate) {
+      this.emitOperationError(
+        'start_calibration', 'unsupported_vehicle_profile',
+        '当前飞控类型尚未适配校准流程', request.requestId,
+      )
+      return null
+    }
+    if (!supportsCalibrationKind(identity, request.kind)) {
+      this.emitOperationError(
+        'start_calibration', 'unsupported_calibration_kind',
+        '当前飞控暂不支持该校准类型', request.requestId,
+      )
+      return null
     }
     if (this.lastArmedState === true) {
-      this.emitOperationError('start_calibration', 'vehicle_armed', '飞行器已解锁，禁止校准', requestId)
-      return
-    }
-    const family = this.selectedIdentity?.family
-    if (!supportsCalibrationKind(this.selectedIdentity, kind)) {
       this.emitOperationError(
-        'start_calibration',
-        'unsupported_calibration_kind',
-        '当前飞控暂不支持该校准类型（罗盘校准将在后续版本启用）',
-        requestId,
+        'start_calibration', 'vehicle_armed',
+        '飞行器已解锁，禁止校准', request.requestId,
       )
-      return
+      return null
     }
-    // param order: [gyro, mag, groundPressure, radio, accel, esc/airspeed, ...]
-    const params: number[] = [0, 0, 0, 0, 0, 0, 0]
-    if (family === 'px4') {
-      // Preserve existing PX4 behavior for every kind.
-      if (kind === 'gyro') params[0] = 1
-      else if (kind === 'mag') params[1] = 1
-      else if (kind === 'baro') params[2] = 1
-      else params[4] = 1 // accel
-    } else if (family === 'ardupilot') {
-      // The unsupported multi-step compass flow was rejected above.
-      if (kind === 'gyro') params[0] = 1
-      else if (kind === 'baro') params[2] = 1
-      else params[4] = 2 // simple/level accel calibration
-    } else {
-      this.emitOperationError(
-        'start_calibration',
-        'unsupported_vehicle_profile',
-        '尚未识别飞控类型，无法编码校准命令',
-        requestId,
-      )
-      return
-    }
-    this.sendCommand('MAV_CMD_PREFLIGHT_CALIBRATION', params, requestId)
+    // PX4 mag: the number of required orientations is driven by CAL_MAG_SIDES
+    // (default all six sides) so the wizard hides sides the FC will not ask for.
+    const magSides = family === 'px4' && request.kind === 'mag'
+      ? this.readMagSides()
+      : undefined
+    const session = new CalibrationSession({
+      sessionId: request.sessionId,
+      requestId: request.requestId,
+      family,
+      kind: request.kind,
+      ...(magSides !== undefined ? { magSides } : {}),
+      // Single-send, no pendingCommands: retransmitting a calibration start
+      // would restart the calibration on the FC.
+      sendCommand: (commandId, params) =>
+        this.writeMessage(this.buildCommand(commandId, params.slice(0, 7)), 'high'),
+      emitSnapshot: (snapshot) => {
+        request.emitSnapshot(snapshot)
+        if (
+          this.activeCalibration === session
+          && (snapshot.phase === 'done' || snapshot.phase === 'failed'
+            || snapshot.phase === 'cancelled' || snapshot.phase === 'accepted')
+        ) {
+          this.activeCalibration = null
+        }
+      },
+    })
+    this.activeCalibration = session
+    return session
+  }
+
+  /** Read CAL_MAG_SIDES bitmask (default 63 = all six sides). */
+  private readMagSides(): number {
+    const value = this.parameterValues.get('CAL_MAG_SIDES')
+    return value !== undefined && Number.isFinite(value)
+      ? (value & 0b111111) || 0b111111
+      : 0b111111
+  }
+
+  // FC -> GCS COMMAND_LONG. The only inbound COMMAND_LONG this GCS acts on is
+  // ACCELCAL_VEHICLE_POS (42429) during ArduPilot six-position accel
+  // calibration; forward its param1 to the active session.
+  private handleInboundCommandLong(msg: MavlinkMessage) {
+    if (!this.activeCalibration) return
+    const d = decode<common.CommandLong>(76, msg.payload)
+    if (!d || (d.command as number) !== MAVLINK_COMMANDS.MAV_CMD_ACCELCAL_VEHICLE_POS) return
+    // Only accept a request addressed to this GCS (or broadcast 0).
+    if (
+      (d.targetSystem !== 0 && d.targetSystem !== this.codec.gcsSystemId)
+      || (d.targetComponent !== 0 && d.targetComponent !== this.codec.gcsComponentId)
+    ) return
+    this.activeCalibration.handlePositionRequest(d._param1)
+  }
+
+  private handleMagCalProgress(msg: MavlinkMessage) {
+    if (!this.activeCalibration) return
+    const d = decode<ardupilotmega.MagCalProgress>(191, msg.payload)
+    if (!d) return
+    this.activeCalibration.handleMagProgress({
+      compassId: d.compassId,
+      calMask: d.calMask,
+      calStatus: d.calStatus,
+      attempt: d.attempt,
+      completionPct: d.completionPct,
+    })
+  }
+
+  private handleMagCalReport(msg: MavlinkMessage) {
+    if (!this.activeCalibration) return
+    const d = decode<common.MagCalReport>(192, msg.payload)
+    if (!d) return
+    this.activeCalibration.handleMagReport({
+      compassId: d.compassId,
+      calMask: d.calMask,
+      calStatus: d.calStatus,
+      autosaved: d.autosaved,
+      fitness: d.fitness,
+      ofs: [d.ofsX, d.ofsY, d.ofsZ],
+    })
   }
 
   private sendMotorTest(
@@ -2747,19 +3080,8 @@ export class MavlinkBridge extends EventEmitter {
     duration: number,
     requestId?: string,
     propsRemoved?: boolean,
+    queuePrepared = false,
   ) {
-    // Capability gate before anything else: unknown or unimplemented profiles
-    // must never receive a motor-test command (not even a stop frame).
-    const motorTestKind = vehicleCapabilities(this.selectedIdentity).motorTest
-    if (motorTestKind === 'none') {
-      this.emitOperationError(
-        'motor_test',
-        'unsupported_motor_test',
-        '当前飞控类型尚未适配电机测试',
-        requestId,
-      )
-      return
-    }
     if (
       !Number.isInteger(instance)
       || instance < 1
@@ -2782,6 +3104,23 @@ export class MavlinkBridge extends EventEmitter {
       return
     }
     const shouldRelease = duration <= 0 || throttle <= 0
+    const queueTag = motorTestStartQueueTag(instance)
+    // Every valid update invalidates this instance's older queued start before
+    // capability/props/armed gates. A rejected update therefore cannot leave
+    // a stale start waiting to escape after backpressure clears.
+    if (!queuePrepared) this.connManager.cancelQueuedWrites(queueTag)
+
+    // Unknown or unimplemented profiles never receive a motor-test command.
+    const motorTestKind = vehicleCapabilities(this.selectedIdentity).motorTest
+    if (motorTestKind === 'none') {
+      this.emitOperationError(
+        'motor_test',
+        'unsupported_motor_test',
+        '当前飞控类型尚未适配电机测试',
+        requestId,
+      )
+      return
+    }
     if (!shouldRelease && propsRemoved !== true) {
       this.emitOperationError(
         'motor_test',
@@ -2802,7 +3141,6 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
-
     if (motorTestKind === 'motor-test') {
       // ArduPilot: MAV_CMD_DO_MOTOR_TEST (209) with a 1-based motor instance,
       // MOTOR_TEST_THROTTLE_PERCENT (0) as throttle type, percent throttle and
@@ -2820,6 +3158,7 @@ export class MavlinkBridge extends EventEmitter {
           [instance, 0, throttlePercent, timeoutSeconds, 0, 0, 0],
         ),
         shouldRelease ? 'critical' : 'high',
+        shouldRelease ? undefined : queueTag,
       )) {
         this.emitOperationError(
           'motor_test',
@@ -2868,6 +3207,7 @@ export class MavlinkBridge extends EventEmitter {
         [value, timeout, 0, 0, outputFunction, 0, 0],
       ),
       shouldRelease ? 'critical' : 'high',
+      shouldRelease ? undefined : queueTag,
     )) {
       this.emitOperationError(
         'motor_test',
@@ -2890,8 +3230,84 @@ export class MavlinkBridge extends EventEmitter {
     } as ServerMessage)
   }
 
+  private sendMotorTestBatch(
+    instances: number[],
+    throttle: number,
+    duration: number,
+    requestId?: string,
+    propsRemoved?: boolean,
+  ): void {
+    if (
+      !Array.isArray(instances)
+      || instances.length < 1
+      || instances.length > 12
+      || instances.some((instance) =>
+        !Number.isInteger(instance) || instance < 1 || instance > 12)
+      || new Set(instances).size !== instances.length
+      || !Number.isFinite(throttle)
+      || throttle < 0
+      || throttle > 100
+      || !Number.isFinite(duration)
+      || duration < 0
+      || duration > 30
+      || (throttle > 0 && duration <= 0)
+      || (throttle === 0 && duration !== 0)
+    ) {
+      this.emitOperationError(
+        'motor_test_batch',
+        'invalid_motor_test',
+        '批量电机测试参数超出安全范围',
+        requestId,
+      )
+      return
+    }
+    const shouldRelease = duration <= 0 || throttle <= 0
+    // Batch updates clear every addressed instance before later safety gates,
+    // matching the single-instance stale-start rule.
+    this.cancelQueuedMotorTestStarts(instances)
+    const motorTestKind = vehicleCapabilities(this.selectedIdentity).motorTest
+    if (motorTestKind === 'none') {
+      this.emitOperationError(
+        'motor_test_batch',
+        'unsupported_motor_test',
+        '当前飞控类型尚未适配电机测试',
+        requestId,
+      )
+      return
+    }
+    if (!shouldRelease && propsRemoved !== true) {
+      this.emitOperationError(
+        'motor_test_batch',
+        'props_confirmation_required',
+        '电机测试前必须确认已拆除桨叶',
+        requestId,
+      )
+      return
+    }
+    if (!shouldRelease && this.lastArmedState === true) {
+      this.emitOperationError(
+        'motor_test_batch',
+        'vehicle_armed',
+        '飞行器已解锁，禁止启动电机测试',
+        requestId,
+      )
+      return
+    }
+    // Validation is completed for the entire batch before the first command
+    // is serialized, preventing malformed direct callers from causing a
+    // partial fan-out. Each underlying MAVLink command remains 1-based.
+    for (const instance of instances) {
+      this.sendMotorTest(instance, throttle, duration, requestId, propsRemoved, true)
+    }
+  }
+
   destroy() {
     this.destroyed = true
+    if (this.activeCalibration) {
+      const session = this.activeCalibration
+      this.activeCalibration = null
+      session.terminate('bridge_destroyed', '服务正在关闭，校准会话终止')
+    }
     if (this.manualControlFlushHandle) {
       clearImmediate(this.manualControlFlushHandle)
       this.manualControlFlushHandle = null

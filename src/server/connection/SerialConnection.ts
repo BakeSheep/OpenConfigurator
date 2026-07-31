@@ -4,6 +4,7 @@ import type { PortInfo } from '../../shared/types'
 
 export type SerialLifecycleState = 'idle' | 'opening' | 'open' | 'closing'
 export type SerialWritePriority = 'normal' | 'high' | 'critical'
+export type SerialWriteQueueTag = string
 
 export interface SerialPortLike extends EventEmitter {
   readonly isOpen: boolean
@@ -33,6 +34,7 @@ export interface SerialWriteOverflow {
 interface QueuedFrame {
   frame: Buffer
   priority: SerialWritePriority
+  queueTag?: SerialWriteQueueTag
 }
 
 interface PortBinding {
@@ -234,14 +236,33 @@ export class SerialConnection extends EventEmitter {
    * either the native stream or the bounded connection queue. `false` means the
    * link is unavailable or the queue rejected the newest frame.
    */
-  write(data: Buffer, priority: SerialWritePriority = 'normal'): boolean {
+  write(
+    data: Buffer,
+    priority: SerialWritePriority = 'normal',
+    queueTag?: SerialWriteQueueTag,
+  ): boolean {
     const binding = this.binding
     if (!binding || this.state !== 'open' || !this._connected) return false
     const frame = Buffer.from(data)
     if (this.waitingForDrain || this.writeQueue.length > 0) {
-      return this.enqueueFrame(frame, priority)
+      return this.enqueueFrame(frame, priority, queueTag)
     }
     return this.writeFrame(binding, frame)
+  }
+
+  /**
+   * Remove frames that have not yet reached the native stream. In-flight
+   * writes are intentionally not reported as cancellable.
+   */
+  cancelQueuedWrites(queueTag: SerialWriteQueueTag): number {
+    let removed = 0
+    this.writeQueue = this.writeQueue.filter((queued) => {
+      if (queued.queueTag !== queueTag) return true
+      this.queuedBytes -= queued.frame.length
+      removed += 1
+      return false
+    })
+    return removed
   }
 
   private handlePortOpen(binding: PortBinding): void {
@@ -355,7 +376,11 @@ export class SerialConnection extends EventEmitter {
     }
   }
 
-  private enqueueFrame(frame: Buffer, priority: SerialWritePriority): boolean {
+  private enqueueFrame(
+    frame: Buffer,
+    priority: SerialWritePriority,
+    queueTag?: SerialWriteQueueTag,
+  ): boolean {
     if (frame.length > this.maxQueuedBytes || this.maxQueuedFrames < 1) {
       this.emitWriteOverflow(frame.length, priority, priority, false)
       return false
@@ -386,7 +411,7 @@ export class SerialConnection extends EventEmitter {
     const insertAt = this.writeQueue.findIndex(
       (queued) => this.priorityRank(queued.priority) < incomingRank,
     )
-    const queued = { frame, priority }
+    const queued = { frame, priority, ...(queueTag ? { queueTag } : {}) }
     if (insertAt < 0) this.writeQueue.push(queued)
     else this.writeQueue.splice(insertAt, 0, queued)
     this.queuedBytes += frame.length
