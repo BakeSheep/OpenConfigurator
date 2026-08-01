@@ -18,6 +18,6 @@ OpenConfigurator 采用 [MIT License](LICENSE)。ESC 协议实现基于公开协
 
 | 项目 | 许可证 | 本项目用途 |
 |---|---|---|
-| QGroundControl `resources/calibration/accel_*.png` | Apache License 2.0 | 六面加速度计校准方位引导图，未修改 |
+| QGroundControl `resources/calibration/accel_*.png`、`src/AutoPilotPlugins/PX4/Images/Vehicle*Rotate.png` | Apache License 2.0 | 六面加速度计方位图与 PX4 罗盘六面旋转引导图，未修改 |
 
-素材来自 [mavlink/qgroundcontrol](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/resources/calibration)，固定于提交 `ae7717a3d19c557fe7ca0c23dae2c8ab19c92668`。许可证全文随素材保存在 [`public/assets/calibration/LICENSE-APACHE-2.0.txt`](public/assets/calibration/LICENSE-APACHE-2.0.txt)。
+素材来自 [QGroundControl 加速度计素材](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/resources/calibration)及 [PX4 校准素材](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/src/AutoPilotPlugins/PX4/Images)，固定于提交 `ae7717a3d19c557fe7ca0c23dae2c8ab19c92668`。许可证全文随素材保存在 [`public/assets/calibration/LICENSE-APACHE-2.0.txt`](public/assets/calibration/LICENSE-APACHE-2.0.txt)。

@@ -1850,9 +1850,6 @@ input[type="range"]:disabled {
 .mc-calibration-side-state i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .mc-orientation-visual { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 8px; user-select: none; transition: filter 160ms ease, opacity 160ms ease; }
 .mc-orientation-visual__image { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
-.mc-orientation-visual__rotation { position: absolute; z-index: 1; top: 43%; left: 50%; width: 44%; aspect-ratio: 1; border: 3px solid transparent; border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; filter: drop-shadow(0 1px 2px var(--bg-secondary)); pointer-events: none; animation: mc-orientation-rotate 1.45s linear infinite; }
-.mc-orientation-visual__rotation::after { position: absolute; top: 4%; right: 5%; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid currentColor; content: ""; transform: rotate(42deg); transform-origin: center; }
-@keyframes mc-orientation-rotate { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
 .mc-calibration-wizard li[data-state="pending"] .mc-orientation-visual { filter: grayscale(.55); opacity: .28; }
 .mc-calibration-wizard li[data-state="done"] .mc-orientation-visual { opacity: .86; }
 .mc-calibration-position { display: flex; min-height: 62px; align-items: center; gap: 10px; margin-top: 12px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary)); color: var(--accent); }
@@ -1952,7 +1949,6 @@ input[type="range"]:disabled {
   .mc-calibration-position .mc-btn { margin-left: 26px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mc-orientation-visual__rotation { animation: none; }
   .mc-calibration-session, .mc-calibration-progress[data-indeterminate="true"] > span { animation: none; }
   .mc-calibration-progress[data-indeterminate="true"] > span { transform: translateX(82%); }
 }
