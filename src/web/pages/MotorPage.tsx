@@ -10,10 +10,9 @@ import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import {
   buildFrameConfigView,
   motorFunctionOptions,
+  normalizeAuthoritativeMotorCount,
   type FrameOutputChannel,
 } from '../utils/vehicleConfig'
-
-const MAX_MOTORS = 12
 
 interface RotorGeometry {
   index: number
@@ -29,11 +28,6 @@ const fallbackQuad = [
   { px: 1, py: -1, ccw: false },
   { px: -1, py: 1, ccw: false },
 ]
-
-function clampMotorCount(value: number | undefined) {
-  if (!Number.isFinite(value)) return 4
-  return Math.min(MAX_MOTORS, Math.max(1, Math.round(value!)))
-}
 
 function protocolLabel(value: number) {
   const protocols: Record<number, string> = {
@@ -67,38 +61,51 @@ const ARDUPILOT_PROTOCOL_OPTIONS: ReadonlyArray<readonly [number, string]> = [
   [4, 'DShot150'], [5, 'DShot300'], [6, 'DShot600'], [7, 'DShot1200'], [8, 'PWMRange'],
 ]
 
-function EscProtocolSelect({ family, params, fallbackLabel, canWrite, ariaLabel }: {
-  family: string
+function ArduPilotProtocolControl({ params, canWrite }: {
   params: Map<string, ParamData>
-  fallbackLabel: string
   canWrite: boolean
+}) {
+  const param = params.get('MOT_PWM_TYPE')
+  const value = param ? Math.round(param.value) : null
+  const known = value !== null
+    && ARDUPILOT_PROTOCOL_OPTIONS.some(([option]) => option === value)
+  return (
+    <div className="mc-motor-global-protocol">
+      <span>
+        <strong>全局 ESC 协议</strong>
+        <small>适用于全部 ArduPilot 电机输出，写入后需重启飞控</small>
+      </span>
+      {param && value !== null ? (
+        <select
+          className="mc-select"
+          aria-label="ArduPilot 全局电调协议"
+          title="写入 MOT_PWM_TYPE（全局），重启飞控后生效"
+          value={value}
+          disabled={!canWrite}
+          onChange={(event) => sendClientMessage({
+            type: 'param_set',
+            data: { id: 'MOT_PWM_TYPE', value: Number(event.target.value), paramType: param.type },
+          })}
+        >
+          {/* Preserve an unknown protocol value verbatim, never drop it. */}
+          {!known && <option value={value}>值 {value}</option>}
+          {ARDUPILOT_PROTOCOL_OPTIONS.map(([option, label]) => (
+            <option key={option} value={option}>{label}</option>
+          ))}
+        </select>
+      ) : (
+        <span className="mc-motor-protocol">等待 MOT_PWM_TYPE</span>
+      )}
+      <span className="mc-motor-param-name">MOT_PWM_TYPE</span>
+    </div>
+  )
+}
+
+function OutputProtocol({ family, label, ariaLabel }: {
+  family: string
+  label: string
   ariaLabel: string
 }) {
-  if (family === 'ardupilot') {
-    const param = params.get('MOT_PWM_TYPE')
-    if (!param) return <span className="mc-motor-protocol">{fallbackLabel}</span>
-    const value = Math.round(param.value)
-    const known = ARDUPILOT_PROTOCOL_OPTIONS.some(([option]) => option === value)
-    return (
-      <select
-        className="mc-select"
-        aria-label={ariaLabel}
-        title="写入 MOT_PWM_TYPE（全局），重启飞控后生效"
-        value={value}
-        disabled={!canWrite}
-        onChange={(event) => sendClientMessage({
-          type: 'param_set',
-          data: { id: 'MOT_PWM_TYPE', value: Number(event.target.value), paramType: param.type },
-        })}
-      >
-        {/* Preserve an unknown protocol value verbatim, never drop it. */}
-        {!known && <option value={value}>值 {value}</option>}
-        {ARDUPILOT_PROTOCOL_OPTIONS.map(([option, label]) => (
-          <option key={option} value={option}>{label}</option>
-        ))}
-      </select>
-    )
-  }
   if (family === 'px4') {
     return (
       <span
@@ -106,11 +113,19 @@ function EscProtocolSelect({ family, params, fallbackLabel, canWrite, ariaLabel 
         aria-label={ariaLabel}
         title="PX4 输出协议由板级 PWM_*_TIMx 分组控制，此处仅显示当前总线状态"
       >
-        {fallbackLabel}
+        {label}
       </span>
     )
   }
-  return <span className="mc-motor-protocol">{fallbackLabel}</span>
+  return (
+    <span
+      className="mc-motor-protocol"
+      aria-label={ariaLabel}
+      title={family === 'ardupilot' ? '由上方全局 MOT_PWM_TYPE 控件统一设置' : undefined}
+    >
+      {label}
+    </span>
+  )
 }
 
 function getFallbackRotor(index: number, count: number) {
@@ -141,10 +156,10 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   // Family-specific frame/actuator read model: SERVOx_FUNCTION for ArduPilot,
   // PWM_MAIN/AUX_FUNCx + CA_ROTOR* for PX4.
   const frameView = useMemo(() => buildFrameConfigView(vehicleIdentity, params), [vehicleIdentity, params])
-  const motorCount = clampMotorCount(frameView?.motorCount ?? undefined)
+  const motorCount = normalizeAuthoritativeMotorCount(frameView?.motorCount)
   const airframeName = (params.size > 0 && frameView ? frameView.name : null)
-    || (motorCount === 4 ? 'Quadrotor' : `${motorCount} Motor Geometry`)
-  const motorCountRef = useRef(motorCount)
+    || '等待机架参数'
+  const motorCountRef = useRef(motorCount ?? 0)
   // True once the user enabled motor testing or a non-zero test command was
   // sent. Merely opening/leaving this page must emit no motor-test command.
   const testActivatedRef = useRef(false)
@@ -172,6 +187,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [frameView])
 
   const rotors = useMemo<RotorGeometry[]>(() => {
+    if (motorCount === null) return []
     return Array.from({ length: motorCount }, (_, index) => {
       const fallback = getFallbackRotor(index, motorCount)
       const px = params.get(`CA_ROTOR${index}_PX`)?.value
@@ -189,22 +205,48 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [motorCount, outputByMotor, params])
 
   useEffect(() => {
-    motorCountRef.current = motorCount
-    setLevels((current) => Array.from({ length: motorCount }, (_, index) => current[index] || 0))
-  }, [motorCount])
+    const nextCount = motorCount ?? 0
+    const previousCount = motorCountRef.current
+    if (
+      testActivatedRef.current
+      && previousCount > 0
+      && previousCount !== nextCount
+    ) {
+      send({
+        type: 'motor_test_batch',
+        data: {
+          instances: Array.from({ length: previousCount }, (_, index) => index + 1),
+          throttle: 0,
+          duration: 0,
+        },
+      })
+      testActivatedRef.current = false
+      setSafetyConfirmed(false)
+    }
+    motorCountRef.current = nextCount
+    setLevels((current) => Array.from({ length: motorCount ?? 0 }, (_, index) => current[index] || 0))
+  }, [motorCount, send])
 
   useEffect(() => () => {
     // Stop frames are sent only after motor testing was actually activated;
     // page navigation alone must not touch the motors (safety requirement,
     // and ArduPilot rejected stray PX4 stop commands with UNSUPPORTED).
     if (!testActivatedRef.current) return
-    for (let index = 0; index < motorCountRef.current; index += 1) {
-      send({ type: 'motor_test', data: { instance: index + 1, throttle: 0, duration: 0 } })
+    const instances = Array.from({ length: motorCountRef.current }, (_, index) => index + 1)
+    if (instances.length > 0) {
+      send({ type: 'motor_test_batch', data: { instances, throttle: 0, duration: 0 } })
     }
   }, [send])
 
   const sendMotorLevel = (index: number, level: number) => {
-    if (!connected || !safetyConfirmed || !motorTestSupported) return
+    if (
+      !connected
+      || !safetyConfirmed
+      || !motorTestSupported
+      || motorCount === null
+      || index < 0
+      || index >= motorCount
+    ) return
     const throttle = Math.max(0, Math.min(100, level))
     if (throttle > 0) testActivatedRef.current = true
     setLevels((current) => current.map((value, motorIndex) => motorIndex === index ? throttle : value))
@@ -220,21 +262,19 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }
 
   const sendAllLevel = (level: number) => {
-    if (!connected || !safetyConfirmed || !motorTestSupported) return
+    if (!connected || !safetyConfirmed || !motorTestSupported || motorCount === null) return
     const throttle = Math.max(0, Math.min(100, level))
     if (throttle > 0) testActivatedRef.current = true
     setLevels(Array.from({ length: motorCount }, () => throttle))
-    for (let index = 0; index < motorCount; index += 1) {
-      send({
-        type: 'motor_test',
-        data: {
-          instance: index + 1,
-          throttle,
-          duration: throttle > 0 ? 2 : 0,
-          ...(throttle > 0 ? { propsRemoved: true } : {}),
-        },
-      })
-    }
+    send({
+      type: 'motor_test_batch',
+      data: {
+        instances: Array.from({ length: motorCount }, (_, index) => index + 1),
+        throttle,
+        duration: throttle > 0 ? 2 : 0,
+        ...(throttle > 0 ? { propsRemoved: true } : {}),
+      },
+    })
   }
 
   const stopMotor = (index: number) => sendMotorLevel(index, 0)
@@ -290,6 +330,12 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
       <section className="mc-motor-workspace">
         {activePanel === 'mapping' && <div className="mc-motor-output-panel">
+          {vehicleIdentity?.family === 'ardupilot' && (
+            <ArduPilotProtocolControl
+              params={params}
+              canWrite={connected && actuatorWritesSupported}
+            />
+          )}
           <div className="mc-motor-output-head">
             <span>物理输出</span>
             <span>实时值</span>
@@ -303,7 +349,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
             ) : outputChannels.map((output) => {
               const param = params.get(output.paramId)
               const functionValue = param ? Math.round(param.value) : output.functionValue
-              const functionOptions = motorFunctionOptions(vehicleIdentity?.family ?? 'unknown', motorCount)
+              const functionOptions = motorCount === null
+                ? []
+                : motorFunctionOptions(vehicleIdentity?.family ?? 'unknown', motorCount)
               const isKnownFunction = functionValue === 0
                 || functionOptions.some((option) => option.value === functionValue)
               const liveValue = motorOutputs?.port === output.port
@@ -339,11 +387,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                       <option value={option.value} key={option.value}>{option.label}</option>
                     ))}
                   </select>
-                  <EscProtocolSelect
+                  <OutputProtocol
                     family={vehicleIdentity?.family ?? 'unknown'}
-                    params={params}
-                    fallbackLabel={protocol}
-                    canWrite={connected && actuatorWritesSupported}
+                    label={protocol}
                     ariaLabel={`${output.label} 电调协议`}
                   />
                   <span className="mc-motor-param-name">{output.paramId}</span>
@@ -355,19 +401,26 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
         {activePanel === 'test' && <aside className="mc-motor-test-panel mc-motor-test-panel--standalone">
           <p className="mc-motor-test-intro">手动控制各逻辑电机，用于验证输出映射、位置与方向</p>
-          <AirframeDiagram
-            rotors={rotors}
-            airframeName={airframeName}
-            geometrySource={vehicleIdentity?.family === 'ardupilot'
-              ? '布局基于 FRAME_CLASS/FRAME_TYPE 推断'
-              : '位置与方向来自 CA_ROTOR* 参数'}
-          />
+          {motorCount === null ? (
+            <div className="mc-capability-note" data-state="waiting">
+              <Icon name="warning" size={15} />
+              <span>尚未从飞控参数取得权威电机数量。请完成参数同步并确认机架类型后再启用电机测试。</span>
+            </div>
+          ) : (
+            <AirframeDiagram
+              rotors={rotors}
+              airframeName={airframeName}
+              geometrySource={vehicleIdentity?.family === 'ardupilot'
+                ? '布局基于 FRAME_CLASS/FRAME_TYPE 推断'
+                : '位置与方向来自 CA_ROTOR* 参数'}
+            />
+          )}
 
           <label className="mc-motor-safety">
             <input
               type="checkbox"
               checked={safetyConfirmed}
-              disabled={!connected || !motorTestSupported}
+              disabled={!connected || !motorTestSupported || motorCount === null}
               onChange={(event) => setSafety(event.target.checked)}
             />
             <span>
@@ -376,11 +429,14 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
             </span>
           </label>
 
-          <div className="mc-motor-sliders" data-disabled={!connected || !safetyConfirmed}>
+          <div
+            className="mc-motor-sliders"
+            data-disabled={!connected || !safetyConfirmed || motorCount === null}
+          >
             <MotorSlider
               label="ALL"
               level={commonLevel}
-              disabled={!connected || !safetyConfirmed}
+              disabled={!connected || !safetyConfirmed || motorCount === null}
               onChange={sendAllLevel}
               onStop={stopAll}
               all
@@ -390,7 +446,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                 key={index}
                 label={`M${index + 1}`}
                 level={level}
-                disabled={!connected || !safetyConfirmed}
+                disabled={!connected || !safetyConfirmed || motorCount === null}
                 onChange={(value) => sendMotorLevel(index, value)}
                 onStop={() => stopMotor(index)}
               />

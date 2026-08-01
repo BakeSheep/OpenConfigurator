@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { crc16Xmodem, EscError, type EscSessionSnapshot } from '../../shared/esc'
 import type { ClientMessage, ServerMessage } from '../../shared/types'
 import { InputValidationError, parseClientMessage } from '../validation'
+import { buildVehicleIdentity } from '../../shared/vehicleProfiles'
 import type { ConnectionManager } from '../connection/ConnectionManager'
 import type { MavlinkBridge } from '../mavlink/MavlinkBridge'
 import { EscService } from './EscService'
@@ -112,6 +113,7 @@ function createService(
   kind: EscByteTransport['kind'],
   family: 'ardupilot' | 'px4' | 'unknown' = kind === 'ardupilot_raw' ? 'ardupilot' : kind === 'px4_serial_control' ? 'px4' : 'unknown',
   pwmType = 5,
+  vehicleTypeId = 2,
 ) {
   const emitted: ServerMessage[] = []
   const targeted: Array<{ clientId: string; message: ServerMessage }> = []
@@ -126,7 +128,11 @@ function createService(
     bridge: {} as unknown as MavlinkBridge,
     emit: (message) => emitted.push(message),
     emitToClient: (clientId, message) => targeted.push({ clientId, message }),
-    getVehicleFamily: () => family,
+    getVehicleIdentity: () => family === 'ardupilot'
+      ? buildVehicleIdentity(3, vehicleTypeId)
+      : family === 'px4'
+        ? buildVehicleIdentity(12, vehicleTypeId)
+        : buildVehicleIdentity(0, vehicleTypeId),
     getParameterValue: (id) => {
       if (id === 'SERVO_BLH_AUTO' && family === 'ardupilot') return 1
       if (id === 'MOT_PWM_TYPE' && family === 'ardupilot') return pwmType
@@ -219,7 +225,7 @@ async function orchestrationTests(): Promise<void> {
       connManager: {} as ConnectionManager,
       bridge: {} as MavlinkBridge,
       emit: (message) => emitted.push(message),
-      getVehicleFamily: () => 'px4',
+      getVehicleIdentity: () => buildVehicleIdentity(12, 2),
       getParameterValue: () => null,
       pinController: () => undefined,
       releaseController: () => undefined,
@@ -255,6 +261,21 @@ async function orchestrationTests(): Promise<void> {
     const mismatch = emitted.find((m) => m.type === 'esc_op_error'
       && (m as { data: { code: string } }).data.code === 'unsupported_vehicle_profile')
     assert.ok(mismatch, 'mismatched autopilot family is rejected before transport open')
+    assert.equal(service.snapshot().state, 'idle')
+    await service.destroy()
+  }
+
+  // ArduPilot classes that are still read-only cannot borrow the FC link for
+  // passthrough, even when the DShot parameters otherwise satisfy preflight.
+  {
+    const { service, emitted } = createService('ardupilot_raw', 'ardupilot', 5, 1)
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    const readOnly = emitted.find((m) => m.type === 'esc_op_error'
+      && (m as { data: { code: string } }).data.code === 'unsupported_vehicle_profile')
+    assert.ok(readOnly, 'ArduPlane passthrough is rejected before transport open')
     assert.equal(service.snapshot().state, 'idle')
     await service.destroy()
   }

@@ -3,11 +3,18 @@ import {
   BAUD_RATES,
   FTP_MAX_PATH_BYTES,
   MAVLINK_COMMANDS,
+  MESSAGE_RATE_OPTIONS,
   PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
   PX4_ESC_SERIAL_CONTROL_DEVICE_MIN,
 } from '../shared/constants'
 import { ESC_MAX_TARGETS } from '../shared/esc/types'
-import type { ClientMessage, ConnectionConfig } from '../shared/types'
+import type {
+  AccelCalibrationPosition,
+  CalibrationKind,
+  ClientMessage,
+  ConnectionConfig,
+  MessageRateConfig,
+} from '../shared/types'
 
 const MAX_FLOAT32 = 3.4028234663852886e38
 const PARAM_TYPES = new Set([1, 2, 3, 4, 5, 6, 9])
@@ -15,6 +22,8 @@ const REQUEST_ID_MAX_BYTES = 64
 const PORT_NAME_MAX_BYTES = 512
 const REMOTE_TOKEN_MIN_BYTES = 32
 const REMOTE_TOKEN_MAX_BYTES = 512
+const MESSAGE_RATE_KEYS = ['attitude', 'position', 'sensors', 'rc', 'status', 'hud', 'auxiliary'] as const
+const MESSAGE_RATE_VALUES = new Set<number>(MESSAGE_RATE_OPTIONS)
 
 export const DEFAULT_SERVER_HOST = '127.0.0.1'
 export const DEFAULT_SERVER_PORT = 3000
@@ -32,6 +41,10 @@ const CLIENT_DENIED_COMMANDS = new Set<string>([
   'MAV_CMD_DO_SET_SERVO',
   'MAV_CMD_SET_MESSAGE_INTERVAL',
   'MAV_CMD_REQUEST_MESSAGE',
+  'MAV_CMD_DO_START_MAG_CAL',
+  'MAV_CMD_DO_ACCEPT_MAG_CAL',
+  'MAV_CMD_DO_CANCEL_MAG_CAL',
+  'MAV_CMD_ACCELCAL_VEHICLE_POS',
 ])
 
 export interface ServerConfig {
@@ -146,6 +159,32 @@ function devicePath(value: unknown, path: string): string {
     fail('invalid_format', `${path} 不得包含 .. 路径段`, path)
   }
   return parsed
+}
+
+// -- Calibration validation helpers ------------------------------------------
+
+const CALIBRATION_KINDS: ReadonlySet<string> =
+  new Set<CalibrationKind>(['accel', 'accel_simple', 'gyro', 'mag', 'baro', 'level'])
+
+function calibrationSessionId(value: unknown): string {
+  return text(value, 'data.sessionId', {
+    minBytes: 8,
+    maxBytes: 64,
+    pattern: /^[0-9a-fA-F-]+$/,
+  })
+}
+
+/** Reject unexpected keys so action payloads stay strict discriminated unions. */
+function restrictKeys(
+  data: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string,
+): void {
+  for (const key of Object.keys(data)) {
+    if (!allowed.includes(key)) {
+      fail('unexpected_field', `${path}.${key} 不是该消息允许的字段`, `${path}.${key}`)
+    }
+  }
 }
 
 // -- ESC validation helpers -------------------------------------------------
@@ -319,6 +358,20 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
     case 'param_request_list':
       return withRequestId({ type: 'param_request_list' }, id) as BoundaryClientMessage
 
+    case 'message_rates_set': {
+      const data = record(input.data, 'data')
+      restrictKeys(data, MESSAGE_RATE_KEYS, 'data')
+      const rates = {} as MessageRateConfig
+      for (const key of MESSAGE_RATE_KEYS) {
+        const rate = finiteNumber(data[key], `data.${key}`, { min: 1, max: 20, integer: true })
+        if (!MESSAGE_RATE_VALUES.has(rate)) {
+          fail('unsupported_message_rate', `data.${key} 不是支持的消息频率`, `data.${key}`)
+        }
+        rates[key] = rate
+      }
+      return withRequestId({ type: 'message_rates_set', data: rates }, id) as BoundaryClientMessage
+    }
+
     case 'reboot_vehicle':
       if (id === undefined) fail('missing_request_id', 'reboot_vehicle 必须携带 requestId', 'requestId')
       if (input.safetyConfirmation !== 'reboot_flight_controller') {
@@ -349,13 +402,66 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         fail('missing_request_id', 'start_calibration 必须携带 requestId', 'requestId')
       }
       const data = record(input.data, 'data')
-      const kind = text(data.kind, 'data.kind', { minBytes: 1, maxBytes: 8, pattern: /^[a-z]+$/ })
-      if (kind !== 'accel' && kind !== 'gyro' && kind !== 'mag' && kind !== 'baro') {
+      restrictKeys(data, ['kind'], 'data')
+      const kind = text(data.kind, 'data.kind', { minBytes: 1, maxBytes: 16, pattern: /^[a-z_]+$/ })
+      if (!CALIBRATION_KINDS.has(kind)) {
         fail('invalid_calibration_kind', `不支持的校准类型：${kind}`, 'data.kind')
       }
       return withRequestId({
         type: 'start_calibration',
-        data: { kind },
+        data: { kind: kind as CalibrationKind },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'calibration_action': {
+      if (id === undefined) {
+        fail('missing_request_id', 'calibration_action 必须携带 requestId', 'requestId')
+      }
+      const data = record(input.data, 'data')
+      const sessionId = calibrationSessionId(data.sessionId)
+      const action = text(data.action, 'data.action', {
+        minBytes: 1,
+        maxBytes: 32,
+        pattern: /^[a-z_]+$/,
+      })
+      if (action === 'cancel' || action === 'accept_mag') {
+        restrictKeys(data, ['sessionId', 'action'], 'data')
+        return withRequestId({
+          type: 'calibration_action',
+          data: { sessionId, action },
+        }, id) as BoundaryClientMessage
+      }
+      if (action === 'confirm_position') {
+        restrictKeys(data, ['sessionId', 'action', 'position'], 'data')
+        const position = finiteNumber(data.position, 'data.position', {
+          min: 1,
+          max: 6,
+          integer: true,
+        }) as AccelCalibrationPosition
+        return withRequestId({
+          type: 'calibration_action',
+          data: { sessionId, action, position },
+        }, id) as BoundaryClientMessage
+      }
+      return fail('invalid_calibration_action', `不支持的校准会话动作：${action}`, 'data.action')
+    }
+
+    case 'calibration_reclaim': {
+      if (id === undefined) {
+        fail('missing_request_id', 'calibration_reclaim 必须携带 requestId', 'requestId')
+      }
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId', 'recoveryToken'], 'data')
+      return withRequestId({
+        type: 'calibration_reclaim',
+        data: {
+          sessionId: calibrationSessionId(data.sessionId),
+          recoveryToken: text(data.recoveryToken, 'data.recoveryToken', {
+            minBytes: 16,
+            maxBytes: 128,
+            pattern: /^[A-Za-z0-9_-]+$/,
+          }),
+        },
       }, id) as BoundaryClientMessage
     }
 
@@ -393,6 +499,40 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         type: 'motor_test',
         data: {
           instance: finiteNumber(data.instance, 'data.instance', { min: 1, max: 12, integer: true }),
+          throttle,
+          duration,
+          ...(propsRemoved ? { propsRemoved: true } : {}),
+        },
+      }, id) as BoundaryClientMessage
+    }
+
+    case 'motor_test_batch': {
+      const data = record(input.data, 'data')
+      if (!Array.isArray(data.instances) || data.instances.length < 1 || data.instances.length > 12) {
+        fail('invalid_motor_instances', 'data.instances 必须是 1..12 项的数组', 'data.instances')
+      }
+      const instances = data.instances.map((value, index) =>
+        finiteNumber(value, `data.instances[${index}]`, { min: 1, max: 12, integer: true }))
+      if (new Set(instances).size !== instances.length) {
+        fail('duplicate_motor_instance', 'data.instances 不能包含重复电机实例', 'data.instances')
+      }
+      const throttle = finiteNumber(data.throttle, 'data.throttle', { min: 0, max: 100 })
+      const duration = finiteNumber(data.duration, 'data.duration', { min: 0, max: 30 })
+      const propsRemoved = data.propsRemoved === true
+      if (throttle > 0 && (!propsRemoved || duration <= 0)) {
+        fail(
+          'motor_safety_confirmation_required',
+          '启动电机测试必须确认已拆除螺旋桨，且 duration 必须大于 0',
+          'data.propsRemoved',
+        )
+      }
+      if (throttle === 0 && duration !== 0) {
+        fail('unsafe_motor_test', '停止电机测试时 duration 必须为 0', 'data.duration')
+      }
+      return withRequestId({
+        type: 'motor_test_batch',
+        data: {
+          instances,
           throttle,
           duration,
           ...(propsRemoved ? { propsRemoved: true } : {}),

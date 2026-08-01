@@ -4,6 +4,8 @@ import { EmptyState } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 
 // PX4 circuit-breaker parameters disable safety protections outright; writing
 // them by accident must require an explicit confirmation.
@@ -36,7 +38,10 @@ function validateParamValue(value: number, type: number): string | null {
 export default function ParameterPage({ embedded = false }: { embedded?: boolean }) {
   const { params, loading, totalCount, receivedCount } = useParameterStore()
   const send = sendClientMessage
-  const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const canAccess = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
+  const canWrite = canAccess && profileWritable
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -60,7 +65,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   }, [])
 
   const requestParams = () => {
-    if (!canWrite) return
+    if (!canAccess) return
     useParameterStore.getState().clear()
     useParameterStore.getState().setLoading(true)
     send({ type: 'param_request_list' })
@@ -136,13 +141,14 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
           {loading ? '正在接收 ' + receivedCount + '/' + totalCount : (params.size || totalCount) + ' 个参数'}
         </span>
         <span className="flex-1" />
-        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canWrite || loading}>
+        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canAccess || loading}>
           <Icon name="refresh" size={15} />{loading ? receivedCount + '/' + totalCount : '重新同步'}
         </button>
         <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
       </div>
 
-      {!canWrite && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>连接飞控并取得控制权后可同步或修改参数。</span></div>}
+      {!canAccess && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>连接飞控并取得控制权后可同步参数。</span></div>}
+      {canAccess && !profileWritable && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>当前飞控类型尚未开放写操作；参数可同步、搜索和导出，但不能修改。</span></div>}
       {writeError && <div className="mc-capability-note" data-state="error"><Icon name="warning" size={15} /><span>{writeError}</span></div>}
 
       <div className="mc-param-search">

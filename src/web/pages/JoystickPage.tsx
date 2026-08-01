@@ -3,6 +3,8 @@ import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useTelemetryStore } from '../stores/telemetryStore'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import {
   useGamepadStore,
   type GamepadActionId,
@@ -64,6 +66,9 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
   } = gamepadState
   const [activeTab, setActiveTab] = useState('overview')
   const flightControllerConnected = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
+  const manualControlAvailable = flightControllerConnected && profileWritable
 
   const axisCount = Math.max(axes.length, 4)
   const buttonCount = Math.max(buttons.length, 16)
@@ -82,11 +87,12 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
                 <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span>
                 <span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
               </span>
-              <input type="checkbox" checked={enabled} disabled={!connected || !flightControllerConnected} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
+              <input type="checkbox" checked={enabled} disabled={!connected || !manualControlAvailable} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
             </label>
             {actionNotice && <p className="-mt-2 mb-3 rounded-lg px-3 py-1.5 text-[11px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{actionNotice}</p>}
             {!flightControllerConnected && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>请先连接飞控。</p>}
-            <GamepadVisualizer connected={connected} controllerId={id} flightControllerConnected={flightControllerConnected} enabled={enabled} axes={axes} buttons={buttons} mapping={mapping} />
+            {flightControllerConnected && !profileWritable && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>当前飞控类型为只读配置，不能启用手柄控制。</p>}
+            <GamepadVisualizer connected={connected} controllerId={id} flightControllerConnected={manualControlAvailable} enabled={enabled} axes={axes} buttons={buttons} mapping={mapping} />
           </div>
 
           {/* Channel mapping integrated below */}

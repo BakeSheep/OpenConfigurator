@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { availableModes } from '../../../shared/vehicleProfiles'
+import { availableModes, vehicleCapabilities } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
@@ -12,6 +12,7 @@ import {
   type ConnectionPreset,
 } from '../../utils/connectionPresets'
 import Icon from '../ui/Icon'
+import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from '../../utils/gpsTelemetry'
 
 const radToDeg = (r: number) => r * 180 / Math.PI
 
@@ -23,7 +24,7 @@ export default function Topbar() {
   const connectionLabel = vehicleReady
     ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '飞控已就绪')
     : transportOpen
-      ? '等待飞控'
+      ? '飞控未连接'
     : reconnecting
       ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? '连接中' : '未连接'
@@ -32,7 +33,7 @@ export default function Topbar() {
   const [presets, setPresets] = useState(loadConnectionPresets)
   const [connectDropdown, setConnectDropdown] = useState(false)
   const [rebootConfirm, setRebootConfirm] = useState(false)
-  const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | null>(null)
+  const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | 'gps' | null>(null)
   const [armDragProgress, setArmDragProgress] = useState(0)
   const [armDragging, setArmDragging] = useState(false)
   const topbarRef = useRef<HTMLElement | null>(null)
@@ -123,6 +124,7 @@ export default function Topbar() {
   const battery = useTelemetryStore((s) => s.battery)
   const vehicle = useTelemetryStore((s) => s.status)
   const vehicleIdentity = useTelemetryStore((s) => s.vehicleIdentity)
+  const caps = vehicleCapabilities(vehicleIdentity)
   const relativeAlt = useTelemetryStore((s) => s.relativeAlt)
   const heading = useTelemetryStore((s) => s.heading)
   const isStale = useTelemetryStore((s) => s.isStale)
@@ -135,8 +137,10 @@ export default function Topbar() {
   const stale = !vehicleReady || isStale('attitude')
   const gpsStale = !vehicleReady || isStale('gps')
   const batteryStale = !vehicleReady || (isStale('battery') && isStale('sysStatus'))
-  const hasGps = !gpsStale && gps && (gps.satellites_visible ?? 0) > 0
-  const canArm = vehicleReady && canControl && preflightCheck !== false && sensorsHealthy !== false
+  const gpsLive = !gpsStale && gps !== null
+  const hasGpsPosition = gpsLive && gpsHasPosition(gps)
+  const canChangeArmState = vehicleReady && canControl && caps.writeOperations && caps.arm
+  const canArm = canChangeArmState && preflightCheck !== false && sensorsHealthy !== false
   const armTone = confirmedArmed ? 'var(--success)' : canArm ? 'var(--info)' : 'var(--danger)'
   const armLabel = confirmedArmed ? '已解锁' : canArm ? '已上锁 · 可解锁' : vehicleReady ? '已上锁 · 不可解锁' : '飞控未就绪'
   const recentArmErrors = statusLogs
@@ -144,7 +148,7 @@ export default function Topbar() {
     .slice(0, 4)
 
   const requestVehicleReboot = () => {
-    if (!vehicleReady || !canControl || armed) return
+    if (!vehicleReady || !canControl || !caps.writeOperations || armed) return
     if (!rebootConfirm) {
       setRebootConfirm(true)
       if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
@@ -200,7 +204,7 @@ export default function Topbar() {
 
   const commitArmChange = () => {
     if (confirmedArmed) {
-      if (!canControl) return
+      if (!canChangeArmState) return
       sendClientMessage({
         type: 'command',
         requestId: `disarm-${Date.now().toString(36)}`,
@@ -233,7 +237,7 @@ export default function Topbar() {
   }
 
   const startArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!vehicleReady || !canControl || (!confirmedArmed && !canArm)) return
+    if (!canChangeArmState || (!confirmedArmed && !canArm)) return
     const startProgress = armProgressFromPointer(event.clientX)
     if (startProgress > 0.18) return
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -294,10 +298,10 @@ export default function Topbar() {
           {activeStatusMenu === 'arm' && (
             <section className="mc-topbar-menu mc-topbar-menu--arm" aria-label="解锁状态">
               <header>
-                <div><strong>{armLabel}</strong><small>{confirmedArmed || canArm ? '将滑块完整拖到右端以确认操作' : '当前不允许操作'}</small></div>
+                <div><strong>{armLabel}</strong><small>{canChangeArmState && (confirmedArmed || canArm) ? '将滑块完整拖到右端以确认操作' : '当前不允许操作'}</small></div>
                 <span style={{ color: armTone }}>{confirmedArmed ? 'ARMED' : canArm ? 'READY' : 'BLOCKED'}</span>
               </header>
-              {(confirmedArmed || canArm) ? (
+              {canChangeArmState && (confirmedArmed || canArm) ? (
                 <div className="mc-arm-control">
                   <button
                     ref={armSliderRef}
@@ -310,7 +314,7 @@ export default function Topbar() {
                     className="mc-arm-slider"
                     data-armed={confirmedArmed}
                     data-dragging={armDragging}
-                    disabled={!vehicleReady || !canControl}
+                    disabled={!canChangeArmState}
                     onPointerDown={startArmDrag}
                     onPointerMove={moveArmDrag}
                     onPointerUp={finishArmDrag}
@@ -330,6 +334,7 @@ export default function Topbar() {
                 <div className="mc-arm-errors" role="alert">
                   {!vehicleReady && <p>尚未收到飞控有效心跳，飞控未就绪。</p>}
                   {vehicleReady && !canControl && <p>控制权正由另一客户端持有，当前页面为只读。</p>}
+                  {vehicleReady && canControl && !caps.writeOperations && <p>当前飞控类型尚未开放写操作。</p>}
                   {vehicleReady && canControl && preflightCheck === false && recentArmErrors.length === 0 && <p>飞控预检未通过，请查看底部状态消息。</p>}
                   {unhealthySensors.length > 0 && <p>传感器异常：{unhealthySensors.join('、')}</p>}
                   {recentArmErrors.map((entry) => <p key={entry.id}>{entry.text}</p>)}
@@ -392,12 +397,40 @@ export default function Topbar() {
                 <span className="mc-topbar__status-value">{heading.toFixed(0)}°</span>
               </span>
             )}
-            {hasGps && (
-              <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
+            <div className="mc-topbar__status-item mc-topbar__status-menu mc-topbar__status-item--secondary">
+              <button
+                type="button"
+                className="mc-topbar__status-trigger"
+                aria-haspopup="menu"
+                aria-expanded={activeStatusMenu === 'gps'}
+                onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'gps' ? null : 'gps') }}
+              >
                 <Icon name="satellite" size={13} />
-                <span className="mc-topbar__status-value">{gps!.satellites_visible} SAT</span>
-              </span>
-            )}
+                <span className="mc-topbar__status-value">{gpsLive ? `${gps.satellites_visible ?? '—'} SAT` : 'GPS —'}</span>
+                <Icon name="chevronDown" size={11} />
+              </button>
+              {activeStatusMenu === 'gps' && (
+                <section className="mc-topbar-menu mc-topbar-menu--gps" aria-label="GPS 详情">
+                  <header>
+                    <div><strong>GPS 详情</strong><small>{gpsLive ? '数据来自 GPS_RAW_INT 实时遥测' : '等待 GPS 遥测数据'}</small></div>
+                    <span data-fix={hasGpsPosition || undefined}>{gpsLive ? gpsFixLabel(gps.fix_type) : '无数据'}</span>
+                  </header>
+                  <dl>
+                    <div><dt>定位类型</dt><dd>{gpsLive ? gpsFixLabel(gps.fix_type) : '—'}</dd></div>
+                    <div><dt>卫星数</dt><dd className="mc-mono">{gpsLive ? gps.satellites_visible ?? '—' : '—'}</dd></div>
+                    <div><dt>纬度</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lat) : '—'}</dd></div>
+                    <div><dt>经度</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lon) : '—'}</dd></div>
+                    <div><dt>海拔 (MSL)</dt><dd className="mc-mono">{hasGpsPosition ? `${gps.alt.toFixed(1)} m` : '—'}</dd></div>
+                    <div><dt>速度</dt><dd className="mc-mono">{gpsLive && gps.vel != null ? `${gps.vel.toFixed(2)} m/s` : '—'}</dd></div>
+                    <div><dt>HDOP</dt><dd className="mc-mono">{gpsLive && gps.eph != null ? gps.eph.toFixed(2) : '—'}</dd></div>
+                    <div><dt>VDOP</dt><dd className="mc-mono">{gpsLive && gps.epv != null ? gps.epv.toFixed(2) : '—'}</dd></div>
+                    <div><dt>水平精度</dt><dd>未提供</dd></div>
+                    <div><dt>垂直精度</dt><dd>未提供</dd></div>
+                    <div className="mc-topbar-gps__wide"><dt>航向</dt><dd className="mc-mono">{gpsLive && gps.cog != null ? `${gps.cog.toFixed(1)}°` : '—'}</dd></div>
+                  </dl>
+                </section>
+              )}
+            </div>
             {!batteryStale && battery && (
               <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
                 <Icon name="battery" size={13} />
@@ -431,8 +464,8 @@ export default function Topbar() {
           type="button"
           className="mc-topbar__reboot"
           data-confirm={rebootConfirm || undefined}
-          disabled={!vehicleReady || !canControl || armed}
-          title={armed ? '飞控已解锁，不能重启' : rebootConfirm ? '再次点击确认重启飞控' : '重启飞控'}
+          disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
+          title={!caps.writeOperations ? '当前飞控类型尚未开放远程重启' : armed ? '飞控已解锁，不能重启' : rebootConfirm ? '再次点击确认重启飞控' : '重启飞控'}
           aria-label={rebootConfirm ? '确认重启飞控' : '重启飞控'}
           onClick={requestVehicleReboot}
         >

@@ -13,3 +13,11 @@ OpenConfigurator 采用 [MIT License](LICENSE)。ESC 协议实现基于公开协
 | MAVLink definitions | MIT-compatible | 通过 `node-mavlink` 使用公开消息定义 |
 
 逐项协议来源和验证状态见 [docs/ESC-PROTOCOL-SOURCES.md](docs/ESC-PROTOCOL-SOURCES.md)。npm 运行时依赖及版本见 [package.json](package.json)，其许可证以各依赖自身声明为准。
+
+## 界面素材
+
+| 项目 | 许可证 | 本项目用途 |
+|---|---|---|
+| QGroundControl `resources/calibration/accel_*.png` | Apache License 2.0 | 六面加速度计校准方位引导图，未修改 |
+
+素材来自 [mavlink/qgroundcontrol](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/resources/calibration)，固定于提交 `ae7717a3d19c557fe7ca0c23dae2c8ab19c92668`。许可证全文随素材保存在 [`public/assets/calibration/LICENSE-APACHE-2.0.txt`](public/assets/calibration/LICENSE-APACHE-2.0.txt)。

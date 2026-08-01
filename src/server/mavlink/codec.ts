@@ -9,6 +9,7 @@ import {
   minimal,
   standard,
   common,
+  ardupilotmega,
   MavLinkProtocolV1,
   MavLinkProtocolV2,
   MavLinkPacketSignature,
@@ -21,13 +22,19 @@ import {
 
 // AUTOPILOT_VERSION (#148) and GLOBAL_POSITION_INT (#33) live in the modern
 // `standard` dialect, so all three registries must remain merged.
+// MAG_CAL_PROGRESS (#191) and the legacy RANGEFINDER (#173) exist only in the
+// ardupilotmega dialect; register just those messages instead of spreading the whole dialect so common
+// stays authoritative for every shared id (MAG_CAL_REPORT #192 keeps decoding
+// as common.MagCalReport).
 export const REGISTRY: Record<number, MavLinkDataConstructor<MavLinkData>> = {
   ...minimal.REGISTRY,
   ...standard.REGISTRY,
   ...common.REGISTRY,
+  173: ardupilotmega.REGISTRY[173],
+  191: ardupilotmega.REGISTRY[191],
 }
 
-export { minimal, standard, common }
+export { minimal, standard, common, ardupilotmega }
 
 export type MavlinkProtocolPreference = 'auto' | 'v1' | 'v2'
 

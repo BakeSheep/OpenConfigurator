@@ -4,6 +4,7 @@ import {
   common,
   minimal,
   standard,
+  ardupilotmega,
   MavLinkPacketSignature,
   MavLinkProtocolV1,
   MavLinkProtocolV2,
@@ -13,6 +14,10 @@ import { MavlinkCodecSession, type MavlinkMessage } from './codec'
 
 const wait = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+const ALL_MOTOR_TEST_QUEUE_TAGS = Array.from(
+  { length: 12 },
+  (_, index) => `motor-test-start:${index + 1}`,
+)
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -307,6 +312,8 @@ function framePayload(frame: Buffer): Buffer {
 class FakeConnection extends EventEmitter {
   frames: Buffer[] = []
   writePriorities: string[] = []
+  writeQueueTags: Array<string | undefined> = []
+  cancelledQueueTags: string[] = []
   status = 'connected'
   config: { type: 'serial' | 'bluetooth' } = { type: 'serial' }
   vehicleReady = false
@@ -315,11 +322,17 @@ class FakeConnection extends EventEmitter {
   heartbeatNotifications = 0
   activityNotifications = 0
 
-  write(frame: Buffer, priority = 'normal'): boolean {
+  write(frame: Buffer, priority = 'normal', queueTag?: string): boolean {
     this.frames.push(frame)
     this.writePriorities.push(priority)
+    this.writeQueueTags.push(queueTag)
     this.bytesSent += frame.length
     return true
+  }
+
+  cancelQueuedWrites(queueTag: string): number {
+    this.cancelledQueueTags.push(queueTag)
+    return 0
   }
 
   feed(frame: Buffer): void {
@@ -460,12 +473,41 @@ assert.ok(initialCommandFrames.some((frame) => {
   const payload = framePayload(frame)
   return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 105
 }))
-for (const messageId of [106, 132]) {
+for (const messageId of [27, 100, 106, 132, 173]) {
   assert.ok(initialCommandFrames.some((frame) => {
     const payload = framePayload(frame)
     return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === messageId
   }), `expected telemetry interval request for MAVLink message #${messageId}`)
 }
+
+const initialAttitudeInterval = findLast(initialCommandFrames, (frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 30
+})
+const initialOpticalFlowInterval = findLast(initialCommandFrames, (frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 106
+})
+assert.equal(framePayload(initialAttitudeInterval!).readFloatLE(4), 125_000)
+assert.equal(framePayload(initialOpticalFlowInterval!).readFloatLE(4), 500_000)
+
+bridge.handleClientMessage({
+  type: 'message_rates_set',
+  requestId: 'rates-custom',
+  data: { attitude: 4, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 1 },
+})
+const customIntervalFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
+const customAttitudeInterval = findLast(customIntervalFrames, (frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 30
+})
+const customOpticalFlowInterval = findLast(customIntervalFrames, (frame) => {
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 106
+})
+assert.equal(framePayload(customAttitudeInterval!).readFloatLE(4), 250_000)
+assert.equal(framePayload(customOpticalFlowInterval!).readFloatLE(4), 1_000_000)
+assert.equal(findLast(messages, (message) => message.type === 'message_rates')?.data.auxiliary, 1)
 
 // Semantic mode change: the server encodes PX4 Position (id 3) as packed
 // main/sub-mode parameters [1, 3, 0, ...] on MAV_CMD_DO_SET_MODE.
@@ -654,6 +696,7 @@ const actuatorFrameCount = () => connection.frames.filter((frame) =>
   frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
 ).length
 const actuatorStart = actuatorFrameCount()
+const motorQueueCancelStart = connection.cancelledQueueTags.length
 bridge.handleClientMessage({
   type: 'motor_test',
   requestId: 'motor-1',
@@ -672,6 +715,14 @@ assert.deepEqual(
   startedActuatorFrames.map((frame) => connection.writePriorities[connection.frames.indexOf(frame)]),
   ['high', 'high'],
 )
+assert.deepEqual(
+  startedActuatorFrames.map((frame) => connection.writeQueueTags[connection.frames.indexOf(frame)]),
+  ['motor-test-start:1', 'motor-test-start:2'],
+)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(motorQueueCancelStart),
+  ['motor-test-start:1', 'motor-test-start:2'],
+)
 assert.ok(messages.some((message) =>
   message.type === 'motor_test_status'
   && message.data.requestId === 'motor-1'
@@ -683,12 +734,17 @@ assert.ok(messages.some((message) =>
   && message.data.requestId === 'motor-2'
   && message.data.action === 'start'
 ))
+const cancelBeforeStop3 = connection.cancelledQueueTags.length
 bridge.handleClientMessage({
   type: 'motor_test',
   requestId: 'motor-stop-3',
   data: { instance: 3, throttle: 0, duration: 0 },
 })
 assert.equal(actuatorFrameCount() - actuatorStart, 3)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(cancelBeforeStop3),
+  ['motor-test-start:3'],
+)
 assert.equal(connection.writePriorities[connection.writePriorities.length - 1], 'critical')
 assert.ok(messages.some((message) =>
   message.type === 'motor_test_status'
@@ -702,12 +758,17 @@ let latestActuator = findLast(
 assert.ok(latestActuator)
 assert.ok(Number.isNaN(framePayload(latestActuator).readFloatLE(0)))
 assert.equal(framePayload(latestActuator).readFloatLE(16), 1103)
+const cancelBeforeStop4 = connection.cancelledQueueTags.length
 bridge.handleClientMessage({
   type: 'motor_test',
   requestId: 'motor-stop-4',
   data: { instance: 4, throttle: 0, duration: 0 },
 })
 assert.equal(actuatorFrameCount() - actuatorStart, 4)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(cancelBeforeStop4),
+  ['motor-test-start:4'],
+)
 latestActuator = findLast(
   connection.frames.filter((frame) => frameMessageId(frame) === 76),
   (frame) => framePayload(frame).readUInt16LE(28) === 310,
@@ -720,19 +781,111 @@ const uncorrelatedMotorAck = findLast(
 )
 assert.equal(uncorrelatedMotorAck.data.requestId, undefined)
 
+// The browser's ALL slider crosses the WS boundary once, then the bridge
+// fans out validated 1-based instances without command-ACK correlation.
+const batchActuatorStart = actuatorFrameCount()
+const cancelBeforeBatchStart = connection.cancelledQueueTags.length
+bridge.handleClientMessage({
+  type: 'motor_test_batch',
+  requestId: 'motor-all-start',
+  data: {
+    instances: [1, 2, 3, 4],
+    throttle: 20,
+    duration: 2,
+    propsRemoved: true,
+  },
+})
+const batchStartFrames = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+).slice(batchActuatorStart)
+assert.equal(batchStartFrames.length, 4)
+assert.deepEqual(
+  batchStartFrames.map((frame) => framePayload(frame).readFloatLE(16)),
+  [1101, 1102, 1103, 1104],
+)
+assert.deepEqual(
+  batchStartFrames.map((frame) => connection.writePriorities[connection.frames.indexOf(frame)]),
+  ['high', 'high', 'high', 'high'],
+)
+assert.deepEqual(
+  batchStartFrames.map((frame) => connection.writeQueueTags[connection.frames.indexOf(frame)]),
+  [
+    'motor-test-start:1',
+    'motor-test-start:2',
+    'motor-test-start:3',
+    'motor-test-start:4',
+  ],
+)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(cancelBeforeBatchStart),
+  [
+    'motor-test-start:1',
+    'motor-test-start:2',
+    'motor-test-start:3',
+    'motor-test-start:4',
+  ],
+)
+assert.equal(
+  messages.filter((message) => message.type === 'motor_test_status'
+    && message.data.requestId === 'motor-all-start'
+    && message.data.action === 'start').length,
+  4,
+)
+const cancelBeforeBatchStop = connection.cancelledQueueTags.length
+bridge.handleClientMessage({
+  type: 'motor_test_batch',
+  requestId: 'motor-all-stop',
+  data: { instances: [1, 2, 3, 4], throttle: 0, duration: 0 },
+})
+const batchStopFrames = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 310
+).slice(batchActuatorStart + 4)
+assert.equal(batchStopFrames.length, 4)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(cancelBeforeBatchStop),
+  [
+    'motor-test-start:1',
+    'motor-test-start:2',
+    'motor-test-start:3',
+    'motor-test-start:4',
+  ],
+)
+assert.ok(batchStopFrames.every((frame) => Number.isNaN(framePayload(frame).readFloatLE(0))))
+assert.deepEqual(
+  batchStopFrames.map((frame) => connection.writePriorities[connection.frames.indexOf(frame)]),
+  ['critical', 'critical', 'critical', 'critical'],
+)
+
 // Reboot is a semantic, disarmed-only command encoded as PREFLIGHT_REBOOT_SHUTDOWN.
 const rebootFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 76).length
-bridge.handleClientMessage({
+const rebootResult = bridge.handleClientMessage({
   type: 'reboot_vehicle',
   requestId: 'reboot-1',
   safetyConfirmation: 'reboot_flight_controller',
 })
+assert.equal(rebootResult.vehicleRebootQueued, true)
 const rebootFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
 assert.equal(rebootFrames.length, rebootFramesBefore + 1)
 const rebootPayload = framePayload(rebootFrames[rebootFrames.length - 1])
 assert.equal(rebootPayload.readUInt16LE(28), 246)
 assert.equal(rebootPayload.readFloatLE(0), 1)
 inject(bridge, 77, commandAckPayload(246, 0))
+
+// A reboot can keep USB open while the FC loses its message-interval setup.
+// Even if the FC stops heartbeats immediately, the first post-reboot heartbeat
+// must renegotiate all streams rather than depending on a final stale frame.
+const intervalFramesBeforeRebootRecovery = connection.frames.filter((frame) => {
+  if (frameMessageId(frame) !== 76) return false
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511
+}).length
+connection.vehicleReady = false
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal(connection.vehicleReady, true)
+assert.ok(connection.frames.filter((frame) => {
+  if (frameMessageId(frame) !== 76) return false
+  return framePayload(frame).readUInt16LE(28) === 511
+}).length > intervalFramesBeforeRebootRecovery)
 
 // Malformed PARAM_VALUE packets never reach the cache or transaction layer.
 const paramMessagesBeforeMalformed = messages.filter((message) => message.type === 'param').length
@@ -1015,6 +1168,65 @@ assert.ok(Math.abs(flow.integrated_zgyro_rad - 0.03) < 1e-6)
 assert.equal(flow.distance_m, null)
 assert.equal(flow.ground_distance, null)
 
+const flowWithoutGyroPayload = Buffer.from(flowPayload)
+flowWithoutGyroPayload.writeFloatLE(Number.NaN, 20)
+flowWithoutGyroPayload.writeFloatLE(Number.NaN, 24)
+flowWithoutGyroPayload.writeFloatLE(Number.NaN, 28)
+inject(bridge, 106, flowWithoutGyroPayload)
+const flowWithoutGyro = findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'OPTICAL_FLOW_RAD',
+)?.data
+assert.equal(flowWithoutGyro.integrated_xgyro_rad, null)
+assert.equal(flowWithoutGyro.integrated_ygyro_rad, null)
+assert.equal(flowWithoutGyro.integrated_zgyro_rad, null)
+assert.equal(flowWithoutGyro.flow_comp_m_x, null)
+assert.equal(flowWithoutGyro.flow_comp_m_y, null)
+
+// Camera/rangefinder peripherals commonly publish under their own component
+// id. The selected autopilot is component 1, but same-system sensor components
+// must still be accepted.
+const legacyFlowPayload = Buffer.alloc(34)
+legacyFlowPayload.writeFloatLE(0.12, 8)
+legacyFlowPayload.writeFloatLE(-0.08, 12)
+legacyFlowPayload.writeFloatLE(1.75, 16)
+legacyFlowPayload.writeInt16LE(14, 20)
+legacyFlowPayload.writeInt16LE(-9, 22)
+legacyFlowPayload[24] = 7
+legacyFlowPayload[25] = 180
+;(bridge as unknown as PrivateBridge).messageIntervalSupport = 'supported'
+const siblingIntervalFramesBefore = connection.frames.length
+inject(bridge, 100, legacyFlowPayload, 42, 158)
+const siblingIntervalFrame = findLast(
+  connection.frames.slice(siblingIntervalFramesBefore),
+  (frame) => {
+    if (frameMessageId(frame) !== 76) return false
+    const payload = framePayload(frame)
+    return payload.readUInt16LE(28) === 511
+      && payload.readFloatLE(0) === 100
+      && payload[31] === 158
+  },
+)
+assert.ok(siblingIntervalFrame, 'a sibling sensor emitter receives its own interval request')
+const legacyFlow = findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'OPTICAL_FLOW',
+)?.data
+assert.equal(legacyFlow.source, 'OPTICAL_FLOW')
+assert.equal(legacyFlow.flow_x, 14)
+assert.equal(legacyFlow.flow_y, -9)
+assert.ok(Math.abs(legacyFlow.flow_comp_m_x - 0.12) < 1e-6)
+assert.equal(legacyFlow.quality, 180)
+assert.ok(Math.abs(legacyFlow.ground_distance - 1.75) < 1e-6)
+
+const foreignSensorMessagesBefore = messages.filter((message) =>
+  message.type === 'sensor' && message.msgType === 'OPTICAL_FLOW'
+).length
+inject(bridge, 100, legacyFlowPayload, 43, 158)
+assert.equal(messages.filter((message) =>
+  message.type === 'sensor' && message.msgType === 'OPTICAL_FLOW'
+).length, foreignSensorMessagesBefore, 'sensor frames from another system must remain isolated')
+
 const estimatorPayload = Buffer.alloc(44)
 estimatorPayload.writeUInt16LE(0x1234, 42)
 inject(bridge, 230, estimatorPayload)
@@ -1025,7 +1237,10 @@ assert.equal(
 )
 
 const distancePayload = Buffer.alloc(14)
-inject(bridge, 132, distancePayload)
+distancePayload.writeUInt16LE(20, 4)
+distancePayload.writeUInt16LE(600, 6)
+distancePayload.writeUInt16LE(125, 8)
+inject(bridge, 132, distancePayload, 42, 196)
 assert.equal(
   findLast(
     messages,
@@ -1033,6 +1248,24 @@ assert.equal(
   )?.data.signal_quality,
   null,
 )
+assert.equal(findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'DISTANCE_SENSOR',
+)?.data.current_distance, 125)
+
+const rangefinderPayload = Buffer.alloc(8)
+rangefinderPayload.writeFloatLE(2.34, 0)
+rangefinderPayload.writeFloatLE(5, 4)
+inject(bridge, 173, rangefinderPayload, 42, 195)
+const rangefinder = findLast(
+  messages,
+  (message) => message.type === 'sensor' && message.msgType === 'RANGEFINDER',
+)?.data
+assert.equal(rangefinder.source, 'RANGEFINDER')
+assert.equal(rangefinder.current_distance, 234)
+assert.equal(rangefinder.min_distance, 0)
+assert.equal(rangefinder.max_distance, 0)
+assert.equal(rangefinder.signal_quality, null)
 
 const invalidPressure = Buffer.alloc(16)
 invalidPressure.writeFloatLE(0, 4)
@@ -1059,13 +1292,6 @@ assert.ok(messages.some((message) =>
   && message.data.reason === 'parameter_count_exceeds_limit'
 ))
 
-// SET_MESSAGE_INTERVAL unsupported -> bounded legacy REQUEST_DATA_STREAM
-// fallback instead of silently losing telemetry.
-const legacyBefore = connection.frames.filter((frame) => frameMessageId(frame) === 66).length
-inject(bridge, 77, commandAckPayload(511, 3))
-const legacyAfter = connection.frames.filter((frame) => frameMessageId(frame) === 66).length
-assert.ok(legacyAfter - legacyBefore >= 7)
-
 // Explicit selection resets readiness. Old-target ACK/telemetry cannot affect
 // the new transaction until the selected target sends a fresh heartbeat.
 for (let systemId = 50; systemId < 90; systemId++) {
@@ -1076,12 +1302,17 @@ assert.ok((bridge as unknown as PrivateBridge).discoveredTargets.size <= 32)
 inject(bridge, 0, heartbeatPayload(), 43, 1)
 bridge.handleClientMessage({ type: 'param_request_list', requestId: 'switching-list' })
 assert.equal((bridge as unknown as PrivateBridge).paramDownloadActive, true)
+const cancelBeforeTargetSwitch = connection.cancelledQueueTags.length
 bridge.handleClientMessage({
   type: 'select_target',
   requestId: 'select-43',
   data: { systemId: 43, componentId: 1 },
 })
 assert.equal((bridge as unknown as PrivateBridge).targetSysId, 43)
+assert.deepEqual(
+  connection.cancelledQueueTags.slice(cancelBeforeTargetSwitch),
+  ALL_MOTOR_TEST_QUEUE_TAGS,
+)
 assert.ok(messages.some((message) =>
   message.type === 'param_failed' && message.data.reason === 'target_switched'
 ))
@@ -1153,8 +1384,8 @@ bridge.destroy()
   }
 }
 
-// IN_PROGRESS is not terminal proof of SET_MESSAGE_INTERVAL support. A later
-// terminal failure must immediately restore legacy REQUEST_DATA_STREAM.
+// IN_PROGRESS and per-message failures are not proof that the interval command
+// itself is unsupported. A later accepted ACK from the same batch wins.
 {
   const fallbackConnection = new FakeConnection()
   const fallbackBridge = new MavlinkBridge(fallbackConnection as never, {
@@ -1178,13 +1409,40 @@ bridge.destroy()
   inject(fallbackBridge, 77, commandAckPayload(511, 4), 8, 1)
   assert.equal(
     (fallbackBridge as unknown as PrivateBridge).messageIntervalSupport,
-    'unsupported',
+    'unknown',
   )
-  assert.ok(
-    fallbackConnection.frames.filter((frame) => frameMessageId(frame) === 66).length
-      - legacyBeforeProgress >= 7,
+  assert.equal(
+    fallbackConnection.frames.filter((frame) => frameMessageId(frame) === 66).length,
+    legacyBeforeProgress,
+  )
+  inject(fallbackBridge, 77, commandAckPayload(511, 0), 8, 1)
+  assert.equal(
+    (fallbackBridge as unknown as PrivateBridge).messageIntervalSupport,
+    'supported',
+  )
+  assert.equal(
+    fallbackConnection.frames.filter((frame) => frameMessageId(frame) === 66).length,
+    legacyBeforeProgress,
   )
   fallbackBridge.destroy()
+}
+// If no interval request is ever accepted, bounded retries still converge to
+// REQUEST_DATA_STREAM for old stacks that genuinely lack command 511.
+{
+  const timeoutFallbackConnection = new FakeConnection()
+  const timeoutFallbackBridge = new MavlinkBridge(timeoutFallbackConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(timeoutFallbackBridge, 0, heartbeatPayload(), 8, 1)
+  await waitFor(() =>
+    (timeoutFallbackBridge as unknown as PrivateBridge).messageIntervalSupport === 'unsupported',
+  )
+  assert.ok(timeoutFallbackConnection.frames.filter(
+    (frame) => frameMessageId(frame) === 66,
+  ).length >= 7)
+  timeoutFallbackBridge.destroy()
 }
 
 // MAVLink v2 zero-trim semantics: a trimmed SERVO_OUTPUT_RAW frame is valid
@@ -1266,7 +1524,7 @@ bridge.destroy()
   inject(trimBridge, 30, attitudePayload(600_000), 21, 1)
   const intervalFramesBeforeReboot = countIntervalFrames()
   inject(trimBridge, 30, attitudePayload(1_000), 21, 1)
-  assert.ok(countIntervalFrames() - intervalFramesBeforeReboot >= 9)
+  assert.ok(countIntervalFrames() - intervalFramesBeforeReboot >= 12)
   trimBridge.destroy()
 }
 
@@ -1343,12 +1601,17 @@ bridge.destroy()
   const apMotorFrames = () => apConnection.frames.filter((frame) =>
     frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 209
   )
+  const cancelBeforeNoProps = apConnection.cancelledQueueTags.length
   apBridge.handleClientMessage({
     type: 'motor_test',
     requestId: 'ap-motor-noprops',
     data: { instance: 1, throttle: 5, duration: 2 },
   })
   assert.equal(apMotorFrames().length, 0)
+  assert.deepEqual(
+    apConnection.cancelledQueueTags.slice(cancelBeforeNoProps),
+    ['motor-test-start:1'],
+  )
   assert.equal(
     findLast(apMessages, (message) => message.type === 'operation_error'
       && message.data.requestId === 'ap-motor-noprops')?.data.code,
@@ -1398,17 +1661,53 @@ bridge.destroy()
     0,
   )
 
+  apBridge.handleClientMessage({
+    type: 'motor_test_batch',
+    requestId: 'ap-motor-all-start',
+    data: {
+      instances: [1, 2, 3],
+      throttle: 7,
+      duration: 2,
+      propsRemoved: true,
+    },
+  })
+  assert.equal(apMotorFrames().length, 5)
+  assert.deepEqual(
+    apMotorFrames().slice(2).map((frame) => framePayload(frame).readFloatLE(0)),
+    [1, 2, 3],
+  )
+  apBridge.handleClientMessage({
+    type: 'motor_test_batch',
+    requestId: 'ap-motor-all-stop',
+    data: { instances: [1, 2, 3], throttle: 0, duration: 0 },
+  })
+  assert.equal(apMotorFrames().length, 8)
+  assert.ok(apMotorFrames().slice(5).every((frame) => (
+    framePayload(frame).readFloatLE(8) === 0
+    && framePayload(frame).readFloatLE(12) === 0
+  )))
+
   // While armed, motor-test starts are refused before serialization; stop
   // commands remain allowed.
   const armedHeartbeat = heartbeatPayload(3, 2, 0)
   armedHeartbeat[6] = 0x80
+  const cancelBeforeArmedHeartbeat = apConnection.cancelledQueueTags.length
   inject(apBridge, 0, armedHeartbeat, 55, 1)
+  assert.deepEqual(
+    apConnection.cancelledQueueTags.slice(cancelBeforeArmedHeartbeat),
+    ALL_MOTOR_TEST_QUEUE_TAGS,
+  )
+  const cancelBeforeArmedReject = apConnection.cancelledQueueTags.length
   apBridge.handleClientMessage({
     type: 'motor_test',
     requestId: 'ap-motor-armed',
     data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
   })
-  assert.equal(apMotorFrames().length, 2)
+  assert.equal(apMotorFrames().length, 8)
+  assert.deepEqual(
+    apConnection.cancelledQueueTags.slice(cancelBeforeArmedReject),
+    ['motor-test-start:1'],
+  )
   assert.equal(
     findLast(apMessages, (message) => message.type === 'operation_error'
       && message.data.requestId === 'ap-motor-armed')?.data.code,
@@ -1419,18 +1718,31 @@ bridge.destroy()
     requestId: 'ap-motor-armed-stop',
     data: { instance: 1, throttle: 0, duration: 0 },
   })
-  assert.equal(apMotorFrames().length, 3)
-  // Calibration is also refused while armed (bench-only operation).
-  const calFramesBeforeArmed = apConnection.frames.filter((frame) =>
-    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
-  ).length
-  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-armed', data: { kind: 'gyro' } })
-  assert.equal(
-    apConnection.frames.filter((frame) =>
-      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
-    ).length,
-    calFramesBeforeArmed,
-  )
+  assert.equal(apMotorFrames().length, 9)
+  // Calibration is bench-only: createCalibrationSession refuses while armed
+  // (session flows are owned by the CalibrationSessionManager, which calls
+  // this factory directly instead of routing start_calibration to the bridge).
+  const calFrames = () => apConnection.frames.filter((frame) => {
+    if (frameMessageId(frame) !== 76) return false
+    const command = framePayload(frame).readUInt16LE(28)
+    return command === 241 || command === 42424
+  })
+  const startCal = (kind: string, requestId: string) => {
+    const snapshots: any[] = []
+    const session = (apBridge as any).createCalibrationSession({
+      sessionId: `sess-${requestId}`,
+      requestId,
+      kind,
+      ownerClientId: 'test-owner',
+      emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+    })
+    session?.start()
+    return { session, snapshots }
+  }
+  const calFramesBeforeArmed = calFrames().length
+  const armedCal = startCal('gyro', 'ap-cal-armed')
+  assert.equal(armedCal.session, null)
+  assert.equal(calFrames().length, calFramesBeforeArmed)
   assert.equal(
     findLast(apMessages, (message) => message.type === 'operation_error'
       && message.data.requestId === 'ap-cal-armed')?.data.code,
@@ -1438,35 +1750,61 @@ bridge.destroy()
   )
   inject(apBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
 
-  // Semantic calibration: ArduCopter maps supported kinds to command 241
-  // parameters and rejects kinds it does not implement (mag needs the mag-cal
-  // protocol). Gyro = param1, baro = param3, accel(level) = param5=2.
-  const apCalFrames = () => apConnection.frames.filter((frame) =>
+  // ArduCopter calibration encodings via MAV_CMD_PREFLIGHT_CALIBRATION(241):
+  // gyro=param1, baro=param3, accel(six-position)=param5=1 (bug fix: was 2),
+  // simple accel=param5=4, level=param5=2. Onboard mag uses DO_START_MAG_CAL.
+  const preflightFrames = () => apConnection.frames.filter((frame) =>
     frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
   )
-  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-gyro', data: { kind: 'gyro' } })
-  assert.equal(apCalFrames().length, 1)
-  assert.equal(framePayload(apCalFrames()[0]).readFloatLE(0), 1)
+  const gyroCal = startCal('gyro', 'ap-cal-gyro')
+  assert.equal(preflightFrames().length, 1)
+  assert.equal(framePayload(preflightFrames()[0]).readFloatLE(0), 1)
+  assert.equal(gyroCal.snapshots[0]?.phase, 'starting')
   inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
   await wait(45)
-  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-baro', data: { kind: 'baro' } })
-  assert.equal(apCalFrames().length, 2)
-  assert.equal(framePayload(apCalFrames()[1]).readFloatLE(8), 1)
+  // gyro one-shot: an ACCEPTED ACK yields accepted/ack_only, never verified.
+  assert.equal(last(gyroCal.snapshots)?.phase, 'accepted')
+  assert.equal(last(gyroCal.snapshots)?.verification, 'ack_only')
+
+  const baroCal = startCal('baro', 'ap-cal-baro')
+  assert.equal(preflightFrames().length, 2)
+  assert.equal(framePayload(preflightFrames()[1]).readFloatLE(8), 1)
   inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
   await wait(45)
-  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-accel', data: { kind: 'accel' } })
-  assert.equal(apCalFrames().length, 3)
-  assert.equal(framePayload(apCalFrames()[2]).readFloatLE(16), 2)
-  inject(apBridge, 77, commandAckPayload(241, 0), 55, 1)
-  await wait(45)
-  // Mag calibration is not implemented for ArduCopter yet: rejected, no frame.
-  apBridge.handleClientMessage({ type: 'start_calibration', requestId: 'ap-cal-mag', data: { kind: 'mag' } })
-  assert.equal(apCalFrames().length, 3)
+
+  // accel is the six-position flow now: param5=1 (previously mis-encoded as 2).
+  const accelCal = startCal('accel', 'ap-cal-accel')
+  assert.equal(preflightFrames().length, 3)
+  assert.equal(framePayload(preflightFrames()[2]).readFloatLE(16), 1)
+  assert.equal(accelCal.session?.cancelSupported, false)
+  // Terminate it so the single-session invariant does not block the next start.
+  accelCal.session?.terminate('test_cleanup', 'test')
+
+  const simpleCal = startCal('accel_simple', 'ap-cal-simple')
+  assert.equal(preflightFrames().length, 4)
+  assert.equal(framePayload(preflightFrames()[3]).readFloatLE(16), 4)
+  simpleCal.session?.terminate('test_cleanup', 'test')
+
+  const levelCal = startCal('level', 'ap-cal-level')
+  assert.equal(preflightFrames().length, 5)
+  assert.equal(framePayload(preflightFrames()[4]).readFloatLE(16), 2)
+  levelCal.session?.terminate('test_cleanup', 'test')
+
+  // Onboard mag calibration is now supported: it sends DO_START_MAG_CAL(42424),
+  // not a PREFLIGHT_CALIBRATION frame.
+  const magFramesBefore = apConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42424
+  ).length
+  const magCal = startCal('mag', 'ap-cal-mag')
+  assert.notEqual(magCal.session, null)
   assert.equal(
-    findLast(apMessages, (message) => message.type === 'operation_error'
-      && message.data.requestId === 'ap-cal-mag')?.data.code,
-    'unsupported_calibration_kind',
+    apConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42424
+    ).length,
+    magFramesBefore + 1,
   )
+  assert.equal(preflightFrames().length, 5, 'mag must not send a PREFLIGHT_CALIBRATION frame')
+  magCal.session?.terminate('test_cleanup', 'test')
 
   // AUTOPILOT_VERSION from an ArduPilot target is labeled ArduPilot, keeping
   // raw board/vendor/product fields intact.
@@ -1549,6 +1887,31 @@ bridge.destroy()
   apBridge.destroy()
 }
 
+// A same-target identity change invalidates every queued motor start before
+// the new (possibly read-only) profile can inherit old commands.
+{
+  const identityConnection = new FakeConnection()
+  const identityBridge = new MavlinkBridge(identityConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(identityBridge, 0, heartbeatPayload(3, 2, 0), 68, 1)
+  identityBridge.handleClientMessage({
+    type: 'motor_test',
+    requestId: 'identity-motor',
+    data: { instance: 1, throttle: 5, duration: 2, propsRemoved: true },
+  })
+  const cancelBeforeIdentityChange = identityConnection.cancelledQueueTags.length
+  inject(identityBridge, 0, heartbeatPayload(3, 1, 0), 68, 1)
+  assert.deepEqual(
+    identityConnection.cancelledQueueTags.slice(cancelBeforeIdentityChange),
+    ALL_MOTOR_TEST_QUEUE_TAGS,
+  )
+  assert.equal(identityBridge.vehicleIdentity?.vehicleClass, 'plane')
+  identityBridge.destroy()
+}
+
 // An unknown autopilot family (MAV_AUTOPILOT generic) is trackable but mode
 // requests must be rejected before serialization - no cross-stack guessing.
 {
@@ -1609,6 +1972,11 @@ bridge.destroy()
     requestId: 'generic-motor',
     data: { instance: 1, throttle: 0, duration: 0 },
   })
+  genericBridge.handleClientMessage({
+    type: 'motor_test_batch',
+    requestId: 'generic-motor-batch',
+    data: { instances: [1, 2, 3, 4], throttle: 0, duration: 0 },
+  })
   assert.equal(
     genericConnection.frames.filter((frame) => frameMessageId(frame) === 76).length,
     commandFramesBeforeGated,
@@ -1617,6 +1985,7 @@ bridge.destroy()
     ['generic-arm', 'unsupported_vehicle_profile'],
     ['generic-cal', 'unsupported_vehicle_profile'],
     ['generic-motor', 'unsupported_motor_test'],
+    ['generic-motor-batch', 'unsupported_motor_test'],
   ] as const) {
     const error = findLast(
       genericMessages,
@@ -1624,11 +1993,19 @@ bridge.destroy()
     )
     assert.equal(error?.data.code, code, `expected ${code} for ${requestId}`)
   }
-  // Semantic calibration also refuses to serialize command 241 for unknown.
+  // Calibration also refuses to create a session for an unknown profile:
+  // createCalibrationSession returns null and serializes no 241 frame.
   const cal241Before = genericConnection.frames.filter((frame) =>
     frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
   ).length
-  genericBridge.handleClientMessage({ type: 'start_calibration', requestId: 'generic-cal2', data: { kind: 'gyro' } })
+  const genericCalSession = (genericBridge as any).createCalibrationSession({
+    sessionId: 'sess-generic-cal2',
+    requestId: 'generic-cal2',
+    kind: 'gyro',
+    ownerClientId: 'test-owner',
+    emitSnapshot: () => {},
+  })
+  assert.equal(genericCalSession, null)
   assert.equal(
     genericConnection.frames.filter((frame) =>
       frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
@@ -1640,7 +2017,135 @@ bridge.destroy()
       && message.data.requestId === 'generic-cal2')?.data.code,
     'unsupported_vehicle_profile',
   )
+
+  const genericMutationFrames = genericConnection.frames.length
+  genericBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'generic-param',
+    data: { id: 'TEST_PARAM', value: 1, paramType: 9 },
+  })
+  genericBridge.handleClientMessage({
+    type: 'manual_control',
+    requestId: 'generic-manual',
+    data: { x: 0, y: 0, z: 0, r: 0 },
+  })
+  const genericRebootResult = genericBridge.handleClientMessage({
+    type: 'reboot_vehicle',
+    requestId: 'generic-reboot',
+    safetyConfirmation: 'reboot_flight_controller',
+  })
+  assert.equal(genericRebootResult.vehicleRebootQueued, false)
+  genericBridge.handleClientMessage({
+    type: 'message_rates_set',
+    requestId: 'generic-rates',
+    data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
+  })
+  genericBridge.handleClientMessage({
+    type: 'fs_delete',
+    requestId: 'generic-delete',
+    data: { entries: [{ path: '/fs/microsd/log/a.ulg', kind: 'file' }] },
+    safetyConfirmation: 'delete_files',
+  })
+  genericBridge.handleClientMessage({
+    type: 'log_erase',
+    requestId: 'generic-erase',
+    safetyConfirmation: 'erase_all_logs',
+  })
+  await wait(0)
+  assert.equal(genericConnection.frames.length, genericMutationFrames)
+  for (const requestId of ['generic-param', 'generic-manual', 'generic-reboot', 'generic-rates']) {
+    assert.equal(
+      findLast(genericMessages, (message) => message.type === 'operation_error'
+        && message.data.requestId === requestId)?.data.code,
+      'unsupported_vehicle_profile',
+    )
+  }
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'fs_op_error'
+      && message.data.requestId === 'generic-delete')?.data.code,
+    'unsupported_vehicle_profile',
+  )
+  assert.equal(
+    findLast(genericMessages, (message) => message.type === 'log_op_error'
+      && message.data.requestId === 'generic-erase')?.data.code,
+    'unsupported_vehicle_profile',
+  )
   genericBridge.destroy()
+}
+
+// ArduPlane retains DataFlash browsing, while every mutation uses the same
+// default-deny write capability as the other unimplemented ArduPilot classes.
+{
+  const planeConnection = new FakeConnection()
+  const planeBridge = new MavlinkBridge(planeConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const planeMessages: any[] = []
+  planeBridge.on('message', (message) => planeMessages.push(message))
+  inject(planeBridge, 0, heartbeatPayload(3, 1, 0), 67, 1)
+
+  planeBridge.handleClientMessage({ type: 'log_list', requestId: 'plane-list' })
+  assert.ok(planeConnection.frames.some((frame) => frameMessageId(frame) === 117))
+
+  const mutationIds = new Set([23, 69, 76, 110, 121])
+  const mutationFrameCount = () => planeConnection.frames.filter(
+    (frame) => mutationIds.has(frameMessageId(frame)),
+  ).length
+  const beforeMutations = mutationFrameCount()
+  planeBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'plane-param',
+    data: { id: 'TEST_PARAM', value: 1, paramType: 9 },
+  })
+  planeBridge.handleClientMessage({
+    type: 'manual_control',
+    requestId: 'plane-manual',
+    data: { x: 0, y: 0, z: 0, r: 0 },
+  })
+  const planeRebootResult = planeBridge.handleClientMessage({
+    type: 'reboot_vehicle',
+    requestId: 'plane-reboot',
+    safetyConfirmation: 'reboot_flight_controller',
+  })
+  assert.equal(planeRebootResult.vehicleRebootQueued, false)
+  planeBridge.handleClientMessage({
+    type: 'message_rates_set',
+    requestId: 'plane-rates',
+    data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
+  })
+  planeBridge.handleClientMessage({
+    type: 'fs_delete',
+    requestId: 'plane-delete',
+    data: { entries: [{ path: '/fs/microsd/log/a.bin', kind: 'file' }] },
+    safetyConfirmation: 'delete_files',
+  })
+  planeBridge.handleClientMessage({
+    type: 'log_erase',
+    requestId: 'plane-erase',
+    safetyConfirmation: 'erase_all_logs',
+  })
+  await wait(0)
+  assert.equal(mutationFrameCount(), beforeMutations)
+  for (const requestId of ['plane-param', 'plane-manual', 'plane-reboot', 'plane-rates']) {
+    assert.equal(
+      findLast(planeMessages, (message) => message.type === 'operation_error'
+        && message.data.requestId === requestId)?.data.code,
+      'unsupported_vehicle_profile',
+    )
+  }
+  assert.equal(
+    findLast(planeMessages, (message) => message.type === 'fs_op_error'
+      && message.data.requestId === 'plane-delete')?.data.code,
+    'unsupported_vehicle_profile',
+  )
+  assert.equal(
+    findLast(planeMessages, (message) => message.type === 'log_op_error'
+      && message.data.requestId === 'plane-erase')?.data.code,
+    'unsupported_vehicle_profile',
+  )
+  planeBridge.destroy()
 }
 
 console.log('MAVLink codec, transaction, target and telemetry checks passed')
@@ -1709,4 +2214,284 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 
   pauseBridge.destroy()
   console.log('MAVLink ESC pause/resume checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// PX4 calibration session wiring: STATUSTEXT [cal] reassembly feeds the
+// session, the start command is sent exactly once (no pendingCommands
+// retransmit), CAL_MAG_SIDES gates mag sides, and cancel emits an all-zero 241.
+// ---------------------------------------------------------------------------
+{
+  function statustextPayload(severity: number, text: string): Buffer {
+    const payload = Buffer.alloc(54)
+    payload[0] = severity
+    Buffer.from(text, 'ascii').copy(payload, 1, 0, 50)
+    return payload
+  }
+
+  const calConnection = new FakeConnection()
+  const calBridge = new MavlinkBridge(calConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  // PX4 quad heartbeat (autopilot 12), disarmed.
+  inject(calBridge, 0, heartbeatPayload(12, 2, 0x03040000), 55, 1)
+
+  const preflight241 = () => calConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 241
+  )
+  const snapshots: any[] = []
+  const session = (calBridge as any).createCalibrationSession({
+    sessionId: 'sess-px4-accel',
+    requestId: 'px4-accel',
+    kind: 'accel',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+  })
+  assert.notEqual(session, null)
+  session.start()
+  assert.equal(preflight241().length, 1)
+  assert.equal(framePayload(preflight241()[0]).readFloatLE(16), 1, 'PX4 accel = param5=1')
+  assert.equal(last(snapshots)?.phase, 'starting')
+  assert.equal(last(snapshots)?.cancelSupported, true)
+
+  // STATUSTEXT [cal] lines drive the wizard state through the bridge reassembly
+  // path and the parser.
+  inject(calBridge, 253, statustextPayload(6, '[cal] calibration started: 2 accel'), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'running')
+  assert.deepEqual(last(snapshots)?.sides, {
+    down: 'pending', up: 'pending', left: 'pending',
+    right: 'pending', front: 'pending', back: 'pending',
+  })
+  inject(calBridge, 253, statustextPayload(6, '[cal] down orientation detected'), 55, 1)
+  assert.equal(last(snapshots)?.sides?.down, 'active')
+  inject(calBridge, 253, statustextPayload(6, '[cal] down side done, rotate to a different side'), 55, 1)
+  assert.equal(last(snapshots)?.sides?.down, 'done')
+  inject(calBridge, 253, statustextPayload(6, '[cal] calibration done: accel'), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'done')
+  assert.equal(last(snapshots)?.verification, 'verified')
+  // The start command was serialized exactly once: no retransmit ever restarts
+  // the calibration on the FC.
+  assert.equal(preflight241().length, 1)
+
+  // A wrong-source STATUSTEXT (different system id) must not touch the session.
+  // Start a fresh session to observe this.
+  const snapshots2: any[] = []
+  const session2 = (calBridge as any).createCalibrationSession({
+    sessionId: 'sess-px4-gyro',
+    requestId: 'px4-gyro',
+    kind: 'gyro',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots2.push(snapshot),
+  })
+  session2.start()
+  const beforeWrongSource = snapshots2.length
+  inject(calBridge, 253, statustextPayload(6, '[cal] calibration done: gyro'), 99, 1)
+  assert.equal(snapshots2.length, beforeWrongSource, 'STATUSTEXT from a non-selected source is ignored')
+  // Cancel sends a single all-zero 241 frame.
+  const before241 = preflight241().length
+  const cancelResult = session2.cancel()
+  assert.equal(cancelResult.ok, true)
+  assert.equal(preflight241().length, before241 + 1)
+  const cancelFrame = preflight241()[preflight241().length - 1]
+  for (let offset = 0; offset <= 24; offset += 4) {
+    assert.equal(framePayload(cancelFrame).readFloatLE(offset), 0, 'cancel params must be all zero')
+  }
+
+  calBridge.destroy()
+  console.log('MAVLink PX4 calibration session wiring checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// ArduPilot interactive accel calibration wiring: inbound COMMAND_LONG(42429)
+// position requests reach the session, and confirmation echoes 42429 to the
+// SELECTED autopilot target (never the FC's GCS-addressed target field).
+// ---------------------------------------------------------------------------
+{
+  function commandLongPayload(command: number, param1: number, targetSystem: number, targetComponent: number): Buffer {
+    const payload = Buffer.alloc(33)
+    payload.writeFloatLE(param1, 0)
+    payload.writeUInt16LE(command, 28)
+    payload[30] = targetSystem
+    payload[31] = targetComponent
+    return payload
+  }
+
+  const apAccelConnection = new FakeConnection()
+  const apAccelBridge = new MavlinkBridge(apAccelConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  // ArduCopter target from system 55, component 1.
+  inject(apAccelBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
+  const snapshots: any[] = []
+  const session = (apAccelBridge as any).createCalibrationSession({
+    sessionId: 'sess-ap-accel',
+    requestId: 'ap-accel-6',
+    kind: 'accel',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+  })
+  assert.notEqual(session, null)
+  session.start()
+
+  const accelcalFrames = () => apAccelConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42429
+  )
+  // FC requests LEVEL (position 1), addressed to the GCS (system 255).
+  inject(apAccelBridge, 76, commandLongPayload(42429, 1, 255, 190), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'waiting_position')
+  assert.equal(last(snapshots)?.requestedPosition, 1)
+
+  // Confirming echoes 42429 back to the SELECTED target (55/1), not 255/190.
+  const confirm = session.confirmPosition(1)
+  assert.equal(confirm.ok, true)
+  assert.equal(accelcalFrames().length, 1)
+  const confirmPayload = framePayload(accelcalFrames()[0])
+  assert.equal(confirmPayload.readFloatLE(0), 1, 'param1 = confirmed position')
+  assert.equal(confirmPayload.readUInt8(30), 55, 'target system must be the selected autopilot')
+  assert.equal(confirmPayload.readUInt8(31), 1, 'target component must be the selected autopilot')
+
+  // A COMMAND_LONG(42429) NOT addressed to this GCS is ignored by the session.
+  inject(apAccelBridge, 76, commandLongPayload(42429, 2, 7, 8), 55, 1)
+  assert.notEqual(last(snapshots)?.requestedPosition, 2, 'wrong-target position request must be ignored')
+
+  // Success sentinel drives a verified terminal snapshot.
+  inject(apAccelBridge, 76, commandLongPayload(42429, 16777215, 255, 190), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'done')
+  assert.equal(last(snapshots)?.verification, 'verified')
+
+  apAccelBridge.destroy()
+  console.log('MAVLink ArduPilot accel calibration wiring checks passed')
+}
+
+// An armed heartbeat from the selected vehicle immediately terminates an
+// in-progress calibration, including when another GCS performed the arming.
+{
+  const positionRequestPayload = (position: number): Buffer => {
+    const payload = Buffer.alloc(33)
+    payload.writeFloatLE(position, 0)
+    payload.writeUInt16LE(42429, 28)
+    payload[30] = 255
+    payload[31] = 190
+    return payload
+  }
+  const armedCalConnection = new FakeConnection()
+  const armedCalBridge = new MavlinkBridge(armedCalConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(armedCalBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
+  const snapshots: any[] = []
+  const session = (armedCalBridge as any).createCalibrationSession({
+    sessionId: 'sess-ap-armed-during-cal',
+    requestId: 'ap-armed-during-cal',
+    kind: 'accel',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+  })
+  assert.notEqual(session, null)
+  session.start()
+
+  // Establish an actionable position-confirmation state before arming.
+  inject(armedCalBridge, 76, positionRequestPayload(1), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'waiting_position')
+  const positionFramesBeforeArm = armedCalConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42429).length
+
+  const armedHeartbeat = heartbeatPayload(3, 2, 0)
+  armedHeartbeat[6] = 0x80
+  inject(armedCalBridge, 0, armedHeartbeat, 55, 1)
+
+  assert.equal(last(snapshots)?.phase, 'failed')
+  assert.equal(last(snapshots)?.failureCode, 'vehicle_armed')
+  assert.equal((armedCalBridge as any).activeCalibration, null)
+  assert.equal(session.confirmPosition(1).ok, false)
+  assert.equal(
+    armedCalConnection.frames.filter((frame) =>
+      frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42429).length,
+    positionFramesBeforeArm,
+    'no position confirmation may be sent after the vehicle arms',
+  )
+
+  armedCalBridge.destroy()
+}
+
+// ---------------------------------------------------------------------------
+// ArduPilot compass calibration wiring: real MAG_CAL_PROGRESS(191) and
+// MAG_CAL_REPORT(192) frames decode and drive the session, and accept sends
+// DO_ACCEPT_MAG_CAL(42425).
+// ---------------------------------------------------------------------------
+{
+  const messagePayload = (message: Parameters<MavLinkProtocolV2['serialize']>[0]): Buffer =>
+    framePayload(new MavLinkProtocolV2(55, 1).serialize(message, 0))
+
+  const magConnection = new FakeConnection()
+  const magBridge = new MavlinkBridge(magConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(magBridge, 0, heartbeatPayload(3, 2, 0), 55, 1)
+
+  const snapshots: any[] = []
+  const session = (magBridge as any).createCalibrationSession({
+    sessionId: 'sess-ap-mag',
+    requestId: 'ap-mag',
+    kind: 'mag',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+  })
+  assert.notEqual(session, null)
+  session.start()
+  assert.equal(magConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42424).length, 1)
+
+  // Real 191 frame -> session running with the expected mask latched.
+  const progress = new ardupilotmega.MagCalProgress()
+  progress.compassId = 0
+  progress.calMask = 0b001
+  progress.calStatus = 2
+  progress.attempt = 1
+  progress.completionPct = 45
+  progress.completionMask = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  inject(magBridge, 191, messagePayload(progress), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'running')
+  assert.equal(last(snapshots)?.expectedMagMask, 0b001)
+  assert.equal(last(snapshots)?.magInstances?.[0]?.pct, 45)
+
+  // Real 192 SUCCESS report (autosave=0) -> awaiting_accept.
+  const report = new common.MagCalReport()
+  report.compassId = 0
+  report.calMask = 0b001
+  report.calStatus = 4
+  report.autosaved = 0
+  report.fitness = 6
+  report.ofsX = 10
+  report.ofsY = -5
+  report.ofsZ = 20
+  inject(magBridge, 192, messagePayload(report), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'awaiting_accept')
+  assert.equal(last(snapshots)?.magInstances?.[0]?.report?.fitness, 6)
+
+  // Accept sends DO_ACCEPT_MAG_CAL(42425).
+  const accept = session.acceptMag()
+  assert.equal(accept.ok, true)
+  assert.equal(magConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 42425).length, 1)
+
+  // An autosaved report finishes the session (verified, reboot required).
+  report.autosaved = 1
+  inject(magBridge, 192, messagePayload(report), 55, 1)
+  assert.equal(last(snapshots)?.phase, 'done')
+  assert.equal(last(snapshots)?.verification, 'verified')
+  assert.equal(last(snapshots)?.rebootRequired, true)
+
+  magBridge.destroy()
+  console.log('MAVLink ArduPilot compass calibration wiring checks passed')
 }

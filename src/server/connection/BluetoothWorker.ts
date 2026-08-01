@@ -1,5 +1,9 @@
 import { EventEmitter } from 'events'
-import { SerialConnection, type SerialWritePriority } from './SerialConnection'
+import {
+  SerialConnection,
+  type SerialWritePriority,
+  type SerialWriteQueueTag,
+} from './SerialConnection'
 import {
   BluetoothConnection,
   BluetoothPortResolutionError,
@@ -32,7 +36,12 @@ export interface BluetoothSerialLink extends EventEmitter {
   readonly connected: boolean
   connect(path: string, baudRate: number, timeoutMs?: number): Promise<void>
   disconnect(timeoutMs?: number): Promise<void>
-  write(data: Buffer, priority?: SerialWritePriority): boolean | void
+  write(
+    data: Buffer,
+    priority?: SerialWritePriority,
+    queueTag?: SerialWriteQueueTag,
+  ): boolean | void
+  cancelQueuedWrites?(queueTag: SerialWriteQueueTag): number
 }
 
 export interface BluetoothWorkerOptions {
@@ -143,9 +152,18 @@ export class BluetoothWorker extends EventEmitter {
     await this.runOpenAttempt(generation, false)
   }
 
-  write(data: Buffer, priority: SerialWritePriority = 'normal'): boolean {
+  write(
+    data: Buffer,
+    priority: SerialWritePriority = 'normal',
+    queueTag?: SerialWriteQueueTag,
+  ): boolean {
     if (!this._transportOpen || !this.conn) return false
-    return this.conn.write(data, priority) !== false
+    return this.conn.write(data, priority, queueTag) !== false
+  }
+
+  cancelQueuedWrites(queueTag: SerialWriteQueueTag): number {
+    if (!this._transportOpen || !this.conn) return 0
+    return this.conn.cancelQueuedWrites?.(queueTag) ?? 0
   }
 
   /**

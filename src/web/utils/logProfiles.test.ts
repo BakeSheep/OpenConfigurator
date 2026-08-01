@@ -4,6 +4,7 @@ import { logSupport } from './logProfiles'
 
 const px4 = buildVehicleIdentity(12, 2)
 const arducopter = buildVehicleIdentity(3, 2)
+const arduplane = buildVehicleIdentity(3, 1)
 const unknown = buildVehicleIdentity(0, 0)
 
 // PX4 profile offers MAVFTP ULog browsing and .ulg analysis.
@@ -24,6 +25,15 @@ assert.equal(apLog.analyze, true)
 assert.equal(apLog.allowDelete, true)
 assert.equal(apLog.deleteScope, 'erase-all')
 assert.equal(apLog.logPath, null)
+
+// Unimplemented ArduPilot classes keep DataFlash browsing/analysis read-only.
+const planeLog = logSupport(arduplane)
+assert.equal(planeLog.format, 'dataflash')
+assert.equal(planeLog.browse, true)
+assert.equal(planeLog.analyze, true)
+assert.equal(planeLog.allowDelete, false)
+assert.equal(planeLog.deleteScope, 'none')
+assert.equal(planeLog.logPath, null)
 
 // Unknown profile offers neither destructive log deletion nor analysis.
 for (const identity of [unknown, null]) {

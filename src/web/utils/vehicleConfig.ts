@@ -81,6 +81,11 @@ const PX4_MOTOR_FUNCTION_BASE = 100
 const MAX_MOTORS = 12
 const MAX_SERVO_OUTPUTS = 16
 
+/** Accept only an explicit, bounded integer motor count from FC parameters. */
+export function normalizeAuthoritativeMotorCount(value: number | null | undefined): number | null {
+  return Number.isInteger(value) && value! >= 1 && value! <= MAX_MOTORS ? value! : null
+}
+
 function px4BusProtocol(params: Map<string, ParamData>, prefix: string): string {
   const values: number[] = []
   for (let timer = 0; timer < 8; timer += 1) {
@@ -153,9 +158,7 @@ function buildPx4View(params: Map<string, ParamData>): FrameConfigView {
   const sysAutostart = params.get('SYS_AUTOSTART')?.value
   const autostartId = Number.isFinite(sysAutostart) ? Math.round(sysAutostart!) : null
   const rotorCountRaw = params.get('CA_ROTOR_COUNT')?.value
-  const motorCount = Number.isFinite(rotorCountRaw)
-    ? Math.min(MAX_MOTORS, Math.max(1, Math.round(rotorCountRaw!)))
-    : null
+  const motorCount = normalizeAuthoritativeMotorCount(rotorCountRaw)
 
   const outputChannels: FrameOutputChannel[] = []
   for (const bus of [

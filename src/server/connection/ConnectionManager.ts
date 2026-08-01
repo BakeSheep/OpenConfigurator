@@ -1,6 +1,10 @@
 import { EventEmitter } from 'events'
 import { performance } from 'node:perf_hooks'
-import { SerialConnection, type SerialWritePriority } from './SerialConnection'
+import {
+  SerialConnection,
+  type SerialWritePriority,
+  type SerialWriteQueueTag,
+} from './SerialConnection'
 import { BluetoothConnection } from './BluetoothConnection'
 import {
   BluetoothWorker,
@@ -15,6 +19,10 @@ const DEFAULT_ACTIVITY_GRACE_MS = 8000
 const DEFAULT_SERIAL_HARD_HEARTBEAT_TIMEOUT_MS = 15000
 const DEFAULT_BLUETOOTH_HARD_HEARTBEAT_TIMEOUT_MS = 30000
 const DEFAULT_HEARTBEAT_CHECK_INTERVAL_MS = 1000
+const DEFAULT_REBOOT_RECONNECT_DELAY_MS = 1000
+const DEFAULT_REBOOT_RECONNECT_GRACE_MS = 45_000
+const DEFAULT_REBOOT_RECONNECT_MAX_ATTEMPTS = 12
+const REBOOT_STALE_HEARTBEAT_GUARD_MS = 750
 const MAX_PRE_TRANSPORT_DATA_BYTES = 256 * 1024
 
 export type ConnectionErrorPhase =
@@ -34,7 +42,12 @@ export interface ConnectionErrorDetail {
 interface ManagedLink extends EventEmitter {
   readonly connected: boolean
   disconnect(timeoutMs?: number): Promise<void>
-  write(data: Buffer, priority?: SerialWritePriority): boolean | void
+  write(
+    data: Buffer,
+    priority?: SerialWritePriority,
+    queueTag?: SerialWriteQueueTag,
+  ): boolean | void
+  cancelQueuedWrites?(queueTag: SerialWriteQueueTag): number
 }
 
 /**
@@ -88,6 +101,9 @@ export interface ConnectionManagerOptions {
   activityGraceMs?: number
   serialHardHeartbeatTimeoutMs?: number
   bluetoothHardHeartbeatTimeoutMs?: number
+  rebootReconnectDelayMs?: number
+  rebootReconnectGraceMs?: number
+  rebootReconnectMaxAttempts?: number
 }
 
 interface LinkHandlers {
@@ -138,6 +154,12 @@ export class ConnectionManager extends EventEmitter {
   private _reconnect: ReconnectProgress | null = null
   private _reconnectTerminalReason: ReconnectTerminalReason | null = null
   private rawSession: RawSessionState | null = null
+  private expectedRebootUntil = 0
+  private expectedRebootStartedAt = 0
+  private rebootInterruptionObserved = false
+  private rebootReconnectAttempt = 0
+  private rebootReconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private rebootReconnectToken = 0
 
   private readonly serialFactory: () => ManagedSerialLink
   private readonly bluetoothFactory: (config: ConnectionConfig) => ManagedBluetoothLink
@@ -153,6 +175,9 @@ export class ConnectionManager extends EventEmitter {
   private readonly activityGraceMs: number
   private readonly serialHardHeartbeatTimeoutMs: number
   private readonly bluetoothHardHeartbeatTimeoutMs: number
+  private readonly rebootReconnectDelayMs: number
+  private readonly rebootReconnectGraceMs: number
+  private readonly rebootReconnectMaxAttempts: number
 
   constructor(options: ConnectionManagerOptions = {}) {
     super()
@@ -175,6 +200,12 @@ export class ConnectionManager extends EventEmitter {
       ?? DEFAULT_SERIAL_HARD_HEARTBEAT_TIMEOUT_MS
     this.bluetoothHardHeartbeatTimeoutMs = options.bluetoothHardHeartbeatTimeoutMs
       ?? DEFAULT_BLUETOOTH_HARD_HEARTBEAT_TIMEOUT_MS
+    this.rebootReconnectDelayMs = options.rebootReconnectDelayMs
+      ?? DEFAULT_REBOOT_RECONNECT_DELAY_MS
+    this.rebootReconnectGraceMs = options.rebootReconnectGraceMs
+      ?? DEFAULT_REBOOT_RECONNECT_GRACE_MS
+    this.rebootReconnectMaxAttempts = options.rebootReconnectMaxAttempts
+      ?? DEFAULT_REBOOT_RECONNECT_MAX_ATTEMPTS
   }
 
   get status() {
@@ -221,7 +252,8 @@ export class ConnectionManager extends EventEmitter {
     return { serial, bluetooth }
   }
 
-  async connect(config: ConnectionConfig): Promise<void> {
+  async connect(config: ConnectionConfig, preserveExpectedReboot = false): Promise<void> {
+    if (!preserveExpectedReboot) this.cancelExpectedVehicleReboot()
     const requestId = ++this.nextConnectRequestId
     return this.enqueueOperation(async () => {
       if (this.isConnectRequestCancelled(requestId)) {
@@ -306,6 +338,7 @@ export class ConnectionManager extends EventEmitter {
   }
 
   async disconnect(): Promise<void> {
+    this.cancelExpectedVehicleReboot()
     // Cancellation must reach a provisional SerialConnection/BluetoothWorker
     // immediately. Waiting behind connect() in pendingOp makes their explicit
     // cancellation support unreachable when native open/discovery stalls.
@@ -351,9 +384,19 @@ export class ConnectionManager extends EventEmitter {
     })
   }
 
-  write(data: Buffer, priority: SerialWritePriority = 'normal'): boolean {
+  write(
+    data: Buffer,
+    priority: SerialWritePriority = 'normal',
+    queueTag?: SerialWriteQueueTag,
+  ): boolean {
     if (!this.link || !this._transportOpen || this._status !== 'connected') return false
-    return this.link.write(data, priority) !== false
+    return this.link.write(data, priority, queueTag) !== false
+  }
+
+  /** Cancel only frames still waiting in the active link's write queue. */
+  cancelQueuedWrites(queueTag: SerialWriteQueueTag): number {
+    if (!this.link || !this._transportOpen || this._status !== 'connected') return 0
+    return this.link.cancelQueuedWrites?.(queueTag) ?? 0
   }
 
   /** True while an exclusive raw ESC session holds the serial link. */
@@ -469,13 +512,51 @@ export class ConnectionManager extends EventEmitter {
     this.lastHeartbeat = now
     this.lastMavlinkActivity = now
     this.heartbeatTimeoutFired = false
+    const staleRebootHeartbeat = this.isExpectedVehicleReboot()
+      && !this.rebootInterruptionObserved
+      && now - this.expectedRebootStartedAt < REBOOT_STALE_HEARTBEAT_GUARD_MS
+    if (
+      !this.isExpectedVehicleReboot()
+      || this.rebootInterruptionObserved
+      || now - this.expectedRebootStartedAt >= REBOOT_STALE_HEARTBEAT_GUARD_MS
+    ) {
+      this.cancelExpectedVehicleReboot()
+    }
     if (this._lastError?.phase === 'heartbeat' || this._lastError?.phase === 'reconnect') {
       this.setLastError(null)
     }
-    this.setVehicleReady(true)
-    if (this.linkKind === 'bluetooth') {
-      ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
+    // A final heartbeat can arrive after the reboot command has already been
+    // queued. Keep readiness down during the short guard window so that stale
+    // pre-reboot traffic cannot make the UI look live again prematurely.
+    if (!staleRebootHeartbeat) {
+      this.setVehicleReady(true)
+      if (this.linkKind === 'bluetooth') {
+        ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
+      }
     }
+  }
+
+  /**
+   * Mark a deliberate FC reboot so a transient USB/serial disappearance is
+   * recovered without user interaction. The window is finite and an explicit
+   * disconnect or manual connect cancels it.
+   */
+  expectVehicleReboot(graceMs = this.rebootReconnectGraceMs): boolean {
+    if (!this.link || !this._config || !this._transportOpen || this._status !== 'connected') {
+      return false
+    }
+    this.cancelExpectedVehicleReboot()
+    const now = this.monotonicNow()
+    this.expectedRebootStartedAt = now
+    this.expectedRebootUntil = now + Math.max(1, graceMs)
+    this.rebootInterruptionObserved = false
+    this.rebootReconnectAttempt = 0
+    this.rebootReconnectToken += 1
+    // The reboot command itself is sufficient to invalidate physical vehicle
+    // readiness even if USB keeps the COM port open throughout the restart.
+    // A fresh heartbeat after the stale-heartbeat guard raises it again.
+    this.setVehicleReady(false)
+    return true
   }
 
   /** Called for every valid frame from the selected autopilot. */
@@ -701,6 +782,13 @@ export class ConnectionManager extends EventEmitter {
     error?: Error,
   ): void {
     if (this.scheduledCleanupGenerations.has(generation)) return
+    const rebootToken = this.rebootReconnectToken
+    const rebootConfig = this.isExpectedVehicleReboot()
+      && this.linkKind === 'serial'
+      && this._config
+      ? { ...this._config }
+      : null
+    if (rebootConfig) this.rebootInterruptionObserved = true
     this.scheduledCleanupGenerations.add(generation)
     if (error) {
       this.setLastError(this.errorDetail('runtime', error.message, error))
@@ -719,6 +807,8 @@ export class ConnectionManager extends EventEmitter {
       } finally {
         this.scheduledCleanupGenerations.delete(generation)
       }
+    }).then(() => {
+      if (rebootConfig) this.scheduleVehicleRebootReconnect(rebootConfig, rebootToken)
     }).catch((queueError) => {
       this.scheduledCleanupGenerations.delete(generation)
       this.emit('connectionError', this.toError(queueError))
@@ -807,6 +897,22 @@ export class ConnectionManager extends EventEmitter {
     if (!softExpiredWithoutActivity && !hardExpired) return
     if (this.heartbeatTimeoutFired) return
 
+    if (this.isExpectedVehicleReboot() && this.link) {
+      this.heartbeatTimeoutFired = true
+      this.rebootInterruptionObserved = true
+      this.setVehicleReady(false)
+      if (bluetooth) {
+        ;(this.link as ManagedBluetoothLink).forceReconnect('飞控重启后等待重新连接')
+      } else {
+        this.scheduleSpontaneousCleanup(
+          this.link,
+          this.connectionGeneration,
+          'disconnected',
+        )
+      }
+      return
+    }
+
     this.heartbeatTimeoutFired = true
     this.setVehicleReady(false)
     const reason = hardExpired
@@ -841,6 +947,51 @@ export class ConnectionManager extends EventEmitter {
     if (!this.heartbeatTimer) return
     this.clearIntervalFn(this.heartbeatTimer)
     this.heartbeatTimer = null
+  }
+
+  private isExpectedVehicleReboot(): boolean {
+    return this.expectedRebootUntil > this.monotonicNow()
+  }
+
+  private scheduleVehicleRebootReconnect(config: ConnectionConfig, token: number): void {
+    if (token !== this.rebootReconnectToken || !this.isExpectedVehicleReboot()) return
+    if (this.rebootReconnectTimer) return
+    if (this.rebootReconnectAttempt >= this.rebootReconnectMaxAttempts) {
+      this.cancelExpectedVehicleReboot()
+      return
+    }
+    this.rebootReconnectAttempt += 1
+    const delayMs = this.rebootReconnectDelayMs
+    this._reconnect = {
+      attempt: this.rebootReconnectAttempt,
+      maxAttempts: this.rebootReconnectMaxAttempts,
+      delayMs,
+      ...(this._lastError?.message ? { lastError: this._lastError.message } : {}),
+    }
+    this.setStatus('reconnecting')
+    this.rebootReconnectTimer = setTimeout(() => {
+      this.rebootReconnectTimer = null
+      if (token !== this.rebootReconnectToken || !this.isExpectedVehicleReboot()) return
+      void this.connect(config, true).catch(() => {
+        if (token === this.rebootReconnectToken && this.isExpectedVehicleReboot()) {
+          this.scheduleVehicleRebootReconnect(config, token)
+        }
+      })
+    }, delayMs)
+    this.rebootReconnectTimer.unref?.()
+  }
+
+  private cancelExpectedVehicleReboot(): void {
+    if (this.rebootReconnectTimer) {
+      clearTimeout(this.rebootReconnectTimer)
+      this.rebootReconnectTimer = null
+    }
+    this.expectedRebootUntil = 0
+    this.expectedRebootStartedAt = 0
+    this.rebootInterruptionObserved = false
+    this.rebootReconnectAttempt = 0
+    this.rebootReconnectToken += 1
+    this._reconnect = null
   }
 
   private prepareForTeardown(status: ConnectionStatus): void {

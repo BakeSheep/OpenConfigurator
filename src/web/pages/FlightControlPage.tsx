@@ -6,6 +6,11 @@ import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import {
+  latestTargetSessionBoundary,
+  PREARM_FAILURE_TTL_MS,
+  resolveRecentPrearmFailure,
+} from '../utils/prearmStatus'
 
 export default function FlightControlPage() {
   const send = sendClientMessage
@@ -28,6 +33,7 @@ export default function FlightControlPage() {
   const connected = vehicleReady && canControl
   const [takeoffAltitude, setTakeoffAltitude] = useState(2.5)
   const [armConfirmation, setArmConfirmation] = useState(false)
+  const [, refreshPrearmExpiry] = useState(0)
   const confirmationTimer = useRef<number | null>(null)
   const armed = vehicle?.armed ?? false
 
@@ -69,20 +75,35 @@ export default function FlightControlPage() {
     send({ type: 'set_flight_mode', data: { modeId } })
 
   const hasGpsPosition = (gps?.fix_type ?? 0) >= 3
-  // ArduPilot broadcasts PreArm failures via STATUSTEXT ("PreArm: ..."). Treat
-  // a recent, unresolved PreArm failure as authoritative and blocking - a
-  // UI-only readiness heuristic must never claim the FC is ready when the FC
-  // itself reports a PreArm failure.
-  const recentPrearmFailure = statusLogs.find((entry) => /pre-?arm/i.test(entry.text)
-    && !/pre-?arm (?:good|checks (?:passed|ok)|ok)/i.test(entry.text))
+  // Status logs intentionally survive reconnects. Bound PreArm feedback to the
+  // latest selected target, then let the newest status resolve older failures.
+  const prearmSessionBoundary = latestTargetSessionBoundary(statusLogs)
+  const recentPrearmFailure = resolveRecentPrearmFailure(statusLogs, {
+    now: Date.now(),
+    sessionBoundary: prearmSessionBoundary,
+  })
+  useEffect(() => {
+    if (!recentPrearmFailure) return
+    const remainingMs = recentPrearmFailure.time + PREARM_FAILURE_TTL_MS - Date.now()
+    if (remainingMs <= 0) return
+    const expiryTimer = window.setTimeout(
+      () => refreshPrearmExpiry((value) => value + 1),
+      remainingMs + 1,
+    )
+    return () => window.clearTimeout(expiryTimer)
+  }, [prearmSessionBoundary?.id, prearmSessionBoundary?.time, recentPrearmFailure?.id, recentPrearmFailure?.time])
   const hasValidOpticalFlow = sensorHealth.opticalFlow === 'ok'
     && !isSensorStale('opticalFlow')
     && (opticalFlow?.quality ?? 0) > 0
+  const rangefinderHasDeclaredRange = distanceSensor !== null
+    && distanceSensor.max_distance > distanceSensor.min_distance
   const hasValidRangefinder = sensorHealth.rangefinder === 'ok'
     && !isSensorStale('distanceSensor')
     && distanceSensor !== null
-    && distanceSensor.current_distance >= distanceSensor.min_distance
-    && distanceSensor.current_distance <= distanceSensor.max_distance
+    && (rangefinderHasDeclaredRange
+      ? distanceSensor.current_distance >= distanceSensor.min_distance
+        && distanceSensor.current_distance <= distanceSensor.max_distance
+      : distanceSensor.current_distance > 0)
     && distanceSensor.signal_quality !== 1
   const hasFlowPosition = hasValidOpticalFlow && hasValidRangefinder
   const sysStatusFresh = !isTelemetryStale('sysStatus')

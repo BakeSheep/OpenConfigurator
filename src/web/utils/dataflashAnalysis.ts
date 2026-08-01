@@ -28,6 +28,7 @@ const FMT_MSG_ID = 0x80
 // FMT wire layout: 3-byte frame header + Type(1) Length(1) Name(4) Format(16)
 // Columns(64) = 89 bytes total.
 const FMT_MSG_LENGTH = 89
+const MIN_FRAME_LENGTH = 3
 
 const MAX_EVENTS = 500
 const ENVELOPE_BUCKET_SEC = 0.05
@@ -106,9 +107,17 @@ function readField(view: DataView, offset: number, code: string, bytes: Uint8Arr
   }
 }
 
-function parseFmtPayload(view: DataView, bytes: Uint8Array, offset: number): MessageFormat {
+function parseFmtPayload(
+  view: DataView,
+  bytes: Uint8Array,
+  offset: number,
+): MessageFormat | null {
   const type = view.getUint8(offset)
   const length = view.getUint8(offset + 1)
+  // The declared length includes the three-byte frame header. Keeping an
+  // invalid zero-length definition in the format table would make the main
+  // loop add zero forever when a matching data-frame header is encountered.
+  if (length < MIN_FRAME_LENGTH) return null
   const name = readString(bytes, offset + 2, 4)
   const format = readString(bytes, offset + 6, 16)
   const columns = readString(bytes, offset + 22, 64).split(',').filter(Boolean)
@@ -500,14 +509,25 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
     if (msgId === FMT_MSG_ID) {
       if (offset + FMT_MSG_LENGTH > total) break // truncated trailing frame
       const fmt = parseFmtPayload(view, bytes, offset + 3)
-      formats.set(fmt.type, fmt)
-      if (fmt.decodable && fmt.name in handlers) handledIds.set(fmt.type, fmt)
+      if (fmt) {
+        formats.set(fmt.type, fmt)
+        if (fmt.decodable && fmt.name in handlers) handledIds.set(fmt.type, fmt)
+      }
       offset += FMT_MSG_LENGTH
       continue
     }
     const fmt = formats.get(msgId)
     if (!fmt) {
       // Data before its FMT definition (or corruption): resync byte-wise.
+      offset++
+      resyncBytes++
+      continue
+    }
+    // Defensive progress guard: parseFmtPayload currently rejects these
+    // definitions, but never trust a format-table value to advance by zero.
+    if (fmt.length < MIN_FRAME_LENGTH) {
+      formats.delete(msgId)
+      handledIds.delete(msgId)
       offset++
       resyncBytes++
       continue

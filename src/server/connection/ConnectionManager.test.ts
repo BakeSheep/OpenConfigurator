@@ -322,6 +322,84 @@ test('valid activity grants only soft grace and cannot suppress the hard heartbe
   assert.equal(manager.status, 'disconnected')
 })
 
+test('expected reboot lowers readiness immediately and rejects the final stale heartbeat', async () => {
+  let now = 100
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({
+    serialFactory: () => link,
+    monotonicNow: () => now,
+  })
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+
+  assert.equal(manager.expectVehicleReboot(), true)
+  assert.equal(manager.vehicleReady, false, 'the reboot command invalidates physical readiness')
+
+  now += 100
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, false, 'a queued pre-reboot heartbeat must stay offline')
+
+  now += 800
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true, 'a later heartbeat restores readiness')
+  await manager.disconnect()
+})
+
+test('an expected flight-controller reboot automatically reopens serial and waits for heartbeat', async () => {
+  const first = new FakeSerialLink()
+  const second = new FakeSerialLink()
+  const links = [first, second]
+  const manager = new ConnectionManager({
+    serialFactory: () => links.shift()!,
+    rebootReconnectDelayMs: 1,
+    rebootReconnectGraceMs: 500,
+  })
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.expectVehicleReboot(), true)
+  // A final heartbeat from the pre-reboot process must not cancel recovery.
+  manager.notifyAutopilotHeartbeat()
+
+  first.emit('disconnected')
+  for (let i = 0; i < 30 && second.connectCalls === 0; i++) await delay(2)
+
+  assert.equal(first.disconnectCalls, 1)
+  assert.equal(second.connectCalls, 1)
+  assert.equal(manager.status, 'connected')
+  assert.equal(manager.transportOpen, true)
+  assert.equal(manager.vehicleReady, false, 'transport reopen alone must not prove vehicle readiness')
+
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+  assert.equal(manager.reconnect, null)
+  await manager.disconnect()
+})
+
+test('explicit disconnect cancels an expected reboot reconnect', async () => {
+  const first = new FakeSerialLink()
+  const second = new FakeSerialLink()
+  const links = [first, second]
+  const manager = new ConnectionManager({
+    serialFactory: () => links.shift()!,
+    rebootReconnectDelayMs: 20,
+    rebootReconnectGraceMs: 500,
+  })
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  manager.expectVehicleReboot()
+  first.emit('disconnected')
+  await delay(1)
+  await manager.disconnect()
+  await delay(30)
+
+  assert.equal(second.connectCalls, 0)
+  assert.equal(manager.status, 'disconnected')
+})
+
 test('Bluetooth hard deadline clears readiness and requests worker reconnect', async () => {
   let now = 0
   let heartbeatCheck: () => void = () => assert.fail('heartbeat monitor was not installed')

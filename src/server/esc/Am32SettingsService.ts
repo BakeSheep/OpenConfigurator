@@ -8,7 +8,7 @@ import {
   type EscSettingsSnapshot,
   type EscSettingsValues,
 } from '../../shared/esc'
-import { FourWayClient, parseDeviceInitInfo } from './EscDetector'
+import { parseDeviceInitInfo, type FourWayClient } from './EscDetector'
 
 interface Am32McuProfile {
   name: string
@@ -27,12 +27,14 @@ export interface Am32ReadResult {
   raw: Uint8Array
 }
 
+type Am32FourWayClient = Pick<FourWayClient, 'initFlash' | 'read' | 'write'>
+
 /**
  * AM32 settings-only EEPROM access over the official 4-way flow.
  * Firmware erase/write commands are intentionally not exposed by this class.
  */
 export class Am32SettingsService {
-  constructor(private readonly fourWay: FourWayClient) {}
+  constructor(private readonly fourWay: Am32FourWayClient) {}
 
   async read(
     sessionId: string,
@@ -101,11 +103,15 @@ export class Am32SettingsService {
   async write(
     sessionId: string,
     device: EscDeviceInfo,
-    original: Uint8Array,
+    _original: Uint8Array,
     values: EscSettingsValues,
     signal: AbortSignal,
   ): Promise<Am32ReadResult> {
-    if (!device.writable || device.mcuSignature === null) {
+    if (
+      !device.writable
+      || device.firmwareKind !== 'am32'
+      || device.mcuSignature === null
+    ) {
       throw new EscError(
         'unsupported_signature_or_layout',
         `ESC #${device.index + 1} 不允许写入`,
@@ -121,8 +127,56 @@ export class Am32SettingsService {
       )
     }
 
-    await this.fourWay.initFlash(device.index, signal)
-    const encoded = encodeAm32Eeprom(original, values)
+    // DeviceInitFlash selects the physical 4-way channel. Re-check the
+    // identity on every write so a reconnect, channel swap, or power cycle
+    // cannot redirect a cached settings snapshot to another ESC.
+    const init = await this.fourWay.initFlash(device.index, signal)
+    const identity = parseDeviceInitInfo(init)
+    if (
+      identity.signature !== device.mcuSignature
+      || identity.interfaceMode !== device.interfaceMode
+    ) {
+      throw new EscError(
+        'target_mismatch',
+        `ESC #${device.index + 1} 身份已变化，请重新扫描并读取设置`,
+        { escIndex: device.index },
+      )
+    }
+
+    // Preserve unknown bytes from the device's current EEPROM contents, not
+    // from the potentially stale snapshot supplied by the client.
+    const fresh = (await this.fourWay.read(
+      profile.eepromAddress,
+      AM32_LAYOUT_SIZE,
+      signal,
+    )).params
+    if (fresh.length !== AM32_LAYOUT_SIZE) {
+      throw new EscError(
+        'validation_failed',
+        `ESC #${device.index + 1} 参数区长度异常：${fresh.length}`,
+        { escIndex: device.index },
+      )
+    }
+    const freshLayoutRevision = fresh[0x01]
+    if (!isSupportedAm32Layout(freshLayoutRevision)) {
+      throw new EscError(
+        'unsupported_signature_or_layout',
+        `ESC #${device.index + 1} 的 AM32 EEPROM 布局版本 ${freshLayoutRevision} 不受支持`,
+        { escIndex: device.index },
+      )
+    }
+    if (
+      device.layoutRevision === null
+      || freshLayoutRevision !== device.layoutRevision
+    ) {
+      throw new EscError(
+        'target_mismatch',
+        `ESC #${device.index + 1} 的 AM32 EEPROM 布局已变化，请重新读取设置`,
+        { escIndex: device.index },
+      )
+    }
+
+    const encoded = encodeAm32Eeprom(fresh, values)
     await this.fourWay.write(profile.eepromAddress, encoded, signal)
     const verified = (await this.fourWay.read(
       profile.eepromAddress,

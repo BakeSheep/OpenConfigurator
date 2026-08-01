@@ -241,6 +241,33 @@ function buildLog(): Buffer {
   assert.ok(dataset.modeSegments.length >= 1)
 }
 
+// Invalid FMT lengths shorter than the three-byte frame header are ignored.
+// A matching frame immediately afterwards used to advance by zero forever.
+{
+  const invalidFmt = fmtFrame({
+    type: 99,
+    name: 'BAD',
+    format: 'B',
+    columns: ['Value'],
+  })
+  invalidFmt[4] = 0
+  const danglingInvalidFrame = Buffer.from([FRAME_HEAD_0, FRAME_HEAD_1, 99])
+  const validMessage = 'ArduCopter V4.7.0 (length-guard)'
+  const log = Buffer.concat([
+    invalidFmt,
+    danglingInvalidFrame,
+    fmtFrame(MSG),
+    dataFrame(MSG, { TimeUS: 1_000_000, Message: validMessage }),
+  ])
+
+  const dataset = parseDataflashLog(toArrayBuffer(log))
+  assert.equal(dataset.overview.firmware, validMessage)
+  assert.ok(
+    dataset.overview.droppedMessages >= danglingInvalidFrame.length,
+    'invalid data frame is resynchronized byte-wise',
+  )
+}
+
 // GPS epoch reference: week 0, ms 0 minus the leap-second offset.
 assert.equal(gpsWeekToUtcMs(0, 0), 315_964_800_000 - 18_000)
 

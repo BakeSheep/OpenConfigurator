@@ -4,9 +4,14 @@ import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
+import {
+  escModeAllowedForProfile,
+  passthroughParamWriteError,
+  type EscConnectionMode,
+} from '../../utils/escConnectionPolicy'
 import Icon from '../ui/Icon'
 
-type PanelMode = 'ardupilot_passthrough' | 'px4_serial_control' | 'direct'
+type PanelMode = EscConnectionMode
 
 interface PassthroughBackup {
   paramId: string
@@ -38,7 +43,8 @@ function loadBackup(paramId: string): PassthroughBackup | null {
 /** ESC session connection and passthrough-preflight panel. */
 export default function EscConnectPanel() {
   const session = useEscStore((state) => state.session)
-  const family = useTelemetryStore((state) => state.vehicleIdentity?.family ?? 'unknown')
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const family = vehicleIdentity?.family ?? 'unknown'
   const linkType = useConnectionStore((state) => state.type)
   const port = useConnectionStore((state) => state.port)
   const baudRate = useConnectionStore((state) => state.baudRate)
@@ -48,6 +54,7 @@ export default function EscConnectPanel() {
   const clientId = useConnectionStore((state) => state.clientId)
   const params = useParameterStore((state) => state.params)
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
+  const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
 
   const defaultMode: PanelMode = family === 'px4' ? 'px4_serial_control' : 'ardupilot_passthrough'
   const [mode, setMode] = useState<PanelMode>(defaultMode)
@@ -73,6 +80,7 @@ export default function EscConnectPanel() {
   const ardupilotReady = blhAuto?.value === 1 || (blhMask?.value != null && blhMask.value > 0)
   const px4Ready = passthruEn?.value === 1
   const directReady = transportOpen && linkType === 'serial' && baudRate === 19200
+  const profileAllowsMode = escModeAllowedForProfile(vehicleIdentity, effectiveMode)
   const setupParam = effectiveMode === 'ardupilot_passthrough'
     ? blhAuto
     : effectiveMode === 'px4_serial_control'
@@ -108,8 +116,25 @@ export default function EscConnectPanel() {
     setPendingWrite(null)
   }, [lastWriteResult, pendingWrite, setupParamId])
 
+  useEffect(() => {
+    const message = passthroughParamWriteError(
+      pendingWrite?.requestId ?? null,
+      lastOperationError,
+    )
+    if (message === null) return
+    setWriteMessage(`写入失败：${message}`)
+    setPendingWrite(null)
+  }, [lastOperationError, pendingWrite])
+
   const togglePassthrough = () => {
-    if (!setupParam || !vehicleReady || !canControl || active || pendingWrite) return
+    if (
+      !setupParam
+      || !vehicleReady
+      || !canControl
+      || !profileAllowsMode
+      || active
+      || pendingWrite
+    ) return
     const restoring = setupEnabled
     let restorePoint = backup
     if (!restoring && !restorePoint) {
@@ -155,6 +180,7 @@ export default function EscConnectPanel() {
     && !busy
     && canControl
     && !ardupilotBlocked
+    && escModeAllowedForProfile(vehicleIdentity, mode)
     && (mode === 'direct' ? directReady : vehicleReady)
     && (mode === 'ardupilot_passthrough' ? ardupilotReady && dshotReady : true)
     && (mode === 'px4_serial_control' ? px4Ready : true)
@@ -232,7 +258,12 @@ export default function EscConnectPanel() {
                   role="switch"
                   aria-checked={setupEnabled}
                   aria-label={setupEnabled ? '关闭电调直通并恢复原参数' : '开启电调直通'}
-                  disabled={!setupParam || !vehicleReady || !canControl || active || pendingWrite !== null}
+                  disabled={!setupParam
+                    || !vehicleReady
+                    || !canControl
+                    || !profileAllowsMode
+                    || active
+                    || pendingWrite !== null}
                   onClick={togglePassthrough}
                 >
                   <span />
@@ -241,6 +272,9 @@ export default function EscConnectPanel() {
             )}
 
             {!canControl && !active && <p className="mc-esc-warning">需要先获取飞控控制权。</p>}
+            {effectiveMode !== 'direct' && !profileAllowsMode && !active && (
+              <p className="mc-esc-warning">当前飞控类型不支持该 ESC 直通写操作。</p>
+            )}
 
             {active ? (
               <div className="mc-esc-session-row">

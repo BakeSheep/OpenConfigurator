@@ -16,7 +16,7 @@ import {
 import type { ClientMessage, ServerMessage } from '../../shared/types'
 import type { ConnectionManager } from '../connection/ConnectionManager'
 import type { MavlinkBridge } from '../mavlink/MavlinkBridge'
-import type { AutopilotFamily } from '../../shared/vehicleProfiles'
+import { vehicleCapabilities, type VehicleIdentity } from '../../shared/vehicleProfiles'
 import { ArduPilotRawTransport } from './ArduPilotRawTransport'
 import type { EscByteTransport, EscTransportTarget } from './EscByteTransport'
 import { detectEscs, FourWayClient, MspClient } from './EscDetector'
@@ -30,8 +30,8 @@ export interface EscServiceOptions {
   emit: (message: ServerMessage) => void
   /** Send owner credentials without broadcasting them to observer clients. */
   emitToClient?: (clientId: string, message: ServerMessage) => void
-  /** Server-authoritative family from the selected HEARTBEAT identity. */
-  getVehicleFamily?: () => AutopilotFamily
+  /** Server-authoritative selected HEARTBEAT identity. */
+  getVehicleIdentity?: () => VehicleIdentity | null
   /** Latest server-validated vehicle parameter, or null when not synchronized. */
   getParameterValue?: (id: string) => number | null
   pinController: (ownerClientId: string, sessionId: string) => void
@@ -188,7 +188,8 @@ export class EscService {
     clientId: string,
     message: Extract<EscClientMessage, { type: 'esc_session_start' }>,
   ): Promise<void> {
-    const family = this.options.getVehicleFamily?.() ?? 'unknown'
+    const identity = this.options.getVehicleIdentity?.() ?? null
+    const family = identity?.family ?? 'unknown'
     if (message.data.mode === 'direct') {
       const connection = this.options.connManager.config
       if (this.options.connManager.status !== 'connected' || connection?.type !== 'serial') {
@@ -198,8 +199,11 @@ export class EscService {
         throw new EscError('precondition_failed', 'USB 直通连接必须使用 19200 波特率')
       }
     }
-    if (message.data.mode === 'ardupilot_passthrough' && family !== 'ardupilot') {
-      throw new EscError('unsupported_vehicle_profile', '仅 ArduPilot 飞控可使用 ArduPilot ESC 直通')
+    if (
+      message.data.mode === 'ardupilot_passthrough'
+      && (family !== 'ardupilot' || !vehicleCapabilities(identity).writeOperations)
+    ) {
+      throw new EscError('unsupported_vehicle_profile', '仅已适配写操作的 ArduCopter 可使用 ArduPilot ESC 直通')
     }
     if (message.data.mode === 'px4_serial_control' && family !== 'px4') {
       throw new EscError('unsupported_vehicle_profile', '仅 PX4 飞控可使用 SERIAL_CONTROL ESC 直通')
