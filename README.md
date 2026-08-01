@@ -5,16 +5,16 @@
 </p>
 
 <p align="center">
-  面向 PX4 与 ArduPilot 的本地优先 Web 地面站，在浏览器中完成连接、监控、参数配置、调参与基础飞行操作。
+  面向 PX4 与 ArduPilot 的本地优先桌面与 Web 地面站，在 Windows 桌面端或浏览器中完成连接、监控、参数配置、调参与基础飞行操作。
 </p>
 
 <p align="center">
   <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线预览</b></a> ·
   <a href="README.en.md">English</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
-  <a href="docs/DEPLOYMENT.md">部署</a> ·
+  <a href="CHANGELOG.md">变更记录</a> ·
   <a href="CONTRIBUTING.md">参与贡献</a> ·
-  <a href="SECURITY.md">安全策略</a>
+  <a href="THIRD_PARTY_NOTICES.md">第三方说明</a>
 </p>
 
 > [!TIP]
@@ -29,7 +29,7 @@
 
 ## 项目简介
 
-React 单页应用通过 REST 与单一 WebSocket 连接本机 Node.js 服务，服务通过 USB 串口或 Bluetooth SPP 与飞控交换 MAVLink v1/v2 数据。服务默认只监听 `127.0.0.1`；远程访问必须显式启用鉴权与 Origin 白名单。
+OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Electron 桌面壳组成。浏览器或桌面端通过 REST 与单一 WebSocket 连接服务，服务通过 USB 串口或 Bluetooth SPP 与飞控交换 MAVLink v1/v2 数据。服务默认只监听 `127.0.0.1`；浏览器远程访问必须显式启用鉴权与 Origin 白名单，桌面版始终使用本机随机端口。
 
 OpenConfigurator 根据 HEARTBEAT 自动识别 PX4 与 ArduPilot。飞控差异由 vehicle profile 隔离，未知或尚未适配的机型默认只读，避免把另一套飞控的模式、参数或命令写入设备。
 
@@ -74,6 +74,10 @@ ArduCopter 4.7 是当前 ArduPilot 实机验收目标。ArduPlane、Rover、Sub 
 
 软件支持不等于具体飞控、ESC 和固件组合已经通过实机验证。使用前请核对 [ESC 参数兼容性矩阵](docs/ESC-COMPATIBILITY.md)；BLHeli_S、Bluejay、未知 signature 或未知 layout 不开放参数写入。
 
+### 桌面运行
+
+Electron 桌面壳复用同一套 React 前端与 Node.js 服务，当前提供 Windows x64 免安装 portable 预发布包。桌面版不会读取可能扩大监听范围的远程部署环境变量，也不要求最终用户另外安装 Node.js 或 npm。
+
 ## 界面
 
 项目包含四个一级工作区：
@@ -97,9 +101,9 @@ ArduCopter 4.7 是当前 ArduPilot 实机验收目标。ArduPlane、Rover、Sub 
 
 ## 快速开始
 
-环境要求：
+开发和构建环境要求：
 
-- Node.js `^20.19.0` 或 `>=22.12.0`
+- Node.js `>=22.12.0`
 - npm
 - 推荐 Chrome / Edge 89+；Web Serial 设备选择器仅能在 HTTPS 或 localhost 使用
 
@@ -122,6 +126,19 @@ npm start
 
 打开 <http://localhost:3000>。只查看界面时可运行 `npm run dev:web`，然后访问 <http://localhost:5173/?demo=1>（与在线预览相同的合成数据演示）。
 
+### Windows 桌面预发布版
+
+桌面包内置 Electron/Node.js 运行时，最终用户无需安装 Node.js 或 npm。当前桌面预发布版本为 `1.0.0-beta.1`，仅构建 Windows x64 免安装 portable EXE：
+
+```bash
+npm ci
+npm run dist:win
+```
+
+产物位于 `release/`，文件名以 `-portable.exe` 结尾。仅生成解包目录用于快速验证时运行 `npm run dist:win:dir`；开发环境启动桌面窗口可运行 `npm run desktop`。
+
+桌面版只在随机分配的 `127.0.0.1` 端口启动内置服务，不读取会扩大监听范围的远程部署环境变量。正式发布前仍需完成目标 Windows 版本、USB/蓝牙串口和飞控硬件验证，并建议对 EXE 进行代码签名。
+
 | 命令 | 用途 |
 |---|---|
 | `npm run dev` | 同时启动前端和后端开发服务 |
@@ -130,25 +147,30 @@ npm start
 | `npm run typecheck` | 严格 TypeScript 类型检查 |
 | `npm run test:server` | 运行全部硬件无关回归测试 |
 | `npm run test:protocol` | 运行 MAVLink 与 ESC 协议专项测试 |
+| `npm run test:desktop` | 启动解包桌面版并验证 React、脚本和样式实际加载 |
 | `npm run build` | 类型检查并生成生产前端 |
+| `npm run build:desktop` | 构建生产前端与 Electron 主进程 |
+| `npm run desktop` | 构建并启动 Electron 桌面开发实例 |
+| `npm run dist:win` | 生成 Windows x64 portable EXE |
 | `npm start` | 启动生产服务 |
 
 ## 架构
 
 ```text
-React SPA
-   │ REST + WebSocket
-   ▼
+Browser / Electron + React SPA
+             │ REST + WebSocket
+             ▼
 Express / ws ── validation / controller lease
-   │
-   ├─ MAVLink bridge ── PX4 / ArduPilot
-   └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
+             │
+             ├─ MAVLink bridge ── PX4 / ArduPilot
+             └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
 ```
 
 - `src/shared/`：前后端唯一共享边界，包含协议、vehicle profile 与 ESC 类型
 - `src/web/`：React 页面、组件、WebSocket 分发和 Zustand stores
 - `src/server/`：HTTP/WS 边界、连接生命周期、MAVLink、日志传输与 ESC 会话
 - `src/server/mavlink/codec.ts`：唯一 MAVLink framing、CRC 与 signing 入口
+- `electron/main.ts`：桌面入口，启动本机服务并加载打包后的前端资源
 
 详细约束见 [架构文档](docs/ARCHITECTURE.md)。
 
@@ -164,9 +186,9 @@ Express / ws ── validation / controller lease
 ## 文档、贡献与许可
 
 - [架构](docs/ARCHITECTURE.md)
-- [部署与环境变量](docs/DEPLOYMENT.md)
 - [ESC 参数兼容性](docs/ESC-COMPATIBILITY.md)
 - [ESC 协议来源](docs/ESC-PROTOCOL-SOURCES.md)
-- [贡献指南](CONTRIBUTING.md)与[安全策略](SECURITY.md)
+- [贡献指南](CONTRIBUTING.md)
+- [第三方说明](THIRD_PARTY_NOTICES.md)
 
 OpenConfigurator 采用 [MIT License](LICENSE)。第三方协议与许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。项目与 PX4、ArduPilot、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系。

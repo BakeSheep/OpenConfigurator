@@ -1414,6 +1414,46 @@ test('listen failures clean up injected services instead of leaking a runtime', 
   }
 })
 
+test('serves packaged web assets from an injected static directory', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const staticDir = await mkdtemp(join(tmpdir(), 'oc-static-'))
+  const connManager = new FakeConnectionManager()
+  const bridge = new FakeMavlinkBridge()
+  let runtime: BackendRuntime | null = null
+
+  try {
+    await writeFile(join(staticDir, 'index.html'), '<!doctype html><title>packaged-shell</title>')
+    await writeFile(join(staticDir, 'desktop-check.txt'), 'desktop-assets-ready')
+    runtime = await startServer({
+      config: testConfig(),
+      services: { connManager, mavlinkBridge: bridge },
+      staticDir,
+      logger: silentLogger,
+      shutdownTimeoutMs: 500,
+    })
+    const address = runtime.server.address()
+    assert.ok(address && typeof address === 'object')
+    const baseUrl = `http://127.0.0.1:${address.port}`
+
+    const asset = await fetch(`${baseUrl}/desktop-check.txt`, {
+      headers: { origin: baseUrl },
+    })
+    assert.equal(asset.status, 200)
+    assert.equal(await asset.text(), 'desktop-assets-ready')
+
+    const route = await fetch(`${baseUrl}/settings/esc`, {
+      headers: { accept: 'text/html' },
+    })
+    assert.equal(route.status, 200)
+    assert.match(await route.text(), /packaged-shell/)
+  } finally {
+    if (runtime) await runtime.shutdown('test')
+    await rm(staticDir, { recursive: true, force: true })
+  }
+})
+
 test('shutdown returns at its deadline when a service cleanup never resolves', async () => {
   const connManager = new FakeConnectionManager()
   connManager.disconnectWait = new Promise<void>(() => undefined)

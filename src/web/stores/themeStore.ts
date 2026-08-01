@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { appRuntimeMode } from '../runtime'
 
 export type Theme = 'dark' | 'light'
 
@@ -23,7 +22,9 @@ const getInitialTheme = (): Theme => {
   } catch {
     // Storage can be unavailable in private browser contexts.
   }
-  return appRuntimeMode === 'demo' ? 'light' : 'dark'
+  // A fresh install starts in the light theme; an explicit saved preference
+  // above still takes precedence.
+  return 'light'
 }
 
 const initialTheme = getInitialTheme()

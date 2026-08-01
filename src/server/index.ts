@@ -130,6 +130,8 @@ export interface BackendServices {
 export interface CreateAppOptions {
   config?: ServerConfig
   services?: Partial<BackendServices>
+  /** Override the built web asset directory (used by packaged desktop builds). */
+  staticDir?: string
   heartbeatIntervalMs?: number
   controllerLeaseMs?: number
   parameterSyncTimeoutMs?: number
@@ -382,6 +384,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   const controllerLeaseMs = options.controllerLeaseMs ?? CONTROLLER_LEASE_MS
   const parameterSyncTimeoutMs = options.parameterSyncTimeoutMs ?? PARAM_SYNC_TIMEOUT_MS
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS
+  const staticDir = options.staticDir ?? distPath
 
   const connManager = options.services?.connManager ?? new ConnectionManager()
   const mavlinkBridge = options.services?.mavlinkBridge
@@ -1164,7 +1167,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     })
   })
 
-  app.use(express.static(distPath))
+  app.use(express.static(staticDir))
 
   app.get('/{*splat}', (request, response, next) => {
     if (!request.accepts('html')) {
@@ -1174,7 +1177,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       })
       return
     }
-    response.sendFile(path.join(distPath, 'index.html'), (error) => {
+    response.sendFile(path.join(staticDir, 'index.html'), (error) => {
       if (error) next(error)
     })
   })
@@ -1721,6 +1724,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Bac
 
   const address = runtime.server.address()
   const actualPort = typeof address === 'object' && address ? address.port : config.port
+  // Port 0 asks the OS for an ephemeral port. Origin validation runs against
+  // the runtime config, so publish the assigned port before accepting browser
+  // subresource and WebSocket requests from that same loopback origin.
+  runtime.config.port = actualPort
   const host = displayHost(config.host)
   logger.log(`[Server] OpenConfigurator running at http://${host}:${actualPort}`)
   logger.log(`[Server] WebSocket at ws://${host}:${actualPort}/ws`)

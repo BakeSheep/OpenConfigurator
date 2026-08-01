@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-electron
+release
+/release-*/
 *.local
 .env
 .env.*
@@ -22,6 +25,7 @@ coverage
 
 # Top-level compiler/test scratch directories
 /.tmp-*/
+/tmp/
 
 # Editor directories and files
 .vscode/*

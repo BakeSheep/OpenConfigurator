@@ -1,9 +1,12 @@
 {
   "name": "open-configurator",
+  "description": "Local-first desktop and web GCS for PX4 and ArduPilot",
+  "author": "BakeSheep",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "license": "MIT",
   "type": "module",
+  "main": "dist-electron/main.mjs",
   "engines": {
     "node": ">=22.12.0"
   },
@@ -12,15 +15,21 @@
     "dev:web": "vite",
     "dev:server": "tsx watch src/server/index.ts",
     "build": "npm run typecheck && vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "build:desktop": "npm run build && npm run build:electron",
     "build:pages": "npm run typecheck && vite build",
     "typecheck": "tsc --noEmit",
     "test:server": "tsx --test && tsx src/web/components/sensors/AccelOrientationVisual.test.tsx",
     "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/codec.test.ts && tsx src/server/mavlink/calProtocol.test.ts && tsx src/server/mavlink/CalibrationSession.test.ts && tsx src/server/mavlink/CalibrationSessionManager.test.ts && tsx src/server/validation.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts && tsx src/server/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/shared/esc/layouts/am32.test.ts && tsx src/server/esc/Am32SettingsService.test.ts && tsx src/server/esc/EscSessionManager.test.ts && tsx src/server/esc/ArduPilotRawTransport.test.ts && tsx src/server/esc/Px4SerialControlTransport.test.ts && tsx src/server/esc/DirectSerialTransport.test.ts && tsx src/server/esc/msp.test.ts && tsx src/server/esc/fourWay.test.ts && tsx src/server/esc/EscDetector.test.ts && tsx src/server/esc/EscService.test.ts",
+    "test:desktop": "node scripts/smoke-electron.mjs",
     "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "test:dataflash": "tsx src/web/utils/dataflashAnalysis.test.ts",
     "start": "tsx src/server/index.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "desktop": "npm run build:desktop && electron .",
+    "dist:win:dir": "npm run build:desktop && electron-builder --win --x64 --dir",
+    "dist:win": "npm run build:desktop && electron-builder --win --x64"
   },
   "devDependencies": {
     "@react-three/drei": "^10.7.7",
@@ -35,6 +44,9 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.1",
     "leaflet": "^1.9.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -51,7 +63,6 @@
     "@foxglove/ulog": "^2.3.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "mavlink-mappings": "^1.0.22-20260311",
     "node-mavlink": "^2.3.0",
     "serialport": "^13.0.0",
     "tsx": "^4.23.1",
@@ -60,5 +71,51 @@
   },
   "overrides": {
     "xml2js": "^0.6.2"
+  },
+  "build": {
+    "appId": "io.github.bakesheep.openconfigurator",
+    "productName": "OpenConfigurator",
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "compression": "maximum",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!node_modules/@foxglove/ulog{,/**/*}",
+      "!node_modules/@esbuild{,/**/*}",
+      "!node_modules/esbuild{,/**/*}",
+      "!node_modules/tsx{,/**/*}",
+      "!node_modules/uplot{,/**/*}",
+      "!node_modules/typescript{,/**/*}",
+      "!node_modules/ts-node{,/**/*}",
+      "!node_modules/**/*.map",
+      "!node_modules/@serialport/bindings-cpp/prebuilds/android-*{,/**/*}",
+      "!node_modules/@serialport/bindings-cpp/prebuilds/darwin-*{,/**/*}",
+      "!node_modules/@serialport/bindings-cpp/prebuilds/linux-*{,/**/*}",
+      "!node_modules/@serialport/bindings-cpp/prebuilds/win32-arm64{,/**/*}",
+      "!node_modules/@serialport/bindings-cpp/prebuilds/win32-ia32{,/**/*}",
+      "!node_modules/@serialport/bindings-cpp/src{,/**/*}"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "electronLanguages": [
+        "en-US",
+        "zh-CN"
+      ],
+      "icon": "build/icon.svg"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
+    }
   }
 }

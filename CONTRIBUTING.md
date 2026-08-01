@@ -1,6 +1,6 @@
 # 参与 OpenConfigurator 开发
 
-飞控与 ESC 软件的错误可能造成设备损坏或人身风险。提交改动时请准确描述已实现范围、失败模式和验证证据，不要把单元测试写成实机结论。
+飞控与 ESC 软件的错误可能造成设备损坏或人身风险。
 
 ## 开发流程
 
@@ -29,12 +29,3 @@ npm run build
 
 ESC 新增硬件支持时同步更新 [兼容性矩阵](docs/ESC-COMPATIBILITY.md)和[协议来源](docs/ESC-PROTOCOL-SOURCES.md)。真实硬件日志必须先脱敏。
 
-## 提交检查
-
-- [ ] 变更范围单一，无无关格式化或密钥、设备标识、未脱敏日志
-- [ ] 新行为有测试，或说明无法自动化验证的原因
-- [ ] 类型检查与相关测试通过
-- [ ] 用户可见能力及限制已更新 README
-- [ ] 安全关键变更包含风险和 HIL 状态
-
-漏洞请按 [SECURITY.md](SECURITY.md) 私密报告。参与项目即表示同意 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
