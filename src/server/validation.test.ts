@@ -21,6 +21,21 @@ function expectFail(value: unknown, code: string, label: string): void {
 const SESSION_ID = 'a1b2c3d4-e5f6-4711-8123-456789abcdef'
 const RECOVERY_TOKEN = 'tok_ABCDEF0123456789'
 
+// Calibration protocol commands are session-manager-only. The generic
+// command surface must not bypass stack, armed-state or owner gates.
+for (const cmd of [
+  'MAV_CMD_DO_START_MAG_CAL',
+  'MAV_CMD_DO_ACCEPT_MAG_CAL',
+  'MAV_CMD_DO_CANCEL_MAG_CAL',
+  'MAV_CMD_ACCELCAL_VEHICLE_POS',
+]) {
+  expectFail(
+    { type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] },
+    'restricted_command',
+    `generic ${cmd}`,
+  )
+}
+
 // -- start_calibration: all six kinds are accepted verbatim ------------------
 for (const kind of ['accel', 'accel_simple', 'gyro', 'mag', 'baro', 'level']) {
   const parsed = parseClientMessage({

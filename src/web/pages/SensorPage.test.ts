@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import type { CalibrationSnapshot, ImuData } from '../../shared/types'
+import type { CalibrationSnapshot } from '../../shared/types'
 import {
   appendLiveSample,
   calibrationAvailabilityReason,
@@ -7,8 +7,8 @@ import {
   canRequestCalibrationExit,
   magPrecheckStatus,
   normalizeOpticalFlow,
-  resolveOpticalGyroDisplay,
   resolveAccelGuideSide,
+  calibrationSideInstruction,
   resolveCalibrationProgress,
   shouldShowCalibrationWizard,
 } from './SensorPage'
@@ -42,11 +42,6 @@ assert.deepEqual(
     source: 'OPTICAL_FLOW_RAD',
     flowX: 0.01,
     flowY: -0.02,
-    gyroX: null,
-    gyroY: null,
-    quality: null,
-    distance: null,
-    integrationMs: 20,
   },
   'partial optical-flow frames must render missing fields as empty instead of throwing',
 )
@@ -57,68 +52,8 @@ assert.deepEqual(
     source: 'OPTICAL_FLOW',
     flowX: 12,
     flowY: -7,
-    gyroX: null,
-    gyroY: null,
-    quality: 180,
-    distance: 1.4,
-    integrationMs: null,
   },
   'legacy optical flow is inferred safely when source metadata is absent',
-)
-
-const normalizedImu: ImuData = {
-  instance: 0,
-  units: 'normalized',
-  xacc: 0,
-  yacc: 0,
-  zacc: 1,
-  xgyro: 0.12,
-  ygyro: -0.34,
-  zgyro: 0,
-  xmag: 0,
-  ymag: 0,
-  zmag: 0,
-  temperature: 25,
-}
-
-assert.deepEqual(
-  resolveOpticalGyroDisplay(normalizeOpticalFlow({
-    source: 'OPTICAL_FLOW_RAD',
-    integration_time_us: 20_000,
-    integrated_xgyro_rad: 0.01,
-    integrated_ygyro_rad: -0.02,
-  }), normalizedImu),
-  {
-    kind: 'optical-integral',
-    x: 0.01,
-    y: -0.02,
-    unit: 'rad',
-    sourceLabel: '光流传感器积分',
-  },
-  'native optical-flow gyro integrals take precedence over the FC IMU',
-)
-
-assert.deepEqual(
-  resolveOpticalGyroDisplay(normalizeOpticalFlow({
-    source: 'OPTICAL_FLOW_RAD',
-    integration_time_us: 20_000,
-    integrated_xgyro_rad: null,
-    integrated_ygyro_rad: null,
-  }), normalizedImu),
-  {
-    kind: 'fc-imu',
-    x: 0.12,
-    y: -0.34,
-    unit: 'rad/s',
-    sourceLabel: '飞控 IMU 1（光流未提供）',
-  },
-  'a normalized FC IMU provides a truthful angular-rate fallback',
-)
-
-assert.equal(
-  resolveOpticalGyroDisplay(null, { ...normalizedImu, units: 'raw' }).kind,
-  'unavailable',
-  'raw IMU counts must never be presented as rad/s',
 )
 
 const activeSnapshot: CalibrationSnapshot = {
@@ -183,6 +118,18 @@ assert.equal(
   resolveAccelGuideSide({ ...activeSnapshot, requestedPosition: 6 }),
   'up',
   'an explicit FC position request wins over side-state inference',
+)
+
+assert.equal(
+  calibrationSideInstruction('mag', 'front'),
+  '保持机头朝下，按箭头方向绕竖直轴缓慢、连续旋转',
+  'PX4 compass sides must instruct rotation instead of holding still',
+)
+
+assert.equal(
+  calibrationSideInstruction('accel', 'front'),
+  '机头垂直向下，保持静止',
+  'accelerometer sides must retain the stationary sampling instruction',
 )
 
 assert.equal(

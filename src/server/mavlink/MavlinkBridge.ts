@@ -112,6 +112,10 @@ export interface MavlinkBridgeOptions {
   versionRetryMs?: number
 }
 
+export interface MavlinkBridgeClientResult {
+  vehicleRebootQueued: boolean
+}
+
 interface DiscoveredTarget {
   systemId: number
   componentId: number
@@ -922,8 +926,6 @@ export class MavlinkBridge extends EventEmitter {
     }
     if (!this.isSelectedSource(msg)) return
 
-    const becameReady = !this.selectedHeartbeatReady
-    this.selectedHeartbeatReady = true
     // Preserve both HEARTBEAT identity fields for every selected heartbeat so
     // the profile survives firmware reboots that change type/autopilot.
     const identity = buildVehicleIdentity(hb.autopilot, hb.type)
@@ -946,6 +948,30 @@ export class MavlinkBridge extends EventEmitter {
     }
     this.selectedIdentity = identity
     this.connManager.notifyAutopilotHeartbeat()
+    if (!this.connManager.vehicleReady) {
+      // During a deliberate reboot the connection manager rejects the final
+      // stale heartbeat for readiness. Do not let that frame re-arm telemetry
+      // setup that the rebooting flight controller is about to discard.
+      this.selectedHeartbeatReady = false
+      return
+    }
+    const becameReady = !this.selectedHeartbeatReady
+    this.selectedHeartbeatReady = true
+    if (becameReady && this.requestedTelemetryStreams) {
+      // USB serial can remain open across an FC reboot. In that case there is
+      // no statusChange event to reset the protocol, but the FC has forgotten
+      // every SET_MESSAGE_INTERVAL request. Re-arm stream negotiation on the
+      // first accepted post-reboot heartbeat.
+      this.requestedTelemetryStreams = false
+      this.telemetryProfile = null
+      this.messageIntervalSupport = 'unknown'
+      this.messageIntervalAttempts = 0
+      this.lastAttitudeBootMs = null
+      if (this.messageIntervalFallbackTimer) {
+        clearTimeout(this.messageIntervalFallbackTimer)
+        this.messageIntervalFallbackTimer = null
+      }
+    }
     if (becameReady || identityChanged) this.emitTarget('selected')
     // Use the autopilot class only as an early compatibility fallback. The
     // authoritative encoding is negotiated from AUTOPILOT_VERSION capabilities.
@@ -1951,7 +1977,8 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   // Send commands from frontend
-  handleClientMessage(msg: ClientMessage) {
+  handleClientMessage(msg: ClientMessage): MavlinkBridgeClientResult {
+    let vehicleRebootQueued = false
     switch (msg.type) {
       case 'command': {
         if (this.requireReadyTarget('command', msg.requestId)) {
@@ -2030,11 +2057,17 @@ export class MavlinkBridge extends EventEmitter {
           )
           break
         }
-        this.sendCommand(
+        vehicleRebootQueued = this.sendCommand(
           'MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN',
           [1, 0, 0, 0, 0, 0, 0],
           msg.requestId,
         )
+        if (vehicleRebootQueued) {
+          // The connection manager is notified by the server immediately after
+          // this handler returns. Invalidate bridge readiness now so recovery
+          // does not depend on receiving a final pre-reboot heartbeat.
+          this.selectedHeartbeatReady = false
+        }
         break
       case 'param_request_list':
         if (this.requireReadyTarget('param_request_list', msg.requestId)) {
@@ -2073,7 +2106,10 @@ export class MavlinkBridge extends EventEmitter {
         }
         break
       case 'message_rates_set':
-        if (this.requireReadyTarget('message_rates_set', msg.requestId)) {
+        if (
+          this.requireReadyTarget('message_rates_set', msg.requestId)
+          && this.requireWritableVehicle('message_rates_set', msg.requestId)
+        ) {
           this.messageRates = { ...msg.data }
           this.messageIntervalAttempts = 0
           this.sendTelemetryIntervalRequests()
@@ -2172,6 +2208,7 @@ export class MavlinkBridge extends EventEmitter {
         }
         break
     }
+    return { vehicleRebootQueued }
   }
 
   private sendCommand(
@@ -2179,15 +2216,15 @@ export class MavlinkBridge extends EventEmitter {
     params: number[],
     requestId?: string,
     safetyConfirmation?: 'arm' | 'disarm' | 'takeoff',
-  ) {
+  ): boolean {
     const cmdId = (MAVLINK_COMMANDS as Record<string, number>)[cmd]
     if (cmdId === undefined) {
       this.emitOperationError('command', 'unsupported_command', `不支持命令 ${cmd}`, requestId)
-      return
+      return false
     }
     if (params.some((value) => !Number.isFinite(value))) {
       this.emitOperationError('command', 'invalid_params', '命令参数必须是有限数值', requestId)
-      return
+      return false
     }
     const requiredConfirmation =
       cmd === 'MAV_CMD_NAV_TAKEOFF'
@@ -2202,7 +2239,7 @@ export class MavlinkBridge extends EventEmitter {
         `命令需要 ${requiredConfirmation} 安全确认`,
         requestId,
       )
-      return
+      return false
     }
 
     // ACK contains only the command id, so an emergency disarm cannot be
@@ -2232,7 +2269,11 @@ export class MavlinkBridge extends EventEmitter {
       }
       this.uncertainCommands.add(cmdId)
       this.commandQuarantineUntil.delete(cmdId)
-      if (!this.writeMessage(this.buildCommand(cmdId, params.slice(0, 7)), 'critical')) {
+      const accepted = this.writeMessage(
+        this.buildCommand(cmdId, params.slice(0, 7)),
+        'critical',
+      )
+      if (!accepted) {
         this.emitOperationError(
           'command',
           'write_rejected',
@@ -2241,7 +2282,7 @@ export class MavlinkBridge extends EventEmitter {
           true,
         )
       }
-      return
+      return accepted
     }
     const pending: PendingCommand = {
       requestId,
@@ -2254,7 +2295,7 @@ export class MavlinkBridge extends EventEmitter {
       deadlineAt: 0,
       timeout: null,
     }
-    this.enqueuePendingCommand(pending)
+    return this.enqueuePendingCommand(pending)
   }
 
   private buildCommand(
@@ -2278,7 +2319,7 @@ export class MavlinkBridge extends EventEmitter {
     return command
   }
 
-  private transmitPendingCommand(pending: PendingCommand): void {
+  private transmitPendingCommand(pending: PendingCommand): boolean {
     if (pending.deadlineAt === 0) {
       pending.deadlineAt = performance.now() + this.commandDeadlineForLink()
     }
@@ -2296,9 +2337,10 @@ export class MavlinkBridge extends EventEmitter {
         pending.requestId,
         true,
       )
-      return
+      return false
     }
     this.scheduleCommandTimeout(pending, this.commandTimeoutForLink())
+    return true
   }
 
   private scheduleCommandTimeout(pending: PendingCommand, requestedDelayMs: number): void {
@@ -2315,7 +2357,7 @@ export class MavlinkBridge extends EventEmitter {
     )
   }
 
-  private enqueuePendingCommand(pending: PendingCommand): void {
+  private enqueuePendingCommand(pending: PendingCommand): boolean {
     const current = this.pendingCommands.get(pending.command)
     if (current) {
       this.emitOperationError(
@@ -2325,7 +2367,7 @@ export class MavlinkBridge extends EventEmitter {
         pending.requestId,
         true,
       )
-      return
+      return false
     }
     if (this.uncertainCommands.has(pending.command)) {
       this.emitOperationError(
@@ -2335,7 +2377,7 @@ export class MavlinkBridge extends EventEmitter {
         pending.requestId,
         true,
       )
-      return
+      return false
     }
     if (this.isCommandQuarantined(pending.command)) {
       this.emitOperationError(
@@ -2345,10 +2387,10 @@ export class MavlinkBridge extends EventEmitter {
         pending.requestId,
         true,
       )
-      return
+      return false
     }
     this.pendingCommands.set(pending.command, pending)
-    this.transmitPendingCommand(pending)
+    return this.transmitPendingCommand(pending)
   }
 
   private finishPendingCommand(commandId: number, quarantine: boolean): void {

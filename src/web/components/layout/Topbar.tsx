@@ -24,7 +24,7 @@ export default function Topbar() {
   const connectionLabel = vehicleReady
     ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '飞控已就绪')
     : transportOpen
-      ? '等待飞控'
+      ? '飞控未连接'
     : reconnecting
       ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? '连接中' : '未连接'

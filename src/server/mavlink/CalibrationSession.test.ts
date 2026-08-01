@@ -276,6 +276,11 @@ function assertSeqStrictlyIncreasing(snapshots: CalibrationSnapshot[]): void {
   assert.equal(result.ok, true)
   assert.equal(sent.length, 2)
   assert.deepEqual(sent[1], { commandId: 241, params: [0, 0, 0, 0, 0, 0, 0] })
+  // Start and cancel share command 241 on PX4. A delayed start ACK must not
+  // terminate the session or release its mutation isolation.
+  session.handleCommandAck(241, 0)
+  assert.equal(last(snapshots).phase, 'running')
+  assert.equal(clock.pending, 1)
   session.handleStatustext('[cal] calibration cancelled')
   assert.equal(last(snapshots).phase, 'cancelled')
   assert.equal(last(snapshots).verification, 'verified')

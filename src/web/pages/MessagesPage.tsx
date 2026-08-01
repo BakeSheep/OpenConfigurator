@@ -4,6 +4,7 @@ import { PageTabs } from '../components/ui/PageFrame'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
 import { DEFAULT_MESSAGE_RATES, MESSAGE_RATE_OPTIONS } from '../../shared/constants'
 import type { MessageRateConfig } from '../../shared/types'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useMessageRateStore } from '../stores/messageRateStore'
@@ -47,12 +48,15 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
   const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
+  const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const rates = useMessageRateStore((state) => state.rates)
-  const setRates = useMessageRateStore((state) => state.setRates)
   const lastUpdate = useTelemetryStore((state) => state.lastUpdate)
   const sensorUpdate = useSensorStore((state) => state.lastUpdate)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
   const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
+  const canSetRates = connected
+    && canControl
+    && vehicleCapabilities(vehicleIdentity).writeOperations
 
   // The live flag compares against wall-clock time; a 1 s tick keeps it
   // re-evaluated after the link stops and store updates no longer arrive
@@ -98,12 +102,12 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
   }
 
   const applyRates = (next: MessageRateConfig) => {
-    if (!connected || !canControl) return
-    if (sendClientMessage({
+    if (!canSetRates) return
+    sendClientMessage({
       type: 'message_rates_set',
       requestId: `message-rates-${Date.now().toString(36)}`,
       data: next,
-    })) setRates(next)
+    })
   }
 
   return (
@@ -139,7 +143,7 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
                     className="mc-select mc-mono"
                     aria-label={`${row.label}消息频率`}
                     value={rates[row.key]}
-                    disabled={!connected || !canControl}
+                    disabled={!canSetRates}
                     onChange={(event) => applyRates({ ...rates, [row.key]: Number(event.target.value) })}
                   >
                     {MESSAGE_RATE_OPTIONS.map((rate) => <option key={rate} value={rate}>{rate}</option>)}
@@ -152,7 +156,7 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
               <button
                 type="button"
                 className="mc-btn mc-btn-ghost"
-                disabled={!connected || !canControl}
+                disabled={!canSetRates}
                 onClick={() => applyRates({ ...DEFAULT_MESSAGE_RATES })}
               >恢复默认</button>
             </footer>

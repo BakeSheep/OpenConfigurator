@@ -322,6 +322,31 @@ test('valid activity grants only soft grace and cannot suppress the hard heartbe
   assert.equal(manager.status, 'disconnected')
 })
 
+test('expected reboot lowers readiness immediately and rejects the final stale heartbeat', async () => {
+  let now = 100
+  const link = new FakeSerialLink()
+  const manager = new ConnectionManager({
+    serialFactory: () => link,
+    monotonicNow: () => now,
+  })
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+
+  assert.equal(manager.expectVehicleReboot(), true)
+  assert.equal(manager.vehicleReady, false, 'the reboot command invalidates physical readiness')
+
+  now += 100
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, false, 'a queued pre-reboot heartbeat must stay offline')
+
+  now += 800
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true, 'a later heartbeat restores readiness')
+  await manager.disconnect()
+})
+
 test('an expected flight-controller reboot automatically reopens serial and waits for heartbeat', async () => {
   const first = new FakeSerialLink()
   const second = new FakeSerialLink()

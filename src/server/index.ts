@@ -100,7 +100,7 @@ export interface ConnectionManagerBoundary extends EventEmitter {
 }
 
 export interface MavlinkBridgeBoundary extends EventEmitter {
-  handleClientMessage(message: ClientMessage): void
+  handleClientMessage(message: ClientMessage): { vehicleRebootQueued: boolean }
   cancelParameterDownload?(): void
   readonly currentParamRunId?: number
   /** Cached one-shot autopilot_version message for late-joining WS clients. */
@@ -918,6 +918,20 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     broadcast(connectionMessage())
   }
 
+  const onVehicleReadyChange = (ready: boolean): void => {
+    // A deliberate FC reboot may leave USB open, so statusChange never fires.
+    // Still cancel the old parameter generation: it belongs to the pre-reboot
+    // process and would otherwise block the automatic refresh after recovery.
+    // Raw ESC passthrough intentionally lowers readiness without losing its
+    // vehicle session, so preserve its isolated state.
+    if (!ready && connManager.rawSessionActive !== true && parameterSync) {
+      cancelBridgeParameterDownload('vehicle_not_ready')
+      clearParamBatch()
+      finishParameterSync('cancelled', 'vehicle_not_ready')
+    }
+    broadcast(connectionMessage())
+  }
+
   const onConnectionError = (error: unknown): void => {
     lastConnectionError = normalizeConnectionError(error)
     logger.error('[Connection] runtime error:', lastConnectionError.message)
@@ -982,7 +996,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   connManager.on('statusChange', onStatusChange)
   connManager.on('connectionError', onConnectionError)
   connManager.on('transportChange', onConnectionStateDetail)
-  connManager.on('vehicleReadyChange', onConnectionStateDetail)
+  connManager.on('vehicleReadyChange', onVehicleReadyChange)
   connManager.on('rawSessionChange', onConnectionStateDetail)
   connManager.on('errorDetailChange', onErrorDetailChange)
 
@@ -1407,8 +1421,8 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
 
     try {
-      mavlinkBridge.handleClientMessage(message as ClientMessage)
-      if (message.type === 'reboot_vehicle') {
+      const bridgeResult = mavlinkBridge.handleClientMessage(message as ClientMessage)
+      if (message.type === 'reboot_vehicle' && bridgeResult.vehicleRebootQueued) {
         connManager.expectVehicleReboot?.()
         calibrationManager.notifyVehicleReboot()
       }
@@ -1647,7 +1661,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       connManager.off('statusChange', onStatusChange)
       connManager.off('connectionError', onConnectionError)
       connManager.off('transportChange', onConnectionStateDetail)
-      connManager.off('vehicleReadyChange', onConnectionStateDetail)
+      connManager.off('vehicleReadyChange', onVehicleReadyChange)
       connManager.off('rawSessionChange', onConnectionStateDetail)
       connManager.off('errorDetailChange', onErrorDetailChange)
       for (const cleanup of shutdownCleanups) {

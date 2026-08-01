@@ -9,7 +9,6 @@ import type {
   AccelCalibrationPosition,
   CalibrationSide,
   CalibrationSnapshot,
-  ImuData,
   OpticalFlowData,
 } from '../../shared/types'
 import { boardOrientationField } from '../utils/parameterProfiles'
@@ -73,6 +72,11 @@ const SIDE_LABELS: Record<CalibrationSide, { label: string; instruction: string 
   back: { label: '机头朝上', instruction: '机头垂直向上，保持静止' },
 }
 
+export const calibrationSideInstruction = (kind: CalibrationKind, side: CalibrationSide): string =>
+  kind === 'mag'
+    ? `保持${SIDE_LABELS[side].label}，按箭头方向绕竖直轴缓慢、连续旋转`
+    : SIDE_LABELS[side].instruction
+
 const SIDE_STATE_LABELS = {
   pending: '未开始',
   active: '正在进行',
@@ -120,19 +124,6 @@ export interface OpticalFlowDisplayFrame {
   source: 'OPTICAL_FLOW' | 'OPTICAL_FLOW_RAD'
   flowX: number | null
   flowY: number | null
-  gyroX: number | null
-  gyroY: number | null
-  quality: number | null
-  distance: number | null
-  integrationMs: number | null
-}
-
-export interface OpticalGyroDisplay {
-  kind: 'optical-integral' | 'fc-imu' | 'unavailable'
-  x: number | null
-  y: number | null
-  unit: 'rad' | 'rad/s'
-  sourceLabel: string
 }
 
 /**
@@ -151,52 +142,6 @@ export const normalizeOpticalFlow = (
     source,
     flowX: finiteNumber(isRad ? data.integrated_x_rad : data.flow_x),
     flowY: finiteNumber(isRad ? data.integrated_y_rad : data.flow_y),
-    gyroX: isRad ? finiteNumber(data.integrated_xgyro_rad) : null,
-    gyroY: isRad ? finiteNumber(data.integrated_ygyro_rad) : null,
-    quality: finiteNumber(data.quality),
-    distance: finiteNumber(data.distance_m ?? data.ground_distance),
-    integrationMs: isRad && finiteNumber(data.integration_time_us) !== null
-      ? finiteNumber(data.integration_time_us)! / 1000
-      : null,
-  }
-}
-
-/**
- * Prefer the gyro integrals measured by the optical-flow sensor. Some
- * autopilots publish OPTICAL_FLOW_RAD with NaN gyro fields; in that case the
- * FC's normalized primary IMU is a useful live fallback, but it remains
- * explicitly labelled as angular rate because it is not the same measurement.
- */
-export const resolveOpticalGyroDisplay = (
-  flow: OpticalFlowDisplayFrame | null,
-  primaryImu: ImuData | null,
-): OpticalGyroDisplay => {
-  if (flow?.source === 'OPTICAL_FLOW_RAD' && flow.gyroX !== null && flow.gyroY !== null) {
-    return {
-      kind: 'optical-integral',
-      x: flow.gyroX,
-      y: flow.gyroY,
-      unit: 'rad',
-      sourceLabel: '光流传感器积分',
-    }
-  }
-  const imuX = primaryImu?.units === 'normalized' ? finiteNumber(primaryImu.xgyro) : null
-  const imuY = primaryImu?.units === 'normalized' ? finiteNumber(primaryImu.ygyro) : null
-  if (imuX !== null && imuY !== null) {
-    return {
-      kind: 'fc-imu',
-      x: imuX,
-      y: imuY,
-      unit: 'rad/s',
-      sourceLabel: '飞控 IMU 1（光流未提供）',
-    }
-  }
-  return {
-    kind: 'unavailable',
-    x: null,
-    y: null,
-    unit: 'rad',
-    sourceLabel: '不可用',
   }
 }
 
@@ -273,12 +218,8 @@ const gpsDopSeries: LiveChartSeries[] = [
   { key: 'vdop', label: 'VDOP', color: 'var(--chart-2)' },
 ]
 const flowSeries: LiveChartSeries[] = [
-  { key: 'x', label: 'Flow X', color: 'var(--chart-4)' },
-  { key: 'y', label: 'Flow Y', color: 'var(--chart-2)' },
-]
-const opticalGyroSeries: LiveChartSeries[] = [
-  { key: 'x', label: 'Gyro X', color: 'var(--warning)' },
-  { key: 'y', label: 'Gyro Y', color: 'var(--accent)' },
+  { key: 'x', label: '光流 X', color: 'var(--chart-4)' },
+  { key: 'y', label: '光流 Y', color: 'var(--chart-2)' },
 ]
 
 function SensorChart({ kind, instance, imu }: { kind: 'accel' | 'gyro'; instance: number; imu: ReturnType<typeof useSensorStore.getState>['imu'] }) {
@@ -509,6 +450,15 @@ function CalibrationWizard({
             ? 'PX4 会自动识别摆放方向，无需手动确认。'
             : '收到方向请求后，确认按钮会固定显示在这里。',
         }
+  const magGuideText = guideSide
+    ? {
+        title: `旋转：${SIDE_LABELS[guideSide].label}`,
+        detail: calibrationSideInstruction('mag', guideSide),
+      }
+    : {
+        title: '选择任一未完成方向',
+        detail: '先让该面朝下；飞控识别后，按图中箭头缓慢、连续旋转。',
+      }
 
   return (
     <div className="mc-calibration-wizard" data-state={snapshot.phase} role="status" aria-live="polite">
@@ -567,21 +517,33 @@ function CalibrationWizard({
         </div>
       )}
 
+      {snapshot.kind === 'mag' && visibleSides.length > 0 && (
+        <div className="mc-calibration-position" data-side={guideSide ?? undefined}>
+          <Icon name="refresh" size={16} />
+          <div>
+            <strong>{magGuideText.title}</strong>
+            <span>{magGuideText.detail}</span>
+          </div>
+        </div>
+      )}
+
       {visibleSides.length > 0 && (
         <ol className="mc-calibration-sides">
           {visibleSides.map((side) => {
             const state = snapshot.sides?.[side] ?? 'pending'
+            const instruction = calibrationSideInstruction(snapshot.kind, side)
             return (
               <li
                 key={side}
                 data-state={state}
-                aria-label={`${SIDE_LABELS[side].label}，${SIDE_LABELS[side].instruction}，${SIDE_STATE_LABELS[state]}`}
-                title={SIDE_LABELS[side].instruction}
+                aria-label={`${SIDE_LABELS[side].label}，${instruction}，${SIDE_STATE_LABELS[state]}`}
+                title={instruction}
               >
                 <AccelOrientationVisual
                   side={side}
                   label={SIDE_LABELS[side].label}
-                  instruction={SIDE_LABELS[side].instruction}
+                  instruction={instruction}
+                  showRotationHint={snapshot.kind === 'mag' && state === 'active'}
                 />
                 <div className="mc-calibration-side-copy">
                   <span className="mc-calibration-side-state">
@@ -673,11 +635,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const magSource = useSensorStore((state) => state.magSource)
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const opticalFlowFrame = useMemo(() => normalizeOpticalFlow(opticalFlow), [opticalFlow])
-  const primaryImu = imus[0] ?? null
-  const opticalGyro = useMemo(
-    () => resolveOpticalGyroDisplay(opticalFlowFrame, primaryImu),
-    [opticalFlowFrame, primaryImu],
-  )
   const distance = useSensorStore((state) => state.distanceSensor)
   const sensorHealth = useSensorStore((state) => state.sensorHealth)
   const gps = useTelemetryStore((state) => state.gps)
@@ -898,29 +855,12 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       {activeTab === 'optflow' && (
         <>
           <SensorStatusCard title="光流" values={[
-            ["Flow X", formatFinite(opticalFlowFrame?.flowX ?? null, opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 3 : 5)],
-            ["Flow Y", formatFinite(opticalFlowFrame?.flowY ?? null, opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 3 : 5)],
-            ["Gyro X", formatFinite(opticalGyro.x, 5, ` ${opticalGyro.unit}`)],
-            ["Gyro Y", formatFinite(opticalGyro.y, 5, ` ${opticalGyro.unit}`)],
-            ["质量", opticalFlowFrame?.quality === null || opticalFlowFrame?.quality === undefined ? '—' : `${opticalFlowFrame.quality} / 255`],
-            ["离地距离", formatFinite(opticalFlowFrame?.distance ?? null, 2, ' m')],
-            ["积分周期", formatFinite(opticalFlowFrame?.integrationMs ?? null, 1, ' ms')],
-            ["数据源", opticalFlowFrame?.source ?? '—'],
-            ["陀螺仪来源", opticalGyro.sourceLabel],
+            ["光流 X", formatFinite(opticalFlowFrame?.flowX ?? null, opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 3 : 5)],
+            ["光流 Y", formatFinite(opticalFlowFrame?.flowY ?? null, opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 3 : 5)],
           ]} />
-          <div className="mc-sensor-chart-grid">
-            <SensorWaveform title="光流 XY" unit={opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 'pixel' : 'rad'} sample={opticalFlow} values={opticalFlowFrame ? { x: opticalFlowFrame.flowX, y: opticalFlowFrame.flowY } : null} series={flowSeries} />
-            <SensorWaveform
-              title={opticalGyro.kind === 'fc-imu' ? '飞控陀螺仪 XY（光流回退）' : '光流陀螺仪 XY'}
-              unit={opticalGyro.unit}
-              sample={opticalGyro.kind === 'fc-imu' ? primaryImu : opticalFlow}
-              values={opticalGyro.kind === 'unavailable' ? null : { x: opticalGyro.x, y: opticalGyro.y }}
-              series={opticalGyroSeries}
-              resetKey={opticalGyro.kind}
-            />
+          <div className="mc-sensor-chart-grid mc-sensor-chart-grid--single">
+            <SensorWaveform title="光流 X/Y" unit={opticalFlowFrame?.source === 'OPTICAL_FLOW' ? 'pixel' : 'rad'} sample={opticalFlow} values={opticalFlowFrame ? { x: opticalFlowFrame.flowX, y: opticalFlowFrame.flowY } : null} series={flowSeries} />
           </div>
-          {opticalFlowFrame?.source === 'OPTICAL_FLOW' && <p className="mc-sensor-data-note">当前飞控发送 legacy OPTICAL_FLOW，该消息不包含陀螺仪积分数据；切换为 OPTICAL_FLOW_RAD 后可显示 Gyro X/Y。</p>}
-          {opticalGyro.kind === 'fc-imu' && <p className="mc-sensor-data-note">当前 OPTICAL_FLOW_RAD 未提供有效的 integrated_xgyro/ygyro；这里显示飞控 IMU 1 的实时角速度（rad/s），不等同于光流传感器的积分陀螺仪数据。</p>}
         </>
       )}
       {activeTab === 'rangefinder' && (

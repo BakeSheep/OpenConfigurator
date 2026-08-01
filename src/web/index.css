@@ -1837,7 +1837,7 @@ input[type="range"]:disabled {
 @keyframes mc-calibration-indeterminate { from { transform: translateX(-105%); } to { transform: translateX(270%); } }
 .mc-calibration-wizard[data-state="completed"] .mc-calibration-progress > span, .mc-calibration-wizard[data-state="done"] .mc-calibration-progress > span, .mc-calibration-wizard[data-state="accepted"] .mc-calibration-progress > span { background: var(--success); }
 .mc-calibration-wizard[data-state="failed"] .mc-calibration-progress > span { background: var(--danger); }
-.mc-calibration-wizard > ol, .mc-calibration-sides { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 9px; margin: 12px 0 0; padding: 0; list-style: none; }
+.mc-calibration-wizard > ol, .mc-calibration-sides { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap: 9px; margin: 12px 0 0; padding: 0 0 4px; overflow-x: auto; list-style: none; }
 .mc-calibration-wizard li { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 2px; padding: 5px 5px 7px; overflow: hidden; border: 2px solid var(--bg-secondary); border-radius: 12px; background: var(--bg-secondary); box-shadow: 0 0 0 1px var(--border), 0 2px 9px color-mix(in srgb, var(--text-primary) 4%, transparent); color: var(--text-disabled); transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease; }
 .mc-calibration-wizard li::after { position: absolute; z-index: 2; top: 9px; right: 9px; width: 8px; height: 8px; border: 2px solid var(--bg-secondary); border-radius: 50%; background: var(--border-strong); box-shadow: 0 0 0 1px var(--border); content: ""; }
 .mc-calibration-wizard li[data-state="active"] { border-color: var(--info); background: color-mix(in srgb, var(--info) 5%, var(--bg-secondary)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--info) 24%, transparent), 0 6px 18px color-mix(in srgb, var(--info) 10%, transparent); color: var(--info); }
@@ -1848,25 +1848,13 @@ input[type="range"]:disabled {
 .mc-calibration-side-copy > strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .mc-calibration-side-state { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: currentColor !important; font-family: var(--font-mono); font-size: 8px !important; font-weight: 700; white-space: nowrap; }
 .mc-calibration-side-state i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.mc-orientation-visual { display: block; width: 100%; aspect-ratio: 1.48; overflow: visible; border-radius: 8px; transition: filter 160ms ease, opacity 160ms ease; }
+.mc-orientation-visual { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; overflow: hidden; border-radius: 8px; user-select: none; transition: filter 160ms ease, opacity 160ms ease; }
+.mc-orientation-visual__image { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
+.mc-orientation-visual__rotation { position: absolute; z-index: 1; top: 43%; left: 50%; width: 44%; aspect-ratio: 1; border: 3px solid transparent; border-top-color: currentColor; border-right-color: currentColor; border-radius: 50%; filter: drop-shadow(0 1px 2px var(--bg-secondary)); pointer-events: none; animation: mc-orientation-rotate 1.45s linear infinite; }
+.mc-orientation-visual__rotation::after { position: absolute; top: 4%; right: 5%; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 8px solid currentColor; content: ""; transform: rotate(42deg); transform-origin: center; }
+@keyframes mc-orientation-rotate { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
 .mc-calibration-wizard li[data-state="pending"] .mc-orientation-visual { filter: grayscale(.55); opacity: .28; }
 .mc-calibration-wizard li[data-state="done"] .mc-orientation-visual { opacity: .86; }
-.mc-orientation-visual__ground { fill: color-mix(in srgb, var(--bg-tertiary) 82%, var(--bg-secondary)); stroke: color-mix(in srgb, var(--border-strong) 72%, transparent); stroke-linejoin: round; stroke-width: 1; }
-.mc-orientation-visual__ground-line { fill: none; stroke: color-mix(in srgb, var(--border-strong) 28%, transparent); stroke-width: .65; }
-.mc-orientation-visual__shadow { fill: var(--text-primary); opacity: .08; }
-.mc-orientation-drone__arm-shadow { stroke: color-mix(in srgb, var(--text-primary) 20%, transparent); stroke-linecap: round; stroke-width: 7; }
-.mc-orientation-drone__arm { stroke: color-mix(in srgb, var(--bg-secondary) 58%, var(--border-strong)); stroke-linecap: round; stroke-width: 4.6; }
-.mc-orientation-drone__leg { stroke: color-mix(in srgb, var(--text-secondary) 62%, var(--border-strong)); stroke-linecap: round; stroke-width: 2.2; }
-.mc-orientation-drone__rotor-disc { fill: color-mix(in srgb, var(--text-secondary) 5%, transparent); stroke: color-mix(in srgb, var(--text-secondary) 24%, transparent); stroke-width: .7; }
-.mc-orientation-drone__propeller { stroke: color-mix(in srgb, var(--text-secondary) 70%, var(--border-strong)); stroke-linecap: round; stroke-width: 2.3; }
-.mc-orientation-drone__motor { stroke: color-mix(in srgb, var(--text-primary) 58%, var(--border-strong)); stroke-linecap: round; stroke-width: 5; }
-.mc-orientation-drone__hub { fill: var(--bg-secondary); stroke: color-mix(in srgb, var(--text-primary) 58%, var(--border-strong)); stroke-width: 1.4; }
-.mc-orientation-drone__body { stroke: color-mix(in srgb, var(--text-secondary) 62%, var(--border-strong)); stroke-linejoin: round; stroke-width: .9; }
-.mc-orientation-drone__body--top { fill: color-mix(in srgb, var(--bg-secondary) 64%, var(--border-strong)); }
-.mc-orientation-drone__body--bottom { fill: color-mix(in srgb, var(--bg-tertiary) 46%, var(--text-secondary)); }
-.mc-orientation-drone__body--front, .mc-orientation-drone__body--left { fill: color-mix(in srgb, var(--bg-tertiary) 76%, var(--border-strong)); }
-.mc-orientation-drone__body--rear, .mc-orientation-drone__body--right { fill: color-mix(in srgb, var(--bg-secondary) 48%, var(--border-strong)); }
-.mc-orientation-drone__nose { fill: var(--warning); stroke: color-mix(in srgb, var(--warning) 72%, var(--text-primary)); stroke-linejoin: round; stroke-width: .75; }
 .mc-calibration-position { display: flex; min-height: 62px; align-items: center; gap: 10px; margin-top: 12px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary)); color: var(--accent); }
 .mc-calibration-position[data-waiting="true"] { border-color: color-mix(in srgb, var(--info) 55%, var(--border)); background: color-mix(in srgb, var(--info) 8%, var(--bg-secondary)); color: var(--info); }
 .mc-calibration-position > div { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
@@ -1948,12 +1936,6 @@ input[type="range"]:disabled {
 .mc-sensor-diagnostics .mc-sensor-chart-grid, .mc-sensor-diagnostics .mc-sensor-status-card { margin-top: 0; }
 .mc-sensor-status-card > header h2 { margin-top: 5px; }
 @keyframes mc-calibration-arrive { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-@container (max-width: 1750px) {
-  .mc-calibration-wizard > .mc-calibration-sides { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 1700px) {
-  .mc-calibration-wizard > .mc-calibration-sides { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
 @media (max-width: 1180px) {
   .mc-sensor-health-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
@@ -1966,11 +1948,11 @@ input[type="range"]:disabled {
   .mc-calibration-session { grid-template-columns: 1fr; }
   .mc-calibration-session__label { flex-direction: row; align-items: center; }
   .mc-calibration-session__exit { width: auto; }
-  .mc-calibration-wizard > .mc-calibration-sides { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mc-calibration-position { align-items: flex-start; flex-wrap: wrap; }
   .mc-calibration-position .mc-btn { margin-left: 26px; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .mc-orientation-visual__rotation { animation: none; }
   .mc-calibration-session, .mc-calibration-progress[data-indeterminate="true"] > span { animation: none; }
   .mc-calibration-progress[data-indeterminate="true"] > span { transform: translateX(82%); }
 }

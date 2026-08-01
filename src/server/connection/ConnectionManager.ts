@@ -512,6 +512,9 @@ export class ConnectionManager extends EventEmitter {
     this.lastHeartbeat = now
     this.lastMavlinkActivity = now
     this.heartbeatTimeoutFired = false
+    const staleRebootHeartbeat = this.isExpectedVehicleReboot()
+      && !this.rebootInterruptionObserved
+      && now - this.expectedRebootStartedAt < REBOOT_STALE_HEARTBEAT_GUARD_MS
     if (
       !this.isExpectedVehicleReboot()
       || this.rebootInterruptionObserved
@@ -522,9 +525,14 @@ export class ConnectionManager extends EventEmitter {
     if (this._lastError?.phase === 'heartbeat' || this._lastError?.phase === 'reconnect') {
       this.setLastError(null)
     }
-    this.setVehicleReady(true)
-    if (this.linkKind === 'bluetooth') {
-      ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
+    // A final heartbeat can arrive after the reboot command has already been
+    // queued. Keep readiness down during the short guard window so that stale
+    // pre-reboot traffic cannot make the UI look live again prematurely.
+    if (!staleRebootHeartbeat) {
+      this.setVehicleReady(true)
+      if (this.linkKind === 'bluetooth') {
+        ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
+      }
     }
   }
 
@@ -544,6 +552,10 @@ export class ConnectionManager extends EventEmitter {
     this.rebootInterruptionObserved = false
     this.rebootReconnectAttempt = 0
     this.rebootReconnectToken += 1
+    // The reboot command itself is sufficient to invalidate physical vehicle
+    // readiness even if USB keeps the COM port open throughout the restart.
+    // A fresh heartbeat after the stale-heartbeat guard raises it again.
+    this.setVehicleReady(false)
     return true
   }
 

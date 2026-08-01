@@ -262,6 +262,12 @@ export class CalibrationSession {
       ? CMD_PREFLIGHT_CALIBRATION
       : MAVLINK_COMMANDS.MAV_CMD_DO_CANCEL_MAG_CAL
     if (this.cancelRequested && commandId === cancelCommandId) {
+      // PX4 uses MAV_CMD_PREFLIGHT_CALIBRATION (241) for both start and
+      // cancellation. COMMAND_ACK has no transaction/request discriminator,
+      // so an ACCEPTED frame here may be the delayed start ACK. Only the
+      // independent [cal] cancellation line (or the explicit unverified
+      // timeout) may settle a PX4 cancel request.
+      if (this.family === 'px4') return
       if (result === RESULT_IN_PROGRESS) return
       if (result === RESULT_ACCEPTED) {
         this.phase = 'cancelled'

@@ -858,17 +858,34 @@ assert.deepEqual(
 
 // Reboot is a semantic, disarmed-only command encoded as PREFLIGHT_REBOOT_SHUTDOWN.
 const rebootFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 76).length
-bridge.handleClientMessage({
+const rebootResult = bridge.handleClientMessage({
   type: 'reboot_vehicle',
   requestId: 'reboot-1',
   safetyConfirmation: 'reboot_flight_controller',
 })
+assert.equal(rebootResult.vehicleRebootQueued, true)
 const rebootFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
 assert.equal(rebootFrames.length, rebootFramesBefore + 1)
 const rebootPayload = framePayload(rebootFrames[rebootFrames.length - 1])
 assert.equal(rebootPayload.readUInt16LE(28), 246)
 assert.equal(rebootPayload.readFloatLE(0), 1)
 inject(bridge, 77, commandAckPayload(246, 0))
+
+// A reboot can keep USB open while the FC loses its message-interval setup.
+// Even if the FC stops heartbeats immediately, the first post-reboot heartbeat
+// must renegotiate all streams rather than depending on a final stale frame.
+const intervalFramesBeforeRebootRecovery = connection.frames.filter((frame) => {
+  if (frameMessageId(frame) !== 76) return false
+  const payload = framePayload(frame)
+  return payload.readUInt16LE(28) === 511
+}).length
+connection.vehicleReady = false
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal(connection.vehicleReady, true)
+assert.ok(connection.frames.filter((frame) => {
+  if (frameMessageId(frame) !== 76) return false
+  return framePayload(frame).readUInt16LE(28) === 511
+}).length > intervalFramesBeforeRebootRecovery)
 
 // Malformed PARAM_VALUE packets never reach the cache or transaction layer.
 const paramMessagesBeforeMalformed = messages.filter((message) => message.type === 'param').length
@@ -2012,10 +2029,16 @@ bridge.destroy()
     requestId: 'generic-manual',
     data: { x: 0, y: 0, z: 0, r: 0 },
   })
-  genericBridge.handleClientMessage({
+  const genericRebootResult = genericBridge.handleClientMessage({
     type: 'reboot_vehicle',
     requestId: 'generic-reboot',
     safetyConfirmation: 'reboot_flight_controller',
+  })
+  assert.equal(genericRebootResult.vehicleRebootQueued, false)
+  genericBridge.handleClientMessage({
+    type: 'message_rates_set',
+    requestId: 'generic-rates',
+    data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
   })
   genericBridge.handleClientMessage({
     type: 'fs_delete',
@@ -2030,7 +2053,7 @@ bridge.destroy()
   })
   await wait(0)
   assert.equal(genericConnection.frames.length, genericMutationFrames)
-  for (const requestId of ['generic-param', 'generic-manual', 'generic-reboot']) {
+  for (const requestId of ['generic-param', 'generic-manual', 'generic-reboot', 'generic-rates']) {
     assert.equal(
       findLast(genericMessages, (message) => message.type === 'operation_error'
         && message.data.requestId === requestId)?.data.code,
@@ -2081,10 +2104,16 @@ bridge.destroy()
     requestId: 'plane-manual',
     data: { x: 0, y: 0, z: 0, r: 0 },
   })
-  planeBridge.handleClientMessage({
+  const planeRebootResult = planeBridge.handleClientMessage({
     type: 'reboot_vehicle',
     requestId: 'plane-reboot',
     safetyConfirmation: 'reboot_flight_controller',
+  })
+  assert.equal(planeRebootResult.vehicleRebootQueued, false)
+  planeBridge.handleClientMessage({
+    type: 'message_rates_set',
+    requestId: 'plane-rates',
+    data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
   })
   planeBridge.handleClientMessage({
     type: 'fs_delete',
@@ -2099,7 +2128,7 @@ bridge.destroy()
   })
   await wait(0)
   assert.equal(mutationFrameCount(), beforeMutations)
-  for (const requestId of ['plane-param', 'plane-manual', 'plane-reboot']) {
+  for (const requestId of ['plane-param', 'plane-manual', 'plane-reboot', 'plane-rates']) {
     assert.equal(
       findLast(planeMessages, (message) => message.type === 'operation_error'
         && message.data.requestId === requestId)?.data.code,

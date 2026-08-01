@@ -9,6 +9,7 @@ import type {
   ConnectionConfig,
   ConnectionStatus,
   PortInfo,
+  ServerMessage,
 } from '../shared/types'
 import {
   handleDownloadError,
@@ -82,6 +83,8 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
 
   expectVehicleReboot(): boolean {
     this.expectedRebootCalls += 1
+    this.vehicleReady = false
+    this.emit('vehicleReadyChange', false)
     return true
   }
 }
@@ -172,6 +175,7 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   currentParamRunId = 0
   destroyed = false
   parameterCancellationCalls = 0
+  vehicleRebootQueued = true
   destroyError: Error | null = null
   readonly ftpDownloads = new Map<string, {
     filePath: string
@@ -179,9 +183,23 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
     sizeBytes: number
   }>()
 
-  handleClientMessage(message: ClientMessage): void {
+  handleClientMessage(message: ClientMessage): { vehicleRebootQueued: boolean } {
     this.messages.push(message)
     if (message.type === 'param_request_list') this.currentParamRunId += 1
+    const vehicleRebootQueued = message.type === 'reboot_vehicle' && this.vehicleRebootQueued
+    if (message.type === 'reboot_vehicle' && !vehicleRebootQueued) {
+      this.emit('message', {
+        type: 'operation_error',
+        data: {
+          requestId: message.requestId,
+          operation: 'reboot_vehicle',
+          code: 'vehicle_armed',
+          message: 'test reboot rejection',
+          retryable: false,
+        },
+      } satisfies ServerMessage)
+    }
+    return { vehicleRebootQueued }
   }
 
   createCalibrationSession(request: CalibrationStartRequest): FakeCalibrationSession {
@@ -1200,11 +1218,20 @@ test('calibration sessions pin the lease, isolate mutations and support reclaim'
       'calibration_session_started',
       (message) => message.data?.requestId === 'cal-before-reboot',
     )
+    const rebootMessageIndex = owner.messages.length
     owner.ws.send(JSON.stringify({
       type: 'reboot_vehicle',
       requestId: 'reboot-during-cal',
       safetyConfirmation: 'reboot_flight_controller',
     }))
+    const rebootOffline = await owner.waitFor(
+      'connection',
+      (message) => message.data?.vehicleReady === false
+        && message.data?.transportOpen === true,
+      1_000,
+      rebootMessageIndex,
+    )
+    assert.equal(rebootOffline.data?.status, 'connected')
     await owner.waitFor(
       'calibration_update',
       (message) => message.data?.failureCode === 'interrupted_by_reboot',
@@ -1473,6 +1500,48 @@ test('log download endpoint validates ids and streams registered files', async (
   } finally {
     await started.runtime.shutdown('test_complete')
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a bridge-rejected reboot does not lower vehicle readiness', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    await client.waitFor(
+      'connection',
+      (message) => message.data?.vehicleReady === true,
+    )
+
+    started.bridge.vehicleRebootQueued = false
+    const messageIndex = client.messages.length
+    client.ws.send(JSON.stringify({
+      type: 'reboot_vehicle',
+      requestId: 'reboot-rejected-by-bridge',
+      safetyConfirmation: 'reboot_flight_controller',
+    }))
+    const rejection = await client.waitFor(
+      'operation_error',
+      (message) => message.data?.requestId === 'reboot-rejected-by-bridge',
+      1_000,
+      messageIndex,
+    )
+
+    assert.equal(rejection.data?.code, 'vehicle_armed')
+    assert.equal(started.connManager.expectedRebootCalls, 0)
+    assert.equal(started.connManager.vehicleReady, true)
+    assert.equal(
+      client.messages.slice(messageIndex).some((message) =>
+        message.type === 'connection' && message.data?.vehicleReady === false),
+      false,
+    )
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
   }
 })
 
