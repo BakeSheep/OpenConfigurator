@@ -543,7 +543,7 @@ function CalibrationWizard({
                   side={side}
                   label={SIDE_LABELS[side].label}
                   instruction={instruction}
-                  showRotationHint={snapshot.kind === 'mag' && state === 'active'}
+                  usePx4MagRotationImage={snapshot.family === 'px4' && snapshot.kind === 'mag'}
                 />
                 <div className="mc-calibration-side-copy">
                   <span className="mc-calibration-side-state">
