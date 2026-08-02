@@ -17,6 +17,7 @@ import type { MagInterferenceReading } from '../utils/magInterference'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import AccelOrientationVisual from '../components/sensors/AccelOrientationVisual'
+import GpsConfigurationPanel from '../components/sensors/GpsConfigurationPanel'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useCalibrationStore } from '../stores/calibrationStore'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -831,6 +832,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       )}
       {activeTab === 'gps' && (
         <>
+          <GpsConfigurationPanel family={vehicleIdentity?.family ?? 'unknown'} writable={caps.gpsConfig} />
           <SensorStatusCard title="GPS 详情" values={[
             ["定位类型", gpsFixLabel(gps?.fix_type)],
             ["卫星数", gps?.satellites_visible == null ? '—' : String(gps.satellites_visible)],

@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://bakesheep.github.io/OpenConfigurator/"><b>Live demo</b></a> ·
+  <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest"><b>Latest Release</b></a> ·
   <a href="README.md">中文说明</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
@@ -20,7 +21,7 @@
 OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The browser or desktop client uses REST plus one WebSocket; the service owns USB serial/Bluetooth SPP, MAVLink v1/v2, log transfer, and ESC sessions.
 
 > [!TIP]
-> The [live demo](https://bakesheep.github.io/OpenConfigurator/) is a static, read-only preview: every value is synthetic, there is no backend, no device can be connected, and no write operation is performed.
+> The [live demo](https://bakesheep.github.io/OpenConfigurator/) is a static, read-only preview: every value is synthetic, there is no backend, no device can be connected, and no write operation is performed. Download the desktop build from the [latest Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest).
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Flight overview workspace with demo data" width="860" />

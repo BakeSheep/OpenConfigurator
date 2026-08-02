@@ -952,6 +952,8 @@ input[type="range"]:disabled {
   font-size: 9px;
   font-weight: 700;
 }
+.mc-demo-banner a { color: var(--warning); font-size: 11px; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.mc-demo-banner a:hover { color: var(--text-primary); }
 
 .mc-global-param-progress button:disabled {
   cursor: not-allowed;
@@ -1883,6 +1885,25 @@ input[type="range"]:disabled {
 .mc-sensor-status-card dt { color: var(--text-secondary); font-size: 11px; }
 .mc-sensor-status-card dd { margin: 8px 0 0; font-weight: 700; }
 .mc-sensor-data-note { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-tertiary); color: var(--text-secondary); font-size: 10px; line-height: 1.6; }
+.mc-gps-config { display: grid; gap: 14px; padding: 20px; }
+.mc-gps-config > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.mc-gps-config > header h2 { margin: 5px 0 0; font-size: 16px; }
+.mc-gps-config > header > span { padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-tertiary); color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.mc-gps-config__tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-tertiary); }
+.mc-gps-config__tabs button { min-height: 38px; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 12px; font-weight: 700; }
+.mc-gps-config__tabs button + button { border-left: 1px solid var(--border); }
+.mc-gps-config__tabs button[data-active="true"] { background: var(--accent); color: var(--bg-primary); }
+.mc-gps-config__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mc-gps-config__field { display: grid; align-content: start; gap: 8px; min-width: 0; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-tertiary); }
+.mc-gps-config__field[data-disabled="true"] { opacity: .68; }
+.mc-gps-config__field > span { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 10px; }
+.mc-gps-config__field > span strong { color: var(--text-primary); font-size: 12px; }
+.mc-gps-config__field > span small { overflow: hidden; color: var(--text-disabled); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.mc-gps-config__field > small { color: var(--text-secondary); font-size: 9px; line-height: 1.45; }
+.mc-gps-config__field .mc-select { width: 100%; }
+.mc-gps-config__readonly { display: flex; min-height: 36px; align-items: center; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-secondary); font-size: 11px; }
+.mc-gps-config__empty { margin: 0; padding: 24px; border: 1px dashed var(--border-strong); border-radius: var(--radius-md); color: var(--text-secondary); text-align: center; }
+.mc-gps-config > footer { color: var(--text-secondary); font-size: 9px; }
 
 /* Sensor commissioning workbench */
 .mc-sensor-workbench { display: flex; flex-direction: column; gap: 18px; padding-bottom: 28px; }
@@ -2395,6 +2416,7 @@ input[type="range"]:disabled {
   .mc-sensor-subbar { flex-wrap: wrap; }
   .mc-sensor-subbar .mc-select { width: 100%; }
   .mc-sensor-status-card > div { grid-template-columns: repeat(2, 1fr); }
+  .mc-gps-config__grid { grid-template-columns: 1fr; }
   .mc-airframe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mc-airframe-illustration { height: 112px; }
   .mc-message-row { grid-template-columns: 68px minmax(120px, 1fr) 58px; }

@@ -177,6 +177,7 @@ assert.equal(px4Caps.actuatorConfig, true)
 assert.equal(px4Caps.pidConfig, true)
 assert.equal(px4Caps.ekfConfig, true)
 assert.equal(px4Caps.serialConfig, true)
+assert.equal(px4Caps.gpsConfig, true)
 assert.equal(px4Caps.logFormat, 'ulog')
 
 const apCopterCaps = vehicleCapabilities(arducopter)
@@ -191,6 +192,7 @@ assert.equal(apCopterCaps.actuatorConfig, true)
 assert.equal(apCopterCaps.pidConfig, true)
 assert.equal(apCopterCaps.ekfConfig, true)
 assert.equal(apCopterCaps.serialConfig, true)
+assert.equal(apCopterCaps.gpsConfig, true)
 assert.equal(apCopterCaps.logFormat, 'dataflash')
 
 // ArduPlane/Rover/Sub/Tracker are explicit read-only profiles until tested.
@@ -207,6 +209,7 @@ for (const typeId of [1, 10, 12, 5]) {
   assert.equal(caps.pidConfig, false)
   assert.equal(caps.ekfConfig, false)
   assert.equal(caps.serialConfig, false)
+  assert.equal(caps.gpsConfig, false)
   assert.equal(caps.logFormat, 'dataflash')
 }
 
@@ -224,6 +227,7 @@ for (const identity of [unknownIdentity, null]) {
   assert.equal(caps.pidConfig, false)
   assert.equal(caps.ekfConfig, false)
   assert.equal(caps.serialConfig, false)
+  assert.equal(caps.gpsConfig, false)
   assert.equal(caps.logFormat, 'unknown')
 }
 

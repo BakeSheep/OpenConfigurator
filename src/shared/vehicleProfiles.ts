@@ -250,6 +250,7 @@ export interface VehicleCapabilities {
   pidConfig: boolean
   ekfConfig: boolean
   serialConfig: boolean
+  gpsConfig: boolean
   logFormat: 'ulog' | 'dataflash' | 'unknown'
 }
 
@@ -265,6 +266,7 @@ const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
   pidConfig: false,
   ekfConfig: false,
   serialConfig: false,
+  gpsConfig: false,
   logFormat: 'unknown',
 }
 
@@ -284,6 +286,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
       pidConfig: true,
       ekfConfig: true,
       serialConfig: true,
+      gpsConfig: true,
       logFormat: 'ulog',
     }
   }
@@ -301,6 +304,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
         pidConfig: true,
         ekfConfig: true,
         serialConfig: true,
+        gpsConfig: true,
         logFormat: 'dataflash',
       }
     }

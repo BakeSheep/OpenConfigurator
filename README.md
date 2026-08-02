@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线预览</b></a> ·
+  <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest"><b>最新 Release</b></a> ·
   <a href="README.en.md">English</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
   <a href="CHANGELOG.md">变更记录</a> ·
@@ -18,7 +19,7 @@
 </p>
 
 > [!TIP]
-> [在线预览](https://bakesheep.github.io/OpenConfigurator/) 是纯静态的只读演示：所有数据均为合成数据，没有后端服务，不能连接真实设备，也不会执行任何写操作。
+> [在线预览](https://bakesheep.github.io/OpenConfigurator/) 是纯静态的只读演示：所有数据均为合成数据，没有后端服务，不能连接真实设备，也不会执行任何写操作。桌面安装包请前往 [最新 Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest) 下载。
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="飞行总览工作区（演示数据）" width="860" />

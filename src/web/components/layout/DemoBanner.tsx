@@ -9,6 +9,9 @@ export default function DemoBanner() {
     <div className="mc-demo-banner" role="status">
       <span className="mc-demo-banner__badge">在线演示</span>
       <span>所有数据均为模拟数据，设备连接和写操作已禁用</span>
+      <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest" target="_blank" rel="noreferrer">
+        查看最新 Release
+      </a>
     </div>
   )
 }
