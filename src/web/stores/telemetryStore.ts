@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VehicleIdentity } from '../../shared/types'
 import type { ServerMessage } from '../../shared/types'
+import {
+  appendGpsTrackPoint,
+  isTrackableGpsFix,
+  type GpsTrackOrigin,
+  type GpsTrackPoint,
+} from '../utils/gpsTrack'
 
 export type StatusSeverity = 'emergency' | 'alert' | 'critical' | 'error' | 'warning' | 'notice' | 'info' | 'debug'
 
@@ -45,6 +51,8 @@ const STALE_THRESHOLDS: Record<TelemetryField, number> = {
 interface TelemetryState {
   attitude: AttitudeData | null
   gps: GpsData | null
+  gpsTrack: GpsTrackPoint[]
+  gpsTrackOrigin: GpsTrackOrigin | null
   battery: BatteryData | null
   // Which message currently feeds `battery`: BATTERY_STATUS is authoritative,
   // SYS_STATUS is only a fallback while BATTERY_STATUS is absent/stale.
@@ -81,6 +89,8 @@ interface TelemetryState {
   lastUpdate: Record<TelemetryField, number>
   setAttitude: (data: AttitudeData) => void
   setGps: (data: GpsData) => void
+  clearGpsTrack: () => void
+  recenterGpsTrack: () => void
   setBattery: (data: BatteryData) => void
   setStatus: (data: VehicleStatus) => void
   setEkfStatus: (data: EkfStatusData) => void
@@ -113,6 +123,8 @@ const zeroLastUpdate = (): Record<TelemetryField, number> => ({
 export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   attitude: null,
   gps: null,
+  gpsTrack: [],
+  gpsTrackOrigin: null,
   battery: null,
   batterySource: null,
   status: null,
@@ -139,7 +151,24 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   lastCommandAck: null,
   lastUpdate: zeroLastUpdate(),
   setAttitude: (data) => set((state) => ({ attitude: data, lastUpdate: { ...state.lastUpdate, attitude: Date.now() } })),
-  setGps: (data) => set((state) => ({ gps: data, lastUpdate: { ...state.lastUpdate, gps: Date.now() } })),
+  setGps: (data) => set((state) => {
+    const now = Date.now()
+    const gpsTrack = appendGpsTrackPoint(state.gpsTrack, data, now)
+    return {
+      gps: data,
+      gpsTrack,
+      gpsTrackOrigin: state.gpsTrackOrigin ?? (isTrackableGpsFix(data) ? { lat: data.lat, lon: data.lon } : null),
+      lastUpdate: { ...state.lastUpdate, gps: now },
+    }
+  }),
+  clearGpsTrack: () => set({ gpsTrack: [], gpsTrackOrigin: null }),
+  recenterGpsTrack: () => set((state) => {
+    const latest = state.gpsTrack[state.gpsTrack.length - 1]
+    if (latest) return { gpsTrackOrigin: { lat: latest.lat, lon: latest.lon } }
+    return isTrackableGpsFix(state.gps)
+      ? { gpsTrackOrigin: { lat: state.gps.lat, lon: state.gps.lon } }
+      : {}
+  }),
   // Keep each BATTERY_STATUS instance intact. In particular, do not fill an
   // unknown field from the previously displayed battery: independent battery
   // IDs may be interleaved on the same MAVLink link.

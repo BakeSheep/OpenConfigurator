@@ -18,6 +18,7 @@ import Icon, { type IconName } from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import AccelOrientationVisual from '../components/sensors/AccelOrientationVisual'
 import GpsConfigurationPanel from '../components/sensors/GpsConfigurationPanel'
+import GpsTrackPlot from '../components/sensors/GpsTrackPlot'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useCalibrationStore } from '../stores/calibrationStore'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -214,10 +215,6 @@ const altitudeTemperatureSeries: LiveChartSeries[] = [
   { key: 'altitude', label: '气压高度', color: 'var(--info)', axis: 'left' },
   { key: 'temperature', label: '温度', color: 'var(--warning)', axis: 'right' },
 ]
-const gpsDopSeries: LiveChartSeries[] = [
-  { key: 'hdop', label: 'HDOP', color: 'var(--chart-4)' },
-  { key: 'vdop', label: 'VDOP', color: 'var(--chart-2)' },
-]
 const flowSeries: LiveChartSeries[] = [
   { key: 'x', label: '光流 X', color: 'var(--chart-4)' },
   { key: 'y', label: '光流 Y', color: 'var(--chart-2)' },
@@ -239,6 +236,8 @@ function SensorWaveform({
   values,
   series,
   resetKey,
+  height,
+  className = '',
 }: {
   title: string
   unit: string
@@ -246,15 +245,40 @@ function SensorWaveform({
   values: Record<string, number | null> | null
   series: LiveChartSeries[]
   resetKey?: string | number
+  height?: number
+  className?: string
 }) {
   return (
-    <section className="mc-card mc-sensor-chart-card">
+    <section className={`mc-card mc-sensor-chart-card ${className}`.trim()}>
       <header><strong>{title}</strong><span>{unit}</span></header>
       <div className="mc-chart-legend">
         {series.map((item) => <span key={item.key} style={{ '--series-color': item.color } as React.CSSProperties}>{item.label}{item.axis && <small>{item.axis === 'left' ? '左轴' : '右轴'}</small>}</span>)}
       </div>
-      <LiveSensorChart sample={sample} values={values} series={series} resetKey={resetKey} />
+      <LiveSensorChart sample={sample} values={values} series={series} resetKey={resetKey} height={height} />
     </section>
+  )
+}
+
+const dopQualityPercent = (value: number | null | undefined): number => value == null
+  ? 0
+  : Math.max(0, Math.min(100, ((6 - value) / 6) * 100))
+
+function GpsMetric({ label, value, state }: { label: string; value: string; state?: string }) {
+  return (
+    <div className="mc-gps-metric" data-state={state}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function DopMeter({ label, value }: { label: string; value: number | null | undefined }) {
+  const percent = dopQualityPercent(value)
+  return (
+    <div className="mc-gps-dop__meter">
+      <span><strong>{label}</strong><b className="mc-mono">{value == null ? '—' : value.toFixed(2)}</b></span>
+      <div><i style={{ width: `${percent}%` }} /></div>
+    </div>
   )
 }
 
@@ -832,26 +856,62 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       )}
       {activeTab === 'gps' && (
         <>
-          <GpsConfigurationPanel family={vehicleIdentity?.family ?? 'unknown'} writable={caps.gpsConfig} />
-          <SensorStatusCard title="GPS 详情" values={[
-            ["定位类型", gpsFixLabel(gps?.fix_type)],
-            ["卫星数", gps?.satellites_visible == null ? '—' : String(gps.satellites_visible)],
-            ["纬度", gps && gps.fix_type >= 2 ? gps.lat.toFixed(7) : '—'],
-            ["经度", gps && gps.fix_type >= 2 ? gps.lon.toFixed(7) : '—'],
-            ["海拔 (MSL)", gps && gps.fix_type >= 2 ? `${gps.alt.toFixed(1)} m` : '—'],
-            ["速度", gps?.vel == null ? '—' : `${gps.vel.toFixed(2)} m/s`],
-            ["HDOP", gps?.eph == null ? '—' : gps.eph.toFixed(2)],
-            ["VDOP", gps?.epv == null ? '—' : gps.epv.toFixed(2)],
-            ["水平精度", '未提供'],
-            ["垂直精度", '未提供'],
-            ["航向", gps?.cog == null ? '—' : `${gps.cog.toFixed(1)}°`],
-            ["状态", gps && gps.fix_type >= 3 ? '定位正常' : '未定位'],
-          ]} />
-          <div className="mc-sensor-chart-grid">
-            <SensorWaveform title="卫星数趋势" unit="颗" sample={gps} values={gps ? { satellites: gps.satellites_visible } : null} series={[{ key: 'satellites', label: '可见卫星', color: 'var(--accent)' }]} />
-            <SensorWaveform title="DOP 精度因子" unit="DOP" sample={gps} values={gps ? { hdop: gps.eph, vdop: gps.epv } : null} series={gpsDopSeries} />
+          <div className="mc-gps-workspace">
+            <GpsConfigurationPanel family={vehicleIdentity?.family ?? 'unknown'} writable={caps.gpsConfig} compact />
+
+            <div className="mc-gps-diagnostics">
+              <div className="mc-gps-metrics">
+                <GpsMetric
+                  label="定位状态"
+                  value={gpsFixLabel(gps?.fix_type)}
+                  state={gps && gps.fix_type >= 3 ? 'good' : gps && gps.fix_type >= 2 ? 'waiting' : 'error'}
+                />
+                <GpsMetric
+                  label="卫星数"
+                  value={gps?.satellites_visible == null ? '—' : String(gps.satellites_visible)}
+                />
+                <GpsMetric
+                  label="地速"
+                  value={gps?.vel == null ? '—' : `${gps.vel.toFixed(1)} m/s`}
+                />
+                <GpsMetric
+                  label="航向"
+                  value={gps?.cog == null ? '—' : `${gps.cog.toFixed(1)}°`}
+                />
+              </div>
+
+              <section className="mc-card mc-gps-dop">
+                <header><strong>DOP 精度因子</strong><span>数值越低越好</span></header>
+                <div>
+                  <DopMeter label="HDOP" value={gps?.eph} />
+                  <DopMeter label="VDOP" value={gps?.epv} />
+                </div>
+              </section>
+
+              <SensorWaveform
+                title="卫星数趋势"
+                unit="颗"
+                sample={gps}
+                values={gps ? { satellites: gps.satellites_visible } : null}
+                series={[{ key: 'satellites', label: '可见卫星', color: 'var(--accent)' }]}
+                height={126}
+                className="mc-gps-satellite-chart"
+              />
+            </div>
+
+            <GpsTrackPlot />
+
+            <section className="mc-card mc-gps-position">
+              <header><span className="mc-eyebrow">POSITION</span><strong>位置信息</strong></header>
+              <dl>
+                <div><dt>纬度</dt><dd className="mc-mono">{gps && gps.fix_type >= 2 ? gps.lat.toFixed(7) : '—'}</dd></div>
+                <div><dt>经度</dt><dd className="mc-mono">{gps && gps.fix_type >= 2 ? gps.lon.toFixed(7) : '—'}</dd></div>
+                <div><dt>海拔 MSL</dt><dd className="mc-mono">{gps && gps.fix_type >= 2 ? `${gps.alt.toFixed(1)} m` : '—'}</dd></div>
+                <div><dt>地速</dt><dd className="mc-mono">{gps?.vel == null ? '—' : `${gps.vel.toFixed(2)} m/s`}</dd></div>
+                <div><dt>航向</dt><dd className="mc-mono">{gps?.cog == null ? '—' : `${gps.cog.toFixed(1)}°`}</dd></div>
+              </dl>
+            </section>
           </div>
-          <p className="mc-sensor-data-note">GPS_RAW_INT 提供 HDOP/VDOP，但不提供绝对水平/垂直精度，因此对应字段不会用 DOP 冒充米制精度。</p>
         </>
       )}
       {activeTab === 'optflow' && (

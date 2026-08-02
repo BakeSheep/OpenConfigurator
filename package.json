@@ -3,7 +3,7 @@
   "description": "Local-first desktop and web GCS for PX4 and ArduPilot",
   "author": "BakeSheep",
   "private": true,
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "license": "MIT",
   "type": "module",
   "main": "dist-electron/main.mjs",

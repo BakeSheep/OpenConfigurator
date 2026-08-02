@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { AutopilotFamily, ParamData } from '../../../shared/types'
+import Icon from '../ui/Icon'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
@@ -226,14 +227,14 @@ function ArduPilotGpsFields({ instance, writable, params }: {
   )
 }
 
-export default function GpsConfigurationPanel({ family, writable }: { family: AutopilotFamily; writable: boolean }) {
+export default function GpsConfigurationPanel({ family, writable, compact = false }: { family: AutopilotFamily; writable: boolean; compact?: boolean }) {
   const [instance, setInstance] = useState<1 | 2>(1)
   const params = useParameterStore((state) => state.params)
   const canControl = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const canWrite = canControl && writable
 
   return (
-    <section className="mc-card mc-gps-config">
+    <section className={`mc-card mc-gps-config${compact ? ' mc-gps-config--compact' : ''}`}>
       <header>
         <div><span className="mc-eyebrow">CONFIGURATION</span><h2>GPS 参数设置</h2></div>
         <span>{family === 'px4' ? 'PX4' : family === 'ardupilot' ? 'ArduPilot' : '等待识别飞控'}</span>
@@ -245,15 +246,10 @@ export default function GpsConfigurationPanel({ family, writable }: { family: Au
           </button>
         ))}
       </div>
-      {!canWrite && (
-        <p className="mc-capability-note" data-state={canControl ? 'waiting' : undefined}>
-          {!canControl ? '飞控未就绪或当前页面没有控制权，GPS 参数仅供查看。' : '当前飞控类型尚未开放 GPS 配置写入，参数仅供查看。'}
-        </p>
-      )}
       {family === 'px4' && <Px4GpsFields instance={instance} writable={canWrite} params={params} />}
       {family === 'ardupilot' && <ArduPilotGpsFields instance={instance} writable={canWrite} params={params} />}
       {family === 'unknown' && <p className="mc-gps-config__empty">连接并识别 PX4 或受支持的 ArduPilot 飞控后显示 GPS 配置。</p>}
-      <footer>GPS 类型、协议、端口或波特率更改通常需要重启飞控后生效。</footer>
+      <footer><Icon name="warning" size={14} /><span>GPS 类型、协议、端口或波特率更改通常需要重启飞控后生效。</span></footer>
     </section>
   )
 }
