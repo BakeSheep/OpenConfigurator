@@ -6,6 +6,7 @@ import { buildGroups, readStatusVariableSnapshot, STATUS_SNAPSHOT_INTERVAL_MS } 
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { attitudeToHorizonTransform } from '../utils/attitudeVisualization'
 import type { RcChannelsData } from '../../shared/types'
 
 const radToDegrees = (radians: number) => radians * 180 / Math.PI
@@ -50,7 +51,7 @@ function readDashboardSnapshot() {
 }
 
 function Horizon({ roll, pitch, yaw, frozen }: { roll: number; pitch: number; yaw: number; frozen: boolean }) {
-  const transform = `rotate(${roll.toFixed(1)}deg) translateY(${(-pitch * 1.15).toFixed(1)}%)`
+  const transform = attitudeToHorizonTransform(roll, pitch)
   return (
     <section className="mc-dashboard-horizon">
       <div className="mc-dashboard-horizon__scene" style={{ transform }}>

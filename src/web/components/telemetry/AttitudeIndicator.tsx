@@ -4,6 +4,7 @@ import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useConnectionStore } from '../../stores/connectionStore'
+import { attitudeToModelRotation } from '../../utils/attitudeVisualization'
 
 function DroneModel({ frozen }: { frozen: boolean }) {
   const meshRef = useRef<THREE.Group>(null)
@@ -14,9 +15,10 @@ function DroneModel({ frozen }: { frozen: boolean }) {
     // freezes at the last known attitude instead of misleadingly tracking a
     // frozen value as if it were live.
     if (meshRef.current && attitude && !frozen) {
-      meshRef.current.rotation.x = attitude.pitch
-      meshRef.current.rotation.y = -attitude.yaw
-      meshRef.current.rotation.z = attitude.roll
+      const rotation = attitudeToModelRotation(attitude)
+      meshRef.current.rotation.x = rotation.x
+      meshRef.current.rotation.y = rotation.y
+      meshRef.current.rotation.z = rotation.z
     }
   })
 
