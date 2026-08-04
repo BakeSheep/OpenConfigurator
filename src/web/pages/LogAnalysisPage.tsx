@@ -28,6 +28,7 @@ import { logSupport } from '../utils/logProfiles'
 import { isDataflashFileName } from '../utils/dataflashAnalysis'
 import { takeStashedLog } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
+import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetadata'
 import { backendEnabled } from '../runtime'
 import type {
   SeriesData,
@@ -616,6 +617,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const [dragOver, setDragOver] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [paramFilter, setParamFilter] = useState('')
+  const [expandedParamGroups, setExpandedParamGroups] = useState<Set<string>>(() => new Set())
   const [eventsOpen, setEventsOpen] = useState(false)
   const [chartCursorTimeSec, setChartCursorTimeSec] = useState<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -787,8 +789,33 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     if (!dataset) return []
     const filter = paramFilter.trim().toUpperCase()
     if (!filter) return dataset.params
-    return dataset.params.filter((param) => param.name.toUpperCase().includes(filter))
+    return dataset.params.filter((param) => {
+      const prefix = parameterGroupKey(param.name)
+      return param.name.toUpperCase().includes(filter)
+        || prefix.includes(filter)
+        || parameterGroupLabel(prefix).toUpperCase().includes(filter)
+    })
   }, [dataset, paramFilter])
+
+  const groupedParams = useMemo(() => {
+    const groups = new Map<string, typeof filteredParams>()
+    for (const param of filteredParams) {
+      const prefix = parameterGroupKey(param.name)
+      const entries = groups.get(prefix)
+      if (entries) entries.push(param)
+      else groups.set(prefix, [param])
+    }
+    return Array.from(groups, ([prefix, params]) => ({ prefix, params }))
+  }, [filteredParams])
+
+  const toggleParamGroup = (prefix: string) => {
+    setExpandedParamGroups((current) => {
+      const next = new Set(current)
+      if (next.has(prefix)) next.delete(prefix)
+      else next.add(prefix)
+      return next
+    })
+  }
 
   const modeTimeline = useMemo(() => {
     if (!dataset || dataset.overview.durationSec <= 0) return []
@@ -1147,28 +1174,41 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               value={paramFilter}
               onChange={(event) => setParamFilter(event.target.value)}
             />
-            <div className="mc-param-table">
-              <table>
-                <thead>
-                  <tr><th>参数</th><th>值</th></tr>
-                </thead>
-                <tbody>
-                  {filteredParams.slice(0, 400).map((param) => (
-                    <tr key={param.name}>
-                      <td className="mc-mono">{param.name}</td>
-                      <td className="mc-mono">{Number.isInteger(param.value)
-                        ? param.value
-                        : param.value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredParams.length > 400 && (
-                    <tr><td colSpan={2} style={{ color: 'var(--text-disabled)' }}>
-                      仅显示前 400 项，请细化搜索
-                    </td></tr>
-                  )}
-                </tbody>
-              </table>
+            <div className="mc-analysis-param-groups">
+              {groupedParams.map(({ prefix, params }) => {
+                const expanded = Boolean(paramFilter.trim()) || expandedParamGroups.has(prefix)
+                return (
+                  <section key={prefix} className="mc-variable-group" data-expanded={expanded || undefined}>
+                    <button
+                      type="button"
+                      className="mc-variable-group__header"
+                      aria-expanded={expanded}
+                      onClick={() => toggleParamGroup(prefix)}
+                    >
+                      <Icon name="chevronDown" size={13} />
+                      <span>
+                        <strong className="mc-mono">{prefix}</strong>
+                        <small>{parameterGroupLabel(prefix)}</small>
+                      </span>
+                      <i className="mc-mono">{params.length}</i>
+                    </button>
+                    {expanded && (
+                      <div className="mc-analysis-param-group__body">
+                        {params.map((param) => (
+                          <div key={param.name}>
+                            <span className="mc-mono">{param.name}</span>
+                            <strong className="mc-mono">{Number.isInteger(param.value)
+                              ? param.value
+                              : param.value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )
+              })}
+              {groupedParams.length === 0 && <p className="mc-analysis-param-groups__empty">没有匹配的参数</p>}
             </div>
           </section>
 

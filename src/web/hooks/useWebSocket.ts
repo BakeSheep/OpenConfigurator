@@ -9,6 +9,8 @@ import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useLogTransferStore } from '../stores/logTransferStore'
 import { useEscStore } from '../stores/escStore'
 import { useMessageRateStore } from '../stores/messageRateStore'
+import { recordMavlinkServerMessage, useMavlinkMessageStore } from '../stores/mavlinkMessageStore'
+import { useShellStore } from '../stores/shellStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
@@ -88,6 +90,11 @@ function handleMessage(msg: ServerMessage) {
   const telemetryStore = useTelemetryStore.getState()
   const sensorStore = useSensorStore.getState()
   const paramStore = useParameterStore.getState()
+
+  // Keep wire-message diagnostics independent from the normalized telemetry
+  // stores. In particular, concurrent RAW/SCALED/HIGHRES IMU streams must each
+  // retain their own liveness, measured browser receive rate, and latest frame.
+  recordMavlinkServerMessage(msg)
 
   switch (msg.type) {
     case 'hello':
@@ -173,6 +180,8 @@ function handleMessage(msg: ServerMessage) {
         useFileExplorerStore.getState().reset()
         useLogTransferStore.getState().reset()
         useEscStore.getState().reset()
+        useMavlinkMessageStore.getState().reset()
+        useShellStore.getState().reset()
         // A calibration session is bound to the dropped FC link. Unlike a
         // transient WS disconnect, this permanently invalidates recovery.
         useCalibrationStore.getState().clearRecovery()
@@ -277,6 +286,12 @@ function handleMessage(msg: ServerMessage) {
       console.log(`[FC] ${msg.data.text}`)
       telemetryStore.addStatusLog(msg.data.severity, msg.data.text)
       break
+    case 'shell_output':
+      useShellStore.getState().append(msg.data.text)
+      break
+    case 'shell_status':
+      useShellStore.getState().setStatus(msg.data.active, msg.data.reason)
+      break
     case 'fs_list':
       useFileExplorerStore.getState().setListing(msg.data.path, msg.data.entries)
       break
@@ -352,6 +367,7 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'operation_error':
       telemetryStore.setOperationError(msg.data)
+      if (msg.data.operation === 'shell') useShellStore.getState().setStatus(false, msg.data.message)
       if (msg.data.operation === 'calibration_reclaim' && msg.data.code === 'reclaim_denied') {
         useCalibrationStore.getState().clearRecovery()
         calibrationReclaimAttempt = null
@@ -599,6 +615,7 @@ function connectSocket() {
       useParameterStore.getState().clear()
       useLogTransferStore.getState().reset()
       useEscStore.getState().reset()
+      useShellStore.getState().reset()
       useCalibrationStore.getState().reset()
       calibrationReclaimAttempt = null
     }

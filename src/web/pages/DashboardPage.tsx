@@ -7,6 +7,7 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { attitudeToHorizonTransform } from '../utils/attitudeVisualization'
+import { statusGroupDescription, statusVariableDescription } from '../utils/statusVariableMetadata'
 import type { RcChannelsData } from '../../shared/types'
 
 const radToDegrees = (radians: number) => radians * 180 / Math.PI
@@ -15,12 +16,32 @@ const AttitudeIndicator = lazy(() => import('../components/telemetry/AttitudeInd
 // Selected variable ids ("GROUP.name") for the custom data board.
 const CUSTOM_VARS_KEY = 'oc-dashboard-custom-vars'
 
+const LEGACY_CUSTOM_VAR_IDS: Record<string, string> = {
+  'GPS.satellitesVisible': 'Gps.count',
+  'ESTIMATORSTATUS.velInnovation': 'EstimatorStatus.velRatio',
+}
+
+function migrateCustomVarId(id: string): string {
+  if (LEGACY_CUSTOM_VAR_IDS[id]) return LEGACY_CUSTOM_VAR_IDS[id]
+  const separator = id.indexOf('.')
+  if (separator < 0) return id
+  const group = id.slice(0, separator)
+  const entry = id.slice(separator + 1)
+  const renamedGroup = group === 'VEHICLE' ? 'Vehicle'
+    : group === 'BATTERY0' ? 'Battery0'
+      : group === 'GPS' ? 'Gps'
+        : group === 'DISTANCESENSOR' ? 'DistanceSensor'
+          : group === 'ESTIMATORSTATUS' ? 'EstimatorStatus'
+            : group
+  return `${renamedGroup}.${entry}`
+}
+
 function loadCustomVars(): string[] {
   try {
     const raw = localStorage.getItem(CUSTOM_VARS_KEY)
     if (raw) {
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string')
+      if (Array.isArray(parsed)) return parsed.filter((id) => typeof id === 'string').map(migrateCustomVarId)
     }
   } catch { /* ignore */ }
   return []
@@ -123,9 +144,16 @@ function CustomDataCard() {
   const [selected, setSelected] = useState(loadCustomVars)
   const [editing, setEditing] = useState(false)
   const [query, setQuery] = useState('')
+  const [expandedPickerGroups, setExpandedPickerGroups] = useState<Set<string>>(() => new Set())
 
   const groups = useMemo(
-    () => buildGroups(snapshot.telemetry, snapshot.sensors, snapshot.linkStats),
+    () => buildGroups(
+      snapshot.telemetry,
+      snapshot.sensors,
+      snapshot.linkStats,
+      snapshot.messages,
+      snapshot.sampledAt,
+    ),
     [snapshot],
   )
   const entryById = new Map(groups.flatMap((group) => group.entries.map((entry) => [`${group.name}.${entry.name}`, entry] as [string, typeof entry])))
@@ -144,11 +172,24 @@ function CustomDataCard() {
         .map((group) => ({
           ...group,
           entries: group.name.toLowerCase().includes(needle)
+            || statusGroupDescription(group.name)?.includes(query.trim())
             ? group.entries
-            : group.entries.filter((entry) => entry.name.toLowerCase().includes(needle)),
+            : group.entries.filter((entry) =>
+                entry.name.toLowerCase().includes(needle)
+                || statusVariableDescription(group.name, entry.name)?.includes(query.trim()),
+              ),
         }))
         .filter((group) => group.entries.length > 0)
     : groups
+
+  const togglePickerGroup = (groupName: string) => {
+    setExpandedPickerGroups((current) => {
+      const next = new Set(current)
+      if (next.has(groupName)) next.delete(groupName)
+      else next.add(groupName)
+      return next
+    })
+  }
 
   return (
     <aside className="mc-card mc-dashboard-sensors overflow-hidden">
@@ -164,25 +205,48 @@ function CustomDataCard() {
             type="text"
             className="mc-input"
             value={query}
-            placeholder="搜索变量名…"
+            placeholder="搜索变量名或中文注释…"
             onChange={(event) => setQuery(event.target.value)}
           />
           <div className="mc-dashboard-custom__picker-list">
-            {pickerGroups.map((group) => (
-              <div key={group.name}>
-                <p>{group.name}</p>
-                {group.entries.map((entry) => {
-                  const id = `${group.name}.${entry.name}`
-                  return (
-                    <label key={id}>
-                      <input type="checkbox" checked={selected.includes(id)} onChange={() => toggleVar(id)} style={{ accentColor: 'var(--accent)' }} />
-                      <span>{entry.name}</span>
-                      <i className="mc-mono">{entry.value ?? '--'}</i>
-                    </label>
-                  )
-                })}
-              </div>
-            ))}
+            {pickerGroups.map((group) => {
+              const expanded = Boolean(needle) || expandedPickerGroups.has(group.name)
+              const selectedCount = group.entries.filter((entry) => selected.includes(`${group.name}.${entry.name}`)).length
+              return (
+                <section key={group.name} className="mc-variable-group" data-expanded={expanded || undefined}>
+                  <button
+                    type="button"
+                    className="mc-variable-group__header"
+                    aria-expanded={expanded}
+                    onClick={() => togglePickerGroup(group.name)}
+                  >
+                    <Icon name="chevronDown" size={13} />
+                    <span>
+                      <strong className="mc-mono">{group.name}</strong>
+                      <small>{statusGroupDescription(group.name)}</small>
+                    </span>
+                    <i className="mc-mono">{selectedCount > 0 ? `${selectedCount}/` : ''}{group.entries.length}</i>
+                  </button>
+                  {expanded && (
+                    <div className="mc-variable-group__body">
+                      {group.entries.map((entry) => {
+                        const id = `${group.name}.${entry.name}`
+                        return (
+                          <label key={id}>
+                            <input type="checkbox" checked={selected.includes(id)} onChange={() => toggleVar(id)} />
+                            <span>
+                              <strong>{entry.name}</strong>
+                              <small>{statusVariableDescription(group.name, entry.name)}</small>
+                            </span>
+                            <i className="mc-mono">{entry.value ?? '--'}</i>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </section>
+              )
+            })}
           </div>
         </div>
       ) : selected.length === 0 ? (

@@ -203,6 +203,10 @@ export const SERIAL_CONTROL_FLAGS = {
 // SERIAL_CONTROL data field is a fixed 70-byte array on the wire.
 export const SERIAL_CONTROL_MAX_DATA = 70
 
+// MAVLink SERIAL_CONTROL_DEV_SHELL. PX4 exposes its NuttX NSH console on
+// device 10; this is distinct from ESC passthrough devices 20..27.
+export const PX4_SHELL_SERIAL_CONTROL_DEVICE = 10
+
 // PX4 exposes ESC passthrough UARTs on SERIAL_CONTROL device ids 20..27
 // (one per DShot output). Provenance is Pending until hardware-verified;
 // see docs/ESC-PROTOCOL-SOURCES.md. Kept as an inclusive range so validation

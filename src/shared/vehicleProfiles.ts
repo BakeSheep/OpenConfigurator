@@ -252,6 +252,8 @@ export interface VehicleCapabilities {
   serialConfig: boolean
   gpsConfig: boolean
   logFormat: 'ulog' | 'dataflash' | 'unknown'
+  /** Interactive shell exposed by the selected firmware over MAVLink. */
+  mavlinkShell: 'px4-nsh' | 'none'
 }
 
 const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
@@ -268,6 +270,7 @@ const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
   serialConfig: false,
   gpsConfig: false,
   logFormat: 'unknown',
+  mavlinkShell: 'none',
 }
 
 export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCapabilities {
@@ -288,6 +291,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
       serialConfig: true,
       gpsConfig: true,
       logFormat: 'ulog',
+      mavlinkShell: 'px4-nsh',
     }
   }
   if (identity.family === 'ardupilot') {
@@ -306,6 +310,7 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
         serialConfig: true,
         gpsConfig: true,
         logFormat: 'dataflash',
+        mavlinkShell: 'none',
       }
     }
     // Plane/Rover/Sub/Tracker: explicitly read-only until tested; the log

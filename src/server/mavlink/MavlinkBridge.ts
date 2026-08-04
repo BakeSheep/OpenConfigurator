@@ -29,6 +29,9 @@ import {
   LOG_DATA_MESSAGE_ID,
   LOG_ENTRY_MESSAGE_ID,
   MAVLINK_COMMANDS,
+  PX4_SHELL_SERIAL_CONTROL_DEVICE,
+  SERIAL_CONTROL_FLAGS,
+  SERIAL_CONTROL_MAX_DATA,
 } from '../../shared/constants'
 import {
   buildVehicleIdentity,
@@ -74,6 +77,9 @@ const STATUSTEXT_MAX_BYTES = 4096
 const MAX_DISCOVERED_TARGETS = 32
 const MAX_PENDING_PARAM_SETS = 64
 const VERSION_MAX_ATTEMPTS = 3
+// A SERIAL_CONTROL write has no ACK. Treat the shell as connected only after
+// the selected flight controller returns bytes from DEV_SHELL.
+const SHELL_PROBE_TIMEOUT_MS = 2_500
 // SET_MESSAGE_INTERVAL requests are fire-and-forget; on a lossy link a single
 // dropped frame must not silently degrade the whole session to the legacy
 // stream path, so the batch is re-sent a bounded number of times.
@@ -263,6 +269,11 @@ export class MavlinkBridge extends EventEmitter {
   // Temporary consumers for SERIAL_CONTROL (#126) replies, used by the PX4
   // ESC transport. MAVLink is NOT paused in this mode.
   private readonly serialControlListeners = new Set<(message: common.SerialControl) => void>()
+  // PX4 NuttX shell tunneled through SERIAL_CONTROL_DEV_SHELL. Only one
+  // controller-owned session may be active; normal MAVLink receive continues.
+  private shellActive = false
+  private shellPending = false
+  private shellProbeTimer: ReturnType<typeof setTimeout> | null = null
   // True while an ESC session has borrowed the link (ADR-003/005). The GCS
   // heartbeat and data intake are detached so MAVLink frames cannot pollute
   // the raw ESC byte stream.
@@ -657,6 +668,13 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private cancelProtocolOperations(restoreTelemetry: boolean, reason: string): void {
+    if (this.shellActive || this.shellPending) {
+      if (this.shellProbeTimer) clearTimeout(this.shellProbeTimer)
+      this.shellProbeTimer = null
+      this.shellActive = false
+      this.shellPending = false
+      this.emit('message', { type: 'shell_status', data: { active: false, reason } } as ServerMessage)
+    }
     this.cancelParamDownload(restoreTelemetry, reason)
     this.ftp.cancelAll(reason)
     this.logTransfer.cancelAll(reason)
@@ -1642,9 +1660,28 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private handleSerialControl(msg: MavlinkMessage): void {
-    if (this.serialControlListeners.size === 0) return
+    if (this.serialControlListeners.size === 0 && !this.shellActive && !this.shellPending) return
+    if (!this.isSelectedSource(msg)) return
     const decoded = decode<common.SerialControl>(126, msg.payload)
     if (!decoded) return
+    if (
+      (this.shellActive || this.shellPending)
+      && Number(decoded.device) === PX4_SHELL_SERIAL_CONTROL_DEVICE
+      && decoded.count > 0
+    ) {
+      if (this.shellPending) {
+        this.shellPending = false
+        this.shellActive = true
+        if (this.shellProbeTimer) clearTimeout(this.shellProbeTimer)
+        this.shellProbeTimer = null
+        this.emitShellStatus(true)
+      }
+      const bytes = Buffer.from(decoded.data as unknown as number[]).subarray(0, decoded.count)
+      this.emit('message', {
+        type: 'shell_output',
+        data: { text: bytes.toString('utf8') },
+      } as ServerMessage)
+    }
     for (const listener of [...this.serialControlListeners]) {
       try {
         listener(decoded)
@@ -1652,6 +1689,121 @@ export class MavlinkBridge extends EventEmitter {
         console.error('[MAVLink] SERIAL_CONTROL listener threw:', error)
       }
     }
+  }
+
+  private emitShellStatus(active: boolean, reason?: string): void {
+    this.emit('message', {
+      type: 'shell_status',
+      data: { active, ...(reason ? { reason } : {}) },
+    } as ServerMessage)
+  }
+
+  private openShell(requestId?: string): void {
+    if (this.shellActive) {
+      this.emitShellStatus(true)
+      return
+    }
+    if (this.shellPending) {
+      this.emitShellStatus(false, 'probing')
+      return
+    }
+    if (vehicleCapabilities(this.selectedIdentity).mavlinkShell !== 'px4-nsh') {
+      this.emitOperationError('shell', 'unsupported_vehicle_profile', '当前固件未提供已验证的 MAVLink 交互 Shell', requestId)
+      this.emitShellStatus(false, 'unsupported_vehicle_profile')
+      return
+    }
+    if (this.lastArmedState !== false) {
+      this.emitOperationError(
+        'shell',
+        this.lastArmedState === true ? 'vehicle_armed' : 'arming_state_unknown',
+        this.lastArmedState === true ? '飞行器已解锁，拒绝打开终端' : '飞行器解锁状态未知，拒绝打开终端',
+        requestId,
+      )
+      this.emitShellStatus(false, 'unsafe_arming_state')
+      return
+    }
+    if (this.paramDownloadActive || this.ftp.busy || this.logTransfer.busy) {
+      this.emitOperationError('shell', 'transfer_busy', '参数或日志传输进行中，暂不能打开终端', requestId, true)
+      this.emitShellStatus(false, 'transfer_busy')
+      return
+    }
+    this.shellPending = true
+    this.emitShellStatus(false, 'probing')
+    if (!this.sendShellPayload('\r')) {
+      this.shellPending = false
+      this.emitOperationError('shell', 'write_failed', '终端探测数据未能写入飞控', requestId, true)
+      this.emitShellStatus(false, 'write_failed')
+      return
+    }
+    this.shellProbeTimer = setTimeout(() => {
+      this.shellProbeTimer = null
+      if (!this.shellPending || this.destroyed) return
+      this.shellPending = false
+      this.sendSerialControl({
+        device: PX4_SHELL_SERIAL_CONTROL_DEVICE,
+        flags: 0,
+        timeout: 0,
+        baudrate: 0,
+        count: 0,
+        data: new Uint8Array(),
+      })
+      this.emitOperationError(
+        'shell',
+        'shell_probe_timeout',
+        '飞控未响应 MAVLink Shell；当前板卡或固件可能未编译该功能',
+        requestId,
+        true,
+      )
+      this.emitShellStatus(false, 'shell_probe_timeout')
+    }, SHELL_PROBE_TIMEOUT_MS)
+  }
+
+  private sendShellPayload(text: string): boolean {
+    const bytes = Buffer.from(text, 'utf8')
+    for (let offset = 0; offset < bytes.length; offset += SERIAL_CONTROL_MAX_DATA) {
+      const chunk = bytes.subarray(offset, offset + SERIAL_CONTROL_MAX_DATA)
+      const sent = this.sendSerialControl({
+        device: PX4_SHELL_SERIAL_CONTROL_DEVICE,
+        flags: SERIAL_CONTROL_FLAGS.Respond | SERIAL_CONTROL_FLAGS.Exclusive | SERIAL_CONTROL_FLAGS.Multi,
+        timeout: 0,
+        baudrate: 0,
+        count: chunk.length,
+        data: chunk,
+      })
+      if (!sent) return false
+    }
+    return true
+  }
+
+  private writeShell(text: string, requestId?: string): void {
+    if (!this.shellActive) {
+      const message = this.shellPending ? '正在确认飞控 Shell 能力' : 'PX4 终端尚未打开'
+      this.emitOperationError('shell', 'shell_not_open', message, requestId, true)
+      return
+    }
+    if (!this.sendShellPayload(text)) {
+      this.emitOperationError('shell', 'write_failed', '终端数据未能写入飞控', requestId, true)
+    }
+  }
+
+  private closeShell(reason = 'closed'): void {
+    if (!this.shellActive && !this.shellPending) {
+      this.emitShellStatus(false, reason)
+      return
+    }
+    if (this.shellProbeTimer) clearTimeout(this.shellProbeTimer)
+    this.shellProbeTimer = null
+    this.sendSerialControl({
+      device: PX4_SHELL_SERIAL_CONTROL_DEVICE,
+      flags: 0,
+      timeout: 0,
+      baudrate: 0,
+      count: 0,
+      data: new Uint8Array(),
+    })
+    this.shellActive = false
+    this.shellPending = false
+    this.emitShellStatus(false, reason)
   }
 
   private emitFsOpError(
@@ -1979,6 +2131,11 @@ export class MavlinkBridge extends EventEmitter {
   // Send commands from frontend
   handleClientMessage(msg: ClientMessage): MavlinkBridgeClientResult {
     let vehicleRebootQueued = false
+    const isShellMessage = msg.type === 'shell_open' || msg.type === 'shell_write' || msg.type === 'shell_close'
+    if ((this.shellActive || this.shellPending) && !isShellMessage) {
+      this.emitOperationError(msg.type, 'shell_active', 'PX4 终端会话进行中，请先关闭终端', 'requestId' in msg ? msg.requestId : undefined, true)
+      return { vehicleRebootQueued }
+    }
     switch (msg.type) {
       case 'command': {
         if (this.requireReadyTarget('command', msg.requestId)) {
@@ -2115,6 +2272,15 @@ export class MavlinkBridge extends EventEmitter {
           this.sendTelemetryIntervalRequests()
           this.emit('message', this.getMessageRatesMessage())
         }
+        break
+      case 'shell_open':
+        if (this.requireReadyTarget('shell', msg.requestId)) this.openShell(msg.requestId)
+        break
+      case 'shell_write':
+        if (this.requireReadyTarget('shell', msg.requestId)) this.writeShell(msg.data.text, msg.requestId)
+        break
+      case 'shell_close':
+        this.closeShell('closed')
         break
       case 'motor_test_batch':
         if (this.requireReadyTarget('motor_test_batch', msg.requestId)) {

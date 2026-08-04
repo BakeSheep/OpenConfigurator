@@ -45,7 +45,9 @@ OpenConfigurator 根据 HEARTBEAT 自动识别 PX4 与 ArduPilot。飞控差异�
 
 ### 飞控配置与操作
 
-- 完整参数同步、搜索、分组、修改、回显确认与导出
+- 完整参数同步、中文名称/用途搜索、分组、修改、回显确认与导出
+- MAVLink 消息字段与实测频率、192 项标准状态变量、变化高亮及扩展链路/传感器诊断
+- PX4 上锁状态下通过 `SERIAL_CONTROL_DEV_SHELL` 使用实时 NuttX NSH 终端
 - 机架识别、执行器映射、传感器监控与校准、PID、EKF、串口和板载朝向配置
 - 带确认保护的解锁/上锁、起飞、降落、返航、模式切换和无桨电机测试
 - RC 通道监控、游戏手柄映射与必须手动启用的 RC override
@@ -61,6 +63,7 @@ OpenConfigurator 根据 HEARTBEAT 自动识别 PX4 与 ArduPilot。飞控差异�
 | 机架与执行器 | 支持 | ArduCopter 支持 |
 | 电机测试 | `MAV_CMD_ACTUATOR_TEST` | `MAV_CMD_DO_MOTOR_TEST` |
 | 飞行日志 | ULog / MAVLink FTP | DataFlash / `LOG_REQUEST_*` |
+| 飞控终端 | NuttX NSH（仅上锁且持有控制权） | 不支持 |
 
 ArduCopter 4.7 是当前 ArduPilot 实机验收目标。ArduPlane、Rover、Sub 与 Tracker 可识别并显示通用数据与 DataFlash 日志，但安全关键写操作仍为只读。ArduPilot 罗盘校准、机架写入和任务/围栏/集结点编辑尚未实现。
 
@@ -74,6 +77,8 @@ ArduCopter 4.7 是当前 ArduPilot 实机验收目标。ArduPlane、Rover、Sub 
 - 软件路径覆盖 AM32 MCU signature `0x1F06`、`0x3506`、`0x1506` 与 layout revision 1–3
 
 软件支持不等于具体飞控、ESC 和固件组合已经通过实机验证。使用前请核对 [ESC 参数兼容性矩阵](docs/ESC-COMPATIBILITY.md)；BLHeli_S、Bluejay、未知 signature 或未知 layout 不开放参数写入。
+
+参数、状态与交互终端的跨板卡/跨固件边界见 [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)。PX4 终端会等待真实 Shell 回包后才进入已连接状态；当前 ArduPilot 官方固件没有与 PX4 NSH 等价的交互终端。
 
 ### 桌面运行
 
@@ -188,6 +193,7 @@ Express / ws ── validation / controller lease
 
 - [架构](docs/ARCHITECTURE.md)
 - [ESC 参数兼容性](docs/ESC-COMPATIBILITY.md)
+- [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
 - [ESC 协议来源](docs/ESC-PROTOCOL-SOURCES.md)
 - [贡献指南](CONTRIBUTING.md)
 - [第三方说明](THIRD_PARTY_NOTICES.md)

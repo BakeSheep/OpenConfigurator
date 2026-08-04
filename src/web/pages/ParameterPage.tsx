@@ -6,6 +6,7 @@ import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
 
 // PX4 circuit-breaker parameters disable safety protections outright; writing
 // them by accident must require an explicit confirmation.
@@ -75,13 +76,13 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     const values = Array.from(params.values())
     if (!search) return values
     const query = search.toUpperCase()
-    return values.filter((param) => param.id.toUpperCase().includes(query))
-  }, [params, search])
+    return values.filter((param) => parameterSearchText(param.id, vehicleIdentity).includes(query))
+  }, [params, search, vehicleIdentity])
 
   const groups = useMemo(() => {
     const result: Record<string, typeof filteredParams> = {}
     for (const param of filteredParams) {
-      const prefix = param.id.split('_')[0]
+      const prefix = parameterGroupKey(param.id)
       if (!result[prefix]) result[prefix] = []
       result[prefix].push(param)
     }
@@ -129,7 +130,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = 'px4_params.params'
+    anchor.download = `${vehicleIdentity?.family ?? 'autopilot'}_params.params`
     anchor.click()
     URL.revokeObjectURL(url)
   }
@@ -153,7 +154,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
 
       <div className="mc-param-search">
         <Icon name="search" size={17} aria-hidden="true" />
-        <input className="mc-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名…" />
+        <input className="mc-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名、中文名称或说明…" />
       </div>
 
       {loading && (
@@ -168,35 +169,45 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
         <div className="space-y-3">
           {Object.entries(groups).map(([prefix, items]) => {
             const isCollapsed = search ? false : (collapsed[prefix] ?? true)
+            const groupLabel = parameterMetadata(items[0]?.id ?? prefix, vehicleIdentity).groupLabel
             return (
               <section key={prefix} className="mc-card overflow-hidden">
                 <button
                   type="button"
-                  className="flex w-full items-center gap-3 px-5 py-3 text-left"
+                  className="mc-param-group__header"
                   onClick={() => setCollapsed((current) => ({ ...current, [prefix]: current[prefix] === undefined ? false : !current[prefix] }))}
                 >
                   <Icon name="chevronDown" size={15} style={{ color: 'var(--text-secondary)', transform: isCollapsed ? 'rotate(-90deg)' : undefined, transition: 'transform 160ms ease' }} />
-                  <span className="mc-mono text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{prefix}</span>
-                  <span className="rounded-full px-2 py-0.5 text-[10px]" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>{items.length}</span>
+                  <span><strong className="mc-mono">{prefix}</strong><small>{groupLabel}</small></span>
+                  <i className="mc-mono">{items.length}</i>
                 </button>
                 {!isCollapsed && (
-                  <div className="border-t" style={{ borderColor: 'var(--border)' }}>
-                    {items.slice(0, visibleCounts[prefix] ?? 80).map((param) => (
-                      <div key={param.id} className="flex items-center gap-3 border-b px-5 py-2.5 last:border-b-0" style={{ borderColor: 'var(--border)' }}>
-                        <span className="min-w-0 flex-1 truncate mc-mono text-[12px]" style={{ color: 'var(--text-primary)' }}>{param.id}</span>
+                  <div className="mc-param-group__body">
+                    {items.slice(0, visibleCounts[prefix] ?? 80).map((param) => {
+                      const metadata = parameterMetadata(param.id, vehicleIdentity)
+                      return (
+                      <div key={param.id} className="mc-param-row">
+                        <div className="mc-param-row__identity">
+                          <span>
+                            <code>{param.id}</code>
+                            <strong>{metadata.title}</strong>
+                            {metadata.unit && <i>{metadata.unit}</i>}
+                          </span>
+                          <p>{metadata.description}</p>
+                        </div>
                         {editId === param.id ? (
-                          <div className="flex items-center gap-2">
+                          <div className="mc-param-row__editor">
                             <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
                             <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>保存</button>
                           </div>
                         ) : (
-                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-mono rounded-md px-2.5 py-1.5 text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--accent)' }} onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
+                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
                             {pendingWrite?.id === param.id ? '确认中…' : param.value}
                           </button>
                         )}
-                        <span className="hidden rounded px-1.5 py-0.5 text-[10px] sm:inline" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-disabled)' }}>T{param.type}</span>
+                        <span className="mc-param-row__type mc-mono">T{param.type}</span>
                       </div>
-                    ))}
+                    )})}
                     {items.length > (visibleCounts[prefix] ?? 80) && (
                       <button type="button" className="mc-load-more" onClick={() => setVisibleCounts((current) => ({ ...current, [prefix]: (current[prefix] ?? 80) + 80 }))}>
                         显示更多 · 还有 {items.length - (visibleCounts[prefix] ?? 80)} 项

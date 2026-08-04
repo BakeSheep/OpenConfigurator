@@ -122,13 +122,13 @@ function seedStatics() {
   try {
     if (!localStorage.getItem('oc-dashboard-custom-vars')) {
       localStorage.setItem('oc-dashboard-custom-vars', JSON.stringify([
-        'VEHICLE.groundSpeed',
-        'VEHICLE.altitudeRelative',
-        'VEHICLE.throttlePct',
-        'BATTERY0.voltage',
-        'BATTERY0.current',
-        'GPS.satellitesVisible',
-        'ESTIMATORSTATUS.velInnovation',
+        'Vehicle.groundSpeed',
+        'Vehicle.altitudeRelative',
+        'Vehicle.throttlePct',
+        'Battery0.voltage',
+        'Battery0.current',
+        'Gps.count',
+        'EstimatorStatus.velRatio',
         'FIRMWARE.firmwareVersion',
       ]))
     }

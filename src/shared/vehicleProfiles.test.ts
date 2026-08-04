@@ -179,6 +179,7 @@ assert.equal(px4Caps.ekfConfig, true)
 assert.equal(px4Caps.serialConfig, true)
 assert.equal(px4Caps.gpsConfig, true)
 assert.equal(px4Caps.logFormat, 'ulog')
+assert.equal(px4Caps.mavlinkShell, 'px4-nsh')
 
 const apCopterCaps = vehicleCapabilities(arducopter)
 assert.equal(apCopterCaps.writeOperations, true)
@@ -194,6 +195,7 @@ assert.equal(apCopterCaps.ekfConfig, true)
 assert.equal(apCopterCaps.serialConfig, true)
 assert.equal(apCopterCaps.gpsConfig, true)
 assert.equal(apCopterCaps.logFormat, 'dataflash')
+assert.equal(apCopterCaps.mavlinkShell, 'none')
 
 // ArduPlane/Rover/Sub/Tracker are explicit read-only profiles until tested.
 for (const typeId of [1, 10, 12, 5]) {
@@ -211,6 +213,7 @@ for (const typeId of [1, 10, 12, 5]) {
   assert.equal(caps.serialConfig, false)
   assert.equal(caps.gpsConfig, false)
   assert.equal(caps.logFormat, 'dataflash')
+  assert.equal(caps.mavlinkShell, 'none')
 }
 
 // Unknown family / missing identity: every write capability defaults false.
@@ -229,6 +232,7 @@ for (const identity of [unknownIdentity, null]) {
   assert.equal(caps.serialConfig, false)
   assert.equal(caps.gpsConfig, false)
   assert.equal(caps.logFormat, 'unknown')
+  assert.equal(caps.mavlinkShell, 'none')
 }
 
 // Per-kind calibration matrix: explicit family × vehicleClass × kind. PX4

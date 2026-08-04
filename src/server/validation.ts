@@ -372,6 +372,20 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       return withRequestId({ type: 'message_rates_set', data: rates }, id) as BoundaryClientMessage
     }
 
+    case 'shell_open':
+      return withRequestId({ type: 'shell_open' }, id) as BoundaryClientMessage
+
+    case 'shell_write': {
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['text'], 'data')
+      const shellText = text(data.text, 'data.text', { minBytes: 1, maxBytes: 1024 })
+      if (shellText.includes('\0')) fail('invalid_format', '终端输入不能包含 NUL 字节', 'data.text')
+      return withRequestId({ type: 'shell_write', data: { text: shellText } }, id) as BoundaryClientMessage
+    }
+
+    case 'shell_close':
+      return withRequestId({ type: 'shell_close' }, id) as BoundaryClientMessage
+
     case 'reboot_vehicle':
       if (id === undefined) fail('missing_request_id', 'reboot_vehicle 必须携带 requestId', 'requestId')
       if (input.safetyConfirmation !== 'reboot_flight_controller') {

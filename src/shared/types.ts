@@ -493,6 +493,8 @@ export type ServerMessage =
       }
     }
   | { type: 'statustext'; data: { severity: number; text: string } }
+  | { type: 'shell_output'; data: { text: string } }
+  | { type: 'shell_status'; data: { active: boolean; reason?: string } }
   | { type: 'rc_channels'; data: RcChannelsData }
   | { type: 'ekf_status'; data: EkfStatusData }
   | { type: 'motor_outputs'; data: MotorOutputData }
@@ -617,6 +619,9 @@ export type ClientMessage =
   | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
   | { type: 'param_request_list'; requestId?: string }
   | { type: 'message_rates_set'; requestId?: string; data: MessageRateConfig }
+  | { type: 'shell_open'; requestId?: string }
+  | { type: 'shell_write'; requestId?: string; data: { text: string } }
+  | { type: 'shell_close'; requestId?: string }
   | { type: 'reboot_vehicle'; requestId: string; safetyConfirmation: 'reboot_flight_controller' }
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {

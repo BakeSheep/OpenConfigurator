@@ -480,6 +480,30 @@ for (const messageId of [27, 100, 106, 132, 173]) {
   }), `expected telemetry interval request for MAVLink message #${messageId}`)
 }
 
+const serialFramesBeforeShell = connection.frames.filter((frame) => frameMessageId(frame) === 126).length
+bridge.handleClientMessage({ type: 'shell_open', requestId: 'shell-open-test' })
+assert.equal(findLast(messages, (message) => message.type === 'shell_status')?.data.active, false)
+assert.equal(findLast(messages, (message) => message.type === 'shell_status')?.data.reason, 'probing')
+assert.ok(
+  connection.frames.filter((frame) => frameMessageId(frame) === 126).length >= serialFramesBeforeShell + 1,
+  'PX4 shell probe must use SERIAL_CONTROL',
+)
+const shellReply = Buffer.alloc(79)
+shellReply[6] = 10
+shellReply[7] = 1
+shellReply[8] = 5
+Buffer.from('nsh> ', 'ascii').copy(shellReply, 9)
+inject(bridge, 126, shellReply)
+assert.equal(findLast(messages, (message) => message.type === 'shell_status')?.data.active, true)
+assert.equal(findLast(messages, (message) => message.type === 'shell_output')?.data.text, 'nsh> ')
+bridge.handleClientMessage({ type: 'shell_write', data: { text: 'ver hw\r' } })
+assert.ok(
+  connection.frames.filter((frame) => frameMessageId(frame) === 126).length >= serialFramesBeforeShell + 2,
+  'PX4 shell probe and input must use SERIAL_CONTROL',
+)
+bridge.handleClientMessage({ type: 'shell_close' })
+assert.equal(findLast(messages, (message) => message.type === 'shell_status')?.data.active, false)
+
 const initialAttitudeInterval = findLast(initialCommandFrames, (frame) => {
   const payload = framePayload(frame)
   return payload.readUInt16LE(28) === 511 && payload.readFloatLE(0) === 30

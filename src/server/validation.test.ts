@@ -274,4 +274,21 @@ expectFail(
   'message rate outside the select options',
 )
 
+const shellOpen = parseClientMessage({ type: 'shell_open', requestId: 'shell-1' })
+assert.equal(shellOpen.type, 'shell_open')
+const shellWrite = parseClientMessage({ type: 'shell_write', data: { text: 'ver hw\r' } })
+assert.equal(shellWrite.type, 'shell_write')
+if (shellWrite.type === 'shell_write') assert.equal(shellWrite.data.text, 'ver hw\r')
+assert.equal(parseClientMessage({ type: 'shell_close' }).type, 'shell_close')
+expectFail(
+  { type: 'shell_write', data: { text: 'bad\0input' } },
+  'invalid_format',
+  'shell input containing NUL',
+)
+expectFail(
+  { type: 'shell_write', data: { text: '' } },
+  'out_of_range',
+  'empty shell input',
+)
+
 console.log('calibration boundary validation checks passed')
