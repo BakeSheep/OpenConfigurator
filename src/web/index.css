@@ -1320,8 +1320,10 @@ input[type="range"]:disabled {
 .mc-param-row__identity i { padding: 1px 5px; border-radius: 4px; background: var(--info-dim); color: var(--info); font-size: 8.5px; font-style: normal; }
 .mc-param-row__identity strong { min-width: 0; overflow: hidden; color: var(--accent); font-size: 11px; font-weight: 600; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .mc-param-row__identity p { width: 100%; overflow: hidden; margin: 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.mc-param-row__editor { display: flex; align-items: center; gap: 7px; }
-.mc-param-row__value { min-width: 74px; padding: 7px 10px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; text-align: right; }
+.mc-param-row__editor { display: flex; max-width: min(520px, 48vw); align-items: center; justify-content: flex-end; gap: 7px; }
+.mc-param-row__select { width: clamp(190px, 30vw, 390px); font-family: var(--font-mono); font-size: 10.5px; }
+.mc-param-row__raw-toggle { flex: 0 0 auto; padding-inline: 9px; font-size: 10px; }
+.mc-param-row__value { max-width: min(430px, 42vw); min-width: 74px; overflow: hidden; padding: 7px 10px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--accent); cursor: pointer; font-size: 11px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .mc-param-row__value:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-dim); }
 .mc-param-row__value:disabled { cursor: not-allowed; opacity: .7; }
 .mc-param-row__type { justify-self: end; padding: 2px 6px; border-radius: 4px; background: var(--bg-tertiary); color: var(--text-disabled); font-size: 8.5px; }
@@ -1344,6 +1346,9 @@ input[type="range"]:disabled {
 @media (max-width: 700px) {
   .mc-param-row { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 12px; }
   .mc-param-row__type { display: none; }
+  .mc-param-row__editor { max-width: 48vw; flex-wrap: wrap; }
+  .mc-param-row__select { width: 48vw; }
+  .mc-param-row__value { max-width: 44vw; }
 }
 
 .mc-channel-bars {

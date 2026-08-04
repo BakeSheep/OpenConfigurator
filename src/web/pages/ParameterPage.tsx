@@ -6,6 +6,7 @@ import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { parameterEnumLabel, parameterEnumOptions, parameterEnumValuesMatch } from '../utils/parameterEnumMetadata'
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
 
 // PX4 circuit-breaker parameters disable safety protections outright; writing
@@ -46,6 +47,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
+  const [editRaw, setEditRaw] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
   const [pendingWrite, setPendingWrite] = useState<{ id: string; value: number } | null>(null)
@@ -185,6 +187,13 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                   <div className="mc-param-group__body">
                     {items.slice(0, visibleCounts[prefix] ?? 80).map((param) => {
                       const metadata = parameterMetadata(param.id, vehicleIdentity)
+                      const enumOptions = parameterEnumOptions(param.id, vehicleIdentity)
+                      const enumLabel = parameterEnumLabel(param.id, param.value, vehicleIdentity)
+                      const knownEnumValue = enumOptions
+                        ?.some((option) => parameterEnumValuesMatch(option.value, param.value)) ?? false
+                      const editorOptions = enumOptions && !knownEnumValue
+                        ? [{ value: param.value, label: '当前固件未收录的值' }, ...enumOptions]
+                        : enumOptions
                       return (
                       <div key={param.id} className="mc-param-row">
                         <div className="mc-param-row__identity">
@@ -197,12 +206,32 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                         </div>
                         {editId === param.id ? (
                           <div className="mc-param-row__editor">
-                            <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
+                            {editorOptions && !editRaw ? (
+                              <select
+                                autoFocus
+                                aria-label={`${param.id} 枚举值`}
+                                className="mc-input mc-param-row__select h-8"
+                                value={editValue}
+                                onChange={(event) => setEditValue(event.target.value)}
+                                onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }}
+                              >
+                                {editorOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>{option.value}: {option.label}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
+                            )}
+                            {editorOptions && (
+                              <button type="button" className="mc-btn mc-btn-ghost h-8 mc-param-row__raw-toggle" onClick={() => setEditRaw((current) => !current)}>
+                                {editRaw ? '选项' : '原始值'}
+                              </button>
+                            )}
                             <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>保存</button>
                           </div>
                         ) : (
-                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)) }}>
-                            {pendingWrite?.id === param.id ? '确认中…' : param.value}
+                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)); setEditRaw(false) }}>
+                            {pendingWrite?.id === param.id ? '确认中…' : enumLabel ? `${param.value}: ${enumLabel}` : param.value}
                           </button>
                         )}
                         <span className="mc-param-row__type mc-mono">T{param.type}</span>
