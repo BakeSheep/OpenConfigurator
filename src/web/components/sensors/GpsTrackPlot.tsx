@@ -1,4 +1,5 @@
 import { useId, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { projectGpsTrack } from '../../utils/gpsTrack'
@@ -9,6 +10,7 @@ const CENTER = VIEW_SIZE / 2
 const PLOT_RADIUS = 132
 
 export default function GpsTrackPlot() {
+  const { t } = useTranslation()
   const [displayRadius, setDisplayRadius] = useState<number>(20)
   const clipId = `gps-track-${useId().replace(/:/g, '')}`
   const track = useTelemetryStore((state) => state.gpsTrack)
@@ -33,38 +35,38 @@ export default function GpsTrackPlot() {
       <header>
         <div>
           <span className="mc-eyebrow">LOCAL POSITION</span>
-          <h2>GPS 打点轨迹</h2>
+          <h2>{t('sensor.gps.track.title')}</h2>
         </div>
         <div className="mc-gps-track__actions">
           <label>
-            <span>显示半径</span>
+            <span>{t('sensor.gps.track.displayRadius')}</span>
             <select
               className="mc-select"
-              aria-label="GPS 轨迹显示半径"
+              aria-label={t('sensor.gps.track.radiusAria')}
               value={displayRadius}
               onChange={(event) => setDisplayRadius(Number(event.target.value))}
             >
               {DISPLAY_RADII.map((radius) => <option key={radius} value={radius}>{radius} m</option>)}
             </select>
           </label>
-          <button type="button" className="mc-icon-btn mc-icon-btn--bordered" onClick={recenterTrack} disabled={track.length === 0} aria-label="以当前位置为轨迹中心" title="以当前位置为中心">
+          <button type="button" className="mc-icon-btn mc-icon-btn--bordered" onClick={recenterTrack} disabled={track.length === 0} aria-label={t('sensor.gps.track.recenterAria')} title={t('sensor.gps.track.recenter')}>
             <Icon name="rtk" size={15} />
           </button>
-          <button type="button" className="mc-icon-btn mc-icon-btn--bordered" onClick={clearTrack} disabled={track.length === 0} aria-label="清空 GPS 轨迹" title="清空轨迹">
+          <button type="button" className="mc-icon-btn mc-icon-btn--bordered" onClick={clearTrack} disabled={track.length === 0} aria-label={t('sensor.gps.track.clearAria')} title={t('sensor.gps.track.clear')}>
             <Icon name="trash" size={15} />
           </button>
         </div>
       </header>
 
       <div className="mc-gps-track__meta">
-        <span>打点数 <strong className="mc-mono">{track.length}</strong></span>
-        <span>中心偏移 <strong className="mc-mono">{latestDistance.toFixed(1)} m</strong></span>
-        {latestOutside && <span data-state="warning">当前位置超出显示半径</span>}
+        <span>{t('sensor.gps.track.pointCount')} <strong className="mc-mono">{track.length}</strong></span>
+        <span>{t('sensor.gps.track.centerOffset')} <strong className="mc-mono">{latestDistance.toFixed(1)} m</strong></span>
+        {latestOutside && <span data-state="warning">{t('sensor.gps.track.outsideRadius')}</span>}
       </div>
 
       <div className="mc-gps-track__plot" data-empty={track.length === 0 || undefined}>
-        {track.length === 0 && <div><span>等待有效 GPS 定位点</span></div>}
-        <svg viewBox={`0 0 ${VIEW_SIZE} ${VIEW_SIZE}`} role="img" aria-label={`GPS 本地轨迹，共 ${track.length} 个点，显示半径 ${displayRadius} 米`}>
+        {track.length === 0 && <div><span>{t('sensor.gps.track.waitingFix')}</span></div>}
+        <svg viewBox={`0 0 ${VIEW_SIZE} ${VIEW_SIZE}`} role="img" aria-label={t('sensor.gps.track.aria', { count: track.length, radius: displayRadius })}>
           <defs><clipPath id={clipId}><circle cx={CENTER} cy={CENTER} r={PLOT_RADIUS} /></clipPath></defs>
           <g className="mc-gps-track__grid">
             <circle cx={CENTER} cy={CENTER} r={PLOT_RADIUS} />

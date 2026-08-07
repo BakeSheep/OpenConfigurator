@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { OrbitControls } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -92,9 +93,10 @@ export default function LogAttitudeVisualizer({
   startSec?: number
   syncTimeSec?: number | null
 }) {
-  const rollSeries = useMemo(() => series.find((entry) => entry.label === '横滚'), [series])
-  const pitchSeries = useMemo(() => series.find((entry) => entry.label === '俯仰'), [series])
-  const yawSeries = useMemo(() => series.find((entry) => entry.label === '偏航'), [series])
+  const { t } = useTranslation()
+  const rollSeries = useMemo(() => series.find((entry) => entry.id === 'attitude.roll'), [series])
+  const pitchSeries = useMemo(() => series.find((entry) => entry.id === 'attitude.pitch'), [series])
+  const yawSeries = useMemo(() => series.find((entry) => entry.id === 'attitude.yaw'), [series])
   const replayStartSec = Math.min(Math.max(startSec, 0), durationSec)
   const [timeSec, setTimeSec] = useState(replayStartSec)
   const [playing, setPlaying] = useState(false)
@@ -132,7 +134,7 @@ export default function LogAttitudeVisualizer({
   }, [playing, durationSec])
 
   if (!rollSeries || !pitchSeries || !yawSeries) {
-    return <p className="mc-explorer__notice">此日志不包含完整的三轴姿态数据</p>
+    return <p className="mc-explorer__notice">{t('logAnalysis.noAttitudeData')}</p>
   }
 
   const attitude: EulerDegrees = {
@@ -162,8 +164,8 @@ export default function LogAttitudeVisualizer({
         <button
           type="button"
           className="mc-icon-btn mc-icon-btn--bordered"
-          aria-label={playing ? '暂停姿态回放' : '播放姿态回放'}
-          title={playing ? '暂停' : '播放'}
+          aria-label={playing ? t('logAnalysis.pauseReplay') : t('logAnalysis.playReplay')}
+          title={playing ? t('common.pause' as const) : t('common.play' as const)}
           onClick={togglePlayback}
         >
           <Icon name={playing ? 'pause' : 'play'} size={14} />
@@ -174,7 +176,7 @@ export default function LogAttitudeVisualizer({
           max={Math.max(durationSec, 0.01)}
           step={0.01}
           value={timeSec}
-          aria-label="日志姿态时间"
+          aria-label={t('logAnalysis.attitudeTimeAria')}
           onChange={(event) => {
             setPlaying(false)
             setTimeSec(Number(event.target.value))

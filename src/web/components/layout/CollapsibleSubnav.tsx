@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
 
 interface CollapsibleSubnavProps {
@@ -20,6 +21,7 @@ export default function CollapsibleSubnav({
   storageKey,
   children,
 }: CollapsibleSubnavProps) {
+  const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(() => loadCollapsed(storageKey))
 
   const toggle = () => {
@@ -40,12 +42,12 @@ export default function CollapsibleSubnav({
       <button
         type="button"
         className="mc-subnav__collapse"
-        aria-label={collapsed ? '展开子页面侧边栏' : '收起子页面侧边栏'}
-        title={collapsed ? '展开侧边栏' : '仅显示图标'}
+        aria-label={collapsed ? t('subnav.expandSubnav') : t('subnav.collapseSubnav')}
+        title={collapsed ? t('subnav.expand') : t('subnav.iconOnly')}
         onClick={toggle}
       >
         <span><Icon name={collapsed ? 'arrowRight' : 'arrowLeft'} size={16} /></span>
-        <span><strong>{collapsed ? '展开' : '收起侧栏'}</strong></span>
+        <span><strong>{collapsed ? t('subnav.expandBtn') : t('subnav.collapseBtn')}</strong></span>
       </button>
     </nav>
   )

@@ -13,14 +13,14 @@ export const AM32_SETTINGS_GROUPS: ReadonlyArray<{
   label: string
   description: string
 }> = [
-  { key: 'essentials', label: '基础设置', description: '输入协议、方向与双向控制' },
-  { key: 'motor', label: '电机', description: '换相、启动、PWM 与电机参数' },
-  { key: 'extended', label: '扩展设置', description: '油门响应与最低占空比' },
-  { key: 'limits', label: '保护限制', description: '电压、温度和电流保护' },
-  { key: 'current', label: '电流环', description: '电流控制器 P / I / D 参数' },
-  { key: 'sine', label: '正弦启动', description: '低速正弦启动参数' },
-  { key: 'brake', label: '制动', description: '停止、运行与主动制动' },
-  { key: 'servo', label: '舵机输入', description: 'PWM 输入范围和中位死区' },
+  { key: 'essentials', label: 'esc.am32.section.essentials', description: 'esc.am32.section.essentials.desc' },
+  { key: 'motor', label: 'esc.am32.section.motor', description: 'esc.am32.section.motor.desc' },
+  { key: 'extended', label: 'esc.am32.section.extended', description: 'esc.am32.section.extended.desc' },
+  { key: 'limits', label: 'esc.am32.section.limits', description: 'esc.am32.section.limits.desc' },
+  { key: 'current', label: 'esc.am32.section.current', description: 'esc.am32.section.current.desc' },
+  { key: 'sine', label: 'esc.am32.section.sine', description: 'esc.am32.section.sine.desc' },
+  { key: 'brake', label: 'esc.am32.section.brake', description: 'esc.am32.section.brake.desc' },
+  { key: 'servo', label: 'esc.am32.section.servo', description: 'esc.am32.section.servo.desc' },
 ]
 
 const bool = (
@@ -88,94 +88,94 @@ const enumeration = (
  * Unknown bytes are deliberately absent and are preserved during encoding.
  */
 export const AM32_SETTINGS_FIELDS: readonly EscSettingsField[] = [
-  bool('disableStickCalibration', '禁用油门校准', 'essentials', 0x07, {
+  bool('disableStickCalibration', 'esc.am32.field.disableStickCalibration', 'essentials', 0x07, {
     minLayoutRevision: 3,
-    description: '保留当前油门端点，不再在上电时重新学习。',
+    description: 'esc.am32.field.disableStickCalibration.desc',
   }),
-  enumeration('protocol', '输入协议', 'essentials', 0x2e, [
-    { value: 0, label: '自动' },
+  enumeration('protocol', 'esc.am32.field.protocol', 'essentials', 0x2e, [
+    { value: 0, label: 'esc.am32.enum.protocol.auto' },
     { value: 1, label: 'DShot' },
     { value: 2, label: 'Servo PWM' },
-    { value: 3, label: '串行' },
-    { value: 4, label: '扩展 DShot' },
+    { value: 3, label: 'esc.am32.enum.protocol.serial' },
+    { value: 4, label: 'esc.am32.enum.protocol.extendedDshot' },
   ]),
-  enumeration('motorDirection', '电机方向', 'essentials', 0x11, [
-    { value: 0, label: '正转' },
-    { value: 1, label: '反转' },
+  enumeration('motorDirection', 'esc.am32.field.motorDirection', 'essentials', 0x11, [
+    { value: 0, label: 'esc.am32.enum.motorDirection.forward' },
+    { value: 1, label: 'esc.am32.enum.motorDirection.reverse' },
   ]),
-  bool('bidirectional', '双向模式', 'essentials', 0x12),
+  bool('bidirectional', 'esc.am32.field.bidirectional', 'essentials', 0x12),
 
-  bool('stuckRotorProtection', '堵转保护', 'motor', 0x16),
-  bool('stallProtection', '失速保护', 'motor', 0x1d),
-  bool('hallSensors', '霍尔传感器', 'motor', 0x27),
-  bool('intervalTelemetry', '30ms 周期遥测', 'motor', 0x1f),
-  bool('complementaryPwm', '互补 PWM', 'motor', 0x14),
-  bool('autoTimingAdvance', '自动进角', 'motor', 0x2f),
-  enumeration('pwmType', 'PWM 类型', 'motor', 0x15, [
-    { value: 0, label: '固定' },
-    { value: 1, label: '可变' },
-    { value: 2, label: '随转速' },
+  bool('stuckRotorProtection', 'esc.am32.field.stuckRotorProtection', 'motor', 0x16),
+  bool('stallProtection', 'esc.am32.field.stallProtection', 'motor', 0x1d),
+  bool('hallSensors', 'esc.am32.field.hallSensors', 'motor', 0x27),
+  bool('intervalTelemetry', 'esc.am32.field.intervalTelemetry', 'motor', 0x1f),
+  bool('complementaryPwm', 'esc.am32.field.complementaryPwm', 'motor', 0x14),
+  bool('autoTimingAdvance', 'esc.am32.field.autoTimingAdvance', 'motor', 0x2f),
+  enumeration('pwmType', 'esc.am32.field.pwmType', 'motor', 0x15, [
+    { value: 0, label: 'esc.am32.enum.pwmType.fixed' },
+    { value: 1, label: 'esc.am32.enum.pwmType.variable' },
+    { value: 2, label: 'esc.am32.enum.pwmType.rpmBased' },
   ]),
-  number('timingAdvance', '进角', 'motor', 0x17, 0, 22.5, 7.5, {
+  number('timingAdvance', 'esc.am32.field.timingAdvance', 'motor', 0x17, 0, 22.5, 7.5, {
     maxLayoutRevision: 2,
     unit: '°',
     precision: 1,
     scale: 7.5,
   }),
-  number('timingAdvance', '进角', 'motor', 0x17, 0, 22.5, 0.9375, {
+  number('timingAdvance', 'esc.am32.field.timingAdvance', 'motor', 0x17, 0, 22.5, 0.9375, {
     minLayoutRevision: 3,
     unit: '°',
     precision: 4,
     scale: 0.9375,
     add: -9.375,
   }),
-  number('startupPower', '启动功率', 'motor', 0x19, 50, 150, 1, { unit: '%' }),
-  number('motorKv', '电机 KV', 'motor', 0x1a, 20, 10220, 40, {
+  number('startupPower', 'esc.am32.field.startupPower', 'motor', 0x19, 50, 150, 1, { unit: '%' }),
+  number('motorKv', 'esc.am32.field.motorKv', 'motor', 0x1a, 20, 10220, 40, {
     scale: 40,
     add: 20,
   }),
-  number('motorPoles', '磁极数', 'motor', 0x1b, 2, 36, 1),
-  number('beeperVolume', '蜂鸣器音量', 'motor', 0x1e, 0, 11, 1),
-  number('pwmFrequency', 'PWM 频率', 'motor', 0x18, 8, 144, 1, {
+  number('motorPoles', 'esc.am32.field.motorPoles', 'motor', 0x1b, 2, 36, 1),
+  number('beeperVolume', 'esc.am32.field.beeperVolume', 'motor', 0x1e, 0, 11, 1),
+  number('pwmFrequency', 'esc.am32.field.pwmFrequency', 'motor', 0x18, 8, 144, 1, {
     unit: 'kHz',
     disabledIf: { key: 'pwmType', equals: 2 },
   }),
 
-  number('rampRate', '爬升速率', 'extended', 0x05, 0.1, 25.5, 0.1, {
+  number('rampRate', 'esc.am32.field.rampRate', 'extended', 0x05, 0.1, 25.5, 0.1, {
     minLayoutRevision: 3,
     unit: '%/ms',
     precision: 1,
     scale: 0.1,
   }),
-  number('minimumDutyCycle', '最低占空比', 'extended', 0x06, 0.5, 100, 0.5, {
+  number('minimumDutyCycle', 'esc.am32.field.minimumDutyCycle', 'extended', 0x06, 0.5, 100, 0.5, {
     minLayoutRevision: 3,
     unit: '%',
     precision: 1,
     scale: 0.5,
   }),
 
-  enumeration('lowVoltageCutoff', '低压保护', 'limits', 0x24, [
-    { value: 0, label: '关闭' },
-    { value: 1, label: '按电芯' },
-    { value: 2, label: '绝对电压' },
+  enumeration('lowVoltageCutoff', 'esc.am32.field.lowVoltageCutoff', 'limits', 0x24, [
+    { value: 0, label: 'esc.am32.enum.lowVoltageCutoff.off' },
+    { value: 1, label: 'esc.am32.enum.lowVoltageCutoff.perCell' },
+    { value: 2, label: 'esc.am32.enum.lowVoltageCutoff.absolute' },
   ]),
-  number('temperatureLimit', '温度限制', 'limits', 0x2b, 70, 140, 1, {
+  number('temperatureLimit', 'esc.am32.field.temperatureLimit', 'limits', 0x2b, 70, 140, 1, {
     unit: '°C',
     disabledValue: 255,
   }),
-  number('currentLimit', '电流限制', 'limits', 0x2c, 0, 200, 2, {
+  number('currentLimit', 'esc.am32.field.currentLimit', 'limits', 0x2c, 0, 200, 2, {
     unit: 'A',
     scale: 2,
     disabledValue: 404,
   }),
-  number('lowVoltageThreshold', '单节截止电压', 'limits', 0x25, 2.5, 3.5, 0.01, {
+  number('lowVoltageThreshold', 'esc.am32.field.lowVoltageThreshold', 'limits', 0x25, 2.5, 3.5, 0.01, {
     unit: 'V',
     precision: 2,
     scale: 0.01,
     add: 2.5,
     visibleIf: { key: 'lowVoltageCutoff', equals: 1 },
   }),
-  number('absoluteVoltageThreshold', '绝对截止电压', 'limits', 0x08, 0.5, 50, 0.5, {
+  number('absoluteVoltageThreshold', 'esc.am32.field.absoluteVoltageThreshold', 'limits', 0x08, 0.5, 50, 0.5, {
     minLayoutRevision: 3,
     unit: 'V',
     precision: 1,
@@ -183,54 +183,54 @@ export const AM32_SETTINGS_FIELDS: readonly EscSettingsField[] = [
     visibleIf: { key: 'lowVoltageCutoff', equals: 2 },
   }),
 
-  number('currentP', '电流 P', 'current', 0x09, 0, 255, 1, {
+  number('currentP', 'esc.am32.field.currentP', 'current', 0x09, 0, 255, 1, {
     minLayoutRevision: 3,
     disabledIf: { key: 'currentLimit', equals: 404 },
   }),
-  number('currentI', '电流 I', 'current', 0x0a, 0, 255, 1, {
+  number('currentI', 'esc.am32.field.currentI', 'current', 0x0a, 0, 255, 1, {
     minLayoutRevision: 3,
     disabledIf: { key: 'currentLimit', equals: 404 },
   }),
-  number('currentD', '电流 D', 'current', 0x0b, 0, 255, 1, {
+  number('currentD', 'esc.am32.field.currentD', 'current', 0x0b, 0, 255, 1, {
     minLayoutRevision: 3,
     disabledIf: { key: 'currentLimit', equals: 404 },
   }),
 
-  bool('sinusoidalStartup', '正弦启动', 'sine', 0x13),
-  number('sineModeRange', '正弦模式范围', 'sine', 0x28, 5, 25, 1),
-  number('sineModePower', '正弦模式功率', 'sine', 0x2d, 1, 10, 1),
+  bool('sinusoidalStartup', 'esc.am32.field.sinusoidalStartup', 'sine', 0x13),
+  number('sineModeRange', 'esc.am32.field.sineModeRange', 'sine', 0x28, 5, 25, 1),
+  number('sineModePower', 'esc.am32.field.sineModePower', 'sine', 0x2d, 1, 10, 1),
 
-  bool('carReverseBraking', '车模反向制动', 'brake', 0x26),
-  enumeration('brakeOnStop', '停止制动', 'brake', 0x1c, [
-    { value: 0, label: '关闭' },
-    { value: 1, label: '停止时制动' },
-    { value: 2, label: '主动制动' },
+  bool('carReverseBraking', 'esc.am32.field.carReverseBraking', 'brake', 0x26),
+  enumeration('brakeOnStop', 'esc.am32.field.brakeOnStop', 'brake', 0x1c, [
+    { value: 0, label: 'esc.am32.enum.brakeOnStop.off' },
+    { value: 1, label: 'esc.am32.enum.brakeOnStop.onStop' },
+    { value: 2, label: 'esc.am32.enum.brakeOnStop.active' },
   ]),
-  number('brakeStrength', '制动力度', 'brake', 0x29, 0, 10, 1),
-  number('runningBrakeLevel', '运行制动级别', 'brake', 0x2a, 0, 10, 1),
-  number('activeBrakePower', '主动制动功率', 'brake', 0x0c, 0, 10, 1, {
+  number('brakeStrength', 'esc.am32.field.brakeStrength', 'brake', 0x29, 0, 10, 1),
+  number('runningBrakeLevel', 'esc.am32.field.runningBrakeLevel', 'brake', 0x2a, 0, 10, 1),
+  number('activeBrakePower', 'esc.am32.field.activeBrakePower', 'brake', 0x0c, 0, 10, 1, {
     minLayoutRevision: 3,
     disabledValue: 0,
   }),
 
-  number('servoLowThreshold', '低端点', 'servo', 0x20, 750, 1258, 2, {
+  number('servoLowThreshold', 'esc.am32.field.servoLowThreshold', 'servo', 0x20, 750, 1258, 2, {
     unit: 'µs',
     scale: 2,
     add: 750,
     scope: 'perEsc',
   }),
-  number('servoHighThreshold', '高端点', 'servo', 0x21, 1750, 2258, 2, {
+  number('servoHighThreshold', 'esc.am32.field.servoHighThreshold', 'servo', 0x21, 1750, 2258, 2, {
     unit: 'µs',
     scale: 2,
     add: 1750,
     scope: 'perEsc',
   }),
-  number('servoNeutral', '中位', 'servo', 0x22, 1374, 1629, 1, {
+  number('servoNeutral', 'esc.am32.field.servoNeutral', 'servo', 0x22, 1374, 1629, 1, {
     unit: 'µs',
     add: 1374,
     scope: 'perEsc',
   }),
-  number('servoDeadBand', '中位死区', 'servo', 0x23, 0, 255, 1, {
+  number('servoDeadBand', 'esc.am32.field.servoDeadBand', 'servo', 0x23, 0, 255, 1, {
     unit: 'µs',
     scope: 'perEsc',
   }),
@@ -257,7 +257,7 @@ export function decodeAm32Eeprom(raw: Uint8Array): {
   if (!isSupportedAm32Layout(layoutRevision)) {
     throw new EscError(
       'unsupported_signature_or_layout',
-      `不支持 AM32 EEPROM 布局版本 ${layoutRevision}`,
+      'errors.esc.am32.unsupportedLayout',
     )
   }
   const values: EscSettingsValues = {}
@@ -279,19 +279,19 @@ export function encodeAm32Eeprom(
   for (const [key, displayValue] of Object.entries(patch)) {
     const field = fields.find((candidate) => candidate.key === key)
     if (!field) {
-      throw new EscError('validation_failed', `当前 AM32 布局不支持参数 ${key}`)
+      throw new EscError('validation_failed', 'errors.esc.am32.unsupportedParam')
     }
     if (!Number.isFinite(displayValue)) {
-      throw new EscError('validation_failed', `${field.label} 不是有效数值`)
+      throw new EscError('validation_failed', 'errors.esc.am32.notANumber')
     }
     if (field.kind === 'bool' && displayValue !== 0 && displayValue !== 1) {
-      throw new EscError('validation_failed', `${field.label} 只能为开启或关闭`)
+      throw new EscError('validation_failed', 'errors.esc.am32.boolOnly')
     }
     if (
       field.kind === 'enum'
       && !field.options?.some((option) => option.value === displayValue)
     ) {
-      throw new EscError('validation_failed', `${field.label} 选项无效`)
+      throw new EscError('validation_failed', 'errors.esc.am32.invalidOption')
     }
     const isDisabledSentinel = field.disabledValue === displayValue
     if (
@@ -299,12 +299,12 @@ export function encodeAm32Eeprom(
       && ((field.min !== undefined && displayValue < field.min)
         || (field.max !== undefined && displayValue > field.max))
     ) {
-      throw new EscError('validation_failed', `${field.label} 超出允许范围`)
+      throw new EscError('validation_failed', 'errors.esc.am32.outOfRange')
     }
     const rawValue = Math.round((displayValue - (field.add ?? 0)) / (field.scale ?? 1))
     const rawMax = 2 ** (field.size * 8) - 1
     if (rawValue < 0 || rawValue > rawMax) {
-      throw new EscError('validation_failed', `${field.label} 无法编码到 EEPROM`)
+      throw new EscError('validation_failed', 'errors.esc.am32.encodeOverflow')
     }
     writeUnsigned(encoded, field.offset, field.size, rawValue)
     values[key] = displayValue
@@ -316,7 +316,7 @@ function assertLayoutWindow(raw: Uint8Array): void {
   if (raw.length !== AM32_LAYOUT_SIZE) {
     throw new EscError(
       'validation_failed',
-      `AM32 EEPROM 数据长度应为 ${AM32_LAYOUT_SIZE} 字节，实际为 ${raw.length}`,
+      'errors.esc.am32.invalidLength',
     )
   }
 }

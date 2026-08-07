@@ -1,8 +1,12 @@
 import { useEffect, useRef } from 'react'
+import i18next from 'i18next'
 import { connectBackendIfEnabled } from '../runtimeMode'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useCalibrationStore } from '../stores/calibrationStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+
+const t = i18next.t.bind(i18next)
+
 import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
@@ -12,6 +16,19 @@ import { useMessageRateStore } from '../stores/messageRateStore'
 import { recordMavlinkServerMessage, useMavlinkMessageStore } from '../stores/mavlinkMessageStore'
 import { useShellStore } from '../stores/shellStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
+
+/**
+ * Resolve a server error to the current language:
+ * 1. The raw message may already be a translation key passed through from a
+ *    shared module (e.g. vehicleProfiles' 'errors.encode.*').
+ * 2. Otherwise a known server error code maps to `errors.<code>`.
+ * 3. Otherwise fall back to the raw server message.
+ */
+function translateServerError(code: string | undefined, message: string): string {
+  if (i18next.exists(message)) return i18next.t(message)
+  if (code && i18next.exists(`errors.${code}`)) return i18next.t(`errors.${code}`)
+  return message
+}
 
 // Module-level singleton WebSocket shared by every useWebSocket() consumer.
 // Reference counting ensures the socket is only closed when the last consumer
@@ -270,16 +287,16 @@ function handleMessage(msg: ServerMessage) {
       telemetryStore.addStatusLog(
         msg.data.result === 0 || msg.data.result === 5 ? 6 : 3,
         msg.data.result === 5
-          ? `指令 #${msg.data.command} 执行中${msg.data.progress == null ? '' : `（${msg.data.progress}%）`}`
+          ? t('websocket.command.executing', { command: msg.data.command, progress: msg.data.progress == null ? '' : ` (${msg.data.progress}%)` })
           : msg.data.result === 0
-          ? `指令 #${msg.data.command} 已接受`
-          : `指令 #${msg.data.command} 失败 (result=${msg.data.result})`
+          ? t('websocket.command.accepted', { command: msg.data.command })
+          : t('websocket.command.failed', { command: msg.data.command, result: msg.data.result })
       )
       break
     case 'motor_test_status':
       telemetryStore.addStatusLog(
         5,
-        `电机 ${msg.data.instance} ${msg.data.action === 'stop' ? '停止' : '测试'}命令已发送（飞控 ACK 无实例字段，结果未确认）`,
+        t('websocket.motorTest.sent', { instance: msg.data.instance, action: msg.data.action === 'stop' ? t('websocket.motorTest.stop') : t('websocket.motorTest.test') }),
       )
       break
     case 'statustext':
@@ -323,10 +340,11 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'fs_op_error': {
       const explorer = useFileExplorerStore.getState()
-      if (msg.data.operation === 'list') explorer.setListError(msg.data.message)
-      else if (msg.data.operation === 'download') explorer.failDownload(msg.data.message)
-      else explorer.failDeletion(msg.data.message)
-      telemetryStore.addStatusLog(3, `文件操作失败：${msg.data.message}`)
+      const message = translateServerError(msg.data.code, msg.data.message)
+      if (msg.data.operation === 'list') explorer.setListError(message)
+      else if (msg.data.operation === 'download') explorer.failDownload(message)
+      else explorer.failDeletion(message)
+      telemetryStore.addStatusLog(3, t('websocket.fileOpFailed', { message }))
       break
     }
     case 'log_list':
@@ -353,28 +371,33 @@ function handleMessage(msg: ServerMessage) {
       break
     case 'log_op_error': {
       const transfer = useLogTransferStore.getState()
-      if (msg.data.operation === 'list') transfer.setListError(msg.data.message)
-      else if (msg.data.operation === 'download') transfer.failDownload(msg.data.message)
-      else transfer.failErase(msg.data.message)
-      telemetryStore.addStatusLog(3, `日志操作失败：${msg.data.message}`)
+      const message = translateServerError(msg.data.code, msg.data.message)
+      if (msg.data.operation === 'list') transfer.setListError(message)
+      else if (msg.data.operation === 'download') transfer.failDownload(message)
+      else transfer.failErase(message)
+      telemetryStore.addStatusLog(3, t('websocket.logOpFailed', { message }))
       break
     }
-    case 'client_error':
+    case 'client_error': {
       // Boundary rejections (controller conflict, validation failure, rate
       // limit, ...) must reach the operator, not vanish silently.
+      const message = translateServerError(msg.data.code, msg.data.message)
       console.warn('[WS] Request rejected:', msg.data.code, msg.data.message)
-      telemetryStore.addStatusLog(3, `请求被拒绝：${msg.data.message}${msg.data.retryable ? '（可重试）' : ''}`)
+      telemetryStore.addStatusLog(3, t('websocket.requestDenied', { message, retryable: msg.data.retryable ? t('websocket.retryable') : '' }))
       break
-    case 'operation_error':
-      telemetryStore.setOperationError(msg.data)
-      if (msg.data.operation === 'shell') useShellStore.getState().setStatus(false, msg.data.message)
+    }
+    case 'operation_error': {
+      const message = translateServerError(msg.data.code, msg.data.message)
+      telemetryStore.setOperationError({ ...msg.data, message })
+      if (msg.data.operation === 'shell') useShellStore.getState().setStatus(false, message)
       if (msg.data.operation === 'calibration_reclaim' && msg.data.code === 'reclaim_denied') {
         useCalibrationStore.getState().clearRecovery()
         calibrationReclaimAttempt = null
       }
       console.warn('[WS] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
-      telemetryStore.addStatusLog(3, `${msg.data.operation} 操作失败：${msg.data.message}`)
+      telemetryStore.addStatusLog(3, t('websocket.opFailed', { operation: msg.data.operation, message }))
       break
+    }
     case 'param_sync':
       if (msg.data.status === 'started') {
         if (activeParamGeneration !== null && msg.data.generation < activeParamGeneration) {
@@ -399,7 +422,7 @@ function handleMessage(msg: ServerMessage) {
         paramStore.setParamFailed(receivedCount, totalCount)
         telemetryStore.addStatusLog(
           4,
-          `参数同步已${msg.data.status === 'failed' ? '失败' : '取消'}`
+          msg.data.status === 'failed' ? t('websocket.paramSyncFailed') : t('websocket.paramSyncCancelled')
             + `${msg.data.reason ? `：${msg.data.reason}` : ''}`,
         )
       }
@@ -412,7 +435,7 @@ function handleMessage(msg: ServerMessage) {
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
         telemetryStore.addStatusLog(
           6,
-          `已选定飞控目标 system ${msg.data.systemId} / component ${msg.data.componentId}`,
+          t('websocket.targetSelected', { systemId: msg.data.systemId, componentId: msg.data.componentId }),
         )
       } else {
         console.log('[WS] target update:', msg.data)

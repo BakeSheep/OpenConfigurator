@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import type { CalibrationSnapshot } from '../../shared/types'
+import { initI18n } from '../i18n/config'
 import {
   appendLiveSample,
   calibrationAvailabilityReason,
@@ -12,6 +13,8 @@ import {
   resolveCalibrationProgress,
   shouldShowCalibrationWizard,
 } from './SensorPage'
+
+initI18n('zh')
 
 const initialHistory = [{ t: 1, x: 2 }]
 assert.equal(

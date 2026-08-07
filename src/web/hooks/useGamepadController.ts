@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import i18next from 'i18next'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import type { ClientMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -32,6 +33,7 @@ const actionModeNames: Partial<Record<GamepadActionId, { px4: string; ardupilot:
  * the user leaves the gamepad settings tab to arm or monitor the vehicle.
  */
 export function useGamepadController(send: (message: ClientMessage) => void) {
+  const t = i18next.t.bind(i18next)
   const rafRef = useRef(0)
   const lastAxisSendRef = useRef(0)
   const lastButtonFireRef = useRef<Record<number, number>>({})
@@ -78,12 +80,12 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
         // confirmation. Button presses only reach here when the user has
         // manually enabled gamepad control on a ready, controllable vehicle.
         armCommand(true)
-        gamepadActions.setActionNotice(`B${button}：已发送解锁指令`)
+        gamepadActions.setActionNotice(t('joystick.actionNotice.armSent', { button }))
         return
       }
       if (action === 'disarm' || action === 'toggle_arm') {
         armCommand(false)
-        gamepadActions.setActionNotice(`B${button}：已发送上锁指令`)
+        gamepadActions.setActionNotice(t('joystick.actionNotice.disarmSent', { button }))
         return
       }
       const modeNames = actionModeNames[action]
@@ -96,14 +98,14 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
           ? availableModes(identity).find((candidate) => candidate.name === targetName)
           : undefined
         if (!option) {
-          gamepadActions.setActionNotice(`B${button}：当前飞控不支持该模式切换`)
+          gamepadActions.setActionNotice(t('joystick.actionNotice.modeNotSupported', { button }))
           return
         }
         sendRef.current({
           type: 'set_flight_mode',
           data: { modeId: option.id },
         })
-        gamepadActions.setActionNotice(`B${button}：切换至 ${option.name}`)
+        gamepadActions.setActionNotice(t('joystick.actionNotice.modeSwitch', { button, mode: option.name }))
       }
     }
 

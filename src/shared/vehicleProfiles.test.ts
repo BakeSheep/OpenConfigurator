@@ -150,7 +150,7 @@ if (px4Mission.ok) assert.deepEqual(px4Mission.params, [1, 4, 4, 0, 0, 0, 0])
 assert.deepEqual(encodeModeCommand(null, 0), {
   ok: false,
   code: 'unsupported_vehicle_profile',
-  message: '尚未识别飞控类型，无法安全编码飞行模式',
+  message: 'errors.encode.unknownVehicleType',
 })
 assert.equal(encodeModeCommand(unknownIdentity, 0).ok, false)
 assert.equal(encodeModeCommand(buildVehicleIdentity(3, 1), 0).ok, false) // plane

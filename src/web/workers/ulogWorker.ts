@@ -15,6 +15,7 @@ import {
   quaternionToEuler,
   type UlogAnalysisDataset,
   type UlogEvent,
+  type UlogWorkerRequest,
   type UlogWorkerResult,
 } from '../utils/ulogAnalysis'
 import {
@@ -23,6 +24,17 @@ import {
   makeRaw,
   pushRaw,
 } from '../utils/seriesCompression'
+import i18next from 'i18next'
+import { zh } from '../i18n/locales/zh'
+import { en } from '../i18n/locales/en'
+
+i18next.init({
+  resources: { zh: { translation: zh }, en: { translation: en } },
+  lng: 'zh',
+  fallbackLng: 'zh',
+  interpolation: { escapeValue: false },
+})
+const t = i18next.t.bind(i18next)
 
 const MAX_EVENTS = 500
 const ENVELOPE_BUCKET_SEC = 0.05
@@ -51,9 +63,9 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   const ulog = new ULog(new CopyingBufferReader(buffer))
   await ulog.open()
   const header = ulog.header
-  if (!header) throw new Error('无法解析 ULog 文件头')
+  if (!header) throw new Error(t('logAnalysis.ulogHeaderError'))
   // open() builds a complete timestamp index. Use it for duration and the
-  // origin so valid logs without our chart topics do not incorrectly show —.
+  // origin so valid logs without our chart topics do not incorrectly show -.
   const timeRange = ulog.timeRange()
   const indexedStartUs = timeRange?.[0] ?? header.timestamp
   const indexedDurationSec = timeRange
@@ -62,50 +74,50 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
 
   // --- collectors -----------------------------------------------------
   const attitude = {
-    roll: makeRaw('横滚'),
-    pitch: makeRaw('俯仰'),
-    yaw: makeRaw('偏航'),
-    rollSp: makeRaw('横滚设定'),
-    pitchSp: makeRaw('俯仰设定'),
-    yawSp: makeRaw('偏航设定'),
+    roll: makeRaw('attitude.roll', t('logAnalysis.label.roll')),
+    pitch: makeRaw('attitude.pitch', t('logAnalysis.label.pitch')),
+    yaw: makeRaw('attitude.yaw', t('logAnalysis.label.yaw')),
+    rollSp: makeRaw('attitude.rollSp', t('logAnalysis.label.rollSp')),
+    pitchSp: makeRaw('attitude.pitchSp', t('logAnalysis.label.pitchSp')),
+    yawSp: makeRaw('attitude.yawSp', t('logAnalysis.label.yawSp')),
   }
   const rates = {
-    roll: makeRaw('横滚速率'),
-    pitch: makeRaw('俯仰速率'),
-    yaw: makeRaw('偏航速率'),
-    rollSp: makeRaw('横滚速率设定'),
-    pitchSp: makeRaw('俯仰速率设定'),
-    yawSp: makeRaw('偏航速率设定'),
+    roll: makeRaw('rates.roll', t('logAnalysis.label.rollRate')),
+    pitch: makeRaw('rates.pitch', t('logAnalysis.label.pitchRate')),
+    yaw: makeRaw('rates.yaw', t('logAnalysis.label.yawRate')),
+    rollSp: makeRaw('rates.rollSp', t('logAnalysis.label.rollRateSp')),
+    pitchSp: makeRaw('rates.pitchSp', t('logAnalysis.label.pitchRateSp')),
+    yawSp: makeRaw('rates.yawSp', t('logAnalysis.label.yawRateSp')),
   }
   // PX4 logs no per-loop PID error topic; hold the latest rate setpoint and
   // subtract each angular-velocity sample from it (both already in deg/s).
   const pidError = {
-    roll: makeRaw('Roll 误差'),
-    pitch: makeRaw('Pitch 误差'),
-    yaw: makeRaw('Yaw 误差'),
+    roll: makeRaw('pid:roll:error', t('logAnalysis.label.error', { label: 'Roll' })),
+    pitch: makeRaw('pid:pitch:error', t('logAnalysis.label.error', { label: 'Pitch' })),
+    yaw: makeRaw('pid:yaw:error', t('logAnalysis.label.error', { label: 'Yaw' })),
   }
   const lastRatesSp: { value: { roll: number; pitch: number; yaw: number } | null } = { value: null }
   const battery = {
-    voltage: makeRaw('电压 (V)'),
-    current: makeRaw('电流 (A)'),
-    power: makeRaw('功率 (W)'),
+    voltage: makeRaw('battery.voltage', t('logAnalysis.label.voltage')),
+    current: makeRaw('battery.current', t('logAnalysis.label.current')),
+    power: makeRaw('battery.power', t('logAnalysis.label.power')),
   }
   const gpsQuality = {
-    satellites: makeRaw('卫星数'),
-    eph: makeRaw('水平精度 (m)'),
-    epv: makeRaw('垂直精度 (m)'),
-    fix: makeRaw('定位类型'),
+    satellites: makeRaw('gps.satellites', t('logAnalysis.label.satellites')),
+    eph: makeRaw('gps.hdop', t('logAnalysis.label.hdop')),
+    epv: makeRaw('gps.vdop', t('logAnalysis.label.vdop')),
+    fix: makeRaw('gps.fix', t('logAnalysis.label.fix')),
   }
   const altitude = {
-    local: makeRaw('相对高度 (m)'),
-    baro: makeRaw('气压高度 (m)'),
-    gps: makeRaw('GPS 海拔 (m)'),
+    local: makeRaw('altitude.relative', t('logAnalysis.label.relAlt')),
+    baro: makeRaw('altitude.baro', t('logAnalysis.label.baroAlt')),
+    gps: makeRaw('altitude.gps', t('logAnalysis.label.gpsAlt')),
   }
   const velocity = {
-    vx: makeRaw('北向速度 (m/s)'),
-    vy: makeRaw('东向速度 (m/s)'),
-    vz: makeRaw('垂直速度 (m/s)'),
-    ground: makeRaw('地速 (m/s)'),
+    vx: makeRaw('velocity.north', t('logAnalysis.label.velNorth')),
+    vy: makeRaw('velocity.east', t('logAnalysis.label.velEast')),
+    vz: makeRaw('velocity.down', t('logAnalysis.label.vz')),
+    ground: makeRaw('velocity.ground', t('logAnalysis.label.groundSpeed')),
   }
   let motorEnvelopes: EnvelopeCollector[] = []
   let motorLabelsFromPwm = true
@@ -330,7 +342,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     vehicle_status: (value, timeSec) => {
       const navState = num(value.nav_state)
       if (Number.isFinite(navState)) {
-        const label = NAV_STATE_NAMES[navState] ?? `模式 ${navState}`
+        const label = NAV_STATE_NAMES[navState] ?? `Mode ${navState}`
         if (modeSamples[modeSamples.length - 1]?.label !== label) {
           modeSamples.push({ timeSec, label })
         }
@@ -378,7 +390,7 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   const modeSegments = buildSegments(modeSamples, endSec)
   const armedSegments = buildSegments(armedSamples, endSec)
     .filter((segment) => segment.label === 'armed')
-    .map((segment) => ({ ...segment, label: '已解锁' }))
+    .map((segment) => ({ ...segment, label: 'armed' }))
   const totalArmedSec = armedSegments.reduce(
     (sum, segment) => sum + Math.max(0, segment.endSec - segment.startSec),
     0,
@@ -394,8 +406,9 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
 
   const motorSeries = motorEnvelopes.map((collector, index) =>
     finishEnvelope(
-      motorLabelsFromPwm ? `电机 ${index + 1} (µs)` : `电机 ${index + 1}`,
+      motorLabelsFromPwm ? t('logAnalysis.label.motorUs', {channel: index + 1}) : t('logAnalysis.label.motor', {channel: index + 1}),
       collector,
+      `actuator.motor${motorLabelsFromPwm ? 'Us' : ''}:${index + 1}`,
     ),
   ).filter((series) => series.times.length > 0)
 
@@ -436,9 +449,9 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       label: loop.label,
       unit: '°/s',
       series: [
-        { ...finishRaw(loop.tar), label: `${loop.label} 目标` },
-        { ...finishRaw(loop.act), label: `${loop.label} 实际` },
-        { ...finishRaw(loop.err), label: `${loop.label} 误差` },
+        { ...finishRaw(loop.tar), id: `pid:${loop.id}:target`, label: t('logAnalysis.label.target', { label: loop.label }) },
+        { ...finishRaw(loop.act), id: `pid:${loop.id}:actual`, label: t('logAnalysis.label.actual', { label: loop.label }) },
+        { ...finishRaw(loop.err), id: `pid:${loop.id}:error`, label: t('logAnalysis.label.error', { label: loop.label }) },
       ].filter((series) => series.times.length > 0),
     })).filter((loop) => loop.series.length > 0),
     actuators: motorSeries,
@@ -458,9 +471,9 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       .map(finishRaw).filter((series) => series.times.length > 0),
     vibration: vibration.result(),
     rawAcc: [
-      finishEnvelope('加速度 X (m/s²)', rawAcc[0]),
-      finishEnvelope('加速度 Y (m/s²)', rawAcc[1]),
-      finishEnvelope('加速度 Z (m/s²)', rawAcc[2]),
+      finishEnvelope(t('logAnalysis.label.accelX'), rawAcc[0], 'rawAccel.x'),
+      finishEnvelope(t('logAnalysis.label.accelY'), rawAcc[1], 'rawAccel.y'),
+      finishEnvelope(t('logAnalysis.label.accelZ'), rawAcc[2], 'rawAccel.z'),
     ].filter((series) => series.times.length > 0),
     params,
     track: track.lat.length > 1 ? track : null,
@@ -468,16 +481,17 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   return dataset
 }
 
-self.onmessage = (event: MessageEvent<ArrayBuffer>) => {
+self.onmessage = (event: MessageEvent<UlogWorkerRequest>) => {
   void (async () => {
     try {
-      const dataset = await analyze(event.data)
+      await i18next.changeLanguage(event.data.language)
+      const dataset = await analyze(event.data.buffer)
       ;(self as unknown as { postMessage(message: UlogWorkerResult): void })
         .postMessage({ dataset })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ;(self as unknown as { postMessage(message: UlogWorkerResult): void })
-        .postMessage({ error: `ULog 解析失败：${message}` })
+        .postMessage({ error: t('logAnalysis.ulogParseFailed', {message}) })
     }
   })()
 }

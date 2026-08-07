@@ -4,6 +4,8 @@
 // so the Web Worker and the node-run unit tests share one implementation.
 
 export interface SeriesData {
+  /** Stable, language-independent identity used for filtering and lookup. */
+  id: string
   label: string
   /** Seconds since log start. */
   times: number[]
@@ -101,6 +103,11 @@ export interface UlogAnalysisDataset {
 export interface UlogWorkerResult {
   dataset?: UlogAnalysisDataset
   error?: string
+}
+
+export interface UlogWorkerRequest {
+  buffer: ArrayBuffer
+  language: 'zh' | 'en'
 }
 
 /** PX4 nav_state values (vehicle_status.nav_state) to display names. */

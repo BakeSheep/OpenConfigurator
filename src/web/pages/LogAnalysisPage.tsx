@@ -15,6 +15,8 @@ import {
   useState,
 } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
+import i18next from 'i18next'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
 import UPlotChart, { seriesColor } from '../components/logs/UPlotChart'
@@ -29,10 +31,12 @@ import { isDataflashFileName } from '../utils/dataflashAnalysis'
 import { takeStashedLog } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
 import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetadata'
+import { localizeLogSeries, logLoopLabel } from '../utils/logSeriesLabels'
 import { backendEnabled } from '../runtime'
 import type {
   SeriesData,
   UlogAnalysisDataset,
+  UlogWorkerRequest,
   UlogWorkerResult,
 } from '../utils/ulogAnalysis'
 import { parsePx4LogPathDate } from '../utils/ulogAnalysis'
@@ -42,24 +46,30 @@ import type { DataflashLogEntry, FsEntry } from '../../shared/types'
 const TrackMap = lazy(() => import('../components/logs/TrackMap'))
 const LogAttitudeVisualizer = lazy(() => import('../components/logs/LogAttitudeVisualizer'))
 
+const t = i18next.t.bind(i18next)
+
 interface SeriesSelectionGroup {
   id: string
   label: string
-  labels: string[]
+  seriesIds: string[]
 }
 
-const ATTITUDE_GROUPS: SeriesSelectionGroup[] = [
-  { id: 'roll', label: 'Roll', labels: ['横滚', '横滚设定'] },
-  { id: 'pitch', label: 'Pitch', labels: ['俯仰', '俯仰设定'] },
-  { id: 'yaw', label: 'Yaw', labels: ['偏航', '偏航设定'] },
-]
-const RATE_GROUPS: SeriesSelectionGroup[] = [
-  { id: 'roll', label: 'Roll', labels: ['横滚速率', '横滚速率设定'] },
-  { id: 'pitch', label: 'Pitch', labels: ['俯仰速率', '俯仰速率设定'] },
-  { id: 'yaw', label: 'Yaw', labels: ['偏航速率', '偏航速率设定'] },
-]
-const BATTERY_SECONDARY_SCALE = ['功率 (W)']
-const ALTITUDE_SECONDARY_SCALE = ['气压高度 (m)', 'GPS 海拔 (m)']
+function getAttitudeGroups(): SeriesSelectionGroup[] {
+  return [
+    { id: 'roll', label: t('common.roll'), seriesIds: ['attitude.roll', 'attitude.rollSp'] },
+    { id: 'pitch', label: t('common.pitch'), seriesIds: ['attitude.pitch', 'attitude.pitchSp'] },
+    { id: 'yaw', label: t('common.yaw'), seriesIds: ['attitude.yaw', 'attitude.yawSp'] },
+  ]
+}
+function getRateGroups(): SeriesSelectionGroup[] {
+  return [
+    { id: 'roll', label: t('common.roll'), seriesIds: ['rates.roll', 'rates.rollSp'] },
+    { id: 'pitch', label: t('common.pitch'), seriesIds: ['rates.pitch', 'rates.pitchSp'] },
+    { id: 'yaw', label: t('common.yaw'), seriesIds: ['rates.yaw', 'rates.yawSp'] },
+  ]
+}
+const BATTERY_SECONDARY_SERIES_IDS = ['battery.power']
+const ALTITUDE_SECONDARY_SERIES_IDS = ['altitude.baro', 'altitude.gps']
 
 const LOG_LEVEL_LABELS: Record<number, { label: string; color: string }> = {
   0: { label: 'EMERG', color: 'var(--danger)' },
@@ -78,6 +88,7 @@ function analyzeInWorker(
   buffer: ArrayBuffer,
   signal: AbortSignal,
   format: LogFormat,
+  language: UlogWorkerRequest['language'],
 ): Promise<UlogAnalysisDataset> {
   return new Promise((resolve, reject) => {
     // Vite requires literal new URL() arguments to bundle each worker.
@@ -93,7 +104,7 @@ function analyzeInWorker(
       if (settled) return
       settled = true
       cleanup()
-      const error = new Error('日志解析已取消')
+      const error = new Error(t('logAnalysis.parseCancelled'))
       error.name = 'AbortError'
       reject(error)
     }
@@ -102,20 +113,21 @@ function analyzeInWorker(
       settled = true
       cleanup()
       if (event.data.dataset) resolve(event.data.dataset)
-      else reject(new Error(event.data.error ?? '日志解析失败'))
+      else reject(new Error(event.data.error ?? t('logAnalysis.parseFailed')))
     }
     worker.onerror = (event) => {
       if (settled) return
       settled = true
       cleanup()
-      reject(new Error(event.message || '日志解析线程异常'))
+      reject(new Error(event.message || t('logAnalysis.workerError')))
     }
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) {
       abort()
       return
     }
-    worker.postMessage(buffer, [buffer])
+    const request: UlogWorkerRequest = { buffer, language }
+    worker.postMessage(request, [buffer])
   })
 }
 
@@ -123,10 +135,11 @@ function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return '—'
   const minutes = Math.floor(seconds / 60)
   const rest = Math.round(seconds - minutes * 60)
-  return minutes > 0 ? `${minutes} 分 ${rest} 秒` : `${rest} 秒`
+  return minutes > 0 ? t('logAnalysis.durationMinutesSeconds', { minutes, seconds: rest }) : t('logAnalysis.durationSeconds', { seconds: rest })
 }
 
 function CopyableOverviewValue({ label, value }: { label: string; value: string }) {
+  const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -151,8 +164,8 @@ function CopyableOverviewValue({ label, value }: { label: string; value: string 
       <button
         type="button"
         className="mc-icon-btn mc-analysis-copy-btn"
-        aria-label={copied ? `${label}已复制` : `复制${label}`}
-        title={copied ? '已复制' : `复制${label}`}
+        aria-label={copied ? t('logAnalysis.labelCopied', { label }) : t('logAnalysis.copyLabel', { label })}
+        title={copied ? t('logAnalysis.copied') : t('logAnalysis.copyLabel', { label })}
         onClick={() => void copy()}
       >
         <Icon name={copied ? 'check' : 'copy'} size={13} />
@@ -168,7 +181,7 @@ function ChartPanel({
   bands,
   height,
   wide = false,
-  secondaryScaleLabels,
+  secondaryScaleIds,
   selectionGroups,
   selectionMode = 'multi',
   headerAside,
@@ -181,7 +194,7 @@ function ChartPanel({
   bands?: UlogAnalysisDataset['armedSegments']
   height?: number
   wide?: boolean
-  secondaryScaleLabels?: string[]
+  secondaryScaleIds?: string[]
   selectionGroups?: SeriesSelectionGroup[]
   /** 'single': the groups behave as an exclusive loop switch. */
   selectionMode?: 'multi' | 'single'
@@ -189,6 +202,7 @@ function ChartPanel({
   onCursorTimeChange?: (timeSec: number) => void
   children?: React.ReactNode
 }) {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [stretched, setStretched] = useState(false)
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(
@@ -216,12 +230,12 @@ function ChartPanel({
       colorIndex: entry.colorIndex ?? index,
     })) ?? []
     if (!selectionGroups) return indexed
-    const selectedLabels = new Set(
+    const selectedSeriesIds = new Set(
       selectionGroups
         .filter((group) => selectedGroups.has(group.id))
-        .flatMap((group) => group.labels),
+        .flatMap((group) => group.seriesIds),
     )
-    return indexed.filter((entry) => selectedLabels.has(entry.label))
+    return indexed.filter((entry) => selectedSeriesIds.has(entry.id))
   }, [series, selectionGroups, selectedGroups])
   const hasChart = visibleSeries.length > 0
   const expandedHeight = typeof window === 'undefined'
@@ -245,7 +259,7 @@ function ChartPanel({
   const legend = hasChart && (
     <div className="mc-analysis-legend">
       {visibleSeries.map((entry, index) => (
-        <span key={entry.label}>
+        <span key={entry.id}>
           <i style={{ background: seriesColor(entry.colorIndex ?? index) }} />
           {entry.label}
         </span>
@@ -256,7 +270,7 @@ function ChartPanel({
   // Shared by the panel header and the fullscreen dialog, so the loop/series
   // switch stays available after expanding.
   const seriesToggles = selectionGroups && (
-    <div className="mc-analysis-series-toggles" aria-label={`${title}曲线选择`}>
+    <div className="mc-analysis-series-toggles" aria-label={t('logAnalysis.seriesSelectionAria', { title })}>
       {selectionGroups.map((group) => (
         <button
           key={group.id}
@@ -290,8 +304,8 @@ function ChartPanel({
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label={stretched ? `恢复${title}宽度` : `拓宽${title}`}
-                title={stretched ? '恢复宽度' : '横向铺满'}
+                aria-label={stretched ? t('logAnalysis.restoreWidthAria', { title }) : t('logAnalysis.widenAria', { title })}
+                title={stretched ? t('logAnalysis.restoreWidth') : t('logAnalysis.fillWidth')}
                 aria-pressed={stretched}
                 onClick={() => setStretched((current) => !current)}
               >
@@ -302,8 +316,8 @@ function ChartPanel({
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered mc-analysis-expand-btn"
-                aria-label={`放大查看${title}`}
-                title="全屏放大"
+                aria-label={t('logAnalysis.expandViewAria', { title })}
+                title={t('logAnalysis.fullscreenExpand')}
                 onClick={() => setExpanded(true)}
               >
                 <Icon name="maximize" size={14} />
@@ -318,7 +332,7 @@ function ChartPanel({
             unit={unit}
             bands={bands}
             height={height}
-            secondaryScaleLabels={secondaryScaleLabels}
+            secondaryScaleIds={secondaryScaleIds}
             onCursorTimeChange={onCursorTimeChange}
           />
         )}
@@ -329,7 +343,7 @@ function ChartPanel({
           className="mc-analysis-chart-backdrop"
           role="dialog"
           aria-modal="true"
-          aria-label={`${title}放大图表`}
+          aria-label={t('logAnalysis.expandedChartAria', { title })}
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setExpanded(false)
           }}
@@ -337,7 +351,7 @@ function ChartPanel({
           <section className="mc-card mc-analysis-chart-dialog">
             <header className="mc-analysis-chart-dialog__header">
               <div>
-                <span className="mc-analysis-chart-dialog__eyebrow">曲线详细视图</span>
+                <span className="mc-analysis-chart-dialog__eyebrow">{t('logAnalysis.detailedChartView')}</span>
                 <h2>{title}</h2>
               </div>
               <div className="mc-analysis-panel__actions">
@@ -345,8 +359,8 @@ function ChartPanel({
                 <button
                   type="button"
                   className="mc-icon-btn mc-icon-btn--bordered"
-                  aria-label="关闭放大图表"
-                  title="关闭（Esc）"
+                  aria-label={t('logAnalysis.closeExpandedChart')}
+                  title={t('logAnalysis.closeEsc')}
                   autoFocus
                   onClick={() => setExpanded(false)}
                 >
@@ -361,7 +375,7 @@ function ChartPanel({
                 unit={unit}
                 bands={bands}
                 height={expandedHeight}
-                secondaryScaleLabels={secondaryScaleLabels}
+                secondaryScaleIds={secondaryScaleIds}
                 onCursorTimeChange={onCursorTimeChange}
               />
             </div>
@@ -384,6 +398,7 @@ function FcImportDialog({
   const loading = useFileExplorerStore((state) => state.loading)
   const listError = useFileExplorerStore((state) => state.listError)
   const download = useFileExplorerStore((state) => state.download)
+  const { t } = useTranslation()
 
   useEffect(() => {
     useFileExplorerStore.getState().setLoading(true)
@@ -421,8 +436,8 @@ function FcImportDialog({
     <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
       <div className="mc-card mc-modal">
         <div className="flex items-center justify-between">
-          <h3 className="mc-section-title">从飞控导入日志</h3>
-          <button type="button" className="mc-icon-btn" aria-label="关闭" onClick={onClose}>
+          <h3 className="mc-section-title">{t('logAnalysis.importFromFcTitle')}</h3>
+          <button type="button" className="mc-icon-btn" aria-label={t('common.close')} onClick={onClose}>
             <Icon name="close" size={15} />
           </button>
         </div>
@@ -430,7 +445,7 @@ function FcImportDialog({
           <button
             type="button"
             className="mc-icon-btn mc-icon-btn--bordered"
-            aria-label="上一级"
+            aria-label={t('logAnalysis.up')}
             disabled={currentPath === '/'}
             onClick={goUp}
           >
@@ -454,17 +469,17 @@ function FcImportDialog({
               className="mc-btn mc-btn-ghost"
               onClick={() => sendClientMessage({ type: 'fs_download_cancel' })}
             >
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         ) : (
           <ul className="mc-modal__list" style={{ maxHeight: 300 }}>
-            {loading && <li style={{ color: 'var(--text-disabled)' }}>正在读取目录…</li>}
+            {loading && <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.readingDir')}</li>}
             {!loading && listError && (
               <li style={{ color: 'var(--danger)' }}>{listError}</li>
             )}
             {!loading && !listError && visible.length === 0 && (
-              <li style={{ color: 'var(--text-disabled)' }}>此目录没有 .ulg 日志</li>
+              <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.noUlgLogs')}</li>
             )}
             {!loading && visible.map((entry) => (
               <li key={entry.name}>
@@ -499,7 +514,7 @@ function FcImportDialog({
         )}
         {download?.status === 'error' && (
           <p style={{ color: 'var(--danger)', fontSize: 12, margin: 0 }}>
-            下载失败：{download.error}
+            {t('logAnalysis.downloadFailed', { error: download.error })}
           </p>
         )}
       </div>
@@ -517,6 +532,7 @@ function FcDataflashImportDialog({
   const loading = useLogTransferStore((state) => state.loading)
   const listError = useLogTransferStore((state) => state.listError)
   const download = useLogTransferStore((state) => state.download)
+  const { t } = useTranslation()
 
   useEffect(() => {
     useLogTransferStore.getState().setLoading(true)
@@ -538,8 +554,8 @@ function FcDataflashImportDialog({
     <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
       <div className="mc-card mc-modal">
         <div className="flex items-center justify-between">
-          <h3 className="mc-section-title">从飞控导入日志</h3>
-          <button type="button" className="mc-icon-btn" aria-label="关闭" onClick={onClose}>
+          <h3 className="mc-section-title">{t('logAnalysis.importFromFcTitle')}</h3>
+          <button type="button" className="mc-icon-btn" aria-label={t('common.close')} onClick={onClose}>
             <Icon name="close" size={15} />
           </button>
         </div>
@@ -557,17 +573,17 @@ function FcDataflashImportDialog({
               className="mc-btn mc-btn-ghost"
               onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
             >
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         ) : (
           <ul className="mc-modal__list" style={{ maxHeight: 300 }}>
-            {loading && <li style={{ color: 'var(--text-disabled)' }}>正在获取日志列表…</li>}
+            {loading && <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.readingLogList')}</li>}
             {!loading && listError && (
               <li style={{ color: 'var(--danger)' }}>{listError}</li>
             )}
             {!loading && !listError && newestFirst.length === 0 && (
-              <li style={{ color: 'var(--text-disabled)' }}>飞控上没有日志</li>
+              <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.noLogsOnFc')}</li>
             )}
             {!loading && newestFirst.map((entry) => (
               <li key={entry.id}>
@@ -596,7 +612,7 @@ function FcDataflashImportDialog({
         )}
         {download?.status === 'error' && (
           <p style={{ color: 'var(--danger)', fontSize: 12, margin: 0 }}>
-            下载失败：{download.error}
+            {t('logAnalysis.downloadFailed', { error: download.error })}
           </p>
         )}
       </div>
@@ -605,6 +621,7 @@ function FcDataflashImportDialog({
 }
 
 export default function LogAnalysisPage({ embedded = false }: { embedded?: boolean }) {
+  const { t, i18n } = useTranslation()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const logs = logSupport(vehicleIdentity)
@@ -655,7 +672,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     setParsing(true)
     setParseError(null)
     setFileName(name)
-    analyzeInWorker(buffer, controller.signal, format)
+    const language = i18n.resolvedLanguage === 'en' ? 'en' : 'zh'
+    analyzeInWorker(buffer, controller.signal, format, language)
       .then((result) => {
         if (controller.signal.aborted) return
         if (result.overview.startTimeUtcMs === null) {
@@ -687,7 +705,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         analysisAbortRef.current = null
         setParsing(false)
       })
-  }, [])
+  }, [i18n.resolvedLanguage])
 
   useEffect(() => {
     // React StrictMode replays effects in development by running cleanup and
@@ -732,7 +750,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         analyzeBuffer(download.fileName ?? 'log.ulg', buffer, { sourcePath: download.path })
       } catch (error) {
         if (!cancelled) {
-          useFileExplorerStore.getState().failDownload('读取已下载文件失败')
+          useFileExplorerStore.getState().failDownload(t('logAnalysis.readFileFailed'))
           console.error('[Analysis] failed to fetch downloaded log:', error)
         }
       }
@@ -761,7 +779,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         analyzeBuffer(logDownload.fileName ?? 'log.bin', buffer)
       } catch (error) {
         if (!cancelled) {
-          useLogTransferStore.getState().failDownload('读取已下载文件失败')
+          useLogTransferStore.getState().failDownload(t('logAnalysis.readFileFailed'))
           console.error('[Analysis] failed to fetch downloaded DataFlash log:', error)
         }
       }
@@ -776,14 +794,14 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     if (!file) return
     const lower = file.name.toLowerCase()
     if (!lower.endsWith('.ulg') && !lower.endsWith('.bin')) {
-      setParseError('请选择 .ulg（PX4 ULog）或 .bin（ArduPilot DataFlash）格式的飞行日志文件')
+      setParseError(t('logAnalysis.selectFileError'))
       return
     }
     void file.arrayBuffer().then((buffer) => analyzeBuffer(file.name, buffer, {
       sourcePath: file.name,
       fileModifiedMs: file.lastModified,
     }))
-  }, [analyzeBuffer])
+  }, [analyzeBuffer, t])
 
   const filteredParams = useMemo(() => {
     if (!dataset) return []
@@ -830,31 +848,43 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     }))
   }, [dataset])
 
+  const localizedSeries = useMemo(() => dataset ? {
+    attitude: localizeLogSeries(dataset.attitude, t),
+    rates: localizeLogSeries(dataset.rates, t),
+    actuators: localizeLogSeries(dataset.actuators, t),
+    battery: localizeLogSeries(dataset.battery, t),
+    gpsQuality: localizeLogSeries(dataset.gpsQuality, t),
+    altitude: localizeLogSeries(dataset.altitude, t),
+    velocity: localizeLogSeries(dataset.velocity, t),
+    rawAcc: localizeLogSeries(dataset.rawAcc, t),
+  } : null, [dataset, t])
+
   const vibrationSeries = useMemo<SeriesData[]>(() => {
     if (!dataset?.vibration) return []
-    const axes = ['X 轴', 'Y 轴', 'Z 轴']
+    const axes = [t('logAnalysis.label.xAxis'), t('logAnalysis.label.yAxis'), t('logAnalysis.label.zAxis')]
     return dataset.vibration.amp.map((amp, index) => ({
+      id: `vibration.${['x', 'y', 'z'][index]}`,
       label: axes[index],
       times: dataset.vibration!.freq,
       values: amp,
     }))
-  }, [dataset])
+  }, [dataset, t])
 
   // PID loop tracking: all loops flattened; the panel's single-select groups
   // show exactly one loop's target/actual/error at a time. Fixed colorIndex
   // per role keeps colors stable across loop switches.
   const pidSeries = useMemo<SeriesData[]>(
     () => dataset?.pidLoops.flatMap((loop) =>
-      loop.series.map((entry, index) => ({ ...entry, colorIndex: index }))) ?? [],
-    [dataset],
+      localizeLogSeries(loop.series, t).map((entry, index) => ({ ...entry, colorIndex: index }))) ?? [],
+    [dataset, t],
   )
   const pidGroups = useMemo<SeriesSelectionGroup[]>(
     () => dataset?.pidLoops.map((loop) => ({
       id: loop.id,
-      label: loop.label,
-      labels: loop.series.map((entry) => entry.label),
+      label: logLoopLabel(loop.id, loop.label, t),
+      seriesIds: loop.series.map((entry) => entry.id),
     })) ?? [],
-    [dataset],
+    [dataset, t],
   )
 
   return (
@@ -872,8 +902,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       }}
     >
       <PageHeader
-        title="日志分析"
-        description="解析 PX4 ULog 与 ArduPilot DataFlash 飞行日志，提供 Flight Review 级的全面分析"
+        title={t('logAnalysis.title')}
+        description={t('logAnalysis.description')}
         actions={
           <>
             <input
@@ -891,18 +921,18 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               className="mc-btn mc-btn-ghost"
               onClick={() => fileInputRef.current?.click()}
             >
-              <Icon name="upload" size={15} /> 打开本地日志
+              <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
             </button>
             <button
               type="button"
               className="mc-btn mc-btn-primary"
               disabled={!backendEnabled || !vehicleReady}
               title={!backendEnabled
-                ? '演示模式不连接飞控；仍可打开本地日志'
-                : vehicleReady ? undefined : '连接飞控后可直接导入日志'}
+                ? t('logAnalysis.demoModeHint')
+                : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
               onClick={() => setImportOpen(true)}
             >
-              <Icon name="download" size={15} /> 从飞控导入
+              <Icon name="download" size={15} /> {t('logAnalysis.importFromFc')}
             </button>
           </>
         }
@@ -918,7 +948,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
       {parsing && (
         <div className="mc-analysis-dropzone">
-          <p style={{ margin: 0 }}>正在解析 {fileName}…（大日志可能需要数秒）</p>
+          <p style={{ margin: 0 }}>{t('logAnalysis.parsing', { fileName })}</p>
         </div>
       )}
 
@@ -931,11 +961,11 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         >
           <Icon name="log" size={34} style={{ margin: '0 auto', color: 'var(--accent)' }} />
           <p style={{ margin: '12px 0 4px', fontSize: 15, color: 'var(--text-primary)' }}>
-            拖入 .ulg / .bin 日志文件，或点击选择本地文件
+            {t('logAnalysis.dropzoneHint')}
           </p>
           <p style={{ margin: 0, fontSize: 12.5 }}>
-            支持 PX4 ULog 与 ArduPilot DataFlash
-            {backendEnabled && '；也可在已连接飞控时点击右上角“从飞控导入”直接下载并分析'}
+            {t('logAnalysis.dropzoneSupports')}
+            {backendEnabled && t('logAnalysis.dropzoneFcHint')}
           </p>
         </div>
       )}
@@ -945,25 +975,25 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
           {/* 1. Flight overview */}
           <section className="mc-card mc-analysis-panel mc-analysis-panel--wide">
             <div className="flex items-center justify-between">
-              <h3 className="mc-section-title">飞行概览</h3>
+              <h3 className="mc-section-title">{t('logAnalysis.flightOverview')}</h3>
               <span className="mc-mono" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                 {fileName}
               </span>
             </div>
             <div className="mc-analysis-overview">
               <div>
-                <span>日志时长</span>
+                <span>{t('logAnalysis.logDuration')}</span>
                 <strong>{formatDuration(dataset.overview.durationSec)}</strong>
               </div>
               <div>
-                <span>解锁时长</span>
+                <span>{t('logAnalysis.armedDuration')}</span>
                 <strong>{formatDuration(dataset.overview.totalArmedSec)}</strong>
               </div>
               <div>
                 <span>
-                  起飞时间 (UTC)
-                  {dataset.overview.startTimeSource === 'filename' && ' · 文件名推断'}
-                  {dataset.overview.startTimeSource === 'file-modified' && ' · 修改时间估算'}
+                  {t('logAnalysis.takeoffTime')}
+                  {dataset.overview.startTimeSource === 'filename' && t('logAnalysis.startTimeFromFilename')}
+                  {dataset.overview.startTimeSource === 'file-modified' && t('logAnalysis.startTimeFromFileModified')}
                 </span>
                 <strong>
                   {dataset.overview.startTimeUtcMs
@@ -972,21 +1002,21 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
                 </strong>
               </div>
               <div>
-                <span>固件</span>
+                <span>{t('common.firmware')}</span>
                 {dataset.overview.firmware
-                  ? <CopyableOverviewValue label="固件信息" value={dataset.overview.firmware} />
+                  ? <CopyableOverviewValue label={t('logAnalysis.firmwareInfo')} value={dataset.overview.firmware} />
                   : <strong>—</strong>}
               </div>
               <div>
-                <span>硬件</span>
-                <strong>{dataset.overview.hardware ?? '—'}</strong>
+                <span>{t('common.hardware')}</span>
+                <strong>{dataset.overview.hardware ?? '-'}</strong>
               </div>
               <div>
-                <span>机型</span>
+                <span>{t('logAnalysis.airframe')}</span>
                 <strong>{dataset.overview.sysName ?? '—'}</strong>
               </div>
               <div>
-                <span>日志丢帧</span>
+                <span>{t('logAnalysis.droppedMessages')}</span>
                 <strong style={{ color: dataset.overview.droppedMessages > 0 ? 'var(--warning)' : undefined }}>
                   {dataset.overview.droppedMessages}
                 </strong>
@@ -995,14 +1025,14 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             {modeTimeline.length > 0 && (
               <>
                 <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-secondary)' }}>
-                  飞行模式时间轴
+                  {t('logAnalysis.flightModeTimeline')}
                 </p>
                 <div className="mc-analysis-timeline">
                   {modeTimeline.map((segment, index) => (
                     <div
                       key={index}
                       style={{ width: `${segment.widthPct}%`, background: segment.color }}
-                      title={`${segment.label}（${formatDuration(segment.durationSec)}）`}
+                      title={t('logAnalysis.modeSegmentTitle', { label: segment.label, duration: formatDuration(segment.durationSec) })}
                     >
                       {segment.widthPct > 9 ? segment.label : ''}
                     </div>
@@ -1019,9 +1049,9 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
                   onClick={() => setEventsOpen((current) => !current)}
                 >
                   <Icon name="message" size={15} />
-                  <strong>事件与消息</strong>
+                  <strong>{t('logAnalysis.events')}</strong>
                   <span className="mc-analysis-events-count">{dataset.events.length}</span>
-                  <em>{eventsOpen ? '收起' : '展开查看'}</em>
+                  <em>{eventsOpen ? t('logAnalysis.eventsCollapse') : t('logAnalysis.eventsExpand')}</em>
                   <Icon name="chevronDown" size={14} style={{ transform: eventsOpen ? 'rotate(180deg)' : undefined, transition: 'transform 160ms ease' }} />
                 </button>
                 {eventsOpen && (
@@ -1046,12 +1076,12 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
           <section className="mc-card mc-analysis-panel">
             <header className="mc-analysis-panel__header">
-              <h3 className="mc-section-title">日志姿态回放</h3>
-              <span className="mc-analysis-panel__hint">拖动时间轴或播放日志姿态</span>
+              <h3 className="mc-section-title">{t('logAnalysis.attitudeReplay')}</h3>
+              <span className="mc-analysis-panel__hint">{t('logAnalysis.attitudeReplayHint')}</span>
             </header>
-            <Suspense fallback={<p className="mc-explorer__notice">正在加载三维姿态…</p>}>
+            <Suspense fallback={<p className="mc-explorer__notice">{t('logAnalysis.loadingAttitude3d')}</p>}>
               <LogAttitudeVisualizer
-                series={dataset.attitude}
+                series={localizedSeries?.attitude ?? []}
                 durationSec={dataset.overview.durationSec}
                 startSec={replayStartSec}
                 syncTimeSec={chartCursorTimeSec}
@@ -1061,25 +1091,25 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
           {/* Attitude & rate tracking */}
           <ChartPanel
-            title="姿态跟踪（实际 vs 设定，°）"
-            series={dataset.attitude}
+            title={t('logAnalysis.attitudeTracking')}
+            series={localizedSeries?.attitude}
             unit="°"
             onCursorTimeChange={handleChartCursorTimeChange}
             bands={dataset.armedSegments}
-            selectionGroups={ATTITUDE_GROUPS}
+            selectionGroups={getAttitudeGroups()}
           />
           <ChartPanel
-            title="角速率跟踪（实际 vs 设定，°/s）"
-            series={dataset.rates}
+            title={t('logAnalysis.rateTracking')}
+            series={localizedSeries?.rates}
             unit="°/s"
             bands={dataset.armedSegments}
-            selectionGroups={RATE_GROUPS}
+            selectionGroups={getRateGroups()}
           />
 
           {/* PID loop tracking: one loop (target/actual/error) at a time. */}
           {pidSeries.length > 0 && (
             <ChartPanel
-              title="PID 环跟踪（目标 / 实际 / 误差）"
+              title={t('logAnalysis.pidTracking')}
               series={pidSeries}
               bands={dataset.armedSegments}
               selectionGroups={pidGroups}
@@ -1089,8 +1119,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
           {/* 4. Actuators */}
           <ChartPanel
-            title="执行器输出"
-            series={dataset.actuators}
+            title={t('logAnalysis.actuatorOutput')}
+            series={localizedSeries?.actuators}
             bands={dataset.armedSegments}
             headerAside={dataset.actuatorSaturation && (
               <span
@@ -1101,44 +1131,43 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
                     ? 'warning'
                     : 'success'}
               >
-                饱和 {dataset.actuatorSaturation.saturationPct.toFixed(1)}%
+                {t('logAnalysis.saturation', { pct: dataset.actuatorSaturation.saturationPct.toFixed(1) })}
               </span>
             )}
           >
             {dataset.actuatorSaturation && dataset.actuatorSaturation.saturationPct > 1 && (
               <p style={{ margin: 0, fontSize: 12, color: 'var(--warning)' }}>
-                <Icon name="warning" size={13} /> 有 {dataset.actuatorSaturation.saturationPct.toFixed(1)}%
-                的采样存在电机输出饱和，控制余量不足（考虑降低负载或调整 PID）
+                <Icon name="warning" size={13} /> {t('logAnalysis.saturationWarning', { pct: dataset.actuatorSaturation.saturationPct.toFixed(1) })}
               </p>
             )}
           </ChartPanel>
 
           {/* 5. Battery */}
           <ChartPanel
-            title="电池（电压 / 电流 / 功率）"
-            series={dataset.battery}
+            title={t('logAnalysis.batteryChart')}
+            series={localizedSeries?.battery}
             bands={dataset.armedSegments}
-            secondaryScaleLabels={BATTERY_SECONDARY_SCALE}
+            secondaryScaleIds={BATTERY_SECONDARY_SERIES_IDS}
           />
 
           {/* 6. GPS quality */}
           <ChartPanel
-            title="GPS 质量"
-            series={dataset.gpsQuality}
+            title={t('logAnalysis.gpsQuality')}
+            series={localizedSeries?.gpsQuality}
             bands={dataset.armedSegments}
           />
 
           {/* 7. Altitude & velocity */}
           <ChartPanel
-            title="高度剖面（m）"
-            series={dataset.altitude}
+            title={t('logAnalysis.altitudeProfile')}
+            series={localizedSeries?.altitude}
             unit="m"
             bands={dataset.armedSegments}
-            secondaryScaleLabels={ALTITUDE_SECONDARY_SCALE}
+            secondaryScaleIds={ALTITUDE_SECONDARY_SERIES_IDS}
           />
           <ChartPanel
-            title="速度（m/s）"
-            series={dataset.velocity}
+            title={t('logAnalysis.velocityChart')}
+            series={localizedSeries?.velocity}
             unit="m/s"
             bands={dataset.armedSegments}
           />
@@ -1146,31 +1175,30 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
           {/* 8. Vibration */}
           {dataset.vibration && (
             <ChartPanel
-              title={`振动频谱（FFT，采样率 ${dataset.vibration.sampleRateHz.toFixed(0)} Hz）`}
+              title={t('logAnalysis.vibrationSpectrum', { rate: dataset.vibration.sampleRateHz.toFixed(0) })}
               series={vibrationSeries}
               unit="m/s²"
               height={240}
             >
               <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-secondary)' }}>
-                Hann 窗 + 分段平均（{dataset.vibration.segments} 段）。健康机架的高频振动幅值应低于
-                约 1 m/s²；桨叶/电机不平衡通常表现为窄带尖峰。
+                {t('logAnalysis.vibrationHint', { segments: dataset.vibration.segments })}
               </p>
             </ChartPanel>
           )}
           <ChartPanel
-            title="原始加速度包络（m/s²）"
-            series={dataset.rawAcc}
+            title={t('logAnalysis.rawAccelEnvelope')}
+            series={localizedSeries?.rawAcc}
             unit="m/s²"
             bands={dataset.armedSegments}
           />
 
           {/* 9. Parameters */}
           <section className="mc-card mc-analysis-panel">
-            <h3 className="mc-section-title">参数快照（{dataset.params.length}）</h3>
+            <h3 className="mc-section-title">{t('logAnalysis.paramSnapshot', { count: dataset.params.length })}</h3>
             <input
               type="search"
               className="mc-input"
-              placeholder="搜索参数名…"
+              placeholder={t('logAnalysis.searchParamsName')}
               value={paramFilter}
               onChange={(event) => setParamFilter(event.target.value)}
             />
@@ -1208,15 +1236,15 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
                   </section>
                 )
               })}
-              {groupedParams.length === 0 && <p className="mc-analysis-param-groups__empty">没有匹配的参数</p>}
+              {groupedParams.length === 0 && <p className="mc-analysis-param-groups__empty">{t('logAnalysis.noMatchingParams')}</p>}
             </div>
           </section>
 
           {/* 10. GPS track */}
           {dataset.track && (
             <section className="mc-card mc-analysis-panel mc-analysis-panel--wide">
-              <h3 className="mc-section-title">GPS 飞行轨迹（按高度着色）</h3>
-              <Suspense fallback={<p className="mc-explorer__notice">正在加载地图…</p>}>
+              <h3 className="mc-section-title">{t('logAnalysis.gpsTrack')}</h3>
+              <Suspense fallback={<p className="mc-explorer__notice">{t('logAnalysis.loadingMap')}</p>}>
                 <TrackMap track={dataset.track} />
               </Suspense>
             </section>

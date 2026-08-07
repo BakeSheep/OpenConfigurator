@@ -2,6 +2,7 @@
 // of recharts because Flight-Review-level analysis renders thousands of
 // points per series; SVG charting collapses at that volume.
 import { useEffect, useMemo, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { useThemeStore } from '../../stores/themeStore'
@@ -20,8 +21,8 @@ interface UPlotChartProps {
   frequencyAxis?: boolean
   /** Disable the page-wide cursor sync (frequency-domain charts). */
   noSync?: boolean
-  /** Series labels plotted against an independent right-hand Y axis. */
-  secondaryScaleLabels?: string[]
+  /** Stable series IDs plotted against an independent right-hand Y axis. */
+  secondaryScaleIds?: string[]
   /** Absolute log time reported whenever the shared cursor moves. */
   onCursorTimeChange?: (timeSec: number) => void
 }
@@ -68,9 +69,10 @@ export default function UPlotChart({
   bands,
   frequencyAxis = false,
   noSync = false,
-  secondaryScaleLabels,
+  secondaryScaleIds,
   onCursorTimeChange,
 }: UPlotChartProps) {
+  const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const plotRef = useRef<uPlot | null>(null)
   const theme = useThemeStore((state) => state.theme)
@@ -94,8 +96,8 @@ export default function UPlotChart({
     const gridColor = cssVar('--chart-grid', '#edf0f4')
     const textColor = cssVar('--text-secondary', '#5f6773')
     const accentDim = cssVar('--accent-dim', 'rgba(13,148,136,0.1)')
-    const secondaryLabels = new Set(secondaryScaleLabels)
-    const hasSecondaryScale = usable.some((entry) => secondaryLabels.has(entry.label))
+    const secondaryIds = new Set(secondaryScaleIds)
+    const hasSecondaryScale = usable.some((entry) => secondaryIds.has(entry.id))
 
     const options: uPlot.Options = {
       width: Math.max(280, container.clientWidth),
@@ -142,14 +144,14 @@ export default function UPlotChart({
       ],
       series: [
         {
-          label: frequencyAxis ? '频率' : '时间',
+          label: frequencyAxis ? t('common.frequency') : t('logAnalysis.time'),
           value: (_u, value) => value == null
             ? ''
             : frequencyAxis ? `${value.toFixed(1)} Hz` : formatSeconds(value),
         },
         ...usable.map((entry, index) => ({
           label: entry.label,
-          scale: secondaryLabels.has(entry.label) ? 'y2' : 'y',
+          scale: secondaryIds.has(entry.id) ? 'y2' : 'y',
           stroke: colors[(entry.colorIndex ?? index) % colors.length],
           width: 1.4,
           spanGaps: true,
@@ -205,10 +207,10 @@ export default function UPlotChart({
       plotRef.current = null
     }
     // Recreate on theme switch so colors are re-read from CSS variables.
-  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleLabels, onCursorTimeChange, theme])
+  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleIds, onCursorTimeChange, theme, t])
 
   if (!data) {
-    return <p className="mc-explorer__notice">此日志不包含该板块的数据</p>
+    return <p className="mc-explorer__notice">{t('logAnalysis.noChartData')}</p>
   }
   return <div ref={containerRef} className="mc-uplot" />
 }

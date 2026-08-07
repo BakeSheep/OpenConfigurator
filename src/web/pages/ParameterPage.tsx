@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import Icon from '../components/ui/Icon'
 import { EmptyState } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -26,18 +28,19 @@ const INTEGER_PARAM_RANGES: Record<number, readonly [number, number]> = {
   8: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
 }
 
-function validateParamValue(value: number, type: number): string | null {
-  if (!Number.isFinite(value)) return '参数值必须是有限数值'
-  if (type === 9) return Number.isFinite(Math.fround(value)) ? null : '参数值超出 REAL32 范围'
+function validateParamValue(value: number, type: number, t: TFunction): string | null {
+  if (!Number.isFinite(value)) return t('parameter.valueMustBeFinite')
+  if (type === 9) return Number.isFinite(Math.fround(value)) ? null : t('parameter.valueOutOfRangeReal32')
   if (type === 10) return null
   const range = INTEGER_PARAM_RANGES[type]
-  if (!range) return `不支持 MAV_PARAM_TYPE ${type}`
+  if (!range) return t('parameter.unsupportedParamType', { type })
   if (!Number.isInteger(value) || value < range[0] || value > range[1]) {
-    return `参数值必须位于 ${range[0]}–${range[1]} 范围内`
+    return t('parameter.valueMustBeInRange', { min: range[0], max: range[1] })
   }
   return null
 }
 export default function ParameterPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const { params, loading, totalCount, receivedCount } = useParameterStore()
   const send = sendClientMessage
   const canAccess = useConnectionStore((state) => state.vehicleReady && state.canControl)
@@ -98,19 +101,19 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     const rawValue = editValue.trim()
     const parsedValue = rawValue === '' ? Number.NaN : Number(rawValue)
     if (!Number.isFinite(parsedValue)) {
-      setWriteError(`${id} 不是有效数值`)
+      setWriteError(t('parameter.invalidValue', { id }))
       return
     }
     const value = parsedValue
-    const rangeError = validateParamValue(value, param.type)
+    const rangeError = validateParamValue(value, param.type, t)
     if (rangeError) {
-      setWriteError(`${id}：${rangeError}`)
+      setWriteError(t('parameter.paramError', { id, error: rangeError }))
       return
     }
     if (
       DANGEROUS_PARAM_PREFIXES.some((prefix) => id.startsWith(prefix))
       && !window.confirm(
-        `${id} 是安全熔断（circuit breaker）参数，错误的值会直接禁用关键安全保护。\n确认写入 ${value} 吗？`,
+        t('parameter.circuitBreakerConfirm', { id, value }),
       )
     ) return
     setWriteError(null)
@@ -119,7 +122,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
     writeTimer.current = window.setTimeout(() => {
       setPendingWrite((current) => {
-        if (current?.id === id) setWriteError(`${id} 未收到飞控回读确认`)
+        if (current?.id === id) setWriteError(t('parameter.noEchoConfirm', { id }))
         return current?.id === id ? null : current
       })
     }, 5000)
@@ -141,22 +144,22 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <span className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
-          {loading ? '正在接收 ' + receivedCount + '/' + totalCount : (params.size || totalCount) + ' 个参数'}
+          {loading ? t('parameter.receiving', { received: receivedCount, total: totalCount }) : t('parameter.paramCount', { count: params.size || totalCount })}
         </span>
         <span className="flex-1" />
         <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canAccess || loading}>
-          <Icon name="refresh" size={15} />{loading ? receivedCount + '/' + totalCount : '重新同步'}
+          <Icon name="refresh" size={15} />{loading ? `${receivedCount}/${totalCount}` : t('parameter.resync')}
         </button>
-        <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />导出参数</button>
+        <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />{t('parameter.exportParams')}</button>
       </div>
 
-      {!canAccess && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>连接飞控并取得控制权后可同步参数。</span></div>}
-      {canAccess && !profileWritable && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>当前飞控类型尚未开放写操作；参数可同步、搜索和导出，但不能修改。</span></div>}
+      {!canAccess && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>{t('parameter.connectToSync')}</span></div>}
+      {canAccess && !profileWritable && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>{t('parameter.writeNotSupported')}</span></div>}
       {writeError && <div className="mc-capability-note" data-state="error"><Icon name="warning" size={15} /><span>{writeError}</span></div>}
 
       <div className="mc-param-search">
         <Icon name="search" size={17} aria-hidden="true" />
-        <input className="mc-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索参数名、中文名称或说明…" />
+        <input className="mc-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('parameter.searchPlaceholder')} />
       </div>
 
       {loading && (
@@ -166,7 +169,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       )}
 
       {params.size === 0 && !loading ? (
-        <EmptyState icon="parameters" description="连接飞控后，点击“刷新参数”读取可配置参数。" />
+        <EmptyState icon="parameters" description={t('parameter.emptyDescription')} />
       ) : (
         <div className="space-y-3">
           {Object.entries(groups).map(([prefix, items]) => {
@@ -192,7 +195,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                       const knownEnumValue = enumOptions
                         ?.some((option) => parameterEnumValuesMatch(option.value, param.value)) ?? false
                       const editorOptions = enumOptions && !knownEnumValue
-                        ? [{ value: param.value, label: '当前固件未收录的值' }, ...enumOptions]
+                        ? [{ value: param.value, label: t('parameter.unknownEnumValue') }, ...enumOptions]
                         : enumOptions
                       return (
                       <div key={param.id} className="mc-param-row">
@@ -209,7 +212,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                             {editorOptions && !editRaw ? (
                               <select
                                 autoFocus
-                                aria-label={`${param.id} 枚举值`}
+                                aria-label={t('parameter.enumValueAria', { id: param.id })}
                                 className="mc-input mc-param-row__select h-8"
                                 value={editValue}
                                 onChange={(event) => setEditValue(event.target.value)}
@@ -224,14 +227,14 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                             )}
                             {editorOptions && (
                               <button type="button" className="mc-btn mc-btn-ghost h-8 mc-param-row__raw-toggle" onClick={() => setEditRaw((current) => !current)}>
-                                {editRaw ? '选项' : '原始值'}
+                                {editRaw ? t('parameter.options') : t('parameter.rawValue')}
                               </button>
                             )}
-                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>保存</button>
+                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>{t('parameter.save')}</button>
                           </div>
                         ) : (
                           <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)); setEditRaw(false) }}>
-                            {pendingWrite?.id === param.id ? '确认中…' : enumLabel ? `${param.value}: ${enumLabel}` : param.value}
+                            {pendingWrite?.id === param.id ? t('parameter.confirming') : enumLabel ? `${param.value}: ${enumLabel}` : param.value}
                           </button>
                         )}
                         <span className="mc-param-row__type mc-mono">T{param.type}</span>
@@ -239,7 +242,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                     )})}
                     {items.length > (visibleCounts[prefix] ?? 80) && (
                       <button type="button" className="mc-load-more" onClick={() => setVisibleCounts((current) => ({ ...current, [prefix]: (current[prefix] ?? 80) + 80 }))}>
-                        显示更多 · 还有 {items.length - (visibleCounts[prefix] ?? 80)} 项
+                        {t('parameter.showMore', { count: items.length - (visibleCounts[prefix] ?? 80) })}
                       </button>
                     )}
                   </div>

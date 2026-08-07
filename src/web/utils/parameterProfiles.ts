@@ -4,6 +4,9 @@
 // editing available. ArduPilot gains keep ArduPilot naming - they are never
 // renamed to PX4 semantics.
 import type { ParamData, VehicleIdentity } from '../../shared/types'
+import i18next from 'i18next'
+
+const t = i18next.t.bind(i18next)
 
 export interface ParameterFieldDefinition {
   id: string
@@ -38,78 +41,78 @@ const px4RateAxis = (axis: 'ROLL' | 'PITCH' | 'YAW'): ParameterFieldDefinition[]
   const prefix = `MC_${axis}RATE`
   const intLim = axis === 'ROLL' ? 'MC_RR_INT_LIM' : axis === 'PITCH' ? 'MC_PR_INT_LIM' : 'MC_YR_INT_LIM'
   return [
-    { id: `${prefix}_K`, label: 'K', min: 0, max: 5, step: 0.05, hint: '整体增益系数，同时缩放 P/I/D' },
-    { id: `${prefix}_P`, label: 'P', min: 0, max: 0.6, step: 0.01, hint: '角速度误差的即时修正力度' },
-    { id: `${prefix}_I`, label: 'I', min: 0, max: 1, step: 0.01, hint: '补偿持续偏差与重心偏移' },
-    { id: `${prefix}_D`, label: 'D', min: 0, max: 0.03, step: 0.0005, hint: '抑制快速变化与高频振荡' },
-    { id: `${prefix}_FF`, label: 'FF', min: 0, max: 2, step: 0.01, hint: '前馈：直接叠加目标角速度' },
-    { id: intLim, label: 'I Limit', min: 0, max: 1, step: 0.05, hint: '积分限幅，防止积分饱和' },
-    { id: `${prefix}_MAX`, label: 'Max Rate', min: 0, max: 1800, step: 5, unit: '°/s', hint: '该轴允许的最大角速度' },
+    { id: `${prefix}_K`, label: 'K', min: 0, max: 5, step: 0.05, hint: 'metadata.profile.pid.rate.K.hint' },
+    { id: `${prefix}_P`, label: 'P', min: 0, max: 0.6, step: 0.01, hint: 'metadata.profile.pid.rate.P.hint' },
+    { id: `${prefix}_I`, label: 'I', min: 0, max: 1, step: 0.01, hint: 'metadata.profile.pid.rate.I.hint' },
+    { id: `${prefix}_D`, label: 'D', min: 0, max: 0.03, step: 0.0005, hint: 'metadata.profile.pid.rate.D.hint' },
+    { id: `${prefix}_FF`, label: 'FF', min: 0, max: 2, step: 0.01, hint: 'metadata.profile.pid.rate.FF.hint' },
+    { id: intLim, label: 'I Limit', min: 0, max: 1, step: 0.05, hint: 'metadata.profile.pid.rate.ILimit.hint' },
+    { id: `${prefix}_MAX`, label: 'Max Rate', min: 0, max: 1800, step: 5, unit: '°/s', hint: 'metadata.profile.pid.rate.MaxRate.hint' },
   ]
 }
 
 const PX4_PID_GROUPS: ParameterGroupDefinition[] = [
-  { id: 'roll-rate', title: '横滚角速率', params: px4RateAxis('ROLL') },
-  { id: 'pitch-rate', title: '俯仰角速率', params: px4RateAxis('PITCH') },
-  { id: 'yaw-rate', title: '偏航角速率', params: px4RateAxis('YAW') },
+  { id: 'roll-rate', title: 'metadata.profile.pid.rollRate.title', params: px4RateAxis('ROLL') },
+  { id: 'pitch-rate', title: 'metadata.profile.pid.pitchRate.title', params: px4RateAxis('PITCH') },
+  { id: 'yaw-rate', title: 'metadata.profile.pid.yawRate.title', params: px4RateAxis('YAW') },
   {
     id: 'attitude',
-    title: '姿态',
+    title: 'metadata.profile.pid.attitude.title',
     params: [
-      { id: 'MC_ROLL_P', label: '横滚控制力度', min: 0, max: 12, step: 0.1, hint: '姿态外环：横滚角误差 → 目标角速度' },
-      { id: 'MC_PITCH_P', label: '俯仰控制力度', min: 0, max: 12, step: 0.1, hint: '姿态外环：俯仰角误差 → 目标角速度' },
-      { id: 'MC_YAW_P', label: '偏航控制力度', min: 0, max: 5, step: 0.1, hint: '姿态外环：偏航角误差 → 目标角速度' },
-      { id: 'MC_YAW_WEIGHT', label: 'Yaw Weight', min: 0, max: 1, step: 0.05, hint: '偏航相对横滚/俯仰的控制优先级' },
+      { id: 'MC_ROLL_P', label: 'metadata.profile.pid.attitude.rollP.label', min: 0, max: 12, step: 0.1, hint: 'metadata.profile.pid.attitude.rollP.hint' },
+      { id: 'MC_PITCH_P', label: 'metadata.profile.pid.attitude.pitchP.label', min: 0, max: 12, step: 0.1, hint: 'metadata.profile.pid.attitude.pitchP.hint' },
+      { id: 'MC_YAW_P', label: 'metadata.profile.pid.attitude.yawP.label', min: 0, max: 5, step: 0.1, hint: 'metadata.profile.pid.attitude.yawP.hint' },
+      { id: 'MC_YAW_WEIGHT', label: 'Yaw Weight', min: 0, max: 1, step: 0.05, hint: 'metadata.profile.pid.attitude.yawWeight.hint' },
     ],
   },
   {
     id: 'position',
-    title: '位置',
+    title: 'metadata.profile.pid.position.title',
     params: [
-      { id: 'MPC_XY_P', label: 'XY P', min: 0, max: 2, step: 0.05, hint: '水平位置误差 → 目标速度' },
-      { id: 'MPC_XY_VEL_P_ACC', label: 'XY Vel P', min: 0, max: 5, step: 0.05, hint: '水平速度环比例增益' },
-      { id: 'MPC_XY_VEL_I_ACC', label: 'XY Vel I', min: 0, max: 5, step: 0.05, hint: '水平速度环积分增益（抗风）' },
-      { id: 'MPC_XY_VEL_D_ACC', label: 'XY Vel D', min: 0, max: 2, step: 0.05, hint: '水平速度环微分增益' },
-      { id: 'MPC_XY_CRUISE', label: 'Cruise Speed', min: 0, max: 20, step: 0.5, unit: 'm/s', hint: '任务模式默认巡航速度' },
-      { id: 'MPC_XY_VEL_MAX', label: 'Max XY Speed', min: 0, max: 20, step: 0.5, unit: 'm/s', hint: '允许的最大水平速度' },
-      { id: 'MPC_ACC_HOR', label: 'Acceleration', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: '定点模式水平加速度' },
-      { id: 'MPC_ACC_HOR_MAX', label: 'Max Acceleration', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: '最大水平加速度' },
+      { id: 'MPC_XY_P', label: 'XY P', min: 0, max: 2, step: 0.05, hint: 'metadata.profile.pid.position.xyP.hint' },
+      { id: 'MPC_XY_VEL_P_ACC', label: 'XY Vel P', min: 0, max: 5, step: 0.05, hint: 'metadata.profile.pid.position.xyVelP.hint' },
+      { id: 'MPC_XY_VEL_I_ACC', label: 'XY Vel I', min: 0, max: 5, step: 0.05, hint: 'metadata.profile.pid.position.xyVelI.hint' },
+      { id: 'MPC_XY_VEL_D_ACC', label: 'XY Vel D', min: 0, max: 2, step: 0.05, hint: 'metadata.profile.pid.position.xyVelD.hint' },
+      { id: 'MPC_XY_CRUISE', label: 'Cruise Speed', min: 0, max: 20, step: 0.5, unit: 'm/s', hint: 'metadata.profile.pid.position.cruiseSpeed.hint' },
+      { id: 'MPC_XY_VEL_MAX', label: 'Max XY Speed', min: 0, max: 20, step: 0.5, unit: 'm/s', hint: 'metadata.profile.pid.position.maxXySpeed.hint' },
+      { id: 'MPC_ACC_HOR', label: 'Acceleration', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: 'metadata.profile.pid.position.acceleration.hint' },
+      { id: 'MPC_ACC_HOR_MAX', label: 'Max Acceleration', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: 'metadata.profile.pid.position.maxAcceleration.hint' },
     ],
   },
   {
     id: 'altitude',
-    title: '高度',
+    title: 'metadata.profile.pid.altitude.title',
     params: [
-      { id: 'MPC_Z_P', label: 'Z P', min: 0, max: 1.5, step: 0.05, hint: '高度误差 → 目标爬升率' },
-      { id: 'MPC_Z_VEL_P_ACC', label: 'Z Vel P', min: 0, max: 15, step: 0.1, hint: '垂直速度环比例增益' },
-      { id: 'MPC_Z_VEL_I_ACC', label: 'Z Vel I', min: 0, max: 3, step: 0.05, hint: '垂直速度环积分增益' },
-      { id: 'MPC_Z_VEL_D_ACC', label: 'Z Vel D', min: 0, max: 2, step: 0.05, hint: '垂直速度环微分增益' },
-      { id: 'MPC_THR_HOVER', label: 'Hover Throttle', min: 0, max: 0.8, step: 0.01, hint: '悬停油门估计值' },
-      { id: 'MPC_THR_MIN', label: 'Min Throttle', min: 0, max: 1, step: 0.01, hint: '最小油门限制' },
-      { id: 'MPC_THR_MAX', label: 'Max Throttle', min: 0, max: 1, step: 0.01, hint: '最大油门限制' },
+      { id: 'MPC_Z_P', label: 'Z P', min: 0, max: 1.5, step: 0.05, hint: 'metadata.profile.pid.altitude.zP.hint' },
+      { id: 'MPC_Z_VEL_P_ACC', label: 'Z Vel P', min: 0, max: 15, step: 0.1, hint: 'metadata.profile.pid.altitude.zVelP.hint' },
+      { id: 'MPC_Z_VEL_I_ACC', label: 'Z Vel I', min: 0, max: 3, step: 0.05, hint: 'metadata.profile.pid.altitude.zVelI.hint' },
+      { id: 'MPC_Z_VEL_D_ACC', label: 'Z Vel D', min: 0, max: 2, step: 0.05, hint: 'metadata.profile.pid.altitude.zVelD.hint' },
+      { id: 'MPC_THR_HOVER', label: 'Hover Throttle', min: 0, max: 0.8, step: 0.01, hint: 'metadata.profile.pid.altitude.hoverThrottle.hint' },
+      { id: 'MPC_THR_MIN', label: 'Min Throttle', min: 0, max: 1, step: 0.01, hint: 'metadata.profile.pid.altitude.minThrottle.hint' },
+      { id: 'MPC_THR_MAX', label: 'Max Throttle', min: 0, max: 1, step: 0.01, hint: 'metadata.profile.pid.altitude.maxThrottle.hint' },
     ],
   },
   {
     id: 'mission',
-    title: '航点导航',
+    title: 'metadata.profile.pid.mission.title',
     params: [
-      { id: 'MPC_Z_VEL_MAX_UP', label: 'Climb Speed', min: 0, max: 8, step: 0.1, unit: 'm/s', hint: '最大爬升速度' },
-      { id: 'MPC_Z_VEL_MAX_DN', label: 'Descent Speed', min: 0, max: 4, step: 0.1, unit: 'm/s', hint: '最大下降速度' },
-      { id: 'MPC_ACC_UP_MAX', label: 'Climb Accel', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: '最大向上加速度' },
-      { id: 'MPC_ACC_DOWN_MAX', label: 'Descent Accel', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: '最大向下加速度' },
-      { id: 'MPC_TKO_SPEED', label: 'Takeoff Speed', min: 0, max: 5, step: 0.1, unit: 'm/s', hint: '起飞爬升速度' },
-      { id: 'MPC_LAND_SPEED', label: 'Land Speed', min: 0, max: 3, step: 0.1, unit: 'm/s', hint: '着陆下降速度' },
-      { id: 'MPC_MAN_TILT_MAX', label: 'Manual Tilt', min: 0, max: 90, step: 1, unit: '°', hint: '手动模式最大倾角' },
-      { id: 'MPC_MAN_Y_MAX', label: 'Manual Yaw Rate', min: 0, max: 400, step: 5, unit: '°/s', hint: '手动模式最大偏航角速度' },
+      { id: 'MPC_Z_VEL_MAX_UP', label: 'Climb Speed', min: 0, max: 8, step: 0.1, unit: 'm/s', hint: 'metadata.profile.pid.mission.climbSpeed.hint' },
+      { id: 'MPC_Z_VEL_MAX_DN', label: 'Descent Speed', min: 0, max: 4, step: 0.1, unit: 'm/s', hint: 'metadata.profile.pid.mission.descentSpeed.hint' },
+      { id: 'MPC_ACC_UP_MAX', label: 'Climb Accel', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: 'metadata.profile.pid.mission.climbAccel.hint' },
+      { id: 'MPC_ACC_DOWN_MAX', label: 'Descent Accel', min: 0, max: 15, step: 0.5, unit: 'm/s²', hint: 'metadata.profile.pid.mission.descentAccel.hint' },
+      { id: 'MPC_TKO_SPEED', label: 'Takeoff Speed', min: 0, max: 5, step: 0.1, unit: 'm/s', hint: 'metadata.profile.pid.mission.takeoffSpeed.hint' },
+      { id: 'MPC_LAND_SPEED', label: 'Land Speed', min: 0, max: 3, step: 0.1, unit: 'm/s', hint: 'metadata.profile.pid.mission.landSpeed.hint' },
+      { id: 'MPC_MAN_TILT_MAX', label: 'Manual Tilt', min: 0, max: 90, step: 1, unit: '°', hint: 'metadata.profile.pid.mission.manualTilt.hint' },
+      { id: 'MPC_MAN_Y_MAX', label: 'Manual Yaw Rate', min: 0, max: 400, step: 5, unit: '°/s', hint: 'metadata.profile.pid.mission.manualYawRate.hint' },
     ],
   },
   {
     id: 'filters',
-    title: '滤波器',
+    title: 'metadata.profile.pid.filters.title',
     params: [
-      { id: 'IMU_GYRO_CUTOFF', label: '陀螺仪低通滤波', min: 0, max: 1000, step: 5, unit: 'Hz', hint: '陀螺仪数据低通截止频率' },
-      { id: 'IMU_DGYRO_CUTOFF', label: 'D Gyro Filter', min: 0, max: 1000, step: 5, unit: 'Hz', hint: 'D 项角加速度低通截止频率' },
-      { id: 'IMU_ACCEL_CUTOFF', label: '加速度低通滤波', min: 0, max: 1000, step: 5, unit: 'Hz', hint: '加速度计数据低通截止频率' },
+      { id: 'IMU_GYRO_CUTOFF', label: 'metadata.profile.pid.filters.gyroCutoff.label', min: 0, max: 1000, step: 5, unit: 'Hz', hint: 'metadata.profile.pid.filters.gyroCutoff.hint' },
+      { id: 'IMU_DGYRO_CUTOFF', label: 'D Gyro Filter', min: 0, max: 1000, step: 5, unit: 'Hz', hint: 'metadata.profile.pid.filters.dGyroCutoff.hint' },
+      { id: 'IMU_ACCEL_CUTOFF', label: 'metadata.profile.pid.filters.accelCutoff.label', min: 0, max: 1000, step: 5, unit: 'Hz', hint: 'metadata.profile.pid.filters.accelCutoff.hint' },
     ],
   },
 ]
@@ -122,81 +125,94 @@ const arduRateAxis = (axis: 'RLL' | 'PIT' | 'YAW'): ParameterFieldDefinition[] =
   const prefix = `ATC_RAT_${axis}`
   const isYaw = axis === 'YAW'
   return [
-    { id: `${prefix}_P`, label: 'P', min: 0, max: isYaw ? 2.5 : 0.5, step: 0.005, hint: '角速度误差的即时修正力度' },
-    { id: `${prefix}_I`, label: 'I', min: 0, max: isYaw ? 1 : 2, step: 0.005, hint: '补偿持续偏差与重心偏移' },
-    { id: `${prefix}_D`, label: 'D', min: 0, max: 0.05, step: 0.0005, hint: '抑制快速变化与高频振荡' },
-    { id: `${prefix}_FF`, label: 'FF', min: 0, max: 0.5, step: 0.001, hint: '前馈：直接叠加目标角速度' },
-    { id: `${prefix}_IMAX`, label: 'I Max', min: 0, max: 1, step: 0.05, hint: '积分限幅，防止积分饱和' },
-    { id: `${prefix}_FLTD`, label: 'D Filter', min: 0, max: 100, step: 1, unit: 'Hz', hint: 'D 项低通滤波截止频率' },
+    { id: `${prefix}_P`, label: 'P', min: 0, max: isYaw ? 2.5 : 0.5, step: 0.005, hint: 'metadata.profile.pid.arduRate.P.hint' },
+    { id: `${prefix}_I`, label: 'I', min: 0, max: isYaw ? 1 : 2, step: 0.005, hint: 'metadata.profile.pid.arduRate.I.hint' },
+    { id: `${prefix}_D`, label: 'D', min: 0, max: 0.05, step: 0.0005, hint: 'metadata.profile.pid.arduRate.D.hint' },
+    { id: `${prefix}_FF`, label: 'FF', min: 0, max: 0.5, step: 0.001, hint: 'metadata.profile.pid.arduRate.FF.hint' },
+    { id: `${prefix}_IMAX`, label: 'I Max', min: 0, max: 1, step: 0.05, hint: 'metadata.profile.pid.arduRate.imax.hint' },
+    { id: `${prefix}_FLTD`, label: 'D Filter', min: 0, max: 100, step: 1, unit: 'Hz', hint: 'metadata.profile.pid.arduRate.dFilter.hint' },
   ]
 }
 
 const ARDUCOPTER_PID_GROUPS: ParameterGroupDefinition[] = [
-  { id: 'roll-rate', title: '横滚角速率', params: arduRateAxis('RLL') },
-  { id: 'pitch-rate', title: '俯仰角速率', params: arduRateAxis('PIT') },
-  { id: 'yaw-rate', title: '偏航角速率', params: arduRateAxis('YAW') },
+  { id: 'roll-rate', title: 'metadata.profile.pid.arduRollRate.title', params: arduRateAxis('RLL') },
+  { id: 'pitch-rate', title: 'metadata.profile.pid.arduPitchRate.title', params: arduRateAxis('PIT') },
+  { id: 'yaw-rate', title: 'metadata.profile.pid.arduYawRate.title', params: arduRateAxis('YAW') },
   {
     id: 'attitude',
-    title: '姿态角',
+    title: 'metadata.profile.pid.arduAttitude.title',
     params: [
-      { id: 'ATC_ANG_RLL_P', label: '横滚角 P', min: 0, max: 12, step: 0.1, hint: '姿态外环：横滚角误差 → 目标角速度' },
-      { id: 'ATC_ANG_PIT_P', label: '俯仰角 P', min: 0, max: 12, step: 0.1, hint: '姿态外环：俯仰角误差 → 目标角速度' },
-      { id: 'ATC_ANG_YAW_P', label: '偏航角 P', min: 0, max: 12, step: 0.1, hint: '姿态外环：偏航角误差 → 目标角速度' },
-      { id: 'ATC_INPUT_TC', label: 'Input TC', min: 0, max: 1, step: 0.01, unit: 's', hint: '摇杆输入平滑时间常数' },
+      { id: 'ATC_ANG_RLL_P', label: 'metadata.profile.pid.arduAttitude.rollP.label', min: 0, max: 12, step: 0.1, hint: 'metadata.profile.pid.arduAttitude.rollP.hint' },
+      { id: 'ATC_ANG_PIT_P', label: 'metadata.profile.pid.arduAttitude.pitchP.label', min: 0, max: 12, step: 0.1, hint: 'metadata.profile.pid.arduAttitude.pitchP.hint' },
+      { id: 'ATC_ANG_YAW_P', label: 'metadata.profile.pid.arduAttitude.yawP.label', min: 0, max: 12, step: 0.1, hint: 'metadata.profile.pid.arduAttitude.yawP.hint' },
+      { id: 'ATC_INPUT_TC', label: 'Input TC', min: 0, max: 1, step: 0.01, unit: 's', hint: 'metadata.profile.pid.arduAttitude.inputTc.hint' },
     ],
   },
   {
     id: 'position',
-    title: '位置',
+    title: 'metadata.profile.pid.arduPosition.title',
     params: [
-      { id: 'PSC_POSXY_P', label: 'XY P', min: 0, max: 2, step: 0.05, hint: '水平位置误差 → 目标速度' },
-      { id: 'PSC_VELXY_P', label: 'XY Vel P', min: 0, max: 6, step: 0.05, hint: '水平速度环比例增益' },
-      { id: 'PSC_VELXY_I', label: 'XY Vel I', min: 0, max: 1, step: 0.01, hint: '水平速度环积分增益（抗风）' },
-      { id: 'PSC_VELXY_D', label: 'XY Vel D', min: 0, max: 1, step: 0.01, hint: '水平速度环微分增益' },
+      { id: 'PSC_POSXY_P', label: 'XY P', min: 0, max: 2, step: 0.05, hint: 'metadata.profile.pid.arduPosition.xyP.hint' },
+      { id: 'PSC_VELXY_P', label: 'XY Vel P', min: 0, max: 6, step: 0.05, hint: 'metadata.profile.pid.arduPosition.xyVelP.hint' },
+      { id: 'PSC_VELXY_I', label: 'XY Vel I', min: 0, max: 1, step: 0.01, hint: 'metadata.profile.pid.arduPosition.xyVelI.hint' },
+      { id: 'PSC_VELXY_D', label: 'XY Vel D', min: 0, max: 1, step: 0.01, hint: 'metadata.profile.pid.arduPosition.xyVelD.hint' },
     ],
   },
   {
     id: 'altitude',
-    title: '高度',
+    title: 'metadata.profile.pid.arduAltitude.title',
     params: [
-      { id: 'PSC_POSZ_P', label: 'Z P', min: 0, max: 3, step: 0.05, hint: '高度误差 → 目标爬升率' },
-      { id: 'PSC_VELZ_P', label: 'Z Vel P', min: 0, max: 8, step: 0.1, hint: '垂直速度环比例增益' },
-      { id: 'PSC_ACCZ_P', label: 'Z Accel P', min: 0, max: 1.5, step: 0.01, hint: '垂直加速度环比例增益' },
-      { id: 'PSC_ACCZ_I', label: 'Z Accel I', min: 0, max: 3, step: 0.05, hint: '垂直加速度环积分增益' },
-      { id: 'MOT_THST_HOVER', label: 'Hover Throttle', min: 0, max: 0.8, step: 0.01, hint: '悬停油门估计值（学习值）' },
+      { id: 'PSC_POSZ_P', label: 'Z P', min: 0, max: 3, step: 0.05, hint: 'metadata.profile.pid.arduAltitude.zP.hint' },
+      { id: 'PSC_VELZ_P', label: 'Z Vel P', min: 0, max: 8, step: 0.1, hint: 'metadata.profile.pid.arduAltitude.zVelP.hint' },
+      { id: 'PSC_ACCZ_P', label: 'Z Accel P', min: 0, max: 1.5, step: 0.01, hint: 'metadata.profile.pid.arduAltitude.zAccelP.hint' },
+      { id: 'PSC_ACCZ_I', label: 'Z Accel I', min: 0, max: 3, step: 0.05, hint: 'metadata.profile.pid.arduAltitude.zAccelI.hint' },
+      { id: 'MOT_THST_HOVER', label: 'Hover Throttle', min: 0, max: 0.8, step: 0.01, hint: 'metadata.profile.pid.arduAltitude.hoverThrottle.hint' },
     ],
   },
   {
     id: 'mission',
-    title: '航点导航',
+    title: 'metadata.profile.pid.arduMission.title',
     params: [
-      { id: 'WPNAV_SPEED', label: 'WP Speed', min: 20, max: 2000, step: 10, unit: 'cm/s', hint: '航点飞行水平速度' },
-      { id: 'WPNAV_SPEED_UP', label: 'Climb Speed', min: 10, max: 1000, step: 10, unit: 'cm/s', hint: '航点最大爬升速度' },
-      { id: 'WPNAV_SPEED_DN', label: 'Descent Speed', min: 10, max: 500, step: 10, unit: 'cm/s', hint: '航点最大下降速度' },
-      { id: 'WPNAV_RADIUS', label: 'WP Radius', min: 5, max: 1000, step: 5, unit: 'cm', hint: '判定到达航点的半径' },
-      { id: 'WPNAV_ACCEL', label: 'WP Accel', min: 50, max: 500, step: 10, unit: 'cm/s²', hint: '航点水平加速度' },
-      { id: 'LAND_SPEED', label: 'Land Speed', min: 30, max: 200, step: 5, unit: 'cm/s', hint: '最终着陆下降速度' },
-      { id: 'PILOT_SPEED_UP', label: 'Pilot Climb', min: 50, max: 500, step: 10, unit: 'cm/s', hint: '手动模式最大爬升速度' },
-      { id: 'ANGLE_MAX', label: 'Max Angle', min: 1000, max: 8000, step: 100, unit: 'c°', hint: '最大倾角（百分之一度）' },
+      { id: 'WPNAV_SPEED', label: 'WP Speed', min: 20, max: 2000, step: 10, unit: 'cm/s', hint: 'metadata.profile.pid.arduMission.wpSpeed.hint' },
+      { id: 'WPNAV_SPEED_UP', label: 'Climb Speed', min: 10, max: 1000, step: 10, unit: 'cm/s', hint: 'metadata.profile.pid.arduMission.climbSpeed.hint' },
+      { id: 'WPNAV_SPEED_DN', label: 'Descent Speed', min: 10, max: 500, step: 10, unit: 'cm/s', hint: 'metadata.profile.pid.arduMission.descentSpeed.hint' },
+      { id: 'WPNAV_RADIUS', label: 'WP Radius', min: 5, max: 1000, step: 5, unit: 'cm', hint: 'metadata.profile.pid.arduMission.wpRadius.hint' },
+      { id: 'WPNAV_ACCEL', label: 'WP Accel', min: 50, max: 500, step: 10, unit: 'cm/s²', hint: 'metadata.profile.pid.arduMission.wpAccel.hint' },
+      { id: 'LAND_SPEED', label: 'Land Speed', min: 30, max: 200, step: 5, unit: 'cm/s', hint: 'metadata.profile.pid.arduMission.landSpeed.hint' },
+      { id: 'PILOT_SPEED_UP', label: 'Pilot Climb', min: 50, max: 500, step: 10, unit: 'cm/s', hint: 'metadata.profile.pid.arduMission.pilotClimb.hint' },
+      { id: 'ANGLE_MAX', label: 'Max Angle', min: 1000, max: 8000, step: 100, unit: 'c°', hint: 'metadata.profile.pid.arduMission.maxAngle.hint' },
     ],
   },
   {
     id: 'filters',
-    title: '滤波器',
+    title: 'metadata.profile.pid.arduFilters.title',
     params: [
-      { id: 'INS_GYRO_FILTER', label: '陀螺仪低通滤波', min: 0, max: 256, step: 1, unit: 'Hz', hint: '陀螺仪数据低通截止频率' },
-      { id: 'INS_ACCEL_FILTER', label: '加速度低通滤波', min: 0, max: 256, step: 1, unit: 'Hz', hint: '加速度计数据低通截止频率' },
-      { id: 'ATC_THR_MIX_MAN', label: 'Thr Mix Manual', min: 0.1, max: 0.9, step: 0.01, hint: '手动飞行时姿态与油门的优先级混合' },
+      { id: 'INS_GYRO_FILTER', label: 'metadata.profile.pid.arduFilters.gyroFilter.label', min: 0, max: 256, step: 1, unit: 'Hz', hint: 'metadata.profile.pid.arduFilters.gyroFilter.hint' },
+      { id: 'INS_ACCEL_FILTER', label: 'metadata.profile.pid.arduFilters.accelFilter.label', min: 0, max: 256, step: 1, unit: 'Hz', hint: 'metadata.profile.pid.arduFilters.accelFilter.hint' },
+      { id: 'ATC_THR_MIX_MAN', label: 'Thr Mix Manual', min: 0.1, max: 0.9, step: 0.01, hint: 'metadata.profile.pid.arduFilters.thrMixManual.hint' },
     ],
   },
 ]
 
+/** Translate the key-based definitions at call time (i18next is live then). */
+function translateGroups(groups: readonly ParameterGroupDefinition[]): ParameterGroupDefinition[] {
+  return groups.map((group) => ({
+    ...group,
+    title: t(group.title),
+    params: group.params.map((field) => ({
+      ...field,
+      label: t(field.label),
+      hint: t(field.hint),
+    })),
+  }))
+}
+
 /** Profile-selected PID editor groups. Empty = page stays read-only. */
 export function pidGroups(identity: VehicleIdentity | null): ParameterGroupDefinition[] {
   if (!identity) return []
-  if (identity.family === 'px4') return PX4_PID_GROUPS
+  if (identity.family === 'px4') return translateGroups(PX4_PID_GROUPS)
   if (identity.family === 'ardupilot' && identity.vehicleClass === 'copter') {
-    return ARDUCOPTER_PID_GROUPS
+    return translateGroups(ARDUCOPTER_PID_GROUPS)
   }
   return []
 }
@@ -240,17 +256,21 @@ const EK3_YAW_OPTIONS = [
 ]
 
 const ARDUPILOT_EKF_SOURCE_FIELDS: SelectFieldDefinition[] = [
-  { id: 'EK3_SRC1_POSXY', label: '水平位置源', options: EK3_POSXY_OPTIONS, rebootRequired: true },
-  { id: 'EK3_SRC1_VELXY', label: '水平速度源', options: EK3_VELXY_OPTIONS, rebootRequired: true },
-  { id: 'EK3_SRC1_POSZ', label: '垂直位置源', options: EK3_POSZ_OPTIONS, rebootRequired: true },
-  { id: 'EK3_SRC1_VELZ', label: '垂直速度源', options: EK3_VELZ_OPTIONS, rebootRequired: true },
-  { id: 'EK3_SRC1_YAW', label: '偏航源', options: EK3_YAW_OPTIONS, rebootRequired: true },
+  { id: 'EK3_SRC1_POSXY', label: 'metadata.profile.ekf.posxy.label', options: EK3_POSXY_OPTIONS, rebootRequired: true },
+  { id: 'EK3_SRC1_VELXY', label: 'metadata.profile.ekf.velxy.label', options: EK3_VELXY_OPTIONS, rebootRequired: true },
+  { id: 'EK3_SRC1_POSZ', label: 'metadata.profile.ekf.posz.label', options: EK3_POSZ_OPTIONS, rebootRequired: true },
+  { id: 'EK3_SRC1_VELZ', label: 'metadata.profile.ekf.velz.label', options: EK3_VELZ_OPTIONS, rebootRequired: true },
+  { id: 'EK3_SRC1_YAW', label: 'metadata.profile.ekf.yaw.label', options: EK3_YAW_OPTIONS, rebootRequired: true },
 ]
 
 /** EKF source configuration selects; empty for PX4 (dedicated EKF2 panel). */
 export function ekfSourceFields(identity: VehicleIdentity | null): SelectFieldDefinition[] {
   if (identity?.family === 'ardupilot' && identity.vehicleClass === 'copter') {
-    return ARDUPILOT_EKF_SOURCE_FIELDS
+    return ARDUPILOT_EKF_SOURCE_FIELDS.map((field) => ({
+      ...field,
+      label: t(field.label),
+      ...(field.hint ? { hint: t(field.hint) } : {}),
+    }))
   }
   return []
 }
@@ -282,18 +302,18 @@ export function boardOrientationField(identity: VehicleIdentity | null): SelectF
   if (identity.family === 'px4') {
     return {
       id: 'SENS_BOARD_ROT',
-      label: 'IMU安装方向',
+      label: t('metadata.profile.boardOrientation.label'),
       options: ROTATION_OPTIONS,
-      hint: '错误的安装方向会直接导致失控，修改前请务必确认。',
+      hint: t('metadata.profile.boardOrientation.hint'),
       rebootRequired: true,
     }
   }
   if (identity.family === 'ardupilot') {
     return {
       id: 'AHRS_ORIENTATION',
-      label: 'IMU安装方向',
+      label: t('metadata.profile.boardOrientation.label'),
       options: ROTATION_OPTIONS,
-      hint: '错误的安装方向会直接导致失控，修改前请务必确认。',
+      hint: t('metadata.profile.boardOrientation.hint'),
       rebootRequired: true,
     }
   }

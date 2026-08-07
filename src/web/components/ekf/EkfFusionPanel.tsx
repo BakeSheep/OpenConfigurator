@@ -1,4 +1,5 @@
 import { useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
@@ -21,6 +22,7 @@ function Toggle({
   canWrite: boolean
   onToggle: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="flex items-center justify-between py-2.5">
       <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>{label}</span>
@@ -28,7 +30,7 @@ function Toggle({
         type="button"
         onClick={onToggle}
         disabled={!param || !canWrite}
-        title={param ? undefined : '当前固件未提供此参数'}
+        title={param ? undefined : t('ekf.paramNotAvailable')}
         className="relative transition-colors"
         style={{
           width: 40,
@@ -57,6 +59,7 @@ function Toggle({
 }
 
 export default function EkfFusionPanel() {
+  const { t } = useTranslation()
   const send = sendClientMessage
   const { params } = useParameterStore()
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -81,7 +84,7 @@ export default function EkfFusionPanel() {
     // explicit confirmation so a stray click cannot drop e.g. GPS fusion.
     if (
       enabled
-      && !window.confirm(`确认关闭 ${label} 融合？EKF 将失去该数据源（重启飞控后生效）。`)
+      && !window.confirm(t('ekf.confirmDisableFusion', { label }))
     ) return
     if (enabled) previousEnabledValues.current.set(id, param.value)
     const value = enabled
@@ -113,7 +116,7 @@ export default function EkfFusionPanel() {
     if (!hgtRefParam || !canWrite) return
     const option = HGT_REF_OPTIONS.find((candidate) => candidate.value === value)
     if (
-      !window.confirm(`确认将高度参考源切换为“${option?.label ?? value}”？重启飞控后生效。`)
+      !window.confirm(t('ekf.confirmHgtRef', { source: option ? t(option.label) : String(value) }))
     ) return
     send({
       type: 'param_set',
@@ -129,7 +132,7 @@ export default function EkfFusionPanel() {
     const param = params.get(id)
     if (!param || !canWrite) return
     if (
-      !window.confirm(`确认修改 ${id}？错误的融合源会导致位置/姿态估计失效（重启飞控后生效）。`)
+      !window.confirm(t('ekf.confirmModifySource', { id }))
     ) return
     send({ type: 'param_set', data: { id, value, paramType: param.type } })
   }
@@ -137,7 +140,7 @@ export default function EkfFusionPanel() {
   if (ekfSources.length > 0) {
     return (
       <div className="mc-card p-5">
-        <h3 className="mc-section-title mb-4">EKF3 源配置</h3>
+        <h3 className="mc-section-title mb-4">{t('ekf.ekf3SourceConfig')}</h3>
         <div className="space-y-3">
           {ekfSources.map((field) => {
             const param = params.get(field.id)
@@ -150,58 +153,58 @@ export default function EkfFusionPanel() {
                   className="mc-select"
                   value={value}
                   disabled={!param || !canWrite}
-                  title={param ? undefined : '当前固件未提供此参数'}
+                  title={param ? undefined : t('ekf.paramNotAvailable')}
                   onChange={(event) => setSourceParam(field.id, Number(event.target.value))}
                 >
-                  {!param && <option value="">参数不可用</option>}
+                  {!param && <option value="">{t('ekf.paramUnavailable')}</option>}
                   {/* Preserve an unknown protocol value instead of dropping it. */}
-                  {param && !known && <option value={value}>值 {value}</option>}
+                  {param && !known && <option value={value}>{t('ekf.valueLabel', { value })}</option>}
                   {field.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
             )
           })}
         </div>
-        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>修改后需重启飞控生效；未提供的参数保持只读。本面板不会自动修改 AHRS_EKF_TYPE / EK3_ENABLE。</p>
+        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>{t('ekf.ekf3Footnote')}</p>
       </div>
     )
   }
 
   return (
     <div className="mc-card p-5">
-      <h3 className="mc-section-title mb-4">EKF2 融合配置</h3>
+      <h3 className="mc-section-title mb-4">{t('ekf.ekf2FusionConfig')}</h3>
       <div style={{ borderTop: 'none' }}>
         {renderToggle('GPS', EKF2_PARAMS.EKF2_GPS_CTRL, undefined, 0, 7)}
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {renderToggle('气压计', EKF2_PARAMS.EKF2_BARO_CTRL)}
+          {renderToggle(t('ekf.barometer'), EKF2_PARAMS.EKF2_BARO_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {renderToggle('磁力计', EKF2_PARAMS.EKF2_MAG_TYPE, (value) => value !== 5, 5, 0)}
+          {renderToggle(t('ekf.magnetometer'), EKF2_PARAMS.EKF2_MAG_TYPE, (value) => value !== 5, 5, 0)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {renderToggle('光流', EKF2_PARAMS.EKF2_OF_CTRL)}
+          {renderToggle(t('ekf.opticalFlow'), EKF2_PARAMS.EKF2_OF_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {renderToggle('测距仪', EKF2_PARAMS.EKF2_RNG_CTRL)}
+          {renderToggle(t('ekf.rangeFinder'), EKF2_PARAMS.EKF2_RNG_CTRL)}
         </div>
         <div style={{ borderTop: '1px solid var(--border)' }}>
-          {renderToggle('视觉', EKF2_PARAMS.EKF2_EV_CTRL)}
+          {renderToggle(t('ekf.vision'), EKF2_PARAMS.EKF2_EV_CTRL)}
         </div>
       </div>
       <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-        <label className="mc-section-title block mb-1.5">高度参考源</label>
+        <label className="mc-section-title block mb-1.5">{t('ekf.heightRefSource')}</label>
         <select
           value={hgtRefParam?.value ?? ''}
           onChange={(e) => setHgtRefParam(Number(e.target.value))}
           className="mc-select"
           disabled={!hgtRefParam || !canWrite}
-          title={hgtRefParam ? undefined : '当前固件未提供 EKF2_HGT_REF'}
+          title={hgtRefParam ? undefined : t('ekf.hgtRefNotAvailable')}
         >
-          {!hgtRefParam && <option value="">参数不可用</option>}
-          {HGT_REF_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {!hgtRefParam && <option value="">{t('ekf.paramUnavailable')}</option>}
+          {HGT_REF_OPTIONS.map((o) => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
         </select>
       </div>
-      <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>修改后需重启飞控生效</p>
+      <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>{t('ekf.rebootRequired')}</p>
     </div>
   )
 }

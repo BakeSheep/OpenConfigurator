@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
 import { useConnectionStore, type LinkStats } from '../../stores/connectionStore'
 import {
@@ -471,6 +472,7 @@ function splitColumns(entries: StatusEntry[], columns: number): StatusEntry[][] 
 }
 
 export default function StatusVariableBrowser({ paused = false }: { paused?: boolean }) {
+  const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState(readStatusVariableSnapshot)
   useEffect(() => {
     const timer = window.setInterval(
@@ -546,16 +548,16 @@ export default function StatusVariableBrowser({ paused = false }: { paused?: boo
           <input
             type="text"
             value={query}
-            placeholder="搜索变量名或中文注释…"
+            placeholder={t('telemetry.statusVar.searchPlaceholder')}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
         <span className="mc-statusvar__count mc-mono">{visibleCount} / {totalCount}</span>
-        <span className="mc-statusvar__legend"><i />变化项</span>
+        <span className="mc-statusvar__legend"><i />{t('telemetry.statusVar.changed')}</span>
       </div>
 
       {visibleGroups.length === 0 ? (
-        <p className="mc-statusvar__empty">没有匹配 “{query.trim()}” 的状态变量</p>
+        <p className="mc-statusvar__empty">{t('telemetry.statusVar.noMatch', { query: query.trim() })}</p>
       ) : (
         visibleGroups.map((group) => {
           // A live search always expands its matches.

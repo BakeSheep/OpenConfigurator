@@ -60,6 +60,6 @@ test('rejects fields unavailable in the active layout', () => {
   raw[1] = 2
   assert.throws(
     () => encodeAm32Eeprom(raw, { rampRate: 10 }),
-    /当前 AM32 布局不支持参数 rampRate/,
+    /errors.esc.am32.unsupportedParam/,
   )
 })

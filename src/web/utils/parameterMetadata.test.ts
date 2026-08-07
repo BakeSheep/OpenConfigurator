@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { initI18n } from '../i18n/config'
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from './parameterMetadata'
+
+initI18n('zh')
 
 const battery = parameterMetadata('BAT_CRIT_THR', null)
 assert.equal(battery.title, '严重低电量阈值')

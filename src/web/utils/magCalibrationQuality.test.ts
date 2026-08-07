@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { initI18n } from '../i18n/config'
 import {
   magFitnessRating,
   magOffsetMagnitude,
@@ -6,6 +7,8 @@ import {
   MAG_FITNESS_THRESHOLDS,
   MAG_OFFSET_WARN_MGAUSS,
 } from './magCalibrationQuality'
+
+initI18n('zh')
 
 // ---------------------------------------------------------------------------
 // Advisory-only quality helpers for MAG_CAL_REPORT. These NEVER override the

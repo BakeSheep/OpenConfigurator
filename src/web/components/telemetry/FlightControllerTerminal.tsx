@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { vehicleCapabilities } from '../../../shared/vehicleProfiles'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useShellStore } from '../../stores/shellStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
-import { ARDUPILOT_MAVPROXY_COMMANDS, PX4_NSH_COMMANDS } from '../../utils/terminalCommandCatalog'
+import { getArduPilotMavproxyCommands, getPx4NshCommands } from '../../utils/terminalCommandCatalog'
 import Icon from '../ui/Icon'
 
 const KEY_SEQUENCES: Record<string, string> = {
@@ -22,6 +23,7 @@ function visibleTerminalText(raw: string): string {
 }
 
 export default function FlightControllerTerminal() {
+  const { t } = useTranslation()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
   const rawSessionActive = useConnectionStore((state) => state.rawSessionActive)
@@ -66,21 +68,21 @@ export default function FlightControllerTerminal() {
 
   const visibleOutput = useMemo(() => visibleTerminalText(output), [output])
   const emptyScreenText = active
-    ? '已连接，等待 PX4 NSH 输出…'
+    ? t('terminal.empty.connected')
     : connecting
-      ? '正在确认当前固件的 MAVLink Shell 能力…'
+      ? t('terminal.empty.probing')
       : reason === 'shell_probe_timeout'
-        ? '当前板卡或固件未响应 MAVLink Shell。可确认固件包含 NSH 后重新连接。'
+        ? t('terminal.empty.probeTimeout')
         : reason === 'transfer_busy'
-          ? '参数或日志传输进行中，完成后可重新连接终端。'
-          : '终端已断开，点击“重新连接”再次探测。'
+          ? t('terminal.empty.transferBusy')
+          : t('terminal.empty.disconnected')
 
   const sendText = (text: string) => {
     if (!active || text.length === 0) return
     sendClientMessage({ type: 'shell_write', data: { text } })
   }
 
-  const quickCategories = referenceFamily === 'px4' ? PX4_NSH_COMMANDS : ARDUPILOT_MAVPROXY_COMMANDS
+  const quickCategories = referenceFamily === 'px4' ? getPx4NshCommands(t) : getArduPilotMavproxyCommands(t)
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!active) return
@@ -105,39 +107,39 @@ export default function FlightControllerTerminal() {
   }
 
   const unavailableMessage = !vehicleReady
-    ? '连接并识别飞控后可使用实时终端。'
+    ? t('terminal.unavailable.notReady')
     : !supported
       ? identity?.family === 'ardupilot'
-        ? 'ArduPilot 官方固件已移除旧 CLI，目前没有与 PX4 NSH 等价的 MAVLink 交互终端。'
-        : '当前飞控未声明已验证的 MAVLink 交互 Shell。'
+        ? t('terminal.unavailable.arduNoCli')
+        : t('terminal.unavailable.notSupported')
       : armed === true
-        ? '飞行器已解锁，为避免绕过安全流程，终端已禁用。'
+        ? t('terminal.unavailable.armed')
         : armed === undefined
-          ? '尚未确认飞行器上锁状态，终端保持禁用。'
+          ? t('terminal.unavailable.armUnknown')
         : !canControl
-          ? '当前浏览器未持有控制权，终端保持只读。'
+          ? t('terminal.unavailable.noControl')
           : rawSessionActive
-            ? 'ESC 直通会话占用链路，退出该会话后才能打开终端。'
-            : reason ?? '终端暂不可用。'
+            ? t('terminal.unavailable.escSession')
+            : reason ?? t('terminal.unavailable.fallback')
 
   return (
     <div className="mc-shell-layout">
     <section className="mc-card mc-shell">
       <header className="mc-shell__toolbar">
-        <span className="mc-shell__status" data-active={active || undefined} data-connecting={connecting || undefined}><i />{active ? 'NSH 已连接' : connecting ? 'NSH 连接中' : 'NSH 未连接'}</span>
-        <p>PX4 SERIAL_CONTROL · Ctrl+C 中断 · 支持粘贴</p>
-        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空终端显示" onClick={clear}><Icon name="trash" size={14} /></button>
+        <span className="mc-shell__status" data-active={active || undefined} data-connecting={connecting || undefined}><i />{active ? t('terminal.status.connected') : connecting ? t('terminal.status.connecting') : t('terminal.status.disconnected')}</span>
+        <p>{t('terminal.toolbar.hint')}</p>
+        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('terminal.aria.clear')} onClick={clear}><Icon name="trash" size={14} /></button>
         {!active && available && !connecting && (
-          <button type="button" className="mc-btn mc-btn-ghost" onClick={() => sendClientMessage({ type: 'shell_open', requestId: `shell-reopen-${Date.now().toString(36)}` })}>重新连接</button>
+          <button type="button" className="mc-btn mc-btn-ghost" onClick={() => sendClientMessage({ type: 'shell_open', requestId: `shell-reopen-${Date.now().toString(36)}` })}>{t('terminal.reconnect')}</button>
         )}
       </header>
-      <div className="mc-shell__notice"><Icon name="warning" size={14} /><span>终端命令直接由飞控执行。请保持飞行器上锁，并在修改参数或重启前确认命令影响。</span></div>
+      <div className="mc-shell__notice"><Icon name="warning" size={14} /><span>{t('terminal.notice.safety')}</span></div>
       {available || active ? (
         <div
           ref={terminalRef}
           className="mc-shell__screen"
           role="textbox"
-          aria-label="飞控终端输入"
+          aria-label={t('terminal.aria.input')}
           aria-multiline="true"
           tabIndex={0}
           onKeyDown={onKeyDown}
@@ -147,24 +149,24 @@ export default function FlightControllerTerminal() {
           <pre ref={outputRef}>{visibleOutput || emptyScreenText}<span className="mc-shell__cursor" aria-hidden="true">▌</span></pre>
         </div>
       ) : (
-        <div className="mc-shell__unavailable"><Icon name="message" size={28} /><strong>实时终端不可用</strong><p>{unavailableMessage}</p></div>
+        <div className="mc-shell__unavailable"><Icon name="message" size={28} /><strong>{t('terminal.unavailable.title')}</strong><p>{unavailableMessage}</p></div>
       )}
     </section>
-    <aside className="mc-card mc-shell-reference" aria-label="终端常见指令速查">
+    <aside className="mc-card mc-shell-reference" aria-label={t('terminal.aria.reference')}>
       <header>
         <div>
           <span>COMMAND INDEX</span>
-          <strong>常见指令速查</strong>
+          <strong>{t('terminal.reference.title')}</strong>
         </div>
-        <div className="mc-shell-reference__tabs" role="tablist" aria-label="固件指令类型">
+        <div className="mc-shell-reference__tabs" role="tablist" aria-label={t('terminal.aria.firmwareTabs')}>
           <button type="button" role="tab" aria-selected={referenceFamily === 'px4'} onClick={() => setReferenceFamily('px4')}>PX4</button>
           <button type="button" role="tab" aria-selected={referenceFamily === 'ardupilot'} onClick={() => setReferenceFamily('ardupilot')}>AP</button>
         </div>
       </header>
       <p className="mc-shell-reference__note" data-external={referenceFamily === 'ardupilot' || undefined}>
         {referenceFamily === 'px4'
-          ? '点击只写入当前 NSH 命令行，不会自动回车执行。'
-          : '以下是外部 MAVProxy 控制台命令，不能在本页飞控终端执行。'}
+          ? t('terminal.reference.px4Note')
+          : t('terminal.reference.apNote')}
       </p>
       <div className="mc-shell-reference__scroll">
         {quickCategories.map((category) => (
@@ -176,7 +178,7 @@ export default function FlightControllerTerminal() {
                   key={entry.command}
                   type="button"
                   disabled={referenceFamily !== 'px4' || !active}
-                  title={referenceFamily === 'px4' ? `写入终端：${entry.command}` : '请在外部 MAVProxy 控制台使用'}
+                  title={referenceFamily === 'px4' ? t('terminal.reference.writeToTerminal', { command: entry.command }) : t('terminal.reference.useExternalMavproxy')}
                   onClick={() => sendText(entry.command)}
                 >
                   <code>{entry.command}</code>

@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import ConnectDialog from './components/ConnectDialog'
 import DemoBanner from './components/layout/DemoBanner'
 import ParameterProgressBar from './components/layout/ParameterProgressBar'
@@ -16,6 +17,7 @@ const FlightControlPage = lazy(() => import('./pages/FlightControlPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 export default function App() {
+  const { t } = useTranslation()
   const { send } = useWebSocket(backendEnabled)
   useGamepadController(send)
 
@@ -28,7 +30,7 @@ export default function App() {
         <div className="mc-app-shell__body">
           <Sidebar />
           <main className="mc-app-shell__main">
-            <Suspense fallback={<div className="mc-route-loading" role="status">正在加载工作区…</div>}>
+            <Suspense fallback={<div className="mc-route-loading" role="status">{t('app.loadingWorkspace')}</div>}>
               <Routes>
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<DashboardPage />} />

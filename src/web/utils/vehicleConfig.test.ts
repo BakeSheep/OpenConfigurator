@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import type { ParamData } from '../../shared/types'
 import { buildVehicleIdentity } from '../../shared/vehicleProfiles'
+import { initI18n } from '../i18n/config'
 import {
   buildFrameConfigView,
   motorFunctionOptions,
   normalizeAuthoritativeMotorCount,
   type FrameOutputChannel,
 } from './vehicleConfig'
+
+initI18n('zh')
 
 function params(values: Record<string, number>): Map<string, ParamData> {
   const map = new Map<string, ParamData>()

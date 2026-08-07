@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import {
   ardupilotSerialPorts,
@@ -63,6 +64,7 @@ const BAUD_PARAMS: Record<number, string> = {
 const baudParamForPort = (portValue: number | undefined) => BAUD_PARAMS[portValue ?? -1]
 
 function ParamSelect({ id, options, writable = true }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable?: boolean }) {
+  const { t } = useTranslation()
   const param = useParameterStore((state) => state.params.get(id))
   const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
@@ -80,8 +82,8 @@ function ParamSelect({ id, options, writable = true }: { id: string; options: Re
         send({ type: 'param_set', data: { id, value: Number(event.target.value), paramType: param.type } })
       }}
     >
-      {!param && <option value="">等待参数</option>}
-      {param && !known && <option value={value}>值 {value}</option>}
+      {!param && <option value="">{t('portSettings.waitingForParams')}</option>}
+      {param && !known && <option value={value}>{t('portSettings.valueLabel', { value })}</option>}
       {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
     </select>
   )
@@ -122,6 +124,7 @@ function RateInput({ id, writable = true }: { id: string; writable?: boolean }) 
 }
 
 export default function PortSettingsPage() {
+  const { t } = useTranslation()
   const params = useParameterStore((state) => state.params)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const serialWritable = vehicleCapabilities(vehicleIdentity).serialConfig
@@ -140,23 +143,23 @@ export default function PortSettingsPage() {
     <section className="mc-port-settings mc-card">
       <header>
         <div>
-          <h2>MAVLink 端口实例</h2>
-          <p>配置端口分配、消息模式与链路速率。修改值会直接写入对应 PX4 参数。</p>
+          <h2>{t('portSettings.mavlinkPortInstances')}</h2>
+          <p>{t('portSettings.mavlinkDescription')}</p>
         </div>
-        <span>{params.size ? '参数已同步' : '连接飞控后读取配置'}</span>
+        <span>{params.size ? t('portSettings.paramsSynced') : t('portSettings.connectToRead')}</span>
       </header>
 
       {vehicleIdentity && !serialWritable && (
         <p className="mc-capability-note" data-state="waiting">
-          当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配串口配置写入，控件仅供查看。
+          {t('portSettings.serialWriteNotAdapted', { type: `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` })}
         </p>
       )}
 
       <div className="mc-port-table-scroll">
         <div className="mc-port-table">
           <div className="mc-port-row mc-port-row--head">
-            <span>实例</span><span>端口</span><span>波特率</span><span>模式</span>
-            <span>速率</span><span>流控</span><span>转发</span><span>高级</span>
+            <span>{t('portSettings.colInstance')}</span><span>{t('common.port')}</span><span>{t('common.baudRate')}</span><span>{t('portSettings.colMode')}</span>
+            <span>{t('portSettings.colRate')}</span><span>{t('portSettings.colFlowControl')}</span><span>{t('portSettings.colForward')}</span><span>{t('common.advanced')}</span>
           </div>
           {rows.map(({ instance, prefix, baudParam }) => (
             <div className="mc-port-row" key={instance}>
@@ -166,24 +169,25 @@ export default function PortSettingsPage() {
                 <ParamSelect id={baudParam} options={PX4_BAUD_OPTIONS} writable={serialWritable} />
               ) : (
                 <div className="mc-port-baud mc-mono">
-                  {instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? '无波特率参数' : '—'}
+                  {instance === 0 && params.get(`${prefix}_CONFIG`)?.value === 0 ? t('portSettings.noBaudParam') : '-'}
                 </div>
               )}
               <ParamSelect id={`${prefix}_MODE`} options={MODE_OPTIONS} writable={serialWritable} />
               <RateInput id={`${prefix}_RATE`} writable={serialWritable} />
               <ParamSelect id={`${prefix}_RADIO_CTL`} options={RADIO_OPTIONS} writable={serialWritable} />
               <ParamSelect id={`${prefix}_FORWARD`} options={FORWARD_OPTIONS} writable={serialWritable} />
-              <NavLink to="/diagnostics" className="mc-btn mc-btn-ghost">高级</NavLink>
+              <NavLink to="/diagnostics" className="mc-btn mc-btn-ghost">{t('portSettings.advanced')}</NavLink>
             </div>
           ))}
         </div>
       </div>
-      <footer>端口或波特率更改通常需要重启飞控后生效。</footer>
+      <footer>{t('portSettings.rebootHint')}</footer>
     </section>
   )
 }
 
 function ArduPilotSerialSelect({ id, options, writable }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable: boolean }) {
+  const { t } = useTranslation()
   const param = useParameterStore((state) => state.params.get(id))
   const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
   const send = sendClientMessage
@@ -200,39 +204,40 @@ function ArduPilotSerialSelect({ id, options, writable }: { id: string; options:
         send({ type: 'param_set', data: { id, value: Number(event.target.value), paramType: param.type } })
       }}
     >
-      {!param && <option value="">等待参数</option>}
+      {!param && <option value="">{t('portSettings.waitingForParams')}</option>}
       {/* Preserve a protocol/baud value the UI does not know, never drop it. */}
-      {param && !known && <option value={value}>值 {value}</option>}
+      {param && !known && <option value={value}>{t('portSettings.valueLabel', { value })}</option>}
       {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
     </select>
   )
 }
 
 function ArduPilotSerialPorts({ params, writable }: { params: Map<string, import('../../shared/types').ParamData>; writable: boolean }) {
+  const { t } = useTranslation()
   const ports = ardupilotSerialPorts(params)
   return (
     <section className="mc-port-settings mc-card">
       <header>
         <div>
-          <h2>ArduPilot 串口</h2>
-          <p>配置各 SERIALx 端口的协议与波特率。仅显示飞控实际返回的 SERIALx 参数。</p>
+          <h2>{t('portSettings.ardupilotSerial')}</h2>
+          <p>{t('portSettings.ardupilotSerialDesc')}</p>
         </div>
-        <span>{ports.length ? `${ports.length} 个串口` : '连接飞控后读取配置'}</span>
+        <span>{ports.length ? t('portSettings.serialCount', { count: ports.length }) : t('portSettings.connectToRead')}</span>
       </header>
 
       {!writable && (
         <p className="mc-capability-note" data-state="waiting">
-          当前飞控类型尚未适配串口配置写入，控件仅供查看。
+          {t('portSettings.serialWriteNotAdaptedSimple')}
         </p>
       )}
 
       <div className="mc-port-table-scroll">
         <div className="mc-port-table">
           <div className="mc-port-row mc-port-row--head">
-            <span>端口</span><span>协议</span><span>波特率</span><span>流数据速率 (SRx_*)</span>
+            <span>{t('common.port')}</span><span>{t('portSettings.colProtocol')}</span><span>{t('common.baudRate')}</span><span>{t('portSettings.colStreamRate')}</span>
           </div>
           {ports.length === 0 ? (
-            <div className="mc-port-row"><span>暂无 SERIALx 参数</span></div>
+            <div className="mc-port-row"><span>{t('portSettings.noSerialParams')}</span></div>
           ) : ports.map((port) => (
             <div className="mc-port-row" key={port.index}>
               <strong className="mc-port-instance">{port.label}</strong>
@@ -249,7 +254,7 @@ function ArduPilotSerialPorts({ params, writable }: { params: Map<string, import
           ))}
         </div>
       </div>
-      <footer>协议或波特率更改通常需要重启飞控后生效；SRx_* 流数据速率此处仅供查看。</footer>
+      <footer>{t('portSettings.ardupilotRebootHint')}</footer>
     </section>
   )
 }

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
 import { useSensorStore } from '../../stores/sensorStore'
@@ -33,6 +34,7 @@ function getLinkQuality(stats: { rxBps: number; crcErrorsPerSec: number } | null
 }
 
 export default function StatusBar() {
+  const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [tempOpen, setTempOpen] = useState(false)
   const transportOpen = useConnectionStore((state) => state.transportOpen)
@@ -57,8 +59,8 @@ export default function StatusBar() {
       label: `IMU${instance}`,
       value: imuFresh && imu?.temperature != null && Number.isFinite(imu.temperature) ? imu.temperature : null,
     })),
-    { label: '气压计', value: baro && !sensorStale('baro') && Number.isFinite(baro.temperature) ? baro.temperature : null },
-    { label: '光流', value: opticalFlow && !sensorStale('opticalFlow') && opticalFlow.temperature_c != null && Number.isFinite(opticalFlow.temperature_c) ? opticalFlow.temperature_c : null },
+    { label: t('statusbar.barometer'), value: baro && !sensorStale('baro') && Number.isFinite(baro.temperature) ? baro.temperature : null },
+    { label: t('statusbar.opticalFlow'), value: opticalFlow && !sensorStale('opticalFlow') && opticalFlow.temperature_c != null && Number.isFinite(opticalFlow.temperature_c) ? opticalFlow.temperature_c : null },
   ]
   const validTemps = tempSources.filter((source) => source.value !== null)
   const avgTemp = validTemps.length > 0
@@ -67,9 +69,9 @@ export default function StatusBar() {
 
   const escActive = escSession !== null && escSession.state !== 'idle'
   const escBanner = !escActive ? null
-    : escSession.mode === 'ardupilot_passthrough' ? 'MAVLink 已暂停（电调直通中）'
-    : escSession.mode === 'px4_serial_control' ? 'PX4 电调 SERIAL_CONTROL 会话中'
-    : '电调直连中'
+    : escSession.mode === 'ardupilot_passthrough' ? t('statusbar.escMavlinkPaused')
+    : escSession.mode === 'px4_serial_control' ? t('statusbar.escPx4Session')
+    : t('statusbar.escDirectConnection')
 
   const linkText = linkStats && transportOpen
     ? `↓${formatKBps(linkStats.rxBps)} ↑${formatKBps(linkStats.txBps)}${linkStats.crcErrorsPerSec > 0 ? ` · CRC ${linkStats.crcErrorsPerSec.toFixed(1)}/s` : ''}`
@@ -81,12 +83,12 @@ export default function StatusBar() {
       <button type="button" className="mc-statusbar__summary" onClick={() => { setTempOpen(false); setExpanded((current) => !current) }}>
         <span className="flex items-center gap-1.5">
           {autopilotVersion && (
-            <span className="mc-statusbar__chip mc-mono" title="飞控固件型号与版本">
+            <span className="mc-statusbar__chip mc-mono" title={t('statusbar.firmwareVersion')}>
               {autopilotVersion.firmwareLabel}
             </span>
           )}
           {cpuLoad !== null && !sysStatusStale && (
-            <span className="mc-statusbar__chip mc-mono" title="飞控CPU占用率">
+            <span className="mc-statusbar__chip mc-mono" title={t('statusbar.cpuLoad')}>
               CPU {cpuLoad.toFixed(0)}%
             </span>
           )}
@@ -96,11 +98,11 @@ export default function StatusBar() {
               tabIndex={0}
               className="mc-statusbar__temp mc-mono"
               data-open={tempOpen || undefined}
-              title="有效传感器温度均值 · 点击查看各温度源"
+              title={t('statusbar.avgTemp')}
               onClick={(event) => { event.stopPropagation(); setExpanded(false); setTempOpen((current) => !current) }}
               onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setExpanded(false); setTempOpen((current) => !current) } }}
             >
-              均温 {avgTemp.toFixed(1)}°C
+              {t('statusbar.avgTempLabel')} {avgTemp.toFixed(1)}°C
             </span>
           )}
           {escBanner && (
@@ -115,7 +117,7 @@ export default function StatusBar() {
             <span
               className="mc-mono text-[11px]"
               style={{ color: linkStats && linkStats.crcErrorsPerSec > 0 ? 'var(--warning)' : 'var(--text-disabled)' }}
-              title="链路吞吐（↓收 ↑发）/ CRC 错误率"
+              title={t('statusbar.linkThroughput')}
             >
               {linkText}
             </span>
@@ -124,32 +126,32 @@ export default function StatusBar() {
             <span
               className="mc-mono text-[11px] font-bold"
               style={{ color: linkQuality.color }}
-              title="连接质量"
+              title={t('statusbar.linkQuality')}
             >
               {linkQuality.percent}%
             </span>
           )}
-          <span className="mc-statusbar__message">{latest?.text ?? '消息速率 —'}</span>
+          <span className="mc-statusbar__message">{latest?.text ?? t('statusbar.messageRateIdle')}</span>
           <Icon name="chevronDown" size={13} style={{ transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 160ms ease' }} />
         </span>
       </button>
       {tempOpen && (
         <section className="mc-statusbar__drawer mc-slide-up">
           <div className="flex items-center justify-between border-b px-4 py-2" style={{ borderColor: 'var(--border)' }}>
-            <span className="mc-section-title">传感器温度</span>
+            <span className="mc-section-title">{t('statusbar.sensorTemp')}</span>
             <span className="mc-mono text-[11px] font-bold" style={{ color: 'var(--accent)' }}>
-              {avgTemp !== null ? `均值 ${avgTemp.toFixed(1)} °C · ${validTemps.length} 个有效源` : '暂无有效温度源'}
+              {avgTemp !== null ? t('statusbar.avgTempSummary', { value: avgTemp.toFixed(1), count: validTemps.length }) : t('statusbar.noValidTempSource')}
             </span>
           </div>
           <div className="max-h-52 overflow-y-auto">
             {tempSources.length === 0 ? (
-              <div className="px-4 py-8 text-center text-[12px]" style={{ color: 'var(--text-disabled)' }}>暂无温度数据</div>
+              <div className="px-4 py-8 text-center text-[12px]" style={{ color: 'var(--text-disabled)' }}>{t('statusbar.noTempData')}</div>
             ) : tempSources.map((source) => (
               <div key={source.label} className="flex items-center gap-3 border-b px-4 py-2 text-[12px]" style={{ borderColor: 'var(--border)' }}>
                 <span className="mc-status-dot" style={{ background: source.value !== null ? 'var(--success)' : 'var(--text-disabled)' }} />
                 <span className="flex-1" style={{ color: 'var(--text-primary)' }}>{source.label}</span>
                 <span className="mc-mono" style={{ color: source.value !== null ? 'var(--text-primary)' : 'var(--text-disabled)' }}>
-                  {source.value !== null ? `${source.value.toFixed(1)} °C` : '—'}
+                  {source.value !== null ? `${source.value.toFixed(1)} °C` : '-'}
                 </span>
               </div>
             ))}
@@ -159,12 +161,12 @@ export default function StatusBar() {
       {expanded && (
         <section className="mc-statusbar__drawer mc-slide-up">
           <div className="flex items-center justify-between border-b px-4 py-2" style={{ borderColor: 'var(--border)' }}>
-            <span className="mc-section-title">飞控消息</span>
-            <button type="button" className="text-[12px]" style={{ color: 'var(--accent)' }} onClick={clearStatusLogs}>清空</button>
+            <span className="mc-section-title">{t('statusbar.fcMessages')}</span>
+            <button type="button" className="text-[12px]" style={{ color: 'var(--accent)' }} onClick={clearStatusLogs}>{t('statusbar.clear')}</button>
           </div>
           <div className="max-h-52 overflow-y-auto">
             {statusLogs.length === 0 ? (
-              <div className="px-4 py-8 text-center text-[12px]" style={{ color: 'var(--text-disabled)' }}>暂无飞控消息</div>
+              <div className="px-4 py-8 text-center text-[12px]" style={{ color: 'var(--text-disabled)' }}>{t('statusbar.noFcMessages')}</div>
             ) : statusLogs.map((log) => (
               <div key={log.id} className="flex items-center gap-3 border-b px-4 py-2 text-[12px]" style={{ borderColor: 'var(--border)' }}>
                 <span className="mc-status-dot" style={{ background: severityTone[log.severity] }} />

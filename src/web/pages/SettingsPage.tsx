@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import CollapsibleSubnav from '../components/layout/CollapsibleSubnav'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
@@ -15,13 +16,13 @@ import SensorPage from './SensorPage'
 type SetupSection = 'airframe' | 'sensors' | 'actuators' | 'esc' | 'receiver' | 'joystick' | 'ports'
 
 const sections: Array<{ id: SetupSection; label: string; description: string; icon: IconName }> = [
-  { id: 'airframe', label: '机架', description: '识别当前飞行器配置', icon: 'flight' },
-  { id: 'sensors', label: '传感器', description: '监控与校准', icon: 'sensor' },
-  { id: 'actuators', label: '执行器', description: '输出映射与电机测试', icon: 'actuator' },
-  { id: 'esc', label: '电调', description: 'AM32 参数读取与配置', icon: 'firmware' },
-  { id: 'receiver', label: '遥控器', description: '通道监控', icon: 'receiver' },
-  { id: 'joystick', label: '游戏手柄', description: '轴、按钮与响应曲线', icon: 'gamepad' },
-  { id: 'ports', label: '端口', description: 'MAVLink 串口实例', icon: 'plug' },
+  { id: 'airframe', label: 'settings.section.airframe.label', description: 'settings.section.airframe.description', icon: 'flight' },
+  { id: 'sensors', label: 'settings.section.sensors.label', description: 'settings.section.sensors.description', icon: 'sensor' },
+  { id: 'actuators', label: 'settings.section.actuators.label', description: 'settings.section.actuators.description', icon: 'actuator' },
+  { id: 'esc', label: 'settings.section.esc.label', description: 'settings.section.esc.description', icon: 'firmware' },
+  { id: 'receiver', label: 'settings.section.receiver.label', description: 'settings.section.receiver.description', icon: 'receiver' },
+  { id: 'joystick', label: 'settings.section.joystick.label', description: 'settings.section.joystick.description', icon: 'gamepad' },
+  { id: 'ports', label: 'settings.section.ports.label', description: 'settings.section.ports.description', icon: 'plug' },
 ]
 
 function isSetupSection(value: string | null): value is SetupSection {
@@ -29,6 +30,7 @@ function isSetupSection(value: string | null): value is SetupSection {
 }
 
 export default function SettingsPage() {
+  const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
   const sectionParam = searchParams.get('section')
   const activeSection: SetupSection = isSetupSection(sectionParam) ? sectionParam : 'airframe'
@@ -44,21 +46,21 @@ export default function SettingsPage() {
 
   return (
     <div className="mc-workspace mc-workspace--full mc-fade-in">
-      <PageHeader title="飞行器设置" description="按硬件配置流程组织机架、传感器、执行器与控制输入。" />
+      <PageHeader title={t('settings.title')} description={t('settings.description')} />
       <div className="mc-subworkspace">
-        <CollapsibleSubnav ariaLabel="飞行器设置" storageKey="oc-settings-subnav-collapsed">
+        <CollapsibleSubnav ariaLabel={t('settings.ariaLabel')} storageKey="oc-settings-subnav-collapsed">
           {sections.map((section) => (
             <button
               key={section.id}
               type="button"
               data-active={section.id === activeSection}
-              aria-label={section.label}
-              title={section.label}
+              aria-label={t(section.label)}
+              title={t(section.label)}
               aria-current={section.id === activeSection ? 'page' : undefined}
               onClick={() => selectSection(section.id)}
             >
               <span><Icon name={section.icon} size={18} /></span>
-              <span><strong>{section.label}</strong><small>{section.description}</small></span>
+              <span><strong>{t(section.label)}</strong><small>{t(section.description)}</small></span>
             </button>
           ))}
         </CollapsibleSubnav>
@@ -69,13 +71,13 @@ export default function SettingsPage() {
               <section className="mc-card mc-setup-identity">
                 <span className="mc-setup-identity__icon"><Icon name="flight" size={34} /></span>
                 <div>
-                  <span className="mc-eyebrow">当前机架</span>
-                  <h2>{frameView?.name ?? '等待飞控参数'}</h2>
+                  <span className="mc-eyebrow">{t('settings.currentFrame')}</span>
+                  <h2>{frameView?.name ?? t('settings.waitingParams')}</h2>
                   <p>{frameView
                     ? frameView.frameSource
                     : params.size > 0 && vehicleIdentity
-                      ? '当前飞控类型尚未适配机架识别。'
-                      : '连接飞控并完成参数同步后自动识别。'}</p>
+                      ? t('settings.frameNotSupported')
+                      : t('settings.autoIdentify')}</p>
                 </div>
               </section>
             </div>

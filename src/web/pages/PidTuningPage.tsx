@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useTranslation } from 'react-i18next'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import {
   pidGroups,
@@ -51,6 +52,7 @@ function updateFades(element: HTMLDivElement | null) {
 }
 
 export default function PidTuningPage() {
+  const { t, i18n } = useTranslation()
   const { params, loading, lastWriteResult } = useParameterStore()
   const connectedAndControllable = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const armed = useTelemetryStore((state) => state.status?.armed ?? false)
@@ -92,7 +94,7 @@ export default function PidTuningPage() {
 
   // PID definitions follow the selected vehicle profile so ArduPilot gains
   // keep ArduPilot naming and are never renamed to PX4 semantics.
-  const profileGroups = useMemo(() => pidGroups(vehicleIdentity), [vehicleIdentity])
+  const profileGroups = useMemo(() => pidGroups(vehicleIdentity), [vehicleIdentity, i18n.language])
   const knownIds = useMemo(
     () => new Set(profileGroups.flatMap((group) => group.params.map((field) => field.id))),
     [profileGroups],
@@ -184,27 +186,27 @@ export default function PidTuningPage() {
             <i
               className="mc-pid-write-dot"
               data-ok={canWrite || undefined}
-              title={armed ? '飞行器已解锁，参数写入已禁用' : canWrite ? '飞控已上锁且具备控制权，可以提交参数' : '连接飞控并取得控制权后可修改参数'}
+              title={armed ? t('pidTuning.writeDisabledArmed') : canWrite ? t('pidTuning.writeEnabled') : t('pidTuning.connectToModify')}
             />
-            扩展调参
+            {t('pidTuning.extendedTuning')}
           </h2>
-          <p>点击 − / + 或拖动滑条微调，也可直接输入数值后回车写入飞控。页面只显示当前飞控实际返回的参数。</p>
+          <p>{t('pidTuning.introDescription')}</p>
         </div>
         <div className="mc-pid-intro__status">
           <strong>{totalCount}</strong>
-          <span>个可调参数</span>
+          <span>{t('pidTuning.tunableParamsLabel')}</span>
           <button type="button" className="mc-btn mc-btn-ghost" onClick={requestParams} disabled={!connectedAndControllable || loading}>
-            <Icon name="refresh" size={14} />{loading ? '同步中' : '重新同步'}
+            <Icon name="refresh" size={14} />{loading ? t('pidTuning.syncing') : t('pidTuning.resync')}
           </button>
         </div>
       </section>
 
       {params.size === 0 && !loading ? (
-        <EmptyState icon="parameters" description="连接飞控并同步参数后，这里会显示可用的控制参数。" />
+        <EmptyState icon="parameters" description={t('pidTuning.emptyConnect')} />
       ) : profileGroups.length === 0 && !loading ? (
-        <EmptyState icon="parameters" description="当前飞控类型尚未适配 PID 调参（仅支持 PX4 与 ArduCopter），可在“完整参数”中编辑。" />
+        <EmptyState icon="parameters" description={t('pidTuning.emptyNotAdapted')} />
       ) : availableGroups.length === 0 && !loading ? (
-        <EmptyState icon="parameters" description="当前参数集中没有识别到对应飞控的控制参数。" />
+        <EmptyState icon="parameters" description={t('pidTuning.emptyNoParams')} />
       ) : (
         <div className="mc-pid-grid">
           {availableGroups.map((group) => {
@@ -217,7 +219,7 @@ export default function PidTuningPage() {
                     <i
                       className="mc-pid-group__result"
                       data-kind={groupFeedback.kind}
-                      title={groupFeedback.kind === 'success' ? '写入成功' : '写入失败'}
+                      title={groupFeedback.kind === 'success' ? t('pidTuning.writeSuccess') : t('pidTuning.writeFailed')}
                     >
                       <Icon name={groupFeedback.kind === 'success' ? 'check' : 'warning'} size={11} strokeWidth={2.4} />
                     </i>
@@ -238,7 +240,7 @@ export default function PidTuningPage() {
                                 {definition.label}
                                 {definition.unit && <small>{definition.unit}</small>}
                               </label>
-                              <span className="mc-mono" style={{ color: 'var(--text-disabled)', fontSize: 11 }}>未提供</span>
+                              <span className="mc-mono" style={{ color: 'var(--text-disabled)', fontSize: 11 }}>{t('pidTuning.notProvided')}</span>
                             </div>
                           </div>
                         )
@@ -260,7 +262,7 @@ export default function PidTuningPage() {
                             <div className="mc-pid-stepper" data-dirty={isDirty || undefined}>
                               <button
                                 type="button"
-                                aria-label={`减小 ${definition.label}`}
+                                aria-label={t('pidTuning.decreaseAria', { label: definition.label })}
                                 disabled={!canWrite || pending !== null}
                                 onClick={() => nudge(definition, -1)}
                               >−</button>
@@ -277,7 +279,7 @@ export default function PidTuningPage() {
                               />
                               <button
                                 type="button"
-                                aria-label={`增大 ${definition.label}`}
+                                aria-label={t('pidTuning.increaseAria', { label: definition.label })}
                                 disabled={!canWrite || pending !== null}
                                 onClick={() => nudge(definition, 1)}
                               >+</button>
@@ -291,7 +293,7 @@ export default function PidTuningPage() {
                             step={definition.step}
                             value={sliderValue}
                             disabled={!canWrite || pending !== null}
-                            aria-label={`${group.title} ${definition.label} 滑动微调`}
+                            aria-label={t('pidTuning.sliderAria', { group: group.title, label: definition.label })}
                             style={{ '--pid-progress': `${progress}%` } as CSSProperties}
                             onChange={(event) => setDrafts((current) => ({ ...current, [definition.id]: event.target.value }))}
                             onPointerUp={(event) => commit(definition, Number(event.currentTarget.value))}
@@ -310,7 +312,7 @@ export default function PidTuningPage() {
 
       {otherPidParams.length > 0 && (
         <details className="mc-card mc-pid-other">
-          <summary>检测到另外 {otherPidParams.length} 个控制相关参数 <span>在“完整参数”中精确编辑</span></summary>
+          <summary>{t('pidTuning.otherPidParams', { count: otherPidParams.length })} <span>{t('pidTuning.otherPidParamsHint')}</span></summary>
           <div>{otherPidParams.map((param) => <span key={param.id}><code>{param.id}</code><b>{param.value}</b></span>)}</div>
         </details>
       )}

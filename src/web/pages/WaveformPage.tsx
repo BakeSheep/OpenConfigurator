@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import Icon from '../components/ui/Icon'
 import { useSensorStore } from '../stores/sensorStore'
@@ -14,11 +15,11 @@ const MAX_POINTS = SAMPLE_RATE_HZ * MAX_WINDOW_SECONDS
 const STANDARD_GRAVITY = 9.80665
 
 const channelGroups: Array<{ title: string; channels: Array<{ key: ChannelKey; label: string }> }> = [
-  { title: '姿态', channels: [{ key: 'roll', label: 'Roll(°)' }, { key: 'pitch', label: 'Pitch(°)' }, { key: 'yaw', label: 'Yaw(°)' }] },
-  { title: '飞行数据', channels: [{ key: 'altitude', label: 'Alt(m)' }, { key: 'climb', label: 'Climb(m/s)' }, { key: 'speed', label: 'GndSpd(m/s)' }] },
-  { title: '电池', channels: [{ key: 'voltage', label: 'Volt(V)' }, { key: 'current', label: 'Curr(A)' }, { key: 'battery', label: 'Batt(%)' }] },
-  { title: '加速度计', channels: [{ key: 'accX', label: 'IMU0 AccX(m/s²)' }, { key: 'accY', label: 'IMU0 AccY(m/s²)' }, { key: 'accZ', label: 'IMU0 AccZ(m/s²)' }] },
-  { title: '光流', channels: [{ key: 'flowX', label: 'Flow X' }, { key: 'flowY', label: 'Flow Y' }, { key: 'quality', label: 'Quality' }] },
+  { title: 'waveform.groupAttitude', channels: [{ key: 'roll', label: 'Roll(°)' }, { key: 'pitch', label: 'Pitch(°)' }, { key: 'yaw', label: 'Yaw(°)' }] },
+  { title: 'waveform.groupFlightData', channels: [{ key: 'altitude', label: 'Alt(m)' }, { key: 'climb', label: 'Climb(m/s)' }, { key: 'speed', label: 'GndSpd(m/s)' }] },
+  { title: 'waveform.groupBattery', channels: [{ key: 'voltage', label: 'Volt(V)' }, { key: 'current', label: 'Curr(A)' }, { key: 'battery', label: 'Batt(%)' }] },
+  { title: 'waveform.groupAccel', channels: [{ key: 'accX', label: 'IMU0 AccX(m/s²)' }, { key: 'accY', label: 'IMU0 AccY(m/s²)' }, { key: 'accZ', label: 'IMU0 AccZ(m/s²)' }] },
+  { title: 'waveform.groupOpticalFlow', channels: [{ key: 'flowX', label: 'Flow X' }, { key: 'flowY', label: 'Flow Y' }, { key: 'quality', label: 'Quality' }] },
 ]
 
 const colors: Record<ChannelKey, string> = {
@@ -28,6 +29,7 @@ const colors: Record<ChannelKey, string> = {
 }
 
 export default function WaveformPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const [data, setData] = useState<WavePoint[]>([])
   const [selected, setSelected] = useState<ChannelKey[]>(['roll', 'pitch', 'yaw'])
   const [paused, setPaused] = useState(false)
@@ -74,11 +76,11 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
     <div className={embedded ? 'mc-fade-in mc-wave-page' : 'mc-workspace mc-fade-in mc-wave-page'}>
       <div className="mc-wave-layout">
         <aside className="mc-card mc-wave-sources">
-          <header><strong>数据源</strong><button type="button" className="mc-icon-btn" onClick={() => setSelected(['roll', 'pitch', 'yaw'])} aria-label="恢复默认"><Icon name="refresh" size={14} /></button></header>
+          <header><strong>{t('waveform.dataSources')}</strong><button type="button" className="mc-icon-btn" onClick={() => setSelected(['roll', 'pitch', 'yaw'])} aria-label={t('waveform.resetDefault')}><Icon name="refresh" size={14} /></button></header>
           <div className="mc-wave-source-scroll">
             {channelGroups.map((group) => (
               <section key={group.title}>
-                <h3>⌄ {group.title}</h3>
+                <h3>⌄ {t(group.title)}</h3>
                 {group.channels.map((channel) => (
                   <label key={channel.key}>
                     <input type="checkbox" checked={selected.includes(channel.key)} onChange={() => toggleChannel(channel.key)} />
@@ -95,10 +97,10 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
         <section className="mc-wave-main">
           <div className="mc-wave-toolbar">
             <div>{[5, 10, 30, 60].map((seconds) => <button type="button" key={seconds} data-active={windowSeconds === seconds} onClick={() => setWindowSeconds(seconds)}>{seconds}s</button>)}</div>
-            <button type="button" className="mc-icon-btn" onClick={() => setPaused((value) => !value)} aria-label={paused ? '继续' : '暂停'}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-            <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label="清除数据"><Icon name="trash" size={15} /></button>
-            <div><button type="button" data-active>{SAMPLE_RATE_HZ}Hz 图表采样</button></div>
-            <span>{selected.length} 通道 · {visibleData.length} 采样</span>
+            <button type="button" className="mc-icon-btn" onClick={() => setPaused((value) => !value)} aria-label={paused ? t('waveform.resume') : t('waveform.pause')}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
+            <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label={t('waveform.clearData')}><Icon name="trash" size={15} /></button>
+            <div><button type="button" data-active>{t('waveform.chartSampleRate', { rate: SAMPLE_RATE_HZ })}</button></div>
+            <span>{t('waveform.channelSampleSummary', { channels: selected.length, samples: visibleData.length })}</span>
           </div>
           <div className="mc-card mc-wave-chart">
             <ResponsiveContainer width="100%" height="100%">

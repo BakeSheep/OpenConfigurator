@@ -1,9 +1,11 @@
+import { useTranslation } from 'react-i18next'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import Icon from '../ui/Icon'
 
 export default function ParameterProgressBar() {
+  const { t } = useTranslation()
   const send = sendClientMessage
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const connectionType = useConnectionStore((state) => state.type)
@@ -38,7 +40,7 @@ export default function ParameterProgressBar() {
       <div
         className="mc-global-param-progress__track"
         role="progressbar"
-        aria-label="飞控参数读取进度"
+        aria-label={t('parameter.progress.ariaLabel')}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={totalCount > 0 ? percent : undefined}
@@ -50,20 +52,20 @@ export default function ParameterProgressBar() {
           error
         ) : (
           <>
-            正在同步飞控参数
-            <strong>{totalCount > 0 ? `${receivedCount}/${totalCount}` : '等待响应'}</strong>
+            {t('parameter.progress.syncing')}
+            <strong>{totalCount > 0 ? `${receivedCount}/${totalCount}` : t('parameter.progress.waitingResponse')}</strong>
             {retryCount > 0 && (
-              <small>正在补读第 {retryCount} 次{missingCount > 0 ? ` · 缺 ${missingCount} 项` : ''}</small>
+              <small>{t('parameter.progress.retrying', { count: retryCount })}{missingCount > 0 ? t('parameter.progress.missing', { count: missingCount }) : ''}</small>
             )}
             {connectionType === 'bluetooth' && retryCount === 0 && (
-              <small>蓝牙低带宽同步 · 已临时降低遥测速率</small>
+              <small>{t('parameter.progress.bluetoothLowBandwidth')}</small>
             )}
           </>
         )}
       </span>
       {error ? (
         <button type="button" disabled={!vehicleReady} onClick={retry}>
-          <Icon name="refresh" size={13} />重新读取
+          <Icon name="refresh" size={13} />{t('parameter.progress.reread')}
         </button>
       ) : (
         <strong className="mc-global-param-progress__percent">{percent}%</strong>

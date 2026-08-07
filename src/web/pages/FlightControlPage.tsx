@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
@@ -13,6 +14,7 @@ import {
 } from '../utils/prearmStatus'
 
 export default function FlightControlPage() {
+  const { t } = useTranslation()
   const send = sendClientMessage
   const vehicle = useTelemetryStore((state) => state.status)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -108,21 +110,21 @@ export default function FlightControlPage() {
   const hasFlowPosition = hasValidOpticalFlow && hasValidRangefinder
   const sysStatusFresh = !isTelemetryStale('sysStatus')
   const systemHealthLabel = unhealthySensors.length > 0
-    ? `飞控系统健康（${unhealthySensors.join('、')}异常）`
-    : '飞控系统健康'
+    ? t('flight.systemHealthAbnormal', { sensors: unhealthySensors.join('、') })
+    : t('flight.systemHealth')
   const checks = [
-    { label: '位置源（GPS 或光流+测距）', ok: hasGpsPosition || hasFlowPosition },
+    { label: t('flight.checkPositionSource'), ok: hasGpsPosition || hasFlowPosition },
     // Battery gate keys off a valid voltage source, not a stale/absent percent.
-    { label: '电池电量 > 20%', ok: battery?.voltage != null && (battery?.remaining ?? 0) > 20 },
-    { label: 'IMU 正常', ok: sensorHealth.imu === 'ok' && !isSensorStale('imu') },
-    { label: '气压计正常', ok: sensorHealth.baro === 'ok' && !isSensorStale('baro') },
-    { label: 'EKF 正常', ok: ekfStatus !== null && !isTelemetryStale('ekfStatus') && ekfStatus.health_flags !== 0 },
+    { label: t('flight.checkBattery'), ok: battery?.voltage != null && (battery?.remaining ?? 0) > 20 },
+    { label: t('flight.checkImu'), ok: sensorHealth.imu === 'ok' && !isSensorStale('imu') },
+    { label: t('flight.checkBaro'), ok: sensorHealth.baro === 'ok' && !isSensorStale('baro') },
+    { label: t('flight.checkEkf'), ok: ekfStatus !== null && !isTelemetryStale('ekfStatus') && ekfStatus.health_flags !== 0 },
     { label: systemHealthLabel, ok: sysStatusFresh && sensorsHealthy === true },
     ...(preflightCheck === null
       ? []
-      : [{ label: '飞控预检', ok: sysStatusFresh && preflightCheck === true }]),
+      : [{ label: t('flight.checkPreflight'), ok: sysStatusFresh && preflightCheck === true }]),
     ...(recentPrearmFailure
-      ? [{ label: `飞控 PreArm：${recentPrearmFailure.text}`, ok: false }]
+      ? [{ label: t('flight.checkPrearm', { text: recentPrearmFailure.text }), ok: false }]
       : []),
   ]
   const allChecksPassed = checks.every((check) => check.ok)
@@ -132,19 +134,19 @@ export default function FlightControlPage() {
 
   return (
     <div className="mc-workspace mc-workspace--standard mc-fade-in">
-      <PageHeader title="飞行操作" description="集中执行解锁、模式切换和导航指令；所有写操作均要求飞控已就绪且控制权可用。" />
+      <PageHeader title={t('flight.title')} description={t('flight.description')} />
 
       {!connected && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
-          <span>{!vehicleReady ? '等待飞控心跳，当前仅可查看保留的遥测数据。' : '另一客户端正在控制飞控，当前页面保持只读。'}</span>
+          <span>{!vehicleReady ? t('flight.waitingHeartbeat') : t('flight.readOnlyControl')}</span>
         </div>
       )}
 
       {connected && !caps.arm && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
-          <span>当前飞控类型（{vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : '未识别'}）尚未适配飞行控制写操作，本页仅供查看。目前仅支持 PX4 与 ArduCopter。</span>
+          <span>{t('flight.writeNotSupported', { type: vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : t('flight.unrecognized') })}</span>
         </div>
       )}
 
@@ -154,28 +156,28 @@ export default function FlightControlPage() {
             <Icon name="flight" size={23} />
           </span>
           <div className="flex-1">
-            <p className="text-[18px] font-bold" style={{ color: armed ? 'var(--success)' : 'var(--text-primary)' }}>{armed ? '已解锁' : '已上锁'}</p>
-            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? '当前模式：' + (vehicle?.mode ?? '—') : '飞控未连接，所有指令已锁定。'}</p>
+            <p className="text-[18px] font-bold" style={{ color: armed ? 'var(--success)' : 'var(--text-primary)' }}>{armed ? t('flight.armed') : t('flight.disarmed')}</p>
+            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? t('flight.currentMode', { mode: vehicle?.mode ?? '-' }) : t('flight.fcNotConnected')}</p>
           </div>
           {!armed && (
             <button type="button" disabled={!connected || !allChecksPassed || !caps.arm} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
-              {armConfirmation ? '再次点击确认解锁' : caps.arm ? '解锁飞行器' : '解锁未适配'}
+              {armConfirmation ? t('flight.confirmArm') : caps.arm ? t('flight.armVehicle') : t('flight.armNotSupported')}
             </button>
           )}
-          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed || !caps.arm} onClick={disarm} title="立即发送普通上锁命令；这不是强制断电 Kill Switch。">立即上锁</button>
+          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed || !caps.arm} onClick={disarm} title={t('flight.disarmTitle')}>{t('flight.disarmNow')}</button>
         </div>
       </section>
 
       <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="mc-card overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>飞行指令</h2>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>飞行器解锁后才可执行起飞指令。</p>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.commands')}</h2>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.commandsHint')}</p>
           </div>
           <div className="space-y-5 p-5">
             <div>
               <div className="flex items-center justify-between">
-                <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>起飞高度</span>
+                <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.takeoffAltitude')}</span>
                 <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{takeoffAltitude.toFixed(1)}m</span>
               </div>
               <input className="mt-4" type="range" min="1" max="10" step="0.5" value={takeoffAltitude} onChange={(event) => setTakeoffAltitude(Number(event.target.value))} />
@@ -192,23 +194,23 @@ export default function FlightControlPage() {
                   safetyConfirmation: 'takeoff',
                 })}
               >
-                起飞
+                {t('flight.takeoff')}
               </button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>降落</button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>返航</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.land')}</button>
+              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.rtl')}</button>
             </div>
           </div>
         </div>
 
         <div className="mc-card overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>飞行模式</h2>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>模式切换通过 MAV_CMD_DO_SET_MODE 执行。</p>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.modeTitle')}</h2>
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.modeHint')}</p>
           </div>
           <div className="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
             {modeOptions.length === 0 && (
               <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-                {connected ? '该机型暂不支持模式切换' : '连接飞控后显示可用模式'}
+                {connected ? t('flight.modeNotSupported') : t('flight.connectToShowModes')}
               </p>
             )}
             {modeOptions.map((mode) => (
@@ -230,7 +232,7 @@ export default function FlightControlPage() {
       <section className="mt-4 grid grid-cols-1 gap-4">
         <div className="mc-card overflow-hidden">
           <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>飞行前检查</h2>
+            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.preflightCheck')}</h2>
           </div>
           <div className="grid grid-cols-1 gap-x-6 gap-y-3 p-5 sm:grid-cols-2">
             {checks.map((check) => (
@@ -242,11 +244,11 @@ export default function FlightControlPage() {
               </div>
             ))}
             <div className="col-span-full mt-2 rounded-xl px-4 py-3 text-[12px] font-semibold" style={{ background: allChecksPassed ? 'var(--success-dim)' : 'var(--warning-dim)', color: allChecksPassed ? 'var(--success)' : 'var(--warning)' }}>
-              {allChecksPassed ? '所有检查通过，可以按安全流程解锁。' : '仍有检查项未通过，请确认飞控状态后再起飞。'}
+              {allChecksPassed ? t('flight.allChecksPassed') : t('flight.checksNotPassed')}
             </div>
             {latestArmMessage && (
               <div className="col-span-full rounded-xl px-4 py-3 text-[11px]" style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}>
-                飞控最近反馈：{latestArmMessage.text}
+                {t('flight.latestFcFeedback', { text: latestArmMessage.text })}
               </div>
             )}
           </div>

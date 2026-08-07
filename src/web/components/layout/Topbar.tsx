@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useTranslation } from 'react-i18next'
+import i18next from 'i18next'
 import { availableModes, vehicleCapabilities } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
+import { useLanguageStore } from '../../stores/languageStore'
 import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
 import { appRuntimeMode } from '../../runtime'
 import {
@@ -17,17 +20,19 @@ import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from '../../utils/gp
 const radToDeg = (r: number) => r * 180 / Math.PI
 
 export default function Topbar() {
+  const { t } = useTranslation()
   const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
+  const { language, toggleLanguage } = useLanguageStore()
   const isDemo = appRuntimeMode === 'demo'
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
-    ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? '飞控已就绪')
+    ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? t('topbar.connection.ready'))
     : transportOpen
-      ? '飞控未连接'
+      ? t('topbar.connection.notConnected')
     : reconnecting
-      ? `重连中${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
-      : status === 'connecting' ? '连接中' : '未连接'
+      ? `${t('topbar.connection.reconnecting')}${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
+      : status === 'connecting' ? t('topbar.connection.connecting') : t('topbar.connection.disconnected')
 
   // Presets for QGC-style connection dropdown
   const [presets, setPresets] = useState(loadConnectionPresets)
@@ -53,7 +58,7 @@ export default function Topbar() {
         if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
         const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
         if (!matched) {
-          setConnectionError('未找到与该预设匹配的串口，请重新选择设备。')
+          setConnectionError(t('topbar.connection.presetNotFound'))
           setStatus('error')
           setConnectDialogOpen(true)
           return
@@ -83,21 +88,23 @@ export default function Topbar() {
         }),
       })
       const text = await res.text()
-      let json: { success?: boolean; error?: { message?: string } } | null = null
+      let json: { success?: boolean; error?: { code?: string; message?: string } } | null = null
       if (text) {
         try { json = JSON.parse(text) } catch { /* not JSON */ }
       }
       // A 200 with success=false is still a failure; never report it silently.
       if (!res.ok || !json?.success) {
-        const reason = json?.error?.message ?? (text || `HTTP ${res.status}`)
+        const raw = json?.error?.message ?? (text || `HTTP ${res.status}`)
+        const code = json?.error?.code
+        const reason = code && i18next.exists(`errors.${code}`) ? i18next.t(`errors.${code}`) : raw
         console.error('[Connect] preset connect failed:', reason)
-        setConnectionError(`预设连接失败：${reason}`)
+        setConnectionError(t('topbar.connection.presetFailed', { reason }))
         setStatus('error')
         setConnectDialogOpen(true)
       }
     } catch (error) {
       console.error('[Connect] preset connect failed:', error)
-      setConnectionError(`预设连接失败：${error instanceof Error ? error.message : String(error)}`)
+      setConnectionError(t('topbar.connection.presetFailed', { reason: error instanceof Error ? error.message : String(error) }))
       setStatus('error')
       setConnectDialogOpen(true)
     }
@@ -142,7 +149,7 @@ export default function Topbar() {
   const canChangeArmState = vehicleReady && canControl && caps.writeOperations && caps.arm
   const canArm = canChangeArmState && preflightCheck !== false && sensorsHealthy !== false
   const armTone = confirmedArmed ? 'var(--success)' : canArm ? 'var(--info)' : 'var(--danger)'
-  const armLabel = confirmedArmed ? '已解锁' : canArm ? '已上锁 · 可解锁' : vehicleReady ? '已上锁 · 不可解锁' : '飞控未就绪'
+  const armLabel = confirmedArmed ? t('topbar.arm.armed') : canArm ? t('topbar.arm.disarmedCanArm') : vehicleReady ? t('topbar.arm.disarmedCannotArm') : t('topbar.arm.vehicleNotReady')
   const recentArmErrors = statusLogs
     .filter((entry) => /arm|arming|pre-arm|preflight|解锁|预检/i.test(entry.text))
     .slice(0, 4)
@@ -296,9 +303,9 @@ export default function Topbar() {
             <Icon name="chevronDown" size={11} />
           </button>
           {activeStatusMenu === 'arm' && (
-            <section className="mc-topbar-menu mc-topbar-menu--arm" aria-label="解锁状态">
+            <section className="mc-topbar-menu mc-topbar-menu--arm" aria-label={t('topbar.arm.armed')}>
               <header>
-                <div><strong>{armLabel}</strong><small>{canChangeArmState && (confirmedArmed || canArm) ? '将滑块完整拖到右端以确认操作' : '当前不允许操作'}</small></div>
+                <div><strong>{armLabel}</strong><small>{canChangeArmState && (confirmedArmed || canArm) ? t('topbar.arm.dragToConfirm') : t('topbar.arm.operationNotAllowed')}</small></div>
                 <span style={{ color: armTone }}>{confirmedArmed ? 'ARMED' : canArm ? 'READY' : 'BLOCKED'}</span>
               </header>
               {canChangeArmState && (confirmedArmed || canArm) ? (
@@ -310,7 +317,7 @@ export default function Topbar() {
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={Math.round(armDragProgress * 100)}
-                    aria-label={confirmedArmed ? '滑动以上锁飞行器' : '滑动以解锁飞行器'}
+                    aria-label={confirmedArmed ? t('topbar.arm.slideToDisarm') : t('topbar.arm.slideToArm')}
                     className="mc-arm-slider"
                     data-armed={confirmedArmed}
                     data-dragging={armDragging}
@@ -332,11 +339,11 @@ export default function Topbar() {
                 </div>
               ) : (
                 <div className="mc-arm-errors" role="alert">
-                  {!vehicleReady && <p>尚未收到飞控有效心跳，飞控未就绪。</p>}
-                  {vehicleReady && !canControl && <p>控制权正由另一客户端持有，当前页面为只读。</p>}
-                  {vehicleReady && canControl && !caps.writeOperations && <p>当前飞控类型尚未开放写操作。</p>}
-                  {vehicleReady && canControl && preflightCheck === false && recentArmErrors.length === 0 && <p>飞控预检未通过，请查看底部状态消息。</p>}
-                  {unhealthySensors.length > 0 && <p>传感器异常：{unhealthySensors.join('、')}</p>}
+                  {!vehicleReady && <p>{t('topbar.arm.noHeartbeat')}</p>}
+                  {vehicleReady && !canControl && <p>{t('topbar.arm.readOnly')}</p>}
+                  {vehicleReady && canControl && !caps.writeOperations && <p>{t('topbar.arm.noWriteOps')}</p>}
+                  {vehicleReady && canControl && preflightCheck === false && recentArmErrors.length === 0 && <p>{t('topbar.arm.preflightFailed')}</p>}
+                  {unhealthySensors.length > 0 && <p>{t('topbar.arm.sensorAbnormal', { sensors: unhealthySensors.join('、') })}</p>}
                   {recentArmErrors.map((entry) => <p key={entry.id}>{entry.text}</p>)}
                 </div>
               )}
@@ -352,17 +359,17 @@ export default function Topbar() {
             aria-expanded={activeStatusMenu === 'mode'}
             onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'mode' ? null : 'mode') }}
           >
-            <span className="mc-topbar__status-label">模式</span>
+            <span className="mc-topbar__status-label">{t('topbar.mode.label')}</span>
             <span className="mc-topbar__status-value">{vehicle?.mode ?? '—'}</span>
             <Icon name="chevronDown" size={11} />
           </button>
           {activeStatusMenu === 'mode' && (
-            <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label="选择飞行模式">
-              <header><div><strong>飞行模式</strong><small>{vehicleReady && canControl ? '选择后立即向飞控发送模式切换指令' : '飞控未就绪或当前没有控制权'}</small></div></header>
+            <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label={t('topbar.mode.flightMode')}>
+              <header><div><strong>{t('topbar.mode.flightMode')}</strong><small>{vehicleReady && canControl ? t('topbar.mode.selectHint') : t('topbar.mode.notReadyOrNoControl')}</small></div></header>
               <div role="menu">
                 {availableModes(vehicleIdentity).length === 0 && (
                   <p className="px-3 py-2 text-[11px]" style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)' }}>
-                    {vehicleReady ? '该机型暂不支持模式切换' : '连接飞控后显示可用模式'}
+                    {vehicleReady ? t('topbar.mode.notSupported') : t('topbar.mode.connectToShow')}
                   </p>
                 )}
                 {availableModes(vehicleIdentity).map((mode) => (
@@ -387,13 +394,13 @@ export default function Topbar() {
           <>
             {!stale && attitude && (
               <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
-                <span className="mc-topbar__status-label">姿态</span>
+                <span className="mc-topbar__status-label">{t('topbar.attitude')}</span>
                 <span className="mc-topbar__status-value">{radToDeg(attitude.roll).toFixed(1)}° / {radToDeg(attitude.pitch).toFixed(1)}° / {isStale('vfrHud') ? '—' : relativeAlt.toFixed(1)}m</span>
               </span>
             )}
             {!isStale('vfrHud') && (
               <span className="mc-topbar__status-item mc-topbar__status-item--secondary">
-                <span className="mc-topbar__status-label">航向</span>
+                <span className="mc-topbar__status-label">{t('topbar.heading')}</span>
                 <span className="mc-topbar__status-value">{heading.toFixed(0)}°</span>
               </span>
             )}
@@ -410,23 +417,23 @@ export default function Topbar() {
                 <Icon name="chevronDown" size={11} />
               </button>
               {activeStatusMenu === 'gps' && (
-                <section className="mc-topbar-menu mc-topbar-menu--gps" aria-label="GPS 详情">
+                <section className="mc-topbar-menu mc-topbar-menu--gps" aria-label={t('topbar.gps.details')}>
                   <header>
-                    <div><strong>GPS 详情</strong><small>{gpsLive ? '数据来自 GPS_RAW_INT 实时遥测' : '等待 GPS 遥测数据'}</small></div>
-                    <span data-fix={hasGpsPosition || undefined}>{gpsLive ? gpsFixLabel(gps.fix_type) : '无数据'}</span>
+                    <div><strong>{t('topbar.gps.details')}</strong><small>{gpsLive ? t('topbar.gps.dataFromRaw') : t('topbar.gps.waiting')}</small></div>
+                    <span data-fix={hasGpsPosition || undefined}>{gpsLive ? gpsFixLabel(gps.fix_type) : t('topbar.gps.noData')}</span>
                   </header>
                   <dl>
-                    <div><dt>定位类型</dt><dd>{gpsLive ? gpsFixLabel(gps.fix_type) : '—'}</dd></div>
-                    <div><dt>卫星数</dt><dd className="mc-mono">{gpsLive ? gps.satellites_visible ?? '—' : '—'}</dd></div>
-                    <div><dt>纬度</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lat) : '—'}</dd></div>
-                    <div><dt>经度</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lon) : '—'}</dd></div>
-                    <div><dt>海拔 (MSL)</dt><dd className="mc-mono">{hasGpsPosition ? `${gps.alt.toFixed(1)} m` : '—'}</dd></div>
-                    <div><dt>速度</dt><dd className="mc-mono">{gpsLive && gps.vel != null ? `${gps.vel.toFixed(2)} m/s` : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.fixType')}</dt><dd>{gpsLive ? gpsFixLabel(gps.fix_type) : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.satellites')}</dt><dd className="mc-mono">{gpsLive ? gps.satellites_visible ?? '—' : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.latitude')}</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lat) : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.longitude')}</dt><dd className="mc-mono">{hasGpsPosition ? formatGpsCoordinate(gps.lon) : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.altitudeMSL')}</dt><dd className="mc-mono">{hasGpsPosition ? `${gps.alt.toFixed(1)} m` : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.speed')}</dt><dd className="mc-mono">{gpsLive && gps.vel != null ? `${gps.vel.toFixed(2)} m/s` : '—'}</dd></div>
                     <div><dt>HDOP</dt><dd className="mc-mono">{gpsLive && gps.eph != null ? gps.eph.toFixed(2) : '—'}</dd></div>
                     <div><dt>VDOP</dt><dd className="mc-mono">{gpsLive && gps.epv != null ? gps.epv.toFixed(2) : '—'}</dd></div>
-                    <div><dt>水平精度</dt><dd>未提供</dd></div>
-                    <div><dt>垂直精度</dt><dd>未提供</dd></div>
-                    <div className="mc-topbar-gps__wide"><dt>航向</dt><dd className="mc-mono">{gpsLive && gps.cog != null ? `${gps.cog.toFixed(1)}°` : '—'}</dd></div>
+                    <div><dt>{t('topbar.gps.horizontalAccuracy')}</dt><dd>{t('topbar.gps.notProvided')}</dd></div>
+                    <div><dt>{t('topbar.gps.verticalAccuracy')}</dt><dd>{t('topbar.gps.notProvided')}</dd></div>
+                    <div className="mc-topbar-gps__wide"><dt>{t('topbar.gps.heading')}</dt><dd className="mc-mono">{gpsLive && gps.cog != null ? `${gps.cog.toFixed(1)}°` : '—'}</dd></div>
                   </dl>
                 </section>
               )}
@@ -447,15 +454,23 @@ export default function Topbar() {
           href="https://github.com/BakeSheep/OpenConfigurator"
           target="_blank"
           rel="noreferrer"
-          title="GitHub 仓库"
-          aria-label="打开 GitHub 仓库"
+          title={t('topbar.github.title')}
+          aria-label={t('topbar.github.ariaLabel')}
         >
           <Icon name="github" size={16} />
         </a>
         <button
           type="button"
           className="mc-topbar__link"
-          title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          title={language === 'zh' ? t('topbar.language.toEnglish') : t('topbar.language.toChinese')}
+          onClick={toggleLanguage}
+        >
+          <span style={{ fontSize: 11, fontWeight: 600 }}>{language === 'zh' ? 'EN' : '中'}</span>
+        </button>
+        <button
+          type="button"
+          className="mc-topbar__link"
+          title={theme === 'dark' ? t('topbar.theme.toLight') : t('topbar.theme.toDark')}
           onClick={toggleTheme}
         >
           <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
@@ -464,13 +479,17 @@ export default function Topbar() {
           type="button"
           className="mc-topbar__reboot"
           data-confirm={rebootConfirm || undefined}
+          aria-pressed={rebootConfirm}
           disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
-          title={!caps.writeOperations ? '当前飞控类型尚未开放远程重启' : armed ? '飞控已解锁，不能重启' : rebootConfirm ? '再次点击确认重启飞控' : '重启飞控'}
-          aria-label={rebootConfirm ? '确认重启飞控' : '重启飞控'}
+          title={!caps.writeOperations ? t('topbar.reboot.notSupported') : armed ? t('topbar.reboot.armed') : rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
+          aria-label={rebootConfirm ? t('topbar.reboot.confirmTitle') : t('topbar.reboot.title')}
           onClick={requestVehicleReboot}
         >
-          <Icon name="refresh" size={15} />
-          <span>{rebootConfirm ? '确认重启' : '重启'}</span>
+          <span className="mc-topbar__reboot-icon" aria-hidden="true">
+            <Icon name="refresh" size={15} />
+            {rebootConfirm && <Icon className="mc-topbar__reboot-confirm-badge" name="check" size={9} strokeWidth={2.8} />}
+          </span>
+          <span className="mc-topbar__reboot-label">{rebootConfirm ? t('topbar.reboot.confirm') : t('topbar.reboot.label')}</span>
         </button>
         <div className="relative">
           {isDemo ? (
@@ -478,41 +497,49 @@ export default function Topbar() {
             <span
               className="mc-topbar__connect is-connected"
               style={{ cursor: 'default' }}
-              title="在线演示：模拟连接，无真实设备"
+              title={t('topbar.demo.title')}
             >
-              <span className="mc-status-dot" style={{ background: 'var(--success)' }} />
-              <span>模拟连接 · {port ?? 'DEMO'}</span>
+              <span className="mc-topbar__connect-icon" aria-hidden="true">
+                <Icon name="plug" size={16} />
+                <span className="mc-status-dot" style={{ background: 'var(--success)' }} />
+              </span>
+              <span className="mc-topbar__connect-label">{t('topbar.demo.simulated')} · {port ?? 'DEMO'}</span>
             </span>
           ) : (
             <>
           <button
             type="button"
             className={'mc-topbar__connect' + (vehicleReady ? ' is-connected' : transportOpen ? ' is-waiting' : '')}
+            title={connectionLabel}
+            aria-label={connectionLabel}
             onClick={() => { setActiveStatusMenu(null); if (!transportOpen) setPresets(loadConnectionPresets()); setConnectDropdown((v) => !v) }}
           >
-            <span className="mc-status-dot" style={{ background: vehicleReady ? 'var(--success)' : (transportOpen || reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
-            <span>{connectionLabel}</span>
-            <Icon name="chevronDown" size={11} />
+            <span className="mc-topbar__connect-icon" aria-hidden="true">
+              <Icon name="plug" size={16} />
+              <span className="mc-status-dot" style={{ background: vehicleReady ? 'var(--success)' : (transportOpen || reconnecting || status === 'connecting') ? 'var(--warning)' : 'var(--text-disabled)' }} />
+            </span>
+            <span className="mc-topbar__connect-label">{connectionLabel}</span>
+            <Icon className="mc-topbar__connect-chevron" name="chevronDown" size={11} aria-hidden="true" />
           </button>
           {connectDropdown && transportOpen && (
             <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
-              <p className="mb-1.5 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>当前连接</p>
+              <p className="mb-1.5 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('topbar.connect.currentConnection')}</p>
               <div className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--bg-tertiary)' }}>
-                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? '蓝牙 SPP' : 'USB 串口'}</span>
+                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? t('topbar.connect.bluetoothSPP') : t('topbar.connect.usbSerial')}</span>
                 <span className="ml-1.5 mc-mono text-[10px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
               </div>
-              <button type="button" className="mc-btn mc-btn-danger w-full py-1.5 text-[11px]" onClick={disconnectTransport}>断开连接</button>
-              <button type="button" className="mc-btn mc-btn-ghost mt-1.5 w-full py-1.5 text-[11px]" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>连接管理…</button>
+              <button type="button" className="mc-btn mc-btn-danger w-full py-1.5 text-[11px]" onClick={disconnectTransport}>{t('topbar.connect.disconnect')}</button>
+              <button type="button" className="mc-btn mc-btn-ghost mt-1.5 w-full py-1.5 text-[11px]" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>{t('topbar.connect.manage')}</button>
             </div>
           )}
           {connectDropdown && !transportOpen && (
             <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
               <div className="flex items-center justify-between mb-1.5">
-                <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>选择设备</p>
-                <button type="button" className="text-[15px] font-bold leading-none" style={{ color: 'var(--accent)' }} onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }} title="添加设备">+</button>
+                <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('topbar.connect.selectDevice')}</p>
+                <button type="button" className="text-[15px] font-bold leading-none" style={{ color: 'var(--accent)' }} onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }} title={t('topbar.connect.addDevice')}>+</button>
               </div>
               {presets.length === 0 && (
-                <p className="text-[10px] py-1.5" style={{ color: 'var(--text-disabled)' }}>暂无预设设备</p>
+                <p className="text-[10px] py-1.5" style={{ color: 'var(--text-disabled)' }}>{t('topbar.connect.noPresets')}</p>
               )}
               {presets.map((p) => (
                 <div key={p.id} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--bg-hover)] cursor-pointer group">

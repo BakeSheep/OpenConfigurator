@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { AutopilotFamily, ParamData } from '../../../shared/types'
 import Icon from '../ui/Icon'
 import { sendClientMessage } from '../../hooks/useWebSocket'
@@ -34,11 +35,12 @@ function ParameterSelect({
   writable: boolean
   disabled?: boolean
 }) {
+  const { t } = useTranslation()
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
   return (
     <label className="mc-gps-config__field" data-disabled={disabled || !param || !writable || undefined}>
-      <span><strong>{label}</strong><small>{param?.id ?? '参数不可用'}</small></span>
+      <span><strong>{label}</strong><small>{param?.id ?? t('sensor.gps.paramUnavailable')}</small></span>
       <select
         className="mc-select"
         aria-label={param?.id ?? label}
@@ -54,8 +56,8 @@ function ParameterSelect({
           })
         }}
       >
-        {!param && <option value="">等待参数</option>}
-        {param && !known && <option value={value}>值 {value}</option>}
+        {!param && <option value="">{t('sensor.gps.waitingParam')}</option>}
+        {param && !known && <option value={value}>{t('sensor.gps.valueOption', { value })}</option>}
         {options.map(([option, optionLabel]) => <option key={option} value={option}>{optionLabel}</option>)}
       </select>
       <small>{hint}</small>
@@ -64,9 +66,10 @@ function ParameterSelect({
 }
 
 function ReadonlyField({ label, value, paramId, hint }: { label: string; value: string; paramId?: string; hint: string }) {
+  const { t } = useTranslation()
   return (
     <div className="mc-gps-config__field" data-disabled="true">
-      <span><strong>{label}</strong><small>{paramId ?? '由固件分配'}</small></span>
+      <span><strong>{label}</strong><small>{paramId ?? t('sensor.gps.firmwareAssigned')}</small></span>
       <div className="mc-gps-config__readonly mc-mono">{value}</div>
       <small>{hint}</small>
     </div>
@@ -78,6 +81,7 @@ function Px4GpsFields({ instance, writable, params }: {
   writable: boolean
   params: Map<string, ParamData>
 }) {
+  const { t } = useTranslation()
   const config = params.get(`GPS_${instance}_CONFIG`)
   const protocol = params.get(`GPS_${instance}_PROTOCOL`)
   const configuredPort = config ? Math.round(config.value) : 0
@@ -89,13 +93,13 @@ function Px4GpsFields({ instance, writable, params }: {
   return (
     <div className="mc-gps-config__grid">
       <label className="mc-gps-config__field" data-disabled={!config || !writable || undefined}>
-        <span><strong>启用 GPS</strong><small>{config?.id ?? '参数不可用'}</small></span>
+        <span><strong>{t('sensor.gps.enableGps')}</strong><small>{config?.id ?? t('sensor.gps.paramUnavailable')}</small></span>
         <select
           className="mc-select"
-          aria-label={`GPS ${instance} 启用状态`}
+          aria-label={t('sensor.gps.instanceEnableAria', { instance })}
           value={enabledParam ? Math.round(enabledParam.value) : ''}
           disabled={!config || !writable}
-          title="PX4 使用 GPS_n_CONFIG=0 禁用实例；启用时恢复到该实例的标准 GPS 端口。"
+          title={t('sensor.gps.px4DisableHint')}
           onChange={(event) => {
             if (!config) return
             const value = Number(event.target.value) === 0 ? 0 : (configuredPort || px4GpsDefaultPort(instance))
@@ -106,23 +110,23 @@ function Px4GpsFields({ instance, writable, params }: {
             })
           }}
         >
-          {!config && <option value="">等待参数</option>}
+          {!config && <option value="">{t('sensor.gps.waitingParam')}</option>}
           <option value={0}>0: Disabled</option>
           <option value={1}>1: Enabled</option>
         </select>
-        <small>禁用和端口选择共用 PX4 的 GPS_n_CONFIG 参数。</small>
+        <small>{t('sensor.gps.px4ConfigShared')}</small>
       </label>
       <ParameterSelect
-        label="端口"
-        hint="配置运行该 GPS 驱动的 PX4 串口；更改后需要重启。"
+        label={t('common.port')}
+        hint={t('sensor.gps.px4PortHint')}
         param={config}
         options={PX4_GPS_PORT_OPTIONS}
         writable={writable}
         disabled={!enabled}
       />
       <ParameterSelect
-        label="协议"
-        hint="Auto detect 会依次探测支持的串行 GPS 协议。"
+        label={t('sensor.gps.protocol')}
+        hint={t('sensor.gps.px4ProtocolHint')}
         param={protocol}
         options={PX4_GPS_PROTOCOL_OPTIONS}
         writable={writable}
@@ -130,8 +134,8 @@ function Px4GpsFields({ instance, writable, params }: {
       />
       {baudId ? (
         <ParameterSelect
-          label="波特率"
-          hint={`波特率属于当前物理端口（${baudId}）；GPS 驱动通常可自动探测。`}
+          label={t('common.baudRate')}
+          hint={t('sensor.gps.px4BaudHint', { baudId })}
           param={baud}
           options={PX4_GPS_BAUD_OPTIONS}
           writable={writable}
@@ -139,9 +143,9 @@ function Px4GpsFields({ instance, writable, params }: {
         />
       ) : (
         <ReadonlyField
-          label="波特率"
-          value={enabled ? '此端口无独立波特率参数' : '未启用'}
-          hint="选择具有 SER_*_BAUD 参数的物理串口后可配置。"
+          label={t('common.baudRate')}
+          value={enabled ? t('sensor.gps.noIndependentBaud') : t('sensor.gps.notEnabled')}
+          hint={t('sensor.gps.px4BaudHintEmpty')}
         />
       )}
     </div>
@@ -153,6 +157,7 @@ function ArduPilotGpsFields({ instance, writable, params }: {
   writable: boolean
   params: Map<string, ParamData>
 }) {
+  const { t } = useTranslation()
   const type = ardupilotGpsTypeParam(params, instance)
   const enabled = Boolean(type && Math.round(type.value) !== 0)
   const needsSerial = ardupilotGpsNeedsSerial(type?.value)
@@ -163,13 +168,13 @@ function ArduPilotGpsFields({ instance, writable, params }: {
   return (
     <div className="mc-gps-config__grid">
       <label className="mc-gps-config__field" data-disabled={!type || !writable || undefined}>
-        <span><strong>启用 GPS</strong><small>{type?.id ?? '参数不可用'}</small></span>
+        <span><strong>{t('sensor.gps.enableGps')}</strong><small>{type?.id ?? t('sensor.gps.paramUnavailable')}</small></span>
         <select
           className="mc-select"
-          aria-label={`GPS ${instance} 启用状态`}
+          aria-label={t('sensor.gps.instanceEnableAria', { instance })}
           value={type ? (enabled ? 1 : 0) : ''}
           disabled={!type || !writable}
-          title="ArduPilot 以 GPSn_TYPE=0 禁用实例；重新启用时使用 Auto 类型。"
+          title={t('sensor.gps.arduPilotDisableHint')}
           onChange={(event) => {
             if (!type) return
             const value = Number(event.target.value) === 0 ? 0 : (Math.round(type.value) || 1)
@@ -180,30 +185,30 @@ function ArduPilotGpsFields({ instance, writable, params }: {
             })
           }}
         >
-          {!type && <option value="">等待参数</option>}
+          {!type && <option value="">{t('sensor.gps.waitingParam')}</option>}
           <option value={0}>0: Disabled</option>
           <option value={1}>1: Enabled</option>
         </select>
-        <small>ArduPilot 使用 GPSn_TYPE=0/非零控制该实例。</small>
+        <small>{t('sensor.gps.arduPilotTypeControlHint')}</small>
       </label>
       <ParameterSelect
-        label="GPS 类型"
-        hint="这是接收机/传输类型，不是 PX4 的协议编号；更改后需要重启。"
+        label={t('sensor.gps.typeLabel')}
+        hint={t('sensor.gps.arduPilotTypeHint')}
         param={type}
         options={ARDUPILOT_GPS_TYPE_OPTIONS}
         writable={writable}
         disabled={!enabled}
       />
       <ReadonlyField
-        label="端口"
-        value={!enabled ? '未启用' : !needsSerial ? '无需串口' : port?.label ?? '未分配 GPS 串口'}
+        label={t('common.port')}
+        value={!enabled ? t('sensor.gps.notEnabled') : !needsSerial ? t('sensor.gps.noSerialRequired') : port?.label ?? t('sensor.gps.noGpsSerialAssigned')}
         paramId={port?.protocolParam}
-        hint="ArduPilot 按 SERIALx_PROTOCOL=5 的先后顺序分配 GPS1/GPS2；请在“端口”页面修改。"
+        hint={t('sensor.gps.arduPilotPortHint')}
       />
       {needsSerial && port ? (
         <ParameterSelect
-          label="波特率"
-          hint="ArduPilot SERIALx_BAUD 使用千波特简码；GPS 驱动也会尝试自动探测。"
+          label={t('common.baudRate')}
+          hint={t('sensor.gps.arduPilotBaudHint')}
           param={baud}
           options={ARDUPILOT_SERIAL_BAUDS}
           writable={writable}
@@ -211,14 +216,14 @@ function ArduPilotGpsFields({ instance, writable, params }: {
         />
       ) : (
         <ReadonlyField
-          label="波特率"
-          value={!enabled ? '未启用' : needsSerial ? '等待 GPS 串口' : '不适用'}
-          hint="DroneCAN、MAVLink、MSP、HIL 与 External AHRS 类型不使用 SERIALx 波特率。"
+          label={t('common.baudRate')}
+          value={!enabled ? t('sensor.gps.notEnabled') : needsSerial ? t('sensor.gps.waitingGpsSerial') : t('sensor.gps.notApplicable')}
+          hint={t('sensor.gps.arduPilotNoBaudHint')}
         />
       )}
       <ParameterSelect
-        label="自动配置"
-        hint="该参数对两个 GPS 实例全局生效；选项来自 ArduPilot 官方定义。"
+        label={t('sensor.gps.autoConfig')}
+        hint={t('sensor.gps.arduPilotAutoConfigHint')}
         param={autoConfig}
         options={ARDUPILOT_GPS_AUTO_CONFIG_OPTIONS}
         writable={writable}
@@ -228,6 +233,7 @@ function ArduPilotGpsFields({ instance, writable, params }: {
 }
 
 export default function GpsConfigurationPanel({ family, writable, compact = false }: { family: AutopilotFamily; writable: boolean; compact?: boolean }) {
+  const { t } = useTranslation()
   const [instance, setInstance] = useState<1 | 2>(1)
   const params = useParameterStore((state) => state.params)
   const canControl = useConnectionStore((state) => state.vehicleReady && state.canControl)
@@ -236,10 +242,10 @@ export default function GpsConfigurationPanel({ family, writable, compact = fals
   return (
     <section className={`mc-card mc-gps-config${compact ? ' mc-gps-config--compact' : ''}`}>
       <header>
-        <div><span className="mc-eyebrow">CONFIGURATION</span><h2>GPS 参数设置</h2></div>
-        <span>{family === 'px4' ? 'PX4' : family === 'ardupilot' ? 'ArduPilot' : '等待识别飞控'}</span>
+        <div><span className="mc-eyebrow">CONFIGURATION</span><h2>{t('sensor.gps.configTitle')}</h2></div>
+        <span>{family === 'px4' ? 'PX4' : family === 'ardupilot' ? 'ArduPilot' : t('sensor.gps.waitingFcIdentify')}</span>
       </header>
-      <div className="mc-gps-config__tabs" role="tablist" aria-label="GPS 实例">
+      <div className="mc-gps-config__tabs" role="tablist" aria-label={t('sensor.gps.instanceAria')}>
         {([1, 2] as const).map((item) => (
           <button key={item} type="button" role="tab" aria-selected={instance === item} data-active={instance === item} onClick={() => setInstance(item)}>
             GPS {item}
@@ -248,8 +254,8 @@ export default function GpsConfigurationPanel({ family, writable, compact = fals
       </div>
       {family === 'px4' && <Px4GpsFields instance={instance} writable={canWrite} params={params} />}
       {family === 'ardupilot' && <ArduPilotGpsFields instance={instance} writable={canWrite} params={params} />}
-      {family === 'unknown' && <p className="mc-gps-config__empty">连接并识别 PX4 或受支持的 ArduPilot 飞控后显示 GPS 配置。</p>}
-      <footer><Icon name="warning" size={14} /><span>GPS 类型、协议、端口或波特率更改通常需要重启飞控后生效。</span></footer>
+      {family === 'unknown' && <p className="mc-gps-config__empty">{t('sensor.gps.emptyHint')}</p>}
+      <footer><Icon name="warning" size={14} /><span>{t('sensor.gps.footerHint')}</span></footer>
     </section>
   )
 }

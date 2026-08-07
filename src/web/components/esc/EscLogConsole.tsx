@@ -1,7 +1,9 @@
+import { useTranslation } from 'react-i18next'
 import { useEscStore } from '../../stores/escStore'
 
 /** Scrolling console of server-side ESC log entries (max 500, newest last). */
 export default function EscLogConsole() {
+  const { t } = useTranslation()
   const log = useEscStore((state) => state.log)
 
   if (log.length === 0) return null
@@ -9,8 +11,8 @@ export default function EscLogConsole() {
   return (
     <details className="mc-card mc-esc-log">
       <summary>
-        <span>通讯记录</span>
-        <small>{log.length} 条 · 默认收起</small>
+        <span>{t('escLog.title')}</span>
+        <small>{t('escLog.countCollapsed', { count: log.length })}</small>
       </summary>
       <div className="mc-mono mc-esc-log__entries">
         {log.map((entry, index) => (

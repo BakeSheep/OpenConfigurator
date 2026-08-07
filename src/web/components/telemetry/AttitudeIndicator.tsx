@@ -2,6 +2,7 @@ import { useRef, useState, useEffect } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
+import { useTranslation } from 'react-i18next'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { attitudeToModelRotation } from '../../utils/attitudeVisualization'
@@ -65,6 +66,7 @@ function Grid() {
 }
 
 export default function AttitudeIndicator() {
+  const { t } = useTranslation()
   const connected = useConnectionStore((s) => s.vehicleReady)
   const isStale = useTelemetryStore((s) => s.isStale)
   // Re-render every 1.5s so the stale overlay appears promptly once the
@@ -96,7 +98,7 @@ export default function AttitudeIndicator() {
         >
           <div className="mc-offline-badge">
             <div className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
-              {connected ? '数据已冻结' : '未连接飞控'}
+              {connected ? t('attitudeIndicator.dataFrozen') : t('attitudeIndicator.notConnected')}
             </div>
           </div>
         </div>

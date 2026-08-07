@@ -8,6 +8,8 @@
 // They are labelled heuristic on purpose and were not copied from a specific
 // source line, so treat them as tunable advisory values.
 
+import i18next from 'i18next'
+
 export type MagFitnessLevel = 'good' | 'acceptable' | 'marginal' | 'poor' | 'unknown'
 
 /** Fitness (mGauss RMS residual) bucket boundaries, ascending = worse. */
@@ -20,12 +22,14 @@ export const MAG_FITNESS_THRESHOLDS = {
 /** Offset magnitude above which a large-offset advisory is shown (mGauss). */
 export const MAG_OFFSET_WARN_MGAUSS = 600
 
-const FITNESS_LABELS: Record<MagFitnessLevel, string> = {
-  good: '优秀',
-  acceptable: '良好',
-  marginal: '勉强可用',
-  poor: '较差',
-  unknown: '未知',
+const t = i18next.t.bind(i18next)
+
+const FITNESS_LABEL_KEYS: Record<MagFitnessLevel, string> = {
+  good: 'sensor.magCalibration.quality.good',
+  acceptable: 'sensor.magCalibration.quality.acceptable',
+  marginal: 'sensor.magCalibration.quality.marginal',
+  poor: 'sensor.magCalibration.quality.poor',
+  unknown: 'sensor.magCalibration.quality.unknown',
 }
 
 export interface MagFitnessRating {
@@ -35,7 +39,7 @@ export interface MagFitnessRating {
 
 /** Classify a fitness value into an advisory rating (never a pass/fail gate). */
 export function magFitnessRating(fitness: number): MagFitnessRating {
-  if (!Number.isFinite(fitness)) return { level: 'unknown', label: FITNESS_LABELS.unknown }
+  if (!Number.isFinite(fitness)) return { level: 'unknown', label: t(FITNESS_LABEL_KEYS.unknown) }
   const level: MagFitnessLevel = fitness < MAG_FITNESS_THRESHOLDS.good
     ? 'good'
     : fitness < MAG_FITNESS_THRESHOLDS.acceptable
@@ -43,7 +47,7 @@ export function magFitnessRating(fitness: number): MagFitnessRating {
       : fitness < MAG_FITNESS_THRESHOLDS.marginal
         ? 'marginal'
         : 'poor'
-  return { level, label: FITNESS_LABELS[level] }
+  return { level, label: t(FITNESS_LABEL_KEYS[level]) }
 }
 
 /** Euclidean magnitude of the offset vector (mGauss). */

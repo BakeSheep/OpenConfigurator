@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   AM32_SETTINGS_GROUPS,
   am32FieldsForRevision,
@@ -11,12 +12,13 @@ import { useEscStore } from '../../stores/escStore'
 import Icon from '../ui/Icon'
 
 const REASON_LABELS: Record<string, string> = {
-  unsupported_signature_or_layout: '参数布局不受支持',
-  not_validated: '只读设备',
-  detect_failed: '设备未响应',
+  unsupported_signature_or_layout: 'escSettings.reasonUnsupportedLayout',
+  not_validated: 'escSettings.reasonNotValidated',
+  detect_failed: 'escSettings.reasonDetectFailed',
 }
 
 export default function EscSettingsWorkbench() {
+  const { t } = useTranslation()
   const session = useEscStore((state) => state.session)
   const devices = useEscStore((state) => state.devices)
   const settings = useEscStore((state) => state.settings)
@@ -109,15 +111,15 @@ export default function EscSettingsWorkbench() {
       <header className="mc-esc-workbench__topbar">
         <div>
           <span className="mc-eyebrow">AM32 PARAMETER WORKBENCH</span>
-          <h2>电调参数</h2>
-          <p>选择一个电调进行编辑；勾选的电调将接收相同的改动。</p>
+          <h2>{t('escSettings.title')}</h2>
+          <p>{t('escSettings.subtitle')}</p>
         </div>
         <button type="button" className="mc-btn mc-btn-ghost" onClick={reread} disabled={busy}>
-          <Icon name="refresh" size={15} /> 重新读取
+          <Icon name="refresh" size={15} /> {t('escSettings.reread')}
         </button>
       </header>
 
-      <div className="mc-esc-device-strip" role="list" aria-label="已检测电调">
+      <div className="mc-esc-device-strip" role="list" aria-label={t('escSettings.detectedEscs')}>
         {devices.map((device) => (
           <DeviceSelector
             key={device.index}
@@ -135,8 +137,8 @@ export default function EscSettingsWorkbench() {
         <div className="mc-esc-settings-empty">
           <span><Icon name="warning" size={20} /></span>
           <div>
-            <strong>此电调没有可编辑参数</strong>
-            <p>{activeDevice?.reason ? REASON_LABELS[activeDevice.reason] : '请确认 ESC 为受支持的 AM32 固件，然后重新读取。'}</p>
+            <strong>{t('escSettings.noEditableParams')}</strong>
+            <p>{activeDevice?.reason ? t(REASON_LABELS[activeDevice.reason]) : t('escSettings.confirmAm32Hint')}</p>
           </div>
         </div>
       ) : (
@@ -150,8 +152,8 @@ export default function EscSettingsWorkbench() {
             return (
               <fieldset key={group.key} className="mc-esc-setting-group">
                 <legend>
-                  <strong>{group.label}</strong>
-                  <span>{group.description}</span>
+                  <strong>{t(group.label)}</strong>
+                  <span>{t(group.description)}</span>
                 </legend>
                 <div className="mc-esc-setting-grid">
                   {groupFields.map((field) => (
@@ -177,17 +179,17 @@ export default function EscSettingsWorkbench() {
           <div className="mc-esc-savebar__status">
             <span data-dirty={dirty.size > 0 || undefined} />
             <div>
-              <strong>{dirty.size > 0 ? `${dirty.size} 项改动尚未保存` : '参数已同步'}</strong>
+              <strong>{dirty.size > 0 ? t('escSettings.changesUnsaved', { count: dirty.size }) : t('escSettings.paramsSynced')}</strong>
               <small>
                 {lastJobResult?.kind === 'settings_write'
-                  ? lastJobResult.ok ? '上次写入已通过读回校验' : '上次写入存在失败项'
-                  : `当前目标：${selectedWritable.length} 个电调`}
+                  ? lastJobResult.ok ? t('escSettings.lastWriteVerified') : t('escSettings.lastWriteFailed')
+                  : t('escSettings.currentTargets', { count: selectedWritable.length })}
               </small>
             </div>
           </div>
           <div className="mc-esc-savebar__actions">
             <button type="button" className="mc-btn mc-btn-ghost" onClick={reset} disabled={busy || dirty.size === 0}>
-              放弃改动
+              {t('escSettings.discardChanges')}
             </button>
             <button
               type="button"
@@ -195,7 +197,7 @@ export default function EscSettingsWorkbench() {
               onClick={save}
               disabled={busy || dirty.size === 0 || selectedWritable.length === 0}
             >
-              {busy ? '正在处理…' : `保存到 ${selectedWritable.length} 个电调`}
+              {busy ? t('escSettings.processing') : t('escSettings.saveToEscs', { count: selectedWritable.length })}
             </button>
           </div>
         </footer>
@@ -219,22 +221,23 @@ function DeviceSelector({
   onActivate: () => void
   onToggleTarget: () => void
 }) {
+  const { t } = useTranslation()
   return (
     <div className="mc-esc-device-selector" data-active={active || undefined} data-ready={hasSettings || undefined} role="listitem">
       <button type="button" onClick={onActivate} aria-pressed={active}>
         <span className="mc-esc-device-selector__index">{device.index + 1}</span>
         <span>
           <strong>ESC {device.index + 1}</strong>
-          <small>{device.firmwareName ?? (device.interfaceMode === null ? '未响应' : device.firmwareKind.toUpperCase())}</small>
+          <small>{device.firmwareName ?? (device.interfaceMode === null ? t('escSettings.notResponding') : device.firmwareKind.toUpperCase())}</small>
         </span>
       </button>
-      <label title={device.writable ? '包含在批量保存目标中' : '该设备不可写'}>
+      <label title={device.writable ? t('escSettings.includeInBatchTitle') : t('escSettings.notWritableTitle')}>
         <input
           type="checkbox"
           checked={targeted}
           disabled={!device.writable}
           onChange={onToggleTarget}
-          aria-label={`选择 ESC ${device.index + 1} 作为保存目标`}
+          aria-label={t('escSettings.selectEscTarget', { index: device.index + 1 })}
         />
       </label>
     </div>
@@ -256,6 +259,7 @@ function SettingControl({
   busy: boolean
   onChange: (value: number) => void
 }) {
+  const { t } = useTranslation()
   const dependencyDisabled = field.disabledIf
     ? values[field.disabledIf.key] === field.disabledIf.equals
     : false
@@ -266,8 +270,8 @@ function SettingControl({
       <div className="mc-esc-field mc-esc-field--switch" data-changed={changed || undefined}>
         <div className="mc-esc-field__heading">
           <span>
-            <strong>{field.label}</strong>
-            {field.description && <small>{field.description}</small>}
+            <strong>{t(field.label)}</strong>
+            {field.description && <small>{t(field.description)}</small>}
           </span>
           <button
             type="button"
@@ -288,7 +292,7 @@ function SettingControl({
     return (
       <div className="mc-esc-field" data-changed={changed || undefined}>
         <div className="mc-esc-field__heading">
-          <strong>{field.label}</strong>
+          <strong>{t(field.label)}</strong>
           <HealthDots />
         </div>
         <select
@@ -298,7 +302,7 @@ function SettingControl({
           onChange={(event) => onChange(Number(event.target.value))}
         >
           {field.options?.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
+            <option key={option.value} value={option.value}>{t(option.label)}</option>
           ))}
         </select>
       </div>
@@ -313,7 +317,7 @@ function SettingControl({
   return (
     <div className="mc-esc-field" data-changed={changed || undefined} data-disabled={disabled || undefined}>
       <div className="mc-esc-field__heading">
-        <strong>{field.label}</strong>
+        <strong>{t(field.label)}</strong>
         <HealthDots />
       </div>
       {sentinel !== undefined && (
@@ -324,7 +328,7 @@ function SettingControl({
             disabled={busy}
             onChange={(event) => onChange(event.target.checked ? (field.max ?? 0) : sentinel)}
           />
-          <span>{limitEnabled ? '已启用' : '已关闭'}</span>
+          <span>{limitEnabled ? t('escSettings.limitEnabled') : t('escSettings.limitDisabled')}</span>
         </label>
       )}
       <div className="mc-esc-range-row">
@@ -336,7 +340,7 @@ function SettingControl({
           value={sliderValue}
           disabled={disabled || !limitEnabled}
           onChange={(event) => onChange(Number(event.target.value))}
-          aria-label={field.label}
+          aria-label={t(field.label)}
         />
         <label>
           <input
@@ -346,7 +350,7 @@ function SettingControl({
             max={field.max}
             step={field.step}
             value={limitEnabled ? Number(value.toFixed(precision)) : ''}
-            placeholder="关闭"
+            placeholder={t('escSettings.limitOffPlaceholder')}
             disabled={disabled || !limitEnabled}
             onChange={(event) => {
               if (event.target.value !== '') onChange(Number(event.target.value))
@@ -355,7 +359,7 @@ function SettingControl({
           {field.unit && <span>{field.unit}</span>}
         </label>
       </div>
-      {dependencyDisabled && <small className="mc-esc-field__hint">由关联参数自动控制</small>}
+      {dependencyDisabled && <small className="mc-esc-field__hint">{t('escSettings.controlledByDependency')}</small>}
     </div>
   )
 }

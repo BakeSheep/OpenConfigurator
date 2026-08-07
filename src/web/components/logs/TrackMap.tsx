@@ -2,6 +2,7 @@
 // automatic offline fallback to a dependency-free 2D canvas track (the app is
 // local-first; tile availability must never break the analysis page).
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { CircleMarker, MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { TrackData } from '../../utils/ulogAnalysis'
@@ -85,6 +86,7 @@ function FitBounds({ track }: { track: TrackData }) {
 
 /** Offline fallback: plain-canvas north/east projection of the track. */
 function TrackCanvas({ track }: { track: TrackData }) {
+  const { t } = useTranslation()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   useEffect(() => {
@@ -143,8 +145,8 @@ function TrackCanvas({ track }: { track: TrackData }) {
     // Scale hint.
     ctx.fillStyle = styles.getPropertyValue('--text-secondary').trim() || '#888'
     ctx.font = '11px "JetBrains Mono", monospace'
-    ctx.fillText(`范围约 ${Math.round(spanX)} m × ${Math.round(spanY)} m（离线轨迹，北向朝上）`, 24, 18)
-  }, [track])
+    ctx.fillText(t('logAnalysis.offlineTrackHint', { width: Math.round(spanX), height: Math.round(spanY) }), 24, 18)
+  }, [track, t])
 
   return <canvas ref={canvasRef} />
 }

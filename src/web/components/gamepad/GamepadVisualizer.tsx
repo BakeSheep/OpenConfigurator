@@ -1,3 +1,5 @@
+import { useTranslation } from 'react-i18next'
+
 interface GamepadVisualizerProps {
   connected: boolean
   controllerId: string | null
@@ -41,6 +43,7 @@ export default function GamepadVisualizer({
   buttons,
   mapping,
 }: GamepadVisualizerProps) {
+  const { t } = useTranslation()
   const leftX = clampAxis(axes[mapping.yaw])
   const leftY = clampAxis(axes[mapping.throttle])
   const rightX = clampAxis(axes[mapping.roll])
@@ -56,7 +59,7 @@ export default function GamepadVisualizer({
           <i className="h-1.5 w-1.5 rounded-full" style={{ background: connected ? 'var(--success)' : 'var(--text-disabled)', boxShadow: connected ? '0 0 10px var(--success)' : 'none' }} />
           {connected ? 'LIVE INPUT' : 'WAITING'}
         </div>
-        <svg viewBox="0 0 560 300" className="h-auto w-full" role="img" aria-label="当前手柄按钮和摇杆状态">
+        <svg viewBox="0 0 560 300" className="h-auto w-full" role="img" aria-label={t('joystick.visualizer.aria.gamepadState')}>
           <defs>
             <linearGradient id="padBody" x1="0" y1="0" x2="1" y2="1">
               <stop offset="0" stopColor="var(--bg-hover)" />
@@ -74,7 +77,7 @@ export default function GamepadVisualizer({
             <rect key={index} x={side ? 367 : 133} y="54" width="60" height="18" rx="9" fill={buttonFill(index)} stroke={buttonStroke(index)} strokeWidth="2" />
           ))}
 
-          <g aria-label="十字方向键">
+          <g aria-label={t('joystick.visualizer.aria.dpad')}>
             <circle cx="147" cy="139" r="47" fill="var(--bg-primary)" stroke="var(--border)" strokeWidth="2" />
             <path d="M136 130v-24c0-5 4-9 9-9h4c5 0 9 4 9 9v24Z" fill={dpadFill(12)} stroke={buttonStroke(12)} strokeWidth="1.5" />
             <path d="M158 148h24c5 0 9-4 9-9v-4c0-5-4-9-9-9h-24Z" fill={dpadFill(15)} stroke={buttonStroke(15)} strokeWidth="1.5" />
@@ -118,17 +121,17 @@ export default function GamepadVisualizer({
 
       <div className="grid gap-3 sm:grid-cols-2">
         <section className="rounded-xl border px-4 py-3" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
-          <p className="mc-section-title mb-1">连接状态</p>
-          <ConnectionRow label="游戏手柄" value={connected ? controllerId ?? '已连接' : '未检测到设备'} active={connected} />
-          <ConnectionRow label="飞控链路" value={flightControllerConnected ? '已连接' : '未连接'} active={flightControllerConnected} />
-          <ConnectionRow label="MAVLink 手动输入" value={enabled ? '已手动启用' : '未启用'} active={enabled} accent />
+          <p className="mc-section-title mb-1">{t('joystick.visualizer.connectionStatus')}</p>
+          <ConnectionRow label={t('joystick.visualizer.gamepad')} value={connected ? controllerId ?? t('joystick.visualizer.connected') : t('joystick.visualizer.noDevice')} active={connected} />
+          <ConnectionRow label={t('joystick.visualizer.fcLink')} value={flightControllerConnected ? t('joystick.visualizer.connected') : t('joystick.visualizer.disconnected')} active={flightControllerConnected} />
+          <ConnectionRow label={t('joystick.visualizer.mavlinkManualInput')} value={enabled ? t('joystick.visualizer.manuallyEnabled') : t('joystick.visualizer.notEnabled')} active={enabled} accent />
         </section>
 
         <section className="rounded-xl border p-4" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
-          <p className="mc-section-title mb-3">摇杆坐标</p>
+          <p className="mc-section-title mb-3">{t('joystick.visualizer.stickCoords')}</p>
           <div className="grid grid-cols-2 gap-2">
             {[
-              ['左 X', leftX], ['左 Y', leftY], ['右 X', rightX], ['右 Y', rightY],
+              [t('joystick.visualizer.leftX'), leftX], [t('joystick.visualizer.leftY'), leftY], [t('joystick.visualizer.rightX'), rightX], [t('joystick.visualizer.rightY'), rightY],
             ].map(([label, value]) => (
               <div key={label as string} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-tertiary)' }}>
                 <p className="text-[9px]" style={{ color: 'var(--text-disabled)' }}>{label}</p>

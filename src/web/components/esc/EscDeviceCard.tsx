@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import type { EscDeviceInfo, EscFirmwareKind } from '../../../shared/esc'
 import Icon from '../ui/Icon'
 
@@ -5,13 +6,13 @@ const FIRMWARE_LABELS: Record<EscFirmwareKind, string> = {
   am32: 'AM32',
   blheli_s: 'BLHeli_S',
   bluejay: 'Bluejay',
-  unknown: '未识别',
+  unknown: 'escDevice.firmwareUnknown',
 }
 
 const REASON_LABELS: Record<string, string> = {
-  unsupported_signature_or_layout: '固件签名/布局未识别，仅可只读',
-  not_validated: '该组合尚未通过硬件验证，仅可只读',
-  detect_failed: 'ESC 未响应（检查供电、信号线与 bootloader）',
+  unsupported_signature_or_layout: 'escDevice.reasonUnsupportedLayout',
+  not_validated: 'escDevice.reasonNotValidated',
+  detect_failed: 'escDevice.reasonDetectFailed',
 }
 
 function formatSignature(signature: number | null): string {
@@ -21,12 +22,13 @@ function formatSignature(signature: number | null): string {
 
 /** Read-only identity card for a single detected ESC. */
 export default function EscDeviceCard({ esc }: { esc: EscDeviceInfo }) {
+  const { t } = useTranslation()
   const rows: Array<{ label: string; value: string }> = [
-    { label: '固件', value: FIRMWARE_LABELS[esc.firmwareKind] },
-    { label: '固件名称', value: esc.firmwareName ?? '—' },
-    { label: '固件版本', value: esc.firmwareVersion ?? '—' },
-    { label: 'MCU', value: esc.mcuName ?? formatSignature(esc.mcuSignature) },
-    { label: 'Bootloader', value: esc.bootloaderVersion ?? '—' },
+    { label: t('escDevice.firmware'), value: t(FIRMWARE_LABELS[esc.firmwareKind]) },
+    { label: t('escDevice.firmwareName'), value: esc.firmwareName ?? '-' },
+    { label: t('escDevice.firmwareVersion'), value: esc.firmwareVersion ?? '-' },
+    { label: t('escDevice.mcu'), value: esc.mcuName ?? formatSignature(esc.mcuSignature) },
+    { label: 'Bootloader', value: esc.bootloaderVersion ?? '-' },
   ]
 
   return (
@@ -34,8 +36,8 @@ export default function EscDeviceCard({ esc }: { esc: EscDeviceInfo }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ color: 'var(--accent)' }}><Icon name="motor" size={22} /></span>
         <div>
-          <div className="mc-eyebrow">电调 #{esc.index + 1}</div>
-          <strong>{FIRMWARE_LABELS[esc.firmwareKind]}</strong>
+          <div className="mc-eyebrow">{t('escDevice.escNumber', { index: esc.index + 1 })}</div>
+          <strong>{t(FIRMWARE_LABELS[esc.firmwareKind])}</strong>
         </div>
       </div>
       <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 12px', margin: 0 }}>
@@ -57,7 +59,7 @@ export default function EscDeviceCard({ esc }: { esc: EscDeviceInfo }) {
           }}
         >
           <Icon name="warning" size={14} />
-          <span>{esc.reason ? REASON_LABELS[esc.reason] ?? '仅可只读' : '仅可只读'}</span>
+          <span>{esc.reason ? t(REASON_LABELS[esc.reason] ?? 'escDevice.readonly') : t('escDevice.readonly')}</span>
         </div>
       )}
     </section>

@@ -16,13 +16,14 @@ const RAW_COMPACT_TRIGGER = MAX_SERIES_POINTS * 8
 const RAW_COMPACT_TARGET = MAX_SERIES_POINTS * 2
 
 export interface RawSeries {
+  id: string
   label: string
   times: number[]
   values: number[]
 }
 
-export function makeRaw(label: string): RawSeries {
-  return { label, times: [], values: [] }
+export function makeRaw(id: string, label = id): RawSeries {
+  return { id, label, times: [], values: [] }
 }
 
 export function pushRaw(series: RawSeries, timeSec: number, value: number): void {
@@ -38,11 +39,15 @@ export function pushRaw(series: RawSeries, timeSec: number, value: number): void
 
 export function finishRaw(series: RawSeries): SeriesData {
   const { times, values } = downsampleMinMax(series.times, series.values, MAX_SERIES_POINTS)
-  return { label: series.label, times, values }
+  return { id: series.id, label: series.label, times, values }
 }
 
-export function finishEnvelope(label: string, collector: EnvelopeCollector): SeriesData {
+export function finishEnvelope(
+  label: string,
+  collector: EnvelopeCollector,
+  id = label,
+): SeriesData {
   const { times, values } = collector.finish()
   const bounded = downsampleMinMax(times, values, MAX_SERIES_POINTS)
-  return { label, times: bounded.times, values: bounded.values }
+  return { id, label, times: bounded.times, values: bounded.values }
 }

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { NavLink } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { PageHeader } from '../components/ui/PageFrame'
@@ -72,6 +73,7 @@ function readDashboardSnapshot() {
 }
 
 function Horizon({ roll, pitch, yaw, frozen }: { roll: number; pitch: number; yaw: number; frozen: boolean }) {
+  const { t } = useTranslation()
   const transform = attitudeToHorizonTransform(roll, pitch)
   return (
     <section className="mc-dashboard-horizon">
@@ -83,7 +85,7 @@ function Horizon({ roll, pitch, yaw, frozen }: { roll: number; pitch: number; ya
       <div className="mc-dashboard-horizon__heading"><span>W</span><span>330</span><strong>{yaw.toFixed(0)}°</strong><span>30</span><span>NE</span></div>
       <div className="mc-dashboard-horizon__angle mc-dashboard-horizon__angle--left">R {roll.toFixed(1)}°</div>
       <div className="mc-dashboard-horizon__angle mc-dashboard-horizon__angle--right">P {pitch.toFixed(1)}°</div>
-      {frozen && <div className="mc-dashboard-horizon__frozen">等待飞控姿态</div>}
+      {frozen && <div className="mc-dashboard-horizon__frozen">{t('dashboard.waitingAttitude')}</div>}
     </section>
   )
 }
@@ -130,6 +132,7 @@ function VerticalBarsCard({ title, subtitle, live, bars }: {
 // Custom data board: user picks any variables from the MAVLink status tree
 // (same registry as the status variable browser) for realtime display.
 function CustomDataCard() {
+  const { t } = useTranslation()
   // Sample a snapshot on a fixed interval instead of subscribing to the whole
   // telemetry/sensor stores, which would rebuild the variable tree for every
   // high-rate message and re-render the dashboard on each packet.
@@ -194,9 +197,9 @@ function CustomDataCard() {
   return (
     <aside className="mc-card mc-dashboard-sensors overflow-hidden">
       <header>
-        <div><h2>自定义看板</h2><p>{editing ? '勾选要显示的 MAVLink 状态变量' : `${selected.length} 项实时数据`}</p></div>
+        <div><h2>{t('dashboard.customBoard')}</h2><p>{editing ? t('dashboard.customBoardHintEditing') : t('dashboard.customBoardHintCount', { count: selected.length })}</p></div>
         <button type="button" className="mc-dashboard-custom__edit" data-active={editing} onClick={() => setEditing((v) => !v)}>
-          {editing ? '完成' : '编辑'}
+          {editing ? t('dashboard.done') : t('dashboard.edit')}
         </button>
       </header>
       {editing ? (
@@ -205,7 +208,7 @@ function CustomDataCard() {
             type="text"
             className="mc-input"
             value={query}
-            placeholder="搜索变量名或中文注释…"
+            placeholder={t('dashboard.searchVars')}
             onChange={(event) => setQuery(event.target.value)}
           />
           <div className="mc-dashboard-custom__picker-list">
@@ -250,7 +253,7 @@ function CustomDataCard() {
           </div>
         </div>
       ) : selected.length === 0 ? (
-        <div className="mc-dashboard-custom__empty">点击右上角“编辑”，从 MAVLink 状态变量中选取要实时显示的数据。</div>
+        <div className="mc-dashboard-custom__empty">{t('dashboard.customEmpty')}</div>
       ) : (
         <div className="mc-dashboard-health-list mc-dashboard-custom__list">
           {selected.map((id) => {
@@ -269,6 +272,7 @@ function CustomDataCard() {
 }
 
 export default function DashboardPage() {
+  const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState(readDashboardSnapshot)
   useEffect(() => {
     const timer = window.setInterval(() => setSnapshot(readDashboardSnapshot()), 200)
@@ -312,12 +316,12 @@ export default function DashboardPage() {
   return (
     <div className="mc-workspace mc-workspace--full mc-fade-in">
       <PageHeader
-        title="飞行总览"
-        actions={<NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />进入飞行操作</NavLink>}
+        title={t('dashboard.title')}
+        actions={<NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />{t('dashboard.enterFlight')}</NavLink>}
       />
       <section className="mc-dashboard-primary-grid">
         <div className="mc-card mc-dashboard-visual overflow-hidden">
-          <Suspense fallback={<div className="mc-attitude-view mc-route-loading">正在加载三维姿态…</div>}><AttitudeIndicator /></Suspense>
+          <Suspense fallback={<div className="mc-attitude-view mc-route-loading">{t('dashboard.loadingAttitude3d')}</div>}><AttitudeIndicator /></Suspense>
           <div className="mc-dashboard-attitude-values">
             {[['ROLL', roll], ['PITCH', pitch], ['YAW', yaw]].map(([label, value]) => <div key={label as string} className="px-3 py-2 text-center"><p className="text-[10px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</p><p className="mt-0.5 mc-mono text-[13px] font-bold">{Number(value).toFixed(1)}°</p></div>)}
           </div>
@@ -326,19 +330,19 @@ export default function DashboardPage() {
           <Horizon roll={roll} pitch={pitch} yaw={yaw} frozen={!vehicleReady || isStale('attitude')} />
         </div>
         <aside className="mc-card mc-dashboard-sensors overflow-hidden">
-          <header><div><h2>系统健康</h2><p>{vehicleReady ? '实时数据' : '等待飞控'}</p></div><span data-ready={vehicleReady}>{vehicleReady ? 'READY' : 'OFFLINE'}</span></header>
+          <header><div><h2>{t('dashboard.systemHealth')}</h2><p>{vehicleReady ? t('dashboard.realtimeData') : t('dashboard.waitingFc')}</p></div><span data-ready={vehicleReady}>{vehicleReady ? 'READY' : 'OFFLINE'}</span></header>
           <div className="mc-dashboard-health-list">
             <HealthRow label="IMU" value={imu ? `${imu.xacc.toFixed(1)} / ${imu.yacc.toFixed(1)} / ${imu.zacc.toFixed(1)}` : '—'} ok={sensorHealth.imu === 'ok'} />
-            <HealthRow label="罗盘" value={magData ? `${magData.x.toFixed(0)} / ${magData.y.toFixed(0)} / ${magData.z.toFixed(0)}` : '—'} ok={sensorHealth.mag === 'ok'} />
-            <HealthRow label="气压计" value={baro ? `${baro.press_abs.toFixed(1)} hPa` : '—'} ok={sensorHealth.baro === 'ok'} />
+            <HealthRow label={t('dashboard.compass')} value={magData ? `${magData.x.toFixed(0)} / ${magData.y.toFixed(0)} / ${magData.z.toFixed(0)}` : '-'} ok={sensorHealth.mag === 'ok'} />
+            <HealthRow label={t('dashboard.barometer')} value={baro ? `${baro.press_abs.toFixed(1)} hPa` : '-'} ok={sensorHealth.baro === 'ok'} />
             <HealthRow label="GPS" value={gps ? `${gps.satellites_visible} SAT · Fix ${gps.fix_type}` : '—'} ok={sensorHealth.gps === 'ok'} />
-            <HealthRow label="光流" value={opticalFlow ? `Q ${opticalFlow.quality}/255` : '—'} ok={sensorHealth.opticalFlow === 'ok'} />
-            <HealthRow label="测距" value={distanceSensor ? `${distanceSensor.current_distance} cm` : '—'} ok={sensorHealth.rangefinder === 'ok'} />
-            <HealthRow label="电池" value={batteryValue} ok={Boolean(vehicleReady && battery)} />
+            <HealthRow label={t('dashboard.opticalFlow')} value={opticalFlow ? `Q ${opticalFlow.quality}/255` : '-'} ok={sensorHealth.opticalFlow === 'ok'} />
+            <HealthRow label={t('dashboard.rangefinder')} value={distanceSensor ? `${distanceSensor.current_distance} cm` : '-'} ok={sensorHealth.rangefinder === 'ok'} />
+            <HealthRow label={t('dashboard.battery')} value={batteryValue} ok={Boolean(vehicleReady && battery)} />
           </div>
         </aside>
-        <VerticalBarsCard title="遥控输入" subtitle="RC_CHANNELS · µs" live={rcLive} bars={rcBars} />
-        <VerticalBarsCard title="电机输出" subtitle="SERVO_OUTPUT_RAW · µs" live={motorLive} bars={motorBars} />
+        <VerticalBarsCard title={t('dashboard.rcInput')} subtitle="RC_CHANNELS · µs" live={rcLive} bars={rcBars} />
+        <VerticalBarsCard title={t('dashboard.motorOutput')} subtitle="SERVO_OUTPUT_RAW · µs" live={motorLive} bars={motorBars} />
         <CustomDataCard />
       </section>
     </div>

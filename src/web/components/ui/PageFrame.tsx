@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useTranslation } from 'react-i18next'
 import Icon, { type IconName } from './Icon'
 
 interface PageHeaderProps {
@@ -53,16 +54,17 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({
-  title = '请先连接飞控',
+  title,
   description,
   icon = 'external',
   action,
 }: EmptyStateProps) {
+  const { t } = useTranslation()
   return (
     <section className="mc-empty-state">
       <div>
         <span className="mc-empty-state__icon"><Icon name={icon} size={22} /></span>
-        <p className="mc-empty-state__title">{title}</p>
+        <p className="mc-empty-state__title">{title ?? t('pageFrame.emptyStateTitle')}</p>
         {description && <p className="mc-empty-state__description">{description}</p>}
         {action && <div className="mt-5 flex justify-center">{action}</div>}
       </div>

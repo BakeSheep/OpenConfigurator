@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
@@ -42,6 +43,7 @@ function loadBackup(paramId: string): PassthroughBackup | null {
 
 /** ESC session connection and passthrough-preflight panel. */
 export default function EscConnectPanel() {
+  const { t } = useTranslation()
   const session = useEscStore((state) => state.session)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const family = vehicleIdentity?.family ?? 'unknown'
@@ -98,7 +100,7 @@ export default function EscConnectPanel() {
   useEffect(() => {
     if (!pendingWrite || lastWriteResult?.requestId !== pendingWrite.requestId) return
     if (!lastWriteResult.accepted) {
-      setWriteMessage(`写入失败：${lastWriteResult.reason ?? '飞控未确认'}`)
+      setWriteMessage(t('escConnect.writeFailed', { reason: lastWriteResult.reason ?? t('escConnect.fcNotConfirmed') }))
       setPendingWrite(null)
       return
     }
@@ -109,9 +111,9 @@ export default function EscConnectPanel() {
         // See saveBackup: storage is best-effort only.
       }
       setBackup(null)
-      setWriteMessage('已恢复开启前参数，重启飞控后生效。')
+      setWriteMessage(t('escConnect.restoredMessage'))
     } else {
-      setWriteMessage('直通参数已开启，重启飞控后生效。')
+      setWriteMessage(t('escConnect.passthroughEnabledMessage'))
     }
     setPendingWrite(null)
   }, [lastWriteResult, pendingWrite, setupParamId])
@@ -122,7 +124,7 @@ export default function EscConnectPanel() {
       lastOperationError,
     )
     if (message === null) return
-    setWriteMessage(`写入失败：${message}`)
+    setWriteMessage(t('escConnect.writeFailed', { reason: message }))
     setPendingWrite(null)
   }, [lastOperationError, pendingWrite])
 
@@ -189,45 +191,45 @@ export default function EscConnectPanel() {
     <section className="mc-card mc-esc-connect">
       <div className="mc-esc-connect__header">
         <div>
-          <div className="mc-section-title">连接与直通</div>
-          <p>建立参数通道并检查飞控前置条件；直通参数支持恢复到开启前的值。</p>
+          <div className="mc-section-title">{t('escConnect.title')}</div>
+          <p>{t('escConnect.subtitle')}</p>
         </div>
         {active && <span className="mc-esc-session-badge">{session?.state}</span>}
       </div>
 
       <div className="mc-esc-connect__body">
-        <div className="mc-esc-mode-picker" role="group" aria-label="电调连接方式">
-          <ModeButton current={effectiveMode} value="ardupilot_passthrough" label="ArduPilot 直通" onSelect={setMode} disabled={active} />
+        <div className="mc-esc-mode-picker" role="group" aria-label={t('escConnect.modeAriaLabel')}>
+          <ModeButton current={effectiveMode} value="ardupilot_passthrough" label={t('escConnect.modeArduPilot')} onSelect={setMode} disabled={active} />
           <ModeButton current={effectiveMode} value="px4_serial_control" label="PX4 SERIAL_CONTROL" onSelect={setMode} disabled={active} />
-          <ModeButton current={effectiveMode} value="direct" label="复用当前 USB" onSelect={setMode} disabled={active} />
+          <ModeButton current={effectiveMode} value="direct" label={t('escConnect.modeDirectUsb')} onSelect={setMode} disabled={active} />
         </div>
 
         <div className="mc-esc-connect__cards">
           <section className="mc-esc-connect-card" aria-labelledby="esc-preconditions-title">
             <header>
-              <h3 id="esc-preconditions-title">连接前置条件</h3>
+              <h3 id="esc-preconditions-title">{t('escConnect.preconditionsTitle')}</h3>
             </header>
 
             {effectiveMode === 'ardupilot_passthrough' && (
               <PreconditionList items={[
-                { ok: !isBluetooth, text: isBluetooth ? '蓝牙链路不支持 ESC 直通，请改用 USB' : '当前连接为 USB 串口' },
-                { ok: ardupilotReady, text: ardupilotReady ? 'SERVO_BLH_AUTO/MASK 已启用' : '需要开启直通参数' },
-                { ok: dshotReady, text: dshotReady ? `电机输出为 DShot（MOT_PWM_TYPE=${motorPwmType}）` : 'MOT_PWM_TYPE 必须使用 DShot' },
-                { ok: vehicleReady || active, text: vehicleReady ? '飞控心跳就绪' : active ? 'ESC 会话已独占串口' : '等待飞控心跳' },
+                { ok: !isBluetooth, text: isBluetooth ? t('escConnect.precondBluetoothBlocked') : t('escConnect.precondUsbConnected') },
+                { ok: ardupilotReady, text: ardupilotReady ? t('escConnect.precondBlhEnabled') : t('escConnect.precondNeedPassthrough') },
+                { ok: dshotReady, text: dshotReady ? t('escConnect.precondDshotReady', { value: motorPwmType }) : t('escConnect.precondDshotRequired') },
+                { ok: vehicleReady || active, text: vehicleReady ? t('escConnect.precondHeartbeatReady') : active ? t('escConnect.precondSessionExclusive') : t('escConnect.precondWaitingHeartbeat') },
               ]} />
             )}
             {effectiveMode === 'px4_serial_control' && (
               <PreconditionList items={[
-                { ok: px4Ready, text: px4Ready ? 'PASSTHRU_EN 已启用' : '需要开启 PASSTHRU_EN（需 bitbang 固件）' },
-                { ok: vehicleReady, text: vehicleReady ? '飞控心跳就绪' : '等待飞控心跳' },
+                { ok: px4Ready, text: px4Ready ? t('escConnect.precondPassthruEnEnabled') : t('escConnect.precondNeedPassthruEn') },
+                { ok: vehicleReady, text: vehicleReady ? t('escConnect.precondHeartbeatReady') : t('escConnect.precondWaitingHeartbeat') },
               ]} />
             )}
             {effectiveMode === 'direct' && (
               <div className="mc-esc-current-link" data-ready={directReady || undefined}>
                 <Icon name={directReady ? 'check' : 'warning'} size={16} />
                 <div>
-                  <strong>{transportOpen && linkType === 'serial' ? (port ?? '当前 USB 串口') : '尚未连接 USB 串口'}</strong>
-                  <span>{directReady ? '将直接复用此连接的原始字节通道' : `请先通过连接面板以 19200 波特打开 USB 适配器${baudRate ? `（当前 ${baudRate}）` : ''}`}</span>
+                  <strong>{transportOpen && linkType === 'serial' ? (port ?? t('escConnect.currentUsbPort')) : t('escConnect.usbNotConnected')}</strong>
+                  <span>{directReady ? t('escConnect.directReuseReady') : (baudRate ? t('escConnect.directOpenHintWithBaud', { baudRate }) : t('escConnect.directOpenHint'))}</span>
                 </div>
               </div>
             )}
@@ -235,29 +237,29 @@ export default function EscConnectPanel() {
 
           <section className="mc-esc-connect-card mc-esc-connect-card--actions" aria-labelledby="esc-actions-title">
             <header>
-              <h3 id="esc-actions-title">直通与 ESC 配置</h3>
+              <h3 id="esc-actions-title">{t('escConnect.actionsTitle')}</h3>
             </header>
 
             {effectiveMode !== 'direct' && (
               <div className="mc-esc-toggle-row" data-enabled={setupEnabled || undefined}>
                 <div>
-                  <strong>{setupEnabled ? '直通参数已开启' : '直通参数已关闭'}</strong>
+                  <strong>{setupEnabled ? t('escConnect.passthroughOn') : t('escConnect.passthroughOff')}</strong>
                   <span>
                     {setupParam
                       ? setupEnabled
-                        ? `关闭后恢复 ${setupParamId}=${backup?.value ?? 0}`
-                        : `开启时保存 ${setupParamId} 当前值，关闭时自动写回`
-                      : `参数 ${setupParamId} 尚未同步`}
+                        ? t('escConnect.toggleRestoreHint', { paramId: setupParamId, value: backup?.value ?? 0 })
+                        : t('escConnect.toggleSaveHint', { paramId: setupParamId })
+                      : t('escConnect.paramNotSynced', { paramId: setupParamId })}
                   </span>
-                  {writeMessage && <small data-success={!writeMessage.startsWith('写入失败') || undefined}>{writeMessage}</small>}
-                  {active && <small>请先退出下方 ESC 会话，再修改直通开关。</small>}
+                  {writeMessage && <small data-success={!writeMessage.startsWith(t('escConnect.writeFailedPrefix')) || undefined}>{writeMessage}</small>}
+                  {active && <small>{t('escConnect.exitSessionFirstHint')}</small>}
                 </div>
                 <button
                   type="button"
                   className="mc-switch"
                   role="switch"
                   aria-checked={setupEnabled}
-                  aria-label={setupEnabled ? '关闭电调直通并恢复原参数' : '开启电调直通'}
+                  aria-label={setupEnabled ? t('escConnect.ariaDisablePassthrough') : t('escConnect.ariaEnablePassthrough')}
                   disabled={!setupParam
                     || !vehicleReady
                     || !canControl
@@ -271,30 +273,30 @@ export default function EscConnectPanel() {
               </div>
             )}
 
-            {!canControl && !active && <p className="mc-esc-warning">需要先获取飞控控制权。</p>}
+            {!canControl && !active && <p className="mc-esc-warning">{t('escConnect.needControlWarning')}</p>}
             {effectiveMode !== 'direct' && !profileAllowsMode && !active && (
-              <p className="mc-esc-warning">当前飞控类型不支持该 ESC 直通写操作。</p>
+              <p className="mc-esc-warning">{t('escConnect.profileNotSupportedWarning')}</p>
             )}
 
             {active ? (
               <div className="mc-esc-session-row">
                 <div>
-                  <strong>参数会话已连接</strong>
+                  <strong>{t('escConnect.sessionConnected')}</strong>
                   <span className="mc-mono">{session?.mode} · {session?.sessionId?.slice(0, 8)}</span>
                 </div>
                 <div className="mc-esc-actions">
                   <button type="button" className="mc-btn mc-btn-ghost" onClick={rescan} disabled={busy || !ownsSession}>
-                    <Icon name="refresh" size={16} /> 重新扫描
+                    <Icon name="refresh" size={16} /> {t('escConnect.rescan')}
                   </button>
                   <button type="button" className="mc-btn mc-btn-danger" onClick={exitSession} disabled={busy || !ownsSession}>
-                    退出 ESC 配置
+                    {t('escConnect.exitEscConfig')}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="mc-esc-connect__footer">
                 <button type="button" className="mc-btn mc-btn-primary" onClick={startSession} disabled={!canStart}>
-                  <Icon name="plug" size={16} /> 进入 ESC 配置
+                  <Icon name="plug" size={16} /> {t('escConnect.enterEscConfig')}
                 </button>
               </div>
             )}

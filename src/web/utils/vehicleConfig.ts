@@ -1,9 +1,12 @@
 // Family-specific frame/actuator read models. Pure functions over the
 // downloaded parameter set; the vehicle profile decides which parameter
 // names are consulted, and unknown values are preserved verbatim.
+import i18next from 'i18next'
 import type { ParamData, VehicleIdentity } from '../../shared/types'
 import type { AutopilotFamily } from '../../shared/vehicleProfiles'
 import { getPx4AirframeInfo } from './px4Airframes'
+
+const t = i18next.t.bind(i18next)
 
 export interface FrameOutputChannel {
   label: string
@@ -92,8 +95,8 @@ function px4BusProtocol(params: Map<string, ParamData>, prefix: string): string 
     const value = params.get(`${prefix}_TIM${timer}`)?.value
     if (Number.isFinite(value) && !values.includes(value!)) values.push(value!)
   }
-  if (values.length === 0) return '飞控默认'
-  if (values.length > 1) return '分组配置'
+  if (values.length === 0) return t('vehicleConfig.fcDefault')
+  if (values.length > 1) return t('vehicleConfig.groupedConfig')
   const protocols: Record<number, string> = {
     [-8]: 'BDShot150',
     [-7]: 'BDShot300',
@@ -103,7 +106,7 @@ function px4BusProtocol(params: Map<string, ParamData>, prefix: string): string 
     [-3]: 'DShot600',
     [-1]: 'OneShot',
   }
-  return protocols[values[0]] || (values[0] > 0 ? `PWM ${values[0]} Hz` : '飞控默认')
+  return protocols[values[0]] || (values[0] > 0 ? `PWM ${values[0]} Hz` : t('vehicleConfig.fcDefault'))
 }
 
 function buildArduPilotView(params: Map<string, ParamData>): FrameConfigView {
@@ -113,7 +116,7 @@ function buildArduPilotView(params: Map<string, ParamData>): FrameConfigView {
   const frameType = Number.isFinite(frameTypeRaw) ? Math.round(frameTypeRaw!) : null
   const classInfo = frameClass === null ? null : ARDUPILOT_FRAME_CLASSES[frameClass]
   const typeName = frameType === null ? null : ARDUPILOT_FRAME_TYPES[frameType]
-  const className = classInfo?.name ?? (frameClass === null ? '等待参数' : `Class ${frameClass}`)
+  const className = classInfo?.name ?? (frameClass === null ? t('vehicleConfig.waitingForParams') : `Class ${frameClass}`)
   const name = `${className} / ${typeName ?? (frameType === null ? '—' : `Type ${frameType}`)}`
 
   // Render SERVO1_FUNCTION through the last present SERVOx_FUNCTION.
@@ -142,7 +145,7 @@ function buildArduPilotView(params: Map<string, ParamData>): FrameConfigView {
   const pwmTypeRaw = params.get('MOT_PWM_TYPE')?.value
   const pwmType = Number.isFinite(pwmTypeRaw) ? Math.round(pwmTypeRaw!) : null
   const protocolLabel = pwmType === null
-    ? '未知'
+    ? t('vehicleConfig.unknown')
     : ARDUPILOT_PWM_TYPES[pwmType] ?? `MOT_PWM_TYPE ${pwmType}`
 
   return {

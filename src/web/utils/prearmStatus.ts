@@ -12,7 +12,7 @@ export interface StatusSessionBoundary {
 }
 
 const PREARM_PATTERN = /\bpre[\s-]?arm\b/i
-const TARGET_SELECTED_PATTERN = /^已选定飞控目标 system \d+ \/ component \d+$/
+const TARGET_SELECTED_PATTERN = /^(?:已选定飞控目标|Flight controller target selected) system \d+ \/ component \d+$/
 
 function isPrearmSuccess(text: string): boolean {
   const match = PREARM_PATTERN.exec(text)

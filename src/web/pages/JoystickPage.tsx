@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
@@ -10,33 +11,33 @@ import {
   type GamepadActionId,
 } from '../stores/gamepadStore'
 
-const tabs = [
-  { id: 'overview', label: '手柄状态' },
-  { id: 'buttons', label: '按钮分配' },
-  { id: 'advanced', label: '高级设置' },
+const TAB_KEYS = [
+  { id: 'overview', label: 'joystick.tab.overview' },
+  { id: 'buttons', label: 'joystick.tab.buttons' },
+  { id: 'advanced', label: 'joystick.tab.advanced' },
 ]
 
-const mappingLabels = [
-  { key: 'throttle', label: '油门', channel: 'CH3' },
-  { key: 'yaw', label: '偏航', channel: 'CH4' },
-  { key: 'pitch', label: '俯仰', channel: 'CH2' },
-  { key: 'roll', label: '横滚', channel: 'CH1' },
+const MAPPING_KEYS = [
+  { key: 'throttle', label: 'joystick.mapping.throttle', channel: 'CH3' },
+  { key: 'yaw', label: 'joystick.mapping.yaw', channel: 'CH4' },
+  { key: 'pitch', label: 'joystick.mapping.pitch', channel: 'CH2' },
+  { key: 'roll', label: 'joystick.mapping.roll', channel: 'CH1' },
 ] as const
 
-const actionOptions: Array<{ id: GamepadActionId; label: string }> = [
-  { id: 'none', label: '无动作' },
-  { id: 'arm', label: '解锁' },
-  { id: 'disarm', label: '上锁' },
-  { id: 'toggle_arm', label: '切换解锁状态' },
-  { id: 'manual', label: 'Manual 模式' },
-  { id: 'altitude', label: 'Altitude 模式' },
-  { id: 'position', label: 'Position 模式' },
-  { id: 'mission', label: 'Mission 模式' },
-  { id: 'hold', label: 'Hold 模式' },
-  { id: 'rtl', label: '返航 RTL' },
-  { id: 'land', label: '降落 Land' },
-  { id: 'stabilized', label: 'Stabilized 模式' },
-  { id: 'acro', label: 'Acro 模式' },
+const ACTION_KEYS: Array<{ id: GamepadActionId; label: string }> = [
+  { id: 'none', label: 'joystick.action.none' },
+  { id: 'arm', label: 'joystick.action.arm' },
+  { id: 'disarm', label: 'joystick.action.disarm' },
+  { id: 'toggle_arm', label: 'joystick.action.toggleArm' },
+  { id: 'manual', label: 'joystick.action.manual' },
+  { id: 'altitude', label: 'joystick.action.altitude' },
+  { id: 'position', label: 'joystick.action.position' },
+  { id: 'mission', label: 'joystick.action.mission' },
+  { id: 'hold', label: 'joystick.action.hold' },
+  { id: 'rtl', label: 'joystick.action.rtl' },
+  { id: 'land', label: 'joystick.action.land' },
+  { id: 'stabilized', label: 'joystick.action.stabilized' },
+  { id: 'acro', label: 'joystick.action.acro' },
 ]
 
 function ToggleSetting({ label, hint, checked, onChange }: {
@@ -45,11 +46,12 @@ function ToggleSetting({ label, hint, checked, onChange }: {
   checked: boolean
   onChange: (checked: boolean) => void
 }) {
+  const { t } = useTranslation()
   return (
     <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
       <span>
-        <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{label}</span>
-        <span className="mt-0.5 block text-[10px] leading-4" style={{ color: 'var(--text-secondary)' }}>{hint}</span>
+        <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{t(label)}</span>
+        <span className="mt-0.5 block text-[10px] leading-4" style={{ color: 'var(--text-secondary)' }}>{t(hint)}</span>
       </span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 shrink-0" style={{ accentColor: 'var(--accent)' }} />
     </label>
@@ -57,6 +59,7 @@ function ToggleSetting({ label, hint, checked, onChange }: {
 }
 
 export default function JoystickPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const gamepadState = useGamepadStore()
   const {
     connected, id, axes, buttons, mapping, buttonAssignments,
@@ -73,6 +76,10 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
   const axisCount = Math.max(axes.length, 4)
   const buttonCount = Math.max(buttons.length, 16)
 
+  const tabs = useMemo(() => TAB_KEYS.map((tab) => ({ ...tab, label: t(tab.label) })), [t])
+  const mappingLabels = useMemo(() => MAPPING_KEYS.map((item) => ({ ...item, label: t(item.label) })), [t])
+  const actionOptions = useMemo(() => ACTION_KEYS.map((action) => ({ ...action, label: t(action.label) })), [t])
+
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in'}>
 
@@ -84,21 +91,21 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
           <div className="mc-card overflow-hidden p-4">
             <label className="mb-4 flex cursor-pointer items-center justify-between rounded-lg border p-3" style={{ borderColor: enabled ? 'var(--accent)' : 'var(--border)', background: enabled ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
               <span>
-                <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>启用手柄控制</span>
+                <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.enableControl')}</span>
                 <span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
               </span>
               <input type="checkbox" checked={enabled} disabled={!connected || !manualControlAvailable} onChange={(event) => setEnabled(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
             </label>
             {actionNotice && <p className="-mt-2 mb-3 rounded-lg px-3 py-1.5 text-[11px]" style={{ background: 'var(--accent-dim)', color: 'var(--accent)' }}>{actionNotice}</p>}
-            {!flightControllerConnected && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>请先连接飞控。</p>}
-            {flightControllerConnected && !profileWritable && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>当前飞控类型为只读配置，不能启用手柄控制。</p>}
+            {!flightControllerConnected && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>{t('joystick.connectFirst')}</p>}
+            {flightControllerConnected && !profileWritable && <p className="-mt-2 mb-3 text-[10px]" style={{ color: 'var(--warning)' }}>{t('joystick.readOnlyFc')}</p>}
             <GamepadVisualizer connected={connected} controllerId={id} flightControllerConnected={manualControlAvailable} enabled={enabled} axes={axes} buttons={buttons} mapping={mapping} />
           </div>
 
           {/* Channel mapping integrated below */}
           <div className="mc-card overflow-hidden">
             <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
-              <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>通道映射与响应曲线</h2>
+              <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.channelMapping')}</h2>
             </div>
             <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-[1fr_0.7fr]">
               <div className="grid grid-cols-2 gap-2">
@@ -117,14 +124,14 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
               <div className="space-y-4 rounded-lg border p-4" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}>
                 <div>
                   <div className="flex items-center justify-between text-[11px]">
-                    <span style={{ color: 'var(--text-secondary)' }}>死区</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{t('joystick.deadzone')}</span>
                     <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{deadzone.toFixed(2)}</span>
                   </div>
                   <input className="mt-2 w-full" type="range" min="0" max="0.3" step="0.01" value={deadzone} onChange={(event) => setDeadzone(Number(event.target.value))} />
                 </div>
                 <div>
                   <div className="flex items-center justify-between text-[11px]">
-                    <span style={{ color: 'var(--text-secondary)' }}>指数</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>{t('joystick.expo')}</span>
                     <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{Math.round(expo * 100)}%</span>
                   </div>
                   <input className="mt-2 w-full" type="range" min="0" max="1" step="0.05" value={expo} onChange={(event) => setExpo(Number(event.target.value))} />
@@ -138,8 +145,8 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
       {activeTab === 'buttons' && (
         <section className="mc-card mt-4 overflow-hidden">
           <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>按钮分配</h2>
-            <p className="mt-0.5 text-[10px]" style={{ color: 'var(--text-secondary)' }}>动作仅在"启用手柄控制"后执行。</p>
+            <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.buttonAssignment')}</h2>
+            <p className="mt-0.5 text-[10px]" style={{ color: 'var(--text-secondary)' }}>{t('joystick.buttonHint')}</p>
           </div>
           <div className="grid grid-cols-1 gap-2 p-4 lg:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: buttonCount }, (_, index) => {
@@ -152,7 +159,7 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
                   </select>
                   <label className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                     <input type="checkbox" checked={assignment.repeat} disabled={assignment.action === 'none' || ['arm', 'disarm', 'toggle_arm'].includes(assignment.action)} onChange={(event) => setButtonAssignment(index, { repeat: event.target.checked })} style={{ accentColor: 'var(--accent)' }} />
-                    重复
+                    {t('joystick.repeat')}
                   </label>
                 </div>
               )
@@ -164,23 +171,23 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
       {activeTab === 'advanced' && (
         <section className="mc-card mt-4 overflow-hidden">
           <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>高级设置</h2>
+            <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.advancedSettings')}</h2>
           </div>
           <div className="grid grid-cols-1 gap-3 p-4 lg:grid-cols-2">
-            <ToggleSetting label="摇杆中位为零油门" hint="适用于自动回中的游戏手柄油门轴。" checked={advanced.throttleModeCenterZero} onChange={(value) => setAdvanced({ throttleModeCenterZero: value })} />
-            <ToggleSetting label="弹簧油门平滑" hint="限制油门每秒最多变化一个完整量程。" checked={advanced.throttleSmoothing} onChange={(value) => setAdvanced({ throttleSmoothing: value })} />
-            <ToggleSetting label="启用圆形校正" hint="补偿圆形摇杆座的边缘行程。" checked={advanced.circleCorrection} onChange={(value) => setAdvanced({ circleCorrection: value })} />
-            <ToggleSetting label="启用死区" hint="关闭后保留原始中心输入。" checked={advanced.useDeadband} onChange={(value) => setAdvanced({ useDeadband: value })} />
+            <ToggleSetting label="joystick.throttleCenterZero" hint="joystick.throttleCenterZeroHint" checked={advanced.throttleModeCenterZero} onChange={(value) => setAdvanced({ throttleModeCenterZero: value })} />
+            <ToggleSetting label="joystick.throttleSmoothing" hint="joystick.throttleSmoothingHint" checked={advanced.throttleSmoothing} onChange={(value) => setAdvanced({ throttleSmoothing: value })} />
+            <ToggleSetting label="joystick.circleCorrection" hint="joystick.circleCorrectionHint" checked={advanced.circleCorrection} onChange={(value) => setAdvanced({ circleCorrection: value })} />
+            <ToggleSetting label="joystick.useDeadband" hint="joystick.useDeadbandHint" checked={advanced.useDeadband} onChange={(value) => setAdvanced({ useDeadband: value })} />
             <label className="rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
               <span className="flex items-center justify-between text-[11px]">
-                <span style={{ color: 'var(--text-primary)' }}>轴频率</span>
+                <span style={{ color: 'var(--text-primary)' }}>{t('joystick.axisFrequency')}</span>
                 <strong className="mc-mono" style={{ color: 'var(--accent)' }}>{advanced.axisFrequencyHz} Hz</strong>
               </span>
               <input className="mt-3 w-full" type="range" min="5" max="60" step="1" value={advanced.axisFrequencyHz} onChange={(event) => setAdvanced({ axisFrequencyHz: Number(event.target.value) })} />
             </label>
             <label className="rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
               <span className="flex items-center justify-between text-[11px]">
-                <span style={{ color: 'var(--text-primary)' }}>按钮重复频率</span>
+                <span style={{ color: 'var(--text-primary)' }}>{t('joystick.buttonFrequency')}</span>
                 <strong className="mc-mono" style={{ color: 'var(--accent)' }}>{advanced.buttonFrequencyHz} Hz</strong>
               </span>
               <input className="mt-3 w-full" type="range" min="1" max="20" step="1" value={advanced.buttonFrequencyHz} onChange={(event) => setAdvanced({ buttonFrequencyHz: Number(event.target.value) })} />

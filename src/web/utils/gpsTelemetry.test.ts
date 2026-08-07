@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { initI18n } from '../i18n/config'
 import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from './gpsTelemetry'
+
+initI18n('zh')
 
 assert.equal(gpsFixLabel(0), '无 GPS')
 assert.equal(gpsFixLabel(3), '3D 定位')

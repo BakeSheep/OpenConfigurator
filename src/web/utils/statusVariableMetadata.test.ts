@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { initI18n } from '../i18n/config'
 import { statusVariableDescription } from './statusVariableMetadata'
+
+initI18n('zh')
 
 assert.equal(statusVariableDescription('Vehicle', 'groundSpeed'), '对地移动速度')
 assert.equal(statusVariableDescription('VEHICLE', 'armed'), '飞行器解锁状态')

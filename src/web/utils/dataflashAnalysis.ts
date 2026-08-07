@@ -21,6 +21,9 @@ import {
   pushRaw,
 } from './seriesCompression'
 import { decodeFlightMode, type VehicleClass } from '../../shared/vehicleProfiles'
+import i18next from 'i18next'
+
+const t = i18next.t.bind(i18next)
 
 const FRAME_HEAD_0 = 0xa3
 const FRAME_HEAD_1 = 0x95
@@ -194,49 +197,49 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
 
   // --- collectors (mirror the ULog worker) ------------------------------
   const attitude = {
-    roll: makeRaw('横滚'),
-    pitch: makeRaw('俯仰'),
-    yaw: makeRaw('偏航'),
-    rollSp: makeRaw('横滚设定'),
-    pitchSp: makeRaw('俯仰设定'),
-    yawSp: makeRaw('偏航设定'),
+    roll: makeRaw('attitude.roll', t('logAnalysis.label.roll')),
+    pitch: makeRaw('attitude.pitch', t('logAnalysis.label.pitch')),
+    yaw: makeRaw('attitude.yaw', t('logAnalysis.label.yaw')),
+    rollSp: makeRaw('attitude.rollSp', t('logAnalysis.label.rollSp')),
+    pitchSp: makeRaw('attitude.pitchSp', t('logAnalysis.label.pitchSp')),
+    yawSp: makeRaw('attitude.yawSp', t('logAnalysis.label.yawSp')),
   }
   const rates = {
-    roll: makeRaw('横滚速率'),
-    pitch: makeRaw('俯仰速率'),
-    yaw: makeRaw('偏航速率'),
-    rollSp: makeRaw('横滚速率设定'),
-    pitchSp: makeRaw('俯仰速率设定'),
-    yawSp: makeRaw('偏航速率设定'),
+    roll: makeRaw('rates.roll', t('logAnalysis.label.rollRate')),
+    pitch: makeRaw('rates.pitch', t('logAnalysis.label.pitchRate')),
+    yaw: makeRaw('rates.yaw', t('logAnalysis.label.yawRate')),
+    rollSp: makeRaw('rates.rollSp', t('logAnalysis.label.rollRateSp')),
+    pitchSp: makeRaw('rates.pitchSp', t('logAnalysis.label.pitchRateSp')),
+    yawSp: makeRaw('rates.yawSp', t('logAnalysis.label.yawRateSp')),
   }
   const battery = {
-    voltage: makeRaw('电压 (V)'),
-    current: makeRaw('电流 (A)'),
-    power: makeRaw('功率 (W)'),
+    voltage: makeRaw('battery.voltage', t('logAnalysis.label.voltage')),
+    current: makeRaw('battery.current', t('logAnalysis.label.current')),
+    power: makeRaw('battery.power', t('logAnalysis.label.power')),
   }
   const gpsQuality = {
-    satellites: makeRaw('卫星数'),
-    hdop: makeRaw('水平精度因子 (HDop)'),
-    fix: makeRaw('定位类型'),
+    satellites: makeRaw('gps.satellites', t('logAnalysis.label.satellites')),
+    hdop: makeRaw('gps.hdop', t('logAnalysis.label.hdop')),
+    fix: makeRaw('gps.fix', t('logAnalysis.label.fix')),
   }
   const altitude = {
-    rel: makeRaw('相对高度 (m)'),
-    baro: makeRaw('气压高度 (m)'),
-    gps: makeRaw('GPS 海拔 (m)'),
+    rel: makeRaw('altitude.relative', t('logAnalysis.label.relAlt')),
+    baro: makeRaw('altitude.baro', t('logAnalysis.label.baroAlt')),
+    gps: makeRaw('altitude.gps', t('logAnalysis.label.gpsAlt')),
   }
   const velocity = {
-    ground: makeRaw('地速 (m/s)'),
-    vz: makeRaw('垂直速度 (m/s)'),
+    ground: makeRaw('velocity.ground', t('logAnalysis.label.groundSpeed')),
+    vz: makeRaw('velocity.down', t('logAnalysis.label.vz')),
   }
   const vibe = {
-    x: makeRaw('Vibe X (m/s²)'),
-    y: makeRaw('Vibe Y (m/s²)'),
-    z: makeRaw('Vibe Z (m/s²)'),
+    x: makeRaw('rawAccel.vibeX', 'Vibe X (m/s²)'),
+    y: makeRaw('rawAccel.vibeY', 'Vibe Y (m/s²)'),
+    z: makeRaw('rawAccel.vibeZ', 'Vibe Z (m/s²)'),
   }
   const pidCollectors = new Map(PID_LOOP_DEFS.map((def) => [def.msg, {
-    tar: makeRaw(`${def.label} 目标`),
-    act: makeRaw(`${def.label} 实际`),
-    err: makeRaw(`${def.label} 误差`),
+    tar: makeRaw(`pid:${def.id}:target`, t('logAnalysis.label.target', { label: def.label })),
+    act: makeRaw(`pid:${def.id}:actual`, t('logAnalysis.label.actual', { label: def.label })),
+    err: makeRaw(`pid:${def.id}:error`, t('logAnalysis.label.error', { label: def.label })),
   }]))
   const motorEnvelopes: EnvelopeCollector[] = []
   const motorIndices: number[] = []
@@ -567,7 +570,7 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
   )
   const armedSegments = buildSegments(armedSamples, endSec)
     .filter((segment) => segment.label === 'armed')
-    .map((segment) => ({ ...segment, label: '已解锁' }))
+    .map((segment) => ({ ...segment, label: 'armed' }))
   const totalArmedSec = armedSegments.reduce(
     (sum, segment) => sum + Math.max(0, segment.endSec - segment.startSec),
     0,
@@ -581,7 +584,7 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
     .map((channel, slot) => ({ channel, slot }))
     .sort((a, b) => a.channel - b.channel)
     .map(({ channel, slot }) =>
-      finishEnvelope(`电机 ${channel} (µs)`, motorEnvelopes[slot]))
+      finishEnvelope(t('logAnalysis.label.motorUs', { channel }), motorEnvelopes[slot], `actuator.motorUs:${channel}`))
     .filter((series) => series.times.length > 0)
 
   const paramList: UlogParamEntry[] = [...params.entries()]
@@ -639,9 +642,9 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
       .map(finishRaw).filter((series) => series.times.length > 0),
     vibration: vibration.result(),
     rawAcc: [
-      finishEnvelope('加速度 X (m/s²)', rawAcc[0]),
-      finishEnvelope('加速度 Y (m/s²)', rawAcc[1]),
-      finishEnvelope('加速度 Z (m/s²)', rawAcc[2]),
+      finishEnvelope(t('logAnalysis.label.accelX'), rawAcc[0], 'rawAccel.x'),
+      finishEnvelope(t('logAnalysis.label.accelY'), rawAcc[1], 'rawAccel.y'),
+      finishEnvelope(t('logAnalysis.label.accelZ'), rawAcc[2], 'rawAccel.z'),
       ...[vibe.x, vibe.y, vibe.z].map(finishRaw),
     ].filter((series) => series.times.length > 0),
     params: paramList,

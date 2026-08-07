@@ -3,6 +3,8 @@
 // context menu, download (save / analyze) and recursive deletion.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import i18next from 'i18next'
 import Icon from '../components/ui/Icon'
 import { EmptyState, PageHeader } from '../components/ui/PageFrame'
 import DataflashLogPanel from '../components/logs/DataflashLogPanel'
@@ -34,12 +36,14 @@ function formatEntryDate(timestamp: number | null): string {
     + `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`
 }
 
+const t = i18next.t.bind(i18next)
+
 function entryTypeLabel(entry: FsEntry): string {
-  if (entry.kind === 'dir') return '文件夹'
+  if (entry.kind === 'dir') return t('flightLogs.folder')
   const dot = entry.name.lastIndexOf('.')
-  if (dot <= 0) return '文件'
+  if (dot <= 0) return t('flightLogs.file')
   const extension = entry.name.slice(dot + 1).toUpperCase()
-  return extension === 'ULG' ? 'ULog 飞行日志' : `${extension} 文件`
+  return extension === 'ULG' ? t('flightLogs.ulogFile') : t('flightLogs.fileType', { ext: extension })
 }
 
 function isUlgFile(entry: FsEntry): boolean {
@@ -65,6 +69,7 @@ function entryTimestamp(entry: FsEntry, currentPath: string): number | null {
 }
 
 export default function FlightLogsPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -138,7 +143,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
       } catch (error) {
         console.error('[Logs] failed to fetch downloaded file:', error)
         if (!cancelled) {
-          useFileExplorerStore.getState().failDownload('读取已下载文件失败')
+          useFileExplorerStore.getState().failDownload(t('flightLogs.readFileFailed'))
         }
       }
     })()
@@ -282,37 +287,37 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   return (
     <div className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}>
       {!embedded && <PageHeader
-        title="飞行日志"
+        title={t('flightLogs.title')}
         description={logs.format === 'dataflash'
-          ? '浏览飞控 DataFlash 日志，下载 .bin 日志或直接送入分析'
-          : '浏览飞控 SD 卡文件，下载 ULog 日志或直接送入分析'}
+          ? t('flightLogs.descDataflash')
+          : t('flightLogs.descUlog')}
         actions={
           <button
             type="button"
             className="mc-btn mc-btn-ghost"
             onClick={() => navigate('/log-analysis')}
           >
-            <Icon name="waveform" size={15} /> 日志分析
+            <Icon name="waveform" size={15} /> {t('flightLogs.logAnalysis')}
           </button>
         }
       />}
 
       {!backendEnabled ? (
         <EmptyState
-          title="演示模式不读取飞控日志"
-          description="可进入日志分析并打开本地 .ulg 或 .bin 文件；在线日志浏览需要运行本地后端。"
+          title={t('flightLogs.demoMode')}
+          description={t('flightLogs.demoModeDesc')}
           icon="folder"
         />
       ) : !vehicleReady ? (
         <EmptyState
-          title="请先连接飞控"
-          description="连接后即可浏览并下载飞控上的日志文件"
+          title={t('flightLogs.connectFirst')}
+          description={t('flightLogs.connectFirstDesc')}
           icon="folder"
         />
       ) : !logs.browse ? (
         <EmptyState
-          title="当前飞控不支持日志浏览"
-          description="尚未识别飞控类型，不提供日志浏览、分析或删除。"
+          title={t('flightLogs.notSupported')}
+          description={t('flightLogs.notSupportedDesc')}
           icon="folder"
         />
       ) : logs.format === 'dataflash' ? (
@@ -329,7 +334,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label="后退"
+                aria-label={t('flightLogs.back')}
                 disabled={backStack.length === 0}
                 onClick={() => useFileExplorerStore.getState().goBack()}
               >
@@ -338,7 +343,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label="前进"
+                aria-label={t('flightLogs.forward')}
                 disabled={forwardStack.length === 0}
                 onClick={() => useFileExplorerStore.getState().goForward()}
               >
@@ -347,14 +352,14 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label="上一级"
+                aria-label={t('flightLogs.up')}
                 disabled={parentPath === null}
                 onClick={() => parentPath && useFileExplorerStore.getState().navigateTo(parentPath)}
               >
                 <Icon name="arrowUp" size={15} />
               </button>
             </div>
-            <nav className="mc-explorer__breadcrumb" aria-label="路径">
+            <nav className="mc-explorer__breadcrumb" aria-label={t('flightLogs.path')}>
               <button
                 type="button"
                 onClick={() => useFileExplorerStore.getState().navigateTo('/')}
@@ -378,12 +383,12 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 className="mc-btn mc-btn-ghost"
                 onClick={() => useFileExplorerStore.getState().navigateTo(PX4_ULOG_LOG_DIRECTORY)}
               >
-                <Icon name="log" size={14} /> 日志目录
+                <Icon name="log" size={14} /> {t('flightLogs.logDir')}
               </button>
               <button
                 type="button"
                 className="mc-icon-btn mc-icon-btn--bordered"
-                aria-label="刷新"
+                aria-label={t('flightLogs.refresh')}
                 onClick={() => requestListing(currentPath)}
               >
                 <Icon name="refresh" size={15} />
@@ -399,7 +404,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               disabled={!singleFile || busy}
               onClick={() => singleFile && startDownload(singleFile, 'save')}
             >
-              <Icon name="download" size={14} /> 下载
+              <Icon name="download" size={14} /> {t('flightLogs.download')}
             </button>
             <button
               type="button"
@@ -407,7 +412,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               disabled={!singleUlg || busy}
               onClick={() => singleUlg && startDownload(singleUlg, 'analyze')}
             >
-              <Icon name="waveform" size={14} /> 下载并分析
+              <Icon name="waveform" size={14} /> {t('flightLogs.downloadAnalyze')}
             </button>
             <button
               type="button"
@@ -415,7 +420,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               disabled={selectedEntries.length === 0 || busy}
               onClick={() => setDeleteDialogOpen(true)}
             >
-              <Icon name="trash" size={14} /> 删除
+              <Icon name="trash" size={14} /> {t('flightLogs.delete')}
             </button>
             {listError && (
               <span className="mc-explorer__error" role="alert">
@@ -428,10 +433,10 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           <div className="mc-explorer__table" role="grid">
             <div className="mc-explorer__row mc-explorer__row--header" role="row">
               {([
-                ['name', '名称'],
-                ['date', '日志时间（文件名）'],
-                ['type', '类型'],
-                ['size', '大小'],
+                ['name', t('flightLogs.colName')],
+                ['date', t('flightLogs.colDate')],
+                ['type', t('flightLogs.colType')],
+                ['size', t('flightLogs.colSize')],
               ] as Array<[SortKey, string]>).map(([key, label]) => (
                 <button key={key} type="button" role="columnheader" onClick={(event) => {
                   event.stopPropagation()
@@ -444,10 +449,10 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
             </div>
             <div className="mc-explorer__body">
               {loading && listedPath !== currentPath ? (
-                <p className="mc-explorer__notice">正在读取目录…</p>
+                <p className="mc-explorer__notice">{t('flightLogs.readingDir')}</p>
               ) : sortedEntries.length === 0 ? (
                 <p className="mc-explorer__notice">
-                  {listError ? '目录读取失败' : '此目录为空'}
+                  {listError ? t('flightLogs.readFailed') : t('flightLogs.emptyDir')}
                 </p>
               ) : (
                 sortedEntries.map((entry) => (
@@ -487,11 +492,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           {/* Status bar */}
           <div className="mc-explorer__statusbar" onClick={(event) => event.stopPropagation()}>
             <span>
-              共 {entries.length} 项
+              {t('flightLogs.totalItems', { count: entries.length })}
               {selectedEntries.length > 0 && (
                 <>
-                  {' · '}已选 {selectedEntries.length} 项
-                  {selectionSize > 0 && <>（{formatBytes(selectionSize)}）</>}
+                  {' · '}{t('flightLogs.selectedItems', { count: selectedEntries.length })}
+                  {selectionSize > 0 && <>({formatBytes(selectionSize)})</>}
                 </>
               )}
             </span>
@@ -508,15 +513,14 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                       {' · '}{formatBytes(Math.round(download.rateBps))}/s
                       {download.rateBps > 0 && download.totalBytes > download.receivedBytes && (
                         <>
-                          {' · 剩余 '}
-                          {Math.ceil((download.totalBytes - download.receivedBytes) / download.rateBps)} 秒
+                          {' · '}{t('flightLogs.remaining', { seconds: Math.ceil((download.totalBytes - download.receivedBytes) / download.rateBps) })}
                         </>
                       )}
                     </span>
                     <button
                       type="button"
                       className="mc-icon-btn"
-                      aria-label="取消下载"
+                      aria-label={t('flightLogs.cancelDownload')}
                       onClick={() => sendClientMessage({ type: 'fs_download_cancel' })}
                     >
                       <Icon name="close" size={13} />
@@ -524,18 +528,18 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                   </>
                 )}
                 {download.status === 'done' && download.intent === 'save' && (
-                  <span style={{ color: 'var(--success)' }}>下载完成，已保存到浏览器下载目录</span>
+                  <span style={{ color: 'var(--success)' }}>{t('flightLogs.downloadDone')}</span>
                 )}
                 {download.status === 'done' && download.intent === 'analyze' && (
-                  <span>下载完成，正在打开分析…</span>
+                  <span>{t('flightLogs.downloadDoneAnalyze')}</span>
                 )}
                 {download.status === 'error' && (
                   <span style={{ color: 'var(--danger)' }}>
-                    下载失败：{download.error}
+                    {t('flightLogs.downloadFailed', { error: download.error })}
                     <button
                       type="button"
                       className="mc-icon-btn"
-                      aria-label="关闭"
+                      aria-label={t('common.close')}
                       onClick={() => useFileExplorerStore.getState().clearDownload()}
                     >
                       <Icon name="close" size={13} />
@@ -548,20 +552,20 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               <span className="mc-explorer__transfer">
                 {deletion.status === 'active' && (
                   <span>
-                    正在删除 {deletion.done}/{deletion.total || '…'}
+                    {t('flightLogs.deleting', { done: deletion.done, total: deletion.total || '…' })}
                     {deletion.current && <span className="mc-mono"> {deletion.current}</span>}
                   </span>
                 )}
                 {deletion.status === 'done' && (
-                  <span style={{ color: 'var(--success)' }}>删除完成</span>
+                  <span style={{ color: 'var(--success)' }}>{t('flightLogs.deleteDone')}</span>
                 )}
                 {deletion.status === 'error' && (
                   <span style={{ color: 'var(--danger)' }}>
-                    删除失败：{deletion.error}
+                    {t('flightLogs.deleteFailed', { error: deletion.error })}
                     <button
                       type="button"
                       className="mc-icon-btn"
-                      aria-label="关闭"
+                      aria-label={t('common.close')}
                       onClick={() => useFileExplorerStore.getState().clearDeletion()}
                     >
                       <Icon name="close" size={13} />
@@ -592,7 +596,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 useFileExplorerStore.getState().navigateTo(joinPath(currentPath, contextMenu.entry.name))
               }}
             >
-              <Icon name="folder" size={14} /> 打开
+              <Icon name="folder" size={14} /> {t('flightLogs.open')}
             </button>
           )}
           {contextMenu.entry.kind === 'file' && (
@@ -604,7 +608,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 startDownload(contextMenu.entry, 'save')
               }}
             >
-              <Icon name="download" size={14} /> 下载
+              <Icon name="download" size={14} /> {t('flightLogs.download')}
             </button>
           )}
           {isUlgFile(contextMenu.entry) && (
@@ -616,7 +620,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 startDownload(contextMenu.entry, 'analyze')
               }}
             >
-              <Icon name="waveform" size={14} /> 下载并分析
+              <Icon name="waveform" size={14} /> {t('flightLogs.downloadAnalyze')}
             </button>
           )}
           <button
@@ -628,7 +632,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
               setDeleteDialogOpen(true)
             }}
           >
-            <Icon name="trash" size={14} /> 删除
+            <Icon name="trash" size={14} /> {t('flightLogs.delete')}
           </button>
         </div>
       )}
@@ -638,11 +642,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
         <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
           <div className="mc-card mc-modal">
             <h3 className="mc-section-title" style={{ color: 'var(--danger)' }}>
-              删除飞控上的文件
+              {t('flightLogs.deleteTitle')}
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              以下 {selectedEntries.length} 项将从 SD 卡上永久删除（文件夹将连同其中全部内容一并删除），
-              此操作不可恢复：
+              {t('flightLogs.deleteConfirm', { count: selectedEntries.length })}
+              {t('flightLogs.deleteConfirmText')}
             </p>
             <ul className="mc-modal__list mc-mono">
               {selectedEntries.slice(0, 8).map((entry) => (
@@ -650,7 +654,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                   {entry.kind === 'dir' ? '📁 ' : ''}{joinPath(currentPath, entry.name)}
                 </li>
               ))}
-              {selectedEntries.length > 8 && <li>… 以及另外 {selectedEntries.length - 8} 项</li>}
+              {selectedEntries.length > 8 && <li>{t('flightLogs.andMore', { count: selectedEntries.length - 8 })}</li>}
             </ul>
             <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
               <input
@@ -658,7 +662,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 checked={deleteAcknowledged}
                 onChange={(event) => setDeleteAcknowledged(event.target.checked)}
               />
-              我已确认这些文件不再需要，理解删除后无法恢复
+              {t('flightLogs.deleteAcknowledge')}
             </label>
             <div className="flex justify-end gap-2 mt-4">
               <button
@@ -669,7 +673,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                   setDeleteAcknowledged(false)
                 }}
               >
-                取消
+                {t('flightLogs.cancel')}
               </button>
               <button
                 type="button"
@@ -677,7 +681,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 disabled={!deleteAcknowledged}
                 onClick={confirmDelete}
               >
-                <Icon name="trash" size={14} /> 永久删除
+                <Icon name="trash" size={14} /> {t('flightLogs.permanentDelete')}
               </button>
             </div>
           </div>

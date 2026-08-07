@@ -96,10 +96,10 @@ export const EKF2_PARAMS = {
 } as const
 
 export const HGT_REF_OPTIONS = [
-  { value: 0, label: '气压计 (Barometer)' },
+  { value: 0, label: 'sensor.type.barometer' },
   { value: 1, label: 'GPS' },
-  { value: 2, label: '测距仪 (Range Finder)' },
-  { value: 3, label: '视觉 (Vision)' },
+  { value: 2, label: 'sensor.type.rangeFinder' },
+  { value: 3, label: 'sensor.type.vision' },
 ] as const
 
 export const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] as const

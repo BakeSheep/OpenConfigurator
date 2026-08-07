@@ -5,6 +5,7 @@
 // context menu, transfer status bar, double-confirmation dialog).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useLogTransferStore } from '../../stores/logTransferStore'
@@ -26,7 +27,7 @@ export function dataflashLogName(entry: DataflashLogEntry): string {
 }
 
 function formatEntryDate(timestamp: number | null): string {
-  if (timestamp === null) return '—'
+  if (timestamp === null) return '-'
   const date = new Date(timestamp)
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} `
@@ -34,6 +35,7 @@ function formatEntryDate(timestamp: number | null): string {
 }
 
 export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: boolean }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const entries = useLogTransferStore((state) => state.entries)
   const listed = useLogTransferStore((state) => state.listed)
@@ -101,7 +103,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
       } catch (error) {
         console.error('[Logs] failed to fetch downloaded file:', error)
         if (!cancelled) {
-          useLogTransferStore.getState().failDownload('读取已下载文件失败')
+          useLogTransferStore.getState().failDownload(t('flightLogs.readFileFailed'))
         }
       }
     })()
@@ -218,7 +220,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
             disabled={!singleLog || busy}
             onClick={() => singleLog && startDownload(singleLog, 'save')}
           >
-            <Icon name="download" size={14} /> 下载
+            <Icon name="download" size={14} /> {t('flightLogs.download')}
           </button>
           <button
             type="button"
@@ -226,7 +228,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
             disabled={!singleLog || busy}
             onClick={() => singleLog && startDownload(singleLog, 'analyze')}
           >
-            <Icon name="waveform" size={14} /> 下载并分析
+            <Icon name="waveform" size={14} /> {t('flightLogs.downloadAnalyze')}
           </button>
           <button
             type="button"
@@ -234,7 +236,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
             disabled={entries.length === 0 || busy}
             onClick={() => setEraseDialogOpen(true)}
           >
-            <Icon name="trash" size={14} /> 全部擦除
+            <Icon name="trash" size={14} /> {t('flightLogs.df.eraseAll')}
           </button>
           <span style={{ flex: 1 }} />
           {listError && (
@@ -245,7 +247,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           <button
             type="button"
             className="mc-icon-btn mc-icon-btn--bordered"
-            aria-label="刷新"
+            aria-label={t('flightLogs.refresh')}
             disabled={busy}
             onClick={() => requestList()}
           >
@@ -261,9 +263,9 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
             style={{ gridTemplateColumns: 'minmax(0, 1fr) 200px 110px' }}
           >
             {([
-              ['name', '名称'],
-              ['date', '日志时间 (UTC)'],
-              ['size', '大小'],
+              ['name', t('flightLogs.colName')],
+              ['date', t('flightLogs.colDate')],
+              ['size', t('flightLogs.colSize')],
             ] as Array<[SortKey, string]>).map(([key, label]) => (
               <button key={key} type="button" role="columnheader" onClick={(event) => {
                 event.stopPropagation()
@@ -276,10 +278,10 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           </div>
           <div className="mc-explorer__body">
             {loading && !listed ? (
-              <p className="mc-explorer__notice">正在获取日志列表…</p>
+              <p className="mc-explorer__notice">{t('flightLogs.readingLogList')}</p>
             ) : sortedEntries.length === 0 ? (
               <p className="mc-explorer__notice">
-                {listError ? '日志列表获取失败' : '飞控上没有日志'}
+                {listError ? t('flightLogs.readFailed') : t('flightLogs.noLogsOnFc')}
               </p>
             ) : (
               sortedEntries.map((entry) => (
@@ -311,11 +313,11 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
         {/* Status bar */}
         <div className="mc-explorer__statusbar" onClick={(event) => event.stopPropagation()}>
           <span>
-            共 {entries.length} 条日志
+            {t('flightLogs.totalItems', { count: entries.length })}
             {entries.length > 0 && <>（{formatBytes(totalSize)}）</>}
             {selectedEntries.length > 0 && (
               <>
-                {' · '}已选 {selectedEntries.length} 条
+                {' · '}{t('flightLogs.selectedItems', { count: selectedEntries.length })}
                 {selectionSize > 0 && <>（{formatBytes(selectionSize)}）</>}
               </>
             )}
@@ -333,15 +335,14 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                     {' · '}{formatBytes(Math.round(download.rateBps))}/s
                     {download.rateBps > 0 && download.totalBytes > download.receivedBytes && (
                       <>
-                        {' · 剩余 '}
-                        {Math.ceil((download.totalBytes - download.receivedBytes) / download.rateBps)} 秒
+                        {' · '}{t('flightLogs.remaining')} {Math.ceil((download.totalBytes - download.receivedBytes) / download.rateBps)} {t('flightLogs.seconds')}
                       </>
                     )}
                   </span>
                   <button
                     type="button"
                     className="mc-icon-btn"
-                    aria-label="取消下载"
+                    aria-label={t('flightLogs.cancelDownload')}
                     onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
                   >
                     <Icon name="close" size={13} />
@@ -349,18 +350,18 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                 </>
               )}
               {download.status === 'done' && download.intent === 'save' && (
-                <span style={{ color: 'var(--success)' }}>下载完成，已保存到浏览器下载目录</span>
+                <span style={{ color: 'var(--success)' }}>{t('flightLogs.downloadDone')}</span>
               )}
               {download.status === 'done' && download.intent === 'analyze' && (
-                <span>下载完成，正在打开分析…</span>
+                <span>{t('flightLogs.downloadDoneAnalyze')}</span>
               )}
               {download.status === 'error' && (
                 <span style={{ color: 'var(--danger)' }}>
-                  下载失败：{download.error}
+                  {t('flightLogs.downloadFailed', { error: download.error })}
                   <button
                     type="button"
                     className="mc-icon-btn"
-                    aria-label="关闭"
+                    aria-label={t('common.close')}
                     onClick={() => useLogTransferStore.getState().clearDownload()}
                   >
                     <Icon name="close" size={13} />
@@ -371,17 +372,17 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           )}
           {erase && (
             <span className="mc-explorer__transfer">
-              {erase.status === 'active' && <span>正在擦除全部日志并等待飞控确认…</span>}
+              {erase.status === 'active' && <span>{t('flightLogs.df.erasing')}</span>}
               {erase.status === 'done' && (
-                <span style={{ color: 'var(--success)' }}>全部日志已擦除</span>
+                <span style={{ color: 'var(--success)' }}>{t('flightLogs.df.eraseDone')}</span>
               )}
               {erase.status === 'error' && (
                 <span style={{ color: 'var(--danger)' }}>
-                  擦除失败：{erase.error}
+                  {t('flightLogs.df.eraseFailed', { error: erase.error })}
                   <button
                     type="button"
                     className="mc-icon-btn"
-                    aria-label="关闭"
+                    aria-label={t('common.close')}
                     onClick={() => useLogTransferStore.getState().clearErase()}
                   >
                     <Icon name="close" size={13} />
@@ -411,7 +412,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
               startDownload(contextMenu.entry, 'save')
             }}
           >
-            <Icon name="download" size={14} /> 下载
+            <Icon name="download" size={14} /> {t('flightLogs.download')}
           </button>
           <button
             type="button"
@@ -421,7 +422,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
               startDownload(contextMenu.entry, 'analyze')
             }}
           >
-            <Icon name="waveform" size={14} /> 下载并分析
+            <Icon name="waveform" size={14} /> {t('flightLogs.downloadAnalyze')}
           </button>
           <button
             type="button"
@@ -432,7 +433,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
               setEraseDialogOpen(true)
             }}
           >
-            <Icon name="trash" size={14} /> 全部擦除…
+            <Icon name="trash" size={14} /> {t('flightLogs.df.eraseAllEllipsis')}
           </button>
         </div>
       )}
@@ -442,12 +443,11 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
         <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
           <div className="mc-card mc-modal">
             <h3 className="mc-section-title" style={{ color: 'var(--danger)' }}>
-              擦除飞控上的全部日志
+              {t('flightLogs.df.eraseTitle')}
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              ArduPilot 的 LOG_ERASE 命令将擦除飞控上的<strong style={{ color: 'var(--danger)' }}>全部
-              {entries.length} 条日志（{formatBytes(totalSize)}）</strong>。
-              该协议不支持只删除单条日志，此操作不可恢复。
+              {t('flightLogs.df.eraseConfirm', { count: entries.length, size: formatBytes(totalSize) })}
+              {t('flightLogs.df.eraseConfirmText')}
             </p>
             <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
               <input
@@ -455,7 +455,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                 checked={eraseAcknowledged}
                 onChange={(event) => setEraseAcknowledged(event.target.checked)}
               />
-              我已确认要擦除飞控上的全部日志，理解擦除后无法恢复
+              {t('flightLogs.df.eraseAcknowledge')}
             </label>
             <div className="flex justify-end gap-2 mt-4">
               <button
@@ -466,7 +466,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                   setEraseAcknowledged(false)
                 }}
               >
-                取消
+                {t('flightLogs.cancel')}
               </button>
               <button
                 type="button"
@@ -474,7 +474,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                 disabled={!eraseAcknowledged}
                 onClick={confirmErase}
               >
-                <Icon name="trash" size={14} /> 擦除全部日志
+                <Icon name="trash" size={14} /> {t('flightLogs.df.eraseAllLogs')}
               </button>
             </div>
           </div>

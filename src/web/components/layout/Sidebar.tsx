@@ -1,32 +1,34 @@
 import { NavLink } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import Icon, { type IconName } from '../ui/Icon'
 
 interface NavigationItem {
   to: string
-  label: string
+  labelKey: string
   icon: IconName
 }
 
 const navigationItems: NavigationItem[] = [
-  { to: '/dashboard', label: '总览', icon: 'dashboard' },
-  { to: '/flight', label: '飞行操作', icon: 'flight' },
-  { to: '/settings', label: '飞行器设置', icon: 'settings' },
-  { to: '/diagnostics', label: '调参与诊断', icon: 'waveform' },
+  { to: '/dashboard', labelKey: 'sidebar.dashboard', icon: 'dashboard' },
+  { to: '/flight', labelKey: 'sidebar.flight', icon: 'flight' },
+  { to: '/settings', labelKey: 'sidebar.settings', icon: 'settings' },
+  { to: '/diagnostics', labelKey: 'sidebar.diagnostics', icon: 'waveform' },
 ]
 
 export default function Sidebar() {
+  const { t } = useTranslation()
   return (
     <aside className="mc-sidebar">
-      <nav className="mc-sidebar__nav" aria-label="主导航">
+      <nav className="mc-sidebar__nav" aria-label={t('sidebar.ariaLabel')}>
         {navigationItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
-            title={item.label}
+            title={t(item.labelKey)}
             className={({ isActive }) => 'mc-sidebar__item' + (isActive ? ' is-active' : '')}
           >
             <Icon name={item.icon} size={21} />
-            <span>{item.label}</span>
+            <span>{t(item.labelKey)}</span>
           </NavLink>
         ))}
       </nav>

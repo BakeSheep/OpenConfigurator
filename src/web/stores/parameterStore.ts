@@ -1,4 +1,7 @@
 import { create } from 'zustand'
+import i18next from 'i18next'
+
+const t = i18next.t.bind(i18next)
 import type { ParamData, ParamSetResultData } from '../../shared/types'
 
 interface ParameterState {
@@ -85,8 +88,8 @@ export const useParameterStore = create<ParameterState>((set) => ({
     totalCount: total,
     missingCount: Math.max(0, total - received),
     error: total > 0
-      ? `参数读取未完成，还缺 ${Math.max(0, total - received)} 项`
-      : '飞控未响应参数请求',
+      ? t('parameter.downloadProgress', { remaining: Math.max(0, total - received) })
+      : t('parameter.noResponse'),
   }),
   setLoading: (loading) => set({
     loading,

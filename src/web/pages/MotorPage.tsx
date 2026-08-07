@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import i18next from 'i18next'
+import { useTranslation } from 'react-i18next'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -13,6 +15,8 @@ import {
   normalizeAuthoritativeMotorCount,
   type FrameOutputChannel,
 } from '../utils/vehicleConfig'
+
+const t = i18next.t.bind(i18next)
 
 interface RotorGeometry {
   index: number
@@ -39,7 +43,7 @@ function protocolLabel(value: number) {
     [-3]: 'DShot600',
     [-1]: 'OneShot',
   }
-  return protocols[value] || (value > 0 ? `PWM ${value} Hz` : '飞控默认')
+  return protocols[value] || (value > 0 ? `PWM ${value} Hz` : t('motor.fcDefault'))
 }
 
 function getBusProtocol(params: Map<string, ParamData>, prefix: string) {
@@ -48,8 +52,8 @@ function getBusProtocol(params: Map<string, ParamData>, prefix: string) {
     const value = params.get(`${prefix}_TIM${timer}`)?.value
     if (Number.isFinite(value) && !values.includes(value!)) values.push(value!)
   }
-  if (values.length === 0) return '飞控默认'
-  if (values.length > 1) return '分组配置'
+  if (values.length === 0) return t('motor.fcDefault')
+  if (values.length > 1) return t('motor.groupedConfig')
   return protocolLabel(values[0])
 }
 
@@ -65,6 +69,7 @@ function ArduPilotProtocolControl({ params, canWrite }: {
   params: Map<string, ParamData>
   canWrite: boolean
 }) {
+  const { t } = useTranslation()
   const param = params.get('MOT_PWM_TYPE')
   const value = param ? Math.round(param.value) : null
   const known = value !== null
@@ -72,14 +77,14 @@ function ArduPilotProtocolControl({ params, canWrite }: {
   return (
     <div className="mc-motor-global-protocol">
       <span>
-        <strong>全局 ESC 协议</strong>
-        <small>适用于全部 ArduPilot 电机输出，写入后需重启飞控</small>
+        <strong>{t('motor.globalEscProtocol')}</strong>
+        <small>{t('motor.globalEscProtocolHint')}</small>
       </span>
       {param && value !== null ? (
         <select
           className="mc-select"
-          aria-label="ArduPilot 全局电调协议"
-          title="写入 MOT_PWM_TYPE（全局），重启飞控后生效"
+          aria-label={t('motor.arduPilotProtocolAria')}
+          title={t('motor.arduPilotProtocolTitle')}
           value={value}
           disabled={!canWrite}
           onChange={(event) => sendClientMessage({
@@ -88,13 +93,13 @@ function ArduPilotProtocolControl({ params, canWrite }: {
           })}
         >
           {/* Preserve an unknown protocol value verbatim, never drop it. */}
-          {!known && <option value={value}>值 {value}</option>}
+          {!known && <option value={value}>{t('motor.valueN', {value: value})}</option>}
           {ARDUPILOT_PROTOCOL_OPTIONS.map(([option, label]) => (
             <option key={option} value={option}>{label}</option>
           ))}
         </select>
       ) : (
-        <span className="mc-motor-protocol">等待 MOT_PWM_TYPE</span>
+        <span className="mc-motor-protocol">{t('motor.waitingMotPwmType')}</span>
       )}
       <span className="mc-motor-param-name">MOT_PWM_TYPE</span>
     </div>
@@ -106,12 +111,13 @@ function OutputProtocol({ family, label, ariaLabel }: {
   label: string
   ariaLabel: string
 }) {
+  const { t } = useTranslation()
   if (family === 'px4') {
     return (
       <span
         className="mc-motor-protocol"
         aria-label={ariaLabel}
-        title="PX4 输出协议由板级 PWM_*_TIMx 分组控制，此处仅显示当前总线状态"
+        title={t('motor.px4ProtocolHint')}
       >
         {label}
       </span>
@@ -121,7 +127,7 @@ function OutputProtocol({ family, label, ariaLabel }: {
     <span
       className="mc-motor-protocol"
       aria-label={ariaLabel}
-      title={family === 'ardupilot' ? '由上方全局 MOT_PWM_TYPE 控件统一设置' : undefined}
+      title={family === 'ardupilot' ? t('motor.arduPilotProtocolHint') : undefined}
     >
       {label}
     </span>
@@ -139,6 +145,7 @@ function getFallbackRotor(index: number, count: number) {
 }
 
 export default function MotorPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const send = sendClientMessage
   const connected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const { params, loading, receivedCount, totalCount } = useParameterStore()
@@ -158,7 +165,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const frameView = useMemo(() => buildFrameConfigView(vehicleIdentity, params), [vehicleIdentity, params])
   const motorCount = normalizeAuthoritativeMotorCount(frameView?.motorCount)
   const airframeName = (params.size > 0 && frameView ? frameView.name : null)
-    || '等待机架参数'
+    || t('motor.waitingFrameParams')
   const motorCountRef = useRef(motorCount ?? 0)
   // True once the user enabled motor testing or a non-zero test command was
   // sent. Merely opening/leaving this page must emit no motor-test command.
@@ -310,23 +317,23 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
     <div className={embedded ? 'mc-fade-in mc-motor-page' : 'mc-workspace mc-fade-in mc-motor-page'}>
       <div className="mc-motor-toolbar">
         <div className="mc-motor-toolbar__title">
-          <strong>执行器输出与无桨测试</strong>
+          <strong>{t('motor.title')}</strong>
           <span className="mc-motor-param-status" data-loading={loading}>
             <i />
-            {loading ? `参数读取中 ${receivedCount}/${totalCount || '…'}` : `${params.size} 个参数已同步`}
+            {loading ? t('motor.paramLoading', {received: receivedCount, total: totalCount}) : t('motor.paramsSynced', { count: params.size })}
           </span>
         </div>
-        <p>输出功能来自飞控参数；修改下拉框会直接写入对应的 <span className="mc-mono">*_FUNCx</span> 参数。</p>
+        <p>{t('motor.outputHint')}</p>
       </div>
 
       {vehicleIdentity && !motorTestSupported && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
-          <span>当前飞控类型（{vehicleIdentity.family}/{vehicleIdentity.vehicleClass}）尚未适配电机测试与输出写入，控件已禁用，仅供查看。</span>
+          <span>{t('motor.capabilityNote', { family: vehicleIdentity.family, vehicleClass: vehicleIdentity.vehicleClass })}</span>
         </div>
       )}
 
-      <PageTabs tabs={[{ id: 'mapping', label: '输出映射' }, { id: 'test', label: '电机测试' }]} active={activePanel} onChange={changePanel} />
+      <PageTabs tabs={[{ id: 'mapping', label: t('motor.tabMapping') }, { id: 'test', label: t('motor.tabTest') }]} active={activePanel} onChange={changePanel} />
 
       <section className="mc-motor-workspace">
         {activePanel === 'mapping' && <div className="mc-motor-output-panel">
@@ -337,15 +344,15 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
             />
           )}
           <div className="mc-motor-output-head">
-            <span>物理输出</span>
-            <span>实时值</span>
-            <span>功能</span>
-            <span>电调协议</span>
-            <span>参数</span>
+            <span>{t('motor.physicalOutput')}</span>
+            <span>{t('motor.realtimeValue')}</span>
+            <span>{t('motor.function')}</span>
+            <span>{t('motor.escProtocol')}</span>
+            <span>{t('motor.param')}</span>
           </div>
           <div className="mc-motor-output-rows">
             {outputChannels.length === 0 ? (
-              <div className="mc-motor-output-empty">当前飞控没有提供输出功能参数（PX4：PWM_MAIN/AUX_FUNCx；ArduPilot：SERVOx_FUNCTION）。</div>
+              <div className="mc-motor-output-empty">{t('motor.noOutputParams')}</div>
             ) : outputChannels.map((output) => {
               const param = params.get(output.paramId)
               const functionValue = param ? Math.round(param.value) : output.functionValue
@@ -359,7 +366,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                 : null
               const protocol = vehicleIdentity?.family === 'px4'
                 ? getBusProtocol(params, output.paramId.split('_FUNC')[0])
-                : frameView?.protocolLabel ?? '未知'
+                : frameView?.protocolLabel ?? t('motor.unknown')
               return (
                 <div className="mc-motor-output-row" key={output.paramId}>
                   <span className="mc-motor-channel" data-assigned={output.motorInstance !== null} title={`PORT ${output.port}`}>
@@ -372,17 +379,17 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                         style={{ width: `${(Math.max(0, Math.min(1, (liveValue - 1000) / 1000)) * 100).toFixed(1)}%` }}
                       />
                     )}
-                    <span>{liveValue == null ? '—' : liveValue}</span>
+                    <span>{liveValue == null ? '-' : liveValue}</span>
                   </span>
                   <select
                     className="mc-select"
                     value={functionValue}
                     disabled={!connected || !param || !actuatorWritesSupported || functionOptions.length === 0}
                     onChange={(event) => updateOutputFunction(output.paramId, Number(event.target.value))}
-                    aria-label={`${output.label} 输出功能`}
+                    aria-label={t('motor.outputFunctionAria', { label: output.label })}
                   >
                     {!isKnownFunction && <option value={functionValue}>Function {functionValue}</option>}
-                    {functionOptions.length === 0 && isKnownFunction && <option value={functionValue}>值 {functionValue}</option>}
+                    {functionOptions.length === 0 && isKnownFunction && <option value={functionValue}>{t('motor.valueN', {value: functionValue})}</option>}
                     {functionOptions.map((option) => (
                       <option value={option.value} key={option.value}>{option.label}</option>
                     ))}
@@ -390,7 +397,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
                   <OutputProtocol
                     family={vehicleIdentity?.family ?? 'unknown'}
                     label={protocol}
-                    ariaLabel={`${output.label} 电调协议`}
+                    ariaLabel={t('motor.escProtocolAria', { label: output.label })}
                   />
                   <span className="mc-motor-param-name">{output.paramId}</span>
                 </div>
@@ -400,19 +407,19 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         </div>}
 
         {activePanel === 'test' && <aside className="mc-motor-test-panel mc-motor-test-panel--standalone">
-          <p className="mc-motor-test-intro">手动控制各逻辑电机，用于验证输出映射、位置与方向</p>
+          <p className="mc-motor-test-intro">{t('motor.testIntro')}</p>
           {motorCount === null ? (
             <div className="mc-capability-note" data-state="waiting">
               <Icon name="warning" size={15} />
-              <span>尚未从飞控参数取得权威电机数量。请完成参数同步并确认机架类型后再启用电机测试。</span>
+              <span>{t('motor.motorCountWaiting')}</span>
             </div>
           ) : (
             <AirframeDiagram
               rotors={rotors}
               airframeName={airframeName}
               geometrySource={vehicleIdentity?.family === 'ardupilot'
-                ? '布局基于 FRAME_CLASS/FRAME_TYPE 推断'
-                : '位置与方向来自 CA_ROTOR* 参数'}
+                ? t('motor.geometryArduPilot')
+                : t('motor.geometryPx4')}
             />
           )}
 
@@ -424,8 +431,8 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
               onChange={(event) => setSafety(event.target.checked)}
             />
             <span>
-              <strong>启用电机测试</strong>
-              <small><Icon name="warning" size={14} />请先拆除所有螺旋桨</small>
+              <strong>{t('motor.enableMotorTest')}</strong>
+              <small><Icon name="warning" size={14} />{t('motor.removeProps')}</small>
             </span>
           </label>
 
@@ -473,6 +480,7 @@ function MotorSlider({
   onStop: () => void
   all?: boolean
 }) {
+  const { t } = useTranslation()
   return (
     <label className="mc-motor-slider" data-all={all}>
       <strong>{Math.round(level)}%</strong>
@@ -482,7 +490,7 @@ function MotorSlider({
         max="100"
         value={level}
         disabled={disabled}
-        aria-label={`${label} 测试油门`}
+        aria-label={t('motor.testThrottle', {label: label})}
         onChange={(event) => onChange(Number(event.target.value))}
         onPointerUp={onStop}
         onPointerCancel={onStop}
@@ -495,6 +503,7 @@ function MotorSlider({
 }
 
 function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: RotorGeometry[]; airframeName: string; geometrySource: string }) {
+  const { t } = useTranslation()
   const scale = Math.max(1, ...rotors.flatMap((rotor) => [Math.abs(rotor.px), Math.abs(rotor.py)]))
   const points = rotors.map((rotor) => ({
     ...rotor,
@@ -504,7 +513,7 @@ function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: Rot
 
   return (
     <div className="mc-airframe-diagram">
-      <svg viewBox="0 0 100 100" role="img" aria-label={`${rotors.length} 电机机架布局`}>
+      <svg viewBox="0 0 100 100" role="img" aria-label={t('motor.airframeAria', {count: rotors.length})}>
         <text x="50" y="7" className="mc-airframe-front">FRONT</text>
         <path d="M47 12 L50 8 L53 12" className="mc-airframe-front-arrow" />
         {points.map((rotor) => (
@@ -525,7 +534,7 @@ function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: Rot
             <circle r="4.2" className="mc-airframe-hub" />
             <text y="1.6" className="mc-airframe-motor-number">{rotor.index + 1}</text>
             <text y="-13" className="mc-airframe-direction">{rotor.ccw ? '↺ CCW' : 'CW ↻'}</text>
-            <text y="15.5" className="mc-airframe-output">{rotor.output || '未分配'}</text>
+            <text y="15.5" className="mc-airframe-output">{rotor.output || t('motor.unassigned')}</text>
           </g>
         ))}
       </svg>

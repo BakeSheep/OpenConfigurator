@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useConnectionStore } from '../../stores/connectionStore'
@@ -15,6 +16,7 @@ interface DataPoint {
 }
 
 export default function RealtimeChart() {
+  const { t } = useTranslation()
   const [data, setData] = useState<DataPoint[]>([])
   const [channel, setChannel] = useState<'altitude' | 'voltage' | 'speed'>('altitude')
   const startTimeRef = useRef(Date.now())
@@ -64,7 +66,7 @@ export default function RealtimeChart() {
   }, [])
 
   const colors = { altitude: 'var(--chart-1)', voltage: 'var(--chart-2)', speed: 'var(--chart-3)' }
-  const labels = { altitude: '高度 (m)', voltage: '电压 (V)', speed: '速度 (m/s)' }
+  const labels = { altitude: t('telemetry.realtimeChart.altitude'), voltage: t('telemetry.realtimeChart.voltage'), speed: t('telemetry.realtimeChart.speed') }
   // Recharts needs actual hex values, not CSS vars - resolve them
   const colorHex = { altitude: '#3B82F6', voltage: '#22C55E', speed: '#F59E0B' }
 
@@ -75,7 +77,7 @@ export default function RealtimeChart() {
   return (
     <div className="mc-card p-4">
       <div className="flex items-center justify-between mb-3">
-        <h4 className="mc-section-title">实时曲线</h4>
+        <h4 className="mc-section-title">{t('telemetry.realtimeChart.title')}</h4>
         <div className="flex gap-1">
           {(Object.keys(labels) as Array<keyof typeof labels>).map((ch) => (
             <button
@@ -109,7 +111,7 @@ export default function RealtimeChart() {
             labelFormatter={(v) => `${Number(v).toFixed(1)}s`}
           />
           {gapPoint && (
-            <ReferenceLine x={gapPoint.time} stroke="#F59E0B" strokeDasharray="4 4" label={{ value: '断链', fontSize: 9, fill: '#F59E0B', position: 'top' }} />
+            <ReferenceLine x={gapPoint.time} stroke="#F59E0B" strokeDasharray="4 4" label={{ value: t('telemetry.realtimeChart.linkLost'), fontSize: 9, fill: '#F59E0B', position: 'top' }} />
           )}
           <Line type="monotone" dataKey={channel} stroke={colorHex[channel]} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
         </LineChart>

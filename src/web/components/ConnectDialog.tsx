@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
 import { getRestControlHeaders } from '../hooks/useWebSocket'
@@ -36,6 +37,7 @@ interface PickedPort {
 
 export default function ConnectDialog() {
   const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen } = useConnectionStore()
+  const { t } = useTranslation()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
   const [connType, setConnType] = useState<'serial' | 'bluetooth'>('serial')
@@ -82,11 +84,11 @@ export default function ConnectDialog() {
         setPorts(json.data.serial, btPorts)
         setSelectedBtPort((current) => current || btPorts[0]?.path || '')
       } else {
-        setError(json.error || '扫描端口失败')
+        setError(json.error || t('connect.scanFailed'))
       }
     } catch (err: any) {
       console.error('Scan failed:', err)
-      setError(`扫描端口失败：${err?.message || String(err)}`)
+      setError(t('connect.scanFailedReason', { reason: err?.message || String(err) }))
     } finally {
       setScanning(false)
     }
@@ -95,7 +97,7 @@ export default function ConnectDialog() {
   const pickSerialPort = async () => {
     setError(null)
     if (!navigator.serial) {
-      setError('当前浏览器不支持 Web Serial API，请使用 Chrome/Edge 89+（HTTPS 或 localhost）')
+      setError(t('connect.webSerialUnsupported'))
       return
     }
     try {
@@ -112,7 +114,7 @@ export default function ConnectDialog() {
       const btSvc = info.bluetoothServiceClassId
       const bt = formatBluetoothServiceId(btSvc)
       // Build a human-readable label
-      let label = '蓝牙串口设备'
+      let label = t('connect.bluetoothSerialDevice')
       if (vid && pid) label = `USB ${vid}:${pid}`
       else if (bt) label = `Bluetooth SPP ${bt}`
       setPickedBt({
@@ -124,7 +126,7 @@ export default function ConnectDialog() {
     } catch (err: any) {
       if (err && err.name === 'NotFoundError') return // user cancelled
       console.error('Serial port selection failed:', err)
-      setError(`串口选择失败：${err?.message || String(err)}`)
+      setError(t('connect.serialSelectFailed', { reason: err?.message || String(err) }))
     }
   }
 
@@ -148,16 +150,16 @@ export default function ConnectDialog() {
       }
       if (!res.ok || !json || !json.success) {
         setStatus('error')
-        const reason = json?.error || (text ? `HTTP ${res.status}: ${text.slice(0, 200)}` : `HTTP ${res.status} 无响应（后端可能已崩溃）`)
+        const reason = json?.error || (text ? `HTTP ${res.status}: ${text.slice(0, 200)}` : t('connect.httpNoResponse', { status: res.status }))
         const reasonText = typeof reason === 'string' ? reason : JSON.stringify(reason)
-        setError(`连接失败：${reasonText}`)
-        setConnectionError(`连接失败：${reasonText}`)
+        setError(t('connect.connectFailed', { reason: reasonText }))
+        setConnectionError(t('connect.connectFailed', { reason: reasonText }))
         return
       }
     } catch (e: any) {
       setStatus('error')
-      setError(`连接失败：${e?.message || String(e)}`)
-      setConnectionError(`连接失败：${e?.message || String(e)}`)
+      setError(t('connect.connectFailed', { reason: e?.message || String(e) }))
+      setConnectionError(t('connect.connectFailed', { reason: e?.message || String(e) }))
     }
   }
 
@@ -177,7 +179,7 @@ export default function ConnectDialog() {
         })
         return
       }
-      if (!pickedBt) { setError('请选择已配对的蓝牙串口，或使用浏览器选择器'); return }
+      if (!pickedBt) { setError(t('connect.selectPairedBtOrBrowser')); return }
       await postConnect({
         type: 'bluetooth',
         port: pickedBt.label,
@@ -188,7 +190,7 @@ export default function ConnectDialog() {
       })
       return
     }
-    if (!selectedPort) { setError('请选择端口'); return }
+    if (!selectedPort) { setError(t('connect.selectPort')); return }
     const selected = serialPorts.find((port) => port.path === selectedPort)
     await postConnect({
       type: 'serial',
@@ -222,11 +224,11 @@ export default function ConnectDialog() {
         presetPort = pickedBt.label
         presetName = pickedBt.label
       } else {
-        setError('请先选择蓝牙设备')
+        setError(t('connect.selectBtDeviceFirst'))
         return
       }
     } else {
-      if (!selectedPort) { setError('请先选择端口'); return }
+      if (!selectedPort) { setError(t('connect.selectPortFirst')); return }
       presetPort = selectedPort
       const portInfo = serialPorts.find((p) => p.path === selectedPort)
       presetName = portInfo?.manufacturer ? `${selectedPort} (${portInfo.manufacturer})` : selectedPort
@@ -285,8 +287,8 @@ export default function ConnectDialog() {
               </svg>
             </div>
             <div>
-              <h2 className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>连接飞控</h2>
-              <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>选择端口并建立连接</p>
+              <h2 className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('connect.title')}</h2>
+              <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('connect.subtitle')}</p>
             </div>
           </div>
           <button
@@ -302,23 +304,23 @@ export default function ConnectDialog() {
         <div className="px-5 py-5 space-y-5">
           {/* Type toggle */}
           <div className="flex p-1 rounded-xl gap-1" style={{ background: 'var(--bg-tertiary)' }}>
-            {(['serial', 'bluetooth'] as const).map((t) => (
+            {(['serial', 'bluetooth'] as const).map((type) => (
               <button
-                key={t}
-                onClick={() => { setConnType(t); setError(null) }}
+                key={type}
+                onClick={() => { setConnType(type); setError(null) }}
                 className="flex-1 py-2 rounded-lg text-[13px] font-medium transition-all flex items-center justify-center gap-1.5"
                 style={
-                  connType === t
+                  connType === type
                     ? { background: 'var(--bg-secondary)', color: 'var(--accent)', boxShadow: 'var(--card-shadow)' }
                     : { color: 'var(--text-secondary)' }
                 }
               >
-                {t === 'serial' ? (
+                {type === 'serial' ? (
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12l-1.5 6.5a3 3 0 0 1-2.93 2.5h-3.14a3 3 0 0 1-2.93-2.5z" /><path d="M12 17v5" /></svg>
                 ) : (
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17" /></svg>
                 )}
-                {t === 'serial' ? 'USB 串口' : '蓝牙'}
+                {type === 'serial' ? t('connect.usbSerial') : t('connect.bluetooth')}
               </button>
             ))}
           </div>
@@ -327,9 +329,9 @@ export default function ConnectDialog() {
           {connType === 'serial' && (
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="mc-section-title">端口</label>
+                <label className="mc-section-title">{t('connect.port')}</label>
                 <button onClick={scanPorts} disabled={scanning} className="text-[12px] transition-colors disabled:opacity-50" style={{ color: 'var(--accent)' }}>
-                  {scanning ? '扫描中…' : '刷新'}
+                  {scanning ? t('connect.scanning') : t('connect.refresh')}
                 </button>
               </div>
               <select
@@ -337,7 +339,7 @@ export default function ConnectDialog() {
                 onChange={(e) => setSelectedPort(e.target.value)}
                 className="mc-select"
               >
-                <option value="">选择端口…</option>
+                <option value="">{t('connect.selectPortPlaceholder')}</option>
                 {serialPorts.map((p) => (
                   <option key={p.path} value={p.path}>
                     {p.path}{p.manufacturer ? ` - ${p.manufacturer}` : ''}
@@ -345,7 +347,7 @@ export default function ConnectDialog() {
                 ))}
               </select>
               <div className="mt-4">
-                <label className="mc-section-title block mb-2">波特率</label>
+                <label className="mc-section-title block mb-2">{t('connect.baudRate')}</label>
                 <select value={baudRate} onChange={(e) => setBaudRate(Number(e.target.value))} className="mc-select">
                   {BAUD_RATES.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
@@ -356,12 +358,12 @@ export default function ConnectDialog() {
           {/* Bluetooth: Web Serial device chooser */}
           {connType === 'bluetooth' && (
             <div className="space-y-3">
-              <label className="mc-section-title block">蓝牙设备</label>
+              <label className="mc-section-title block">{t('connect.bluetoothDevice')}</label>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>已配对的 SPP 串口</span>
+                  <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('connect.pairedSppSerial')}</span>
                   <button onClick={scanPorts} disabled={scanning} className="text-[12px] disabled:opacity-50" style={{ color: 'var(--accent)' }}>
-                    {scanning ? '扫描中…' : '刷新'}
+                    {scanning ? t('connect.scanning') : t('connect.refresh')}
                   </button>
                 </div>
                 <select
@@ -369,22 +371,22 @@ export default function ConnectDialog() {
                   onChange={(e) => { setSelectedBtPort(e.target.value); setPickedBt(null) }}
                   className="mc-select"
                 >
-                  <option value="">未发现蓝牙 SPP 串口</option>
+                  <option value="">{t('connect.noBtSppFound')}</option>
                   {bluetoothPorts.map((p) => (
                     <option key={p.path} value={p.path}>
-                      {p.path}{p.friendlyName ? ` · ${p.friendlyName}` : (p.manufacturer ? ` - ${p.manufacturer}` : '')}{p.recommended ? '（推荐）' : ''}
+                      {p.path}{p.friendlyName ? ` · ${p.friendlyName}` : (p.manufacturer ? ` - ${p.manufacturer}` : '')}{p.recommended ? t('connect.recommended') : ''}
                     </option>
                   ))}
                 </select>
               </div>
               <div className="flex items-center gap-3 text-[10px]" style={{ color: 'var(--text-disabled)' }}>
                 <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
-                <span>未扫描到时使用兼容模式</span>
+                <span>{t('connect.compatModeHint')}</span>
                 <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
               </div>
               {serialSupported === false && (
                 <div className="p-3 rounded-xl text-[12px]" style={{ background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid rgba(245,158,11,.25)' }}>
-                  当前浏览器不支持 Web Serial。请使用 Chrome/Edge 89+，且页面需通过 HTTPS 或 localhost 访问。
+                  {t('connect.webSerialUnsupportedLong')}
                 </div>
               )}
               <button
@@ -394,7 +396,7 @@ export default function ConnectDialog() {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="m7 7 10 10-5 5V2l5 5L7 17" />
                 </svg>
-                {pickedBt ? '重新选择设备' : '选择蓝牙设备'}
+                {pickedBt ? t('connect.reselectDevice') : t('connect.selectBluetoothDevice')}
               </button>
               {pickedBt && (
                 <div
@@ -409,10 +411,10 @@ export default function ConnectDialog() {
                 </div>
               )}
               <p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>
-                建议先在 Windows 蓝牙设置中完成配对，并选择上方的出站 COM 口。浏览器选择器仅作为兼容回退。
+                {t('connect.btPairHint')}
               </p>
               <div>
-                <label className="mc-section-title block mb-2">波特率</label>
+                <label className="mc-section-title block mb-2">{t('connect.baudRate')}</label>
                 <select value={baudRate} onChange={(e) => setBaudRate(Number(e.target.value))} className="mc-select">
                   {BAUD_RATES.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
@@ -429,18 +431,18 @@ export default function ConnectDialog() {
 
           {/* Status hint */}
           <p className="text-[11px] text-center" style={{ color: 'var(--text-disabled)' }}>
-            支持 Pixhawk / CubePilot / MicoAir 等 ArduPilot/PX4 飞控
+            {t('connect.supportedFcHint')}
           </p>
         </div>
 
         {/* Footer */}
         <div className="flex gap-3 px-5 py-4 border-t" style={{ borderColor: 'var(--border)' }}>
           <button onClick={() => setConnectDialogOpen(false)} className="mc-btn mc-btn-ghost flex-1 py-2.5">
-            取消
+            {t('connect.cancel')}
           </button>
           {transportOpen ? (
             <button onClick={disconnect} className="mc-btn mc-btn-danger flex-1 py-2.5">
-              断开连接
+              {t('connect.disconnect')}
             </button>
           ) : (
             <>
@@ -449,14 +451,14 @@ export default function ConnectDialog() {
                 disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
                 className="mc-btn mc-btn-ghost flex-1 py-2.5"
               >
-                添加到预设
+                {t('connect.addToPreset')}
               </button>
               <button
                 onClick={connect}
                 disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
                 className="mc-btn mc-btn-primary flex-1 py-2.5"
               >
-                {status === 'connecting' ? '连接中…' : '连接'}
+                {status === 'connecting' ? t('connect.connecting') : t('connect.connect')}
               </button>
             </>
           )}

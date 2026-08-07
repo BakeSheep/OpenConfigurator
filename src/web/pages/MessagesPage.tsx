@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import type { TFunction } from 'i18next'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
@@ -17,10 +19,10 @@ import {
 import { useMessageRateStore } from '../stores/messageRateStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
-const tabs = [
-  { id: 'messages', label: '消息' },
-  { id: 'status', label: '状态' },
-  { id: 'terminal', label: '终端' },
+const TAB_KEYS = [
+  { id: 'messages', label: 'messages.tabMessages' },
+  { id: 'status', label: 'messages.tabStatus' },
+  { id: 'terminal', label: 'messages.tabTerminal' },
 ]
 
 const streamRows = [
@@ -50,20 +52,20 @@ const streamRows = [
 ] satisfies Array<{ id: number; name: string; group?: keyof MessageRateConfig; event?: boolean }>
 
 const rateRows: Array<{ key: keyof MessageRateConfig; label: string }> = [
-  { key: 'attitude', label: '姿态' },
-  { key: 'position', label: '位置' },
-  { key: 'sensors', label: '传感器' },
-  { key: 'rc', label: '遥控' },
-  { key: 'status', label: '状态' },
-  { key: 'hud', label: 'HUD' },
-  { key: 'auxiliary', label: '光流/电池/振动' },
+  { key: 'attitude', label: 'messages.rateAttitude' },
+  { key: 'position', label: 'messages.ratePosition' },
+  { key: 'sensors', label: 'messages.rateSensors' },
+  { key: 'rc', label: 'messages.rateRc' },
+  { key: 'status', label: 'messages.rateStatus' },
+  { key: 'hud', label: 'messages.rateHud' },
+  { key: 'auxiliary', label: 'messages.rateAuxiliary' },
 ]
 
-function formatMeasuredRate(sample: MavlinkMessageSample | undefined, nowMs: number, event = false): string {
+function formatMeasuredRate(sample: MavlinkMessageSample | undefined, nowMs: number, t: TFunction, event = false): string {
   if (!isMavlinkMessageLive(sample, nowMs)) return '0 Hz'
-  if (event) return '事件'
+  if (event) return t('messages.event')
   const hz = measuredMavlinkHz(sample, nowMs)
-  if (hz === null) return '测量中'
+  if (hz === null) return t('messages.measuring')
   return `${hz >= 10 ? hz.toFixed(0) : hz.toFixed(1)} Hz`
 }
 
@@ -94,15 +96,17 @@ function messageFields(data: unknown): Array<[string, unknown]> {
   return [['value', data]]
 }
 
-function imuUnitSummary(data: unknown): string | null {
+function imuUnitSummary(data: unknown, t: TFunction): string | null {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null
   const units = (data as Record<string, unknown>).units
-  if (units === 'raw') return '原始设备计数（未经单位换算）'
-  if (units === 'normalized') return '归一化单位：加速度 g · 角速度 rad/s · 磁场 mG'
+  if (units === 'raw') return t('messages.imuUnitRaw')
+  if (units === 'normalized') return t('messages.imuUnitNormalized')
   return null
 }
 
 export default function MessagesPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
+  const tabs = useMemo(() => TAB_KEYS.map((tab) => ({ ...tab, label: t(tab.label) })), [t])
   const [activeTab, setActiveTab] = useState('messages')
   const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
@@ -131,10 +135,10 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
     return {
       ...row,
       sample,
-      rate: formatMeasuredRate(sample, nowTick, row.event),
+      rate: formatMeasuredRate(sample, nowTick, t, row.event),
       live: connected && isMavlinkMessageLive(sample, nowTick),
     }
-  }), [connected, messageSamples, nowTick])
+  }), [connected, messageSamples, nowTick, t])
 
   const [pausedRows, setPausedRows] = useState<typeof rows | null>(null)
   const [pausedLogs, setPausedLogs] = useState<typeof statusLogs | null>(null)
@@ -184,40 +188,40 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
       {activeTab !== 'terminal' && <div className="flex items-center justify-end gap-2 mb-3">
-        <span className="mc-toolbar-summary">{liveCount} 种活跃消息 · {displayLogs.length} 条状态记录</span>
-        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? '继续' : '暂停'} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label="清空" onClick={clearDiagnostics}><Icon name="trash" size={15} /></button>
+        <span className="mc-toolbar-summary">{t('messages.activeSummary', { live: liveCount, logs: displayLogs.length })}</span>
+        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? t('messages.resume') : t('messages.pause')} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
+        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('messages.clear')} onClick={clearDiagnostics}><Icon name="trash" size={15} /></button>
       </div>}
       <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
 
       {activeTab === 'messages' && (
         <div className="mc-message-layout">
           <section className="mc-card mc-message-table">
-            <div className="mc-message-row mc-message-row--header"><span>ID</span><span>消息名称</span><span>状态</span><span>实测频率</span></div>
+            <div className="mc-message-row mc-message-row--header"><span>ID</span><span>{t('messages.colMessageName')}</span><span>{t('messages.colStatus')}</span><span>{t('messages.colMeasuredRate')}</span></div>
             {displayRows.map((row) => {
               const expanded = expandedRows.has(row.id)
-              const unitSummary = imuUnitSummary(row.sample?.latestData)
+              const unitSummary = imuUnitSummary(row.sample?.latestData, t)
               return (
               <div className="mc-message-item" key={row.id} data-expanded={expanded}>
                 <div className="mc-message-row">
                   <button
                     type="button"
                     className="mc-message-row__toggle mc-mono"
-                    aria-label={`${expanded ? '收起' : '展开'} ${row.name}`}
+                    aria-label={expanded ? t('messages.collapseAria', { name: row.name }) : t('messages.expandAria', { name: row.name })}
                     aria-expanded={expanded}
                     onClick={() => toggleExpanded(row.id)}
                   >{expanded ? '−' : '+'}&nbsp; #{row.id}</button>
                   <strong className="mc-mono">{row.name}</strong>
-                  <span>{row.live ? '接收中' : '等待'}</span>
-                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-disabled)' }}>{paused ? '暂停' : row.rate}</span>
+                  <span>{row.live ? t('messages.receiving') : t('messages.waiting')}</span>
+                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-disabled)' }}>{paused ? t('messages.paused') : row.rate}</span>
                 </div>
                 {expanded && (
                   <div className="mc-message-details">
                     {row.sample ? (
                       <>
                         <header>
-                          <span>{unitSummary ?? '后端解码后的最新字段'}</span>
-                          <span className="mc-mono">累计 {row.sample.totalCount} 帧 · {new Date(row.sample.lastSeen).toLocaleTimeString()}</span>
+                          <span>{unitSummary ?? t('messages.latestFields')}</span>
+                          <span className="mc-mono">{t('messages.frames', { count: row.sample.totalCount })} · {new Date(row.sample.lastSeen).toLocaleTimeString()}</span>
                         </header>
                         <div className="mc-message-details__grid">
                           {messageFields(row.sample.latestData).map(([field, value]) => (
@@ -225,7 +229,7 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
                           ))}
                         </div>
                       </>
-                    ) : <p>尚未收到该消息。</p>}
+                    ) : <p>{t('messages.notReceived')}</p>}
                   </div>
                 )}
               </div>
@@ -233,14 +237,14 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
           </section>
 
           <section className="mc-card mc-rate-panel">
-            <h3>消息频率控制</h3>
+            <h3>{t('messages.rateControl')}</h3>
             <div className="mc-rate-panel__rows">
               {rateRows.map((row) => (
                 <label key={row.key}>
-                  <span>{row.label}</span>
+                  <span>{t(row.label)}</span>
                   <select
                     className="mc-select mc-mono"
-                    aria-label={`${row.label}消息频率`}
+                    aria-label={t('messages.rateAria', { label: t(row.label) })}
                     value={rates[row.key]}
                     disabled={!canSetRates}
                     onChange={(event) => applyRates({ ...rates, [row.key]: Number(event.target.value) })}
@@ -257,14 +261,14 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
                 className="mc-btn mc-btn-ghost"
                 disabled={!canSetRates}
                 onClick={() => applyRates({ ...DEFAULT_MESSAGE_RATES })}
-              >恢复默认</button>
+              >{t('messages.resetDefault')}</button>
             </footer>
           </section>
 
           <section className="mc-card mc-link-stats">
-            <h3>链路统计</h3>
+            <h3>{t('messages.linkStats')}</h3>
             {[
-              ['连接状态', connected ? '已连接' : '未连接'], ['活跃数据流', String(liveCount)], ['状态消息', String(displayLogs.length)], ['CRC 错误', '—'], ['丢包率', '—'], ['传输速率', connected ? '实时' : '0 msg/s'],
+              [t('messages.statConnection'), connected ? t('messages.connected') : t('messages.disconnected')], [t('messages.statActiveStreams'), String(liveCount)], [t('messages.statStatusMsgs'), String(displayLogs.length)], [t('messages.statCrcErrors'), '-'], [t('messages.statLossRate'), '-'], [t('messages.statTransferRate'), connected ? t('messages.realtime') : '0 msg/s'],
             ].map(([label, value]) => <div key={label}><span>{label}</span><strong className="mc-mono">{value}</strong></div>)}
           </section>
         </div>

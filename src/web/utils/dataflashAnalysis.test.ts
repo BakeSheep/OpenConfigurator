@@ -4,11 +4,16 @@
 // the shared ArduCopter mode table, armed segmentation and truncation
 // tolerance. Run directly: npm run test:dataflash
 import assert from 'node:assert/strict'
+import i18next from 'i18next'
+import { initI18n } from '../i18n/config'
+import { localizeLogSeries } from './logSeriesLabels'
 import {
   DATAFLASH_TEST_HOOKS,
   gpsWeekToUtcMs,
   parseDataflashLog,
 } from './dataflashAnalysis'
+
+initI18n('zh')
 
 const { FRAME_HEAD_0, FRAME_HEAD_1, FMT_MSG_ID, FIELD_SIZES } = DATAFLASH_TEST_HOOKS
 
@@ -194,7 +199,7 @@ function buildLog(): Buffer {
 
   // Armed segment from EV 10 (armed) .. EV 11 (disarmed).
   assert.equal(dataset.armedSegments.length, 1)
-  assert.equal(dataset.armedSegments[0].label, '已解锁')
+  assert.equal(dataset.armedSegments[0].label, 'armed')
   assert.ok(Math.abs(dataset.armedSegments[0].startSec - 0.6) < 1e-6)
   assert.ok(dataset.overview.totalArmedSec > 2 && dataset.overview.totalArmedSec <= 2.5)
 
@@ -204,7 +209,7 @@ function buildLog(): Buffer {
   assert.ok(Math.abs(dataset.track!.lon[0] - LNG) < 1e-6)
 
   // c-type fixed-point scaling (int16 / 100): HDop 1.5 decodes exactly.
-  const hdop = dataset.gpsQuality.find((series) => series.label.includes('HDop'))
+  const hdop = dataset.gpsQuality.find((series) => series.id === 'gps.hdop')
   assert.ok(hdop, 'HDop series present')
   assert.ok(hdop!.values.some((value) => Math.abs(value - 1.5) < 1e-6), 'HDop 1.5 decoded')
 
@@ -216,14 +221,22 @@ function buildLog(): Buffer {
   assert.equal(dataset.overview.startTimeSource, 'gps')
 
   // Attitude series decoded (float fields).
-  const roll = dataset.attitude.find((series) => series.label === '横滚')
+  const roll = dataset.attitude.find((series) => series.id === 'attitude.roll')
   assert.ok(roll && roll.values.some((value) => Math.abs(value - 1.2) < 1e-4))
+
+  // Stable series IDs survive language changes while labels follow the UI.
+  const zhRoll = localizeLogSeries([roll!], i18next.getFixedT('zh'))[0]
+  const enRoll = localizeLogSeries([roll!], i18next.getFixedT('en'))[0]
+  assert.equal(zhRoll.id, 'attitude.roll')
+  assert.equal(enRoll.id, 'attitude.roll')
+  assert.equal(zhRoll.label, '横滚')
+  assert.equal(enRoll.label, 'Roll')
 
   // PIDR Tar/Act/Err feed the roll PID loop; loops without data are dropped.
   assert.deepEqual(dataset.pidLoops.map((loop) => loop.id), ['roll'])
   const rollLoop = dataset.pidLoops[0]
-  const target = rollLoop.series.find((series) => series.label === 'Roll 目标')
-  const error = rollLoop.series.find((series) => series.label === 'Roll 误差')
+  const target = rollLoop.series.find((series) => series.id === 'pid:roll:target')
+  const error = rollLoop.series.find((series) => series.id === 'pid:roll:error')
   assert.ok(target && target.values.some((value) => Math.abs(value - 10) < 1e-4))
   assert.ok(error && error.values.some((value) => Math.abs(value - 0.5) < 1e-4))
 

@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import { PageHeader } from '../components/ui/PageFrame'
 import EscConnectPanel from '../components/esc/EscConnectPanel'
 import EscSettingsWorkbench from '../components/esc/EscSettingsWorkbench'
@@ -7,6 +8,7 @@ import { useEscStore } from '../stores/escStore'
 
 /** ESC configuration workspace, embedded directly in the vehicle settings page. */
 export default function EscPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useTranslation()
   const session = useEscStore((state) => state.session)
   const devices = useEscStore((state) => state.devices)
   const lastError = useEscStore((state) => state.lastError)
@@ -21,7 +23,7 @@ export default function EscPage({ embedded = false }: { embedded?: boolean }) {
         <div className="mc-card mc-esc-alert" role="alert">
           <Icon name="warning" size={17} />
           <div>
-            <strong>ESC 通讯失败</strong>
+            <strong>{t('esc.commFailure')}</strong>
             <span>{lastError.message}</span>
           </div>
         </div>
@@ -35,10 +37,10 @@ export default function EscPage({ embedded = false }: { embedded?: boolean }) {
             {!scanFailed && <span className="mc-esc-scan-status__pulse" />}
             <div>
               <span className="mc-eyebrow">DISCOVERY</span>
-              <strong>{scanFailed ? '没有完成电调扫描' : '正在建立参数工作区'}</strong>
+              <strong>{scanFailed ? t('esc.scanFailed') : t('esc.buildingWorkspace')}</strong>
               <p>{scanFailed
-                ? '检查 ESC 供电、DShot 输出和直通参数后重新扫描。'
-                : '正在识别 MCU 与 AM32 EEPROM 布局，完成后将自动载入全部参数。'}</p>
+                ? t('esc.scanFailedHint')
+                : t('esc.identifyingMcu')}</p>
             </div>
           </section>
         )
@@ -52,7 +54,7 @@ export default function EscPage({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className="mc-workspace mc-workspace--wide mc-fade-in">
-      <PageHeader title="电调配置" description="读取、比较并安全写入 AM32 电调参数。" />
+      <PageHeader title={t('esc.title')} description={t('esc.description')} />
       {content}
     </div>
   )

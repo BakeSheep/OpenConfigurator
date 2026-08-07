@@ -205,20 +205,20 @@ export function encodeModeCommand(
     return {
       ok: false,
       code: 'unsupported_vehicle_profile',
-      message: '尚未识别飞控类型，无法安全编码飞行模式',
+      message: 'errors.encode.unknownVehicleType',
     }
   }
   if (identity.family === 'px4') {
     const mode = Object.values(PX4_MODES).find((candidate) => candidate.id === modeId)
     if (!mode) {
-      return { ok: false, code: 'unknown_mode', message: `未知的 PX4 飞行模式 id ${modeId}` }
+      return { ok: false, code: 'unknown_mode', message: 'errors.encode.unknownPx4Mode' }
     }
     // PX4: param1=CUSTOM_MODE_ENABLED, param2=main mode, param3=sub mode.
     return { ok: true, params: [1, mode.mainMode, mode.subMode, 0, 0, 0, 0] }
   }
   if (identity.vehicleClass === 'copter') {
     if (!ARDUCOPTER_SELECTABLE_MODE_IDS.includes(modeId as never)) {
-      return { ok: false, code: 'unknown_mode', message: `未开放的 ArduCopter 飞行模式 id ${modeId}` }
+      return { ok: false, code: 'unknown_mode', message: 'errors.encode.unsupportedArduCopterMode' }
     }
     // ArduPilot: param1=MAV_MODE_FLAG_CUSTOM_MODE_ENABLED(1), param2=raw
     // flight-mode number, param3=0.
@@ -227,7 +227,7 @@ export function encodeModeCommand(
   return {
     ok: false,
     code: 'unsupported_vehicle_profile',
-    message: '当前机型的模式切换尚未适配（仅支持 ArduCopter）',
+    message: 'errors.encode.modeNotSupported',
   }
 }
 
