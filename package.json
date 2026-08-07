@@ -26,6 +26,7 @@
     "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "test:dataflash": "tsx src/web/utils/dataflashAnalysis.test.ts",
+    "test:qgc-params": "tsx --test src/web/utils/qgcParameterFile.test.ts",
     "start": "tsx src/server/index.ts",
     "preview": "vite preview",
     "desktop": "npm run build:desktop && electron .",

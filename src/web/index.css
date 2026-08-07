@@ -2984,6 +2984,134 @@ input[type="range"]:disabled {
   overflow-y: auto;
 }
 
+.mc-param-import-modal {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.mc-param-import-file {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mc-param-import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mc-param-import-summary span {
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mc-param-import-summary span[data-state='write'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.mc-param-import-list {
+  max-height: 300px;
+}
+
+.mc-param-import-list li,
+.mc-param-import-failures li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.mc-param-import-list li > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.mc-param-import-list code,
+.mc-param-import-failures code {
+  color: var(--text-primary);
+}
+
+.mc-param-import-list small,
+.mc-param-import-failures span {
+  color: var(--text-secondary);
+}
+
+.mc-param-import-list li[data-state='write'] small {
+  color: var(--accent);
+}
+
+.mc-param-import-list li[data-state='target_mismatch'] small,
+.mc-param-import-list li[data-state='missing'] small,
+.mc-param-import-list li[data-state='type_mismatch'] small,
+.mc-param-import-list li[data-state='invalid_value'] small,
+.mc-param-import-failures span {
+  color: var(--danger);
+}
+
+.mc-param-import-danger {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--warning-dim);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.mc-param-import-danger input {
+  margin-top: 2px;
+}
+
+.mc-param-import-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.mc-param-import-progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.mc-param-import-progress__track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+}
+
+.mc-param-import-progress__track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
+.mc-param-import-result {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.mc-param-import-failures {
+  max-height: 180px;
+}
+
 /* ---------------------------------------------------------------------------
  * Log analysis page
  * ------------------------------------------------------------------------- */

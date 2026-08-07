@@ -10,10 +10,39 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { parameterEnumLabel, parameterEnumOptions, parameterEnumValuesMatch } from '../utils/parameterEnumMetadata'
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
+import {
+  buildQgcParameterPreview,
+  parseQgcParameterFile,
+  serializeQgcParameterFile,
+  type QgcParameterPreview,
+  type QgcParameterPreviewEntry,
+} from '../utils/qgcParameterFile'
 
 // PX4 circuit-breaker parameters disable safety protections outright; writing
 // them by accident must require an explicit confirmation.
 const DANGEROUS_PARAM_PREFIXES = ['CBRK_']
+const QGC_PARAMETER_FILE_MAX_BYTES = 2 * 1024 * 1024
+
+interface ParameterImportSelection {
+  fileName: string
+  preview: QgcParameterPreview
+  systemId: number
+  componentId: number
+}
+
+interface ParameterImportFailure {
+  id: string
+  reason: string
+}
+
+interface ParameterImportJob {
+  entries: QgcParameterPreviewEntry[]
+  nextIndex: number
+  pendingRequestId: string | null
+  succeeded: string[]
+  failed: ParameterImportFailure[]
+  status: 'writing' | 'done'
+}
 
 const INTEGER_PARAM_RANGES: Record<number, readonly [number, number]> = {
   1: [0, 0xff],
@@ -44,7 +73,12 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const { params, loading, totalCount, receivedCount } = useParameterStore()
   const send = sendClientMessage
   const canAccess = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
+  const firmwareVersion = useTelemetryStore((state) => state.autopilotVersion?.firmwareVersion ?? null)
+  const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
+  const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
   const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
   const canWrite = canAccess && profileWritable
   const [search, setSearch] = useState('')
@@ -55,7 +89,14 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
   const [pendingWrite, setPendingWrite] = useState<{ id: string; value: number } | null>(null)
   const [writeError, setWriteError] = useState<string | null>(null)
+  const [importSelection, setImportSelection] = useState<ParameterImportSelection | null>(null)
+  const [importJob, setImportJob] = useState<ParameterImportJob | null>(null)
+  const [dangerousImportAcknowledged, setDangerousImportAcknowledged] = useState(false)
   const writeTimer = useRef<number | null>(null)
+  const importInput = useRef<HTMLInputElement | null>(null)
+  const importRunSequence = useRef(0)
+  const importResyncPending = useRef(false)
+  const importWriting = importJob?.status === 'writing'
 
   useEffect(() => {
     if (!pendingWrite) return
@@ -70,8 +111,95 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
   }, [])
 
+  useEffect(() => {
+    if (!importJob || importJob.status !== 'writing' || !importJob.pendingRequestId) return
+    if (lastWriteResult?.requestId !== importJob.pendingRequestId) return
+    setImportJob((current) => {
+      if (!current || current.pendingRequestId !== lastWriteResult.requestId) return current
+      const entry = current.entries[current.nextIndex]
+      if (!entry) return { ...current, status: 'done', pendingRequestId: null }
+      return {
+        ...current,
+        nextIndex: current.nextIndex + 1,
+        pendingRequestId: null,
+        succeeded: lastWriteResult.accepted ? [...current.succeeded, entry.row.name] : current.succeeded,
+        failed: lastWriteResult.accepted
+          ? current.failed
+          : [...current.failed, { id: entry.row.name, reason: lastWriteResult.reason ?? t('parameter.importWriteRejected') }],
+      }
+    })
+  }, [importJob, lastWriteResult, t])
+
+  useEffect(() => {
+    if (!importJob || importJob.status !== 'writing' || !importJob.pendingRequestId) return
+    if (lastOperationError?.requestId !== importJob.pendingRequestId) return
+    setImportJob((current) => {
+      if (!current || current.pendingRequestId !== lastOperationError.requestId) return current
+      const entry = current.entries[current.nextIndex]
+      if (!entry) return { ...current, status: 'done', pendingRequestId: null }
+      return {
+        ...current,
+        nextIndex: current.nextIndex + 1,
+        pendingRequestId: null,
+        failed: [...current.failed, { id: entry.row.name, reason: lastOperationError.message }],
+      }
+    })
+  }, [importJob, lastOperationError])
+
+  useEffect(() => {
+    if (!importJob || importJob.status !== 'writing' || importJob.pendingRequestId) return
+    const targetChanged = !canWrite
+      || !importSelection
+      || targetSystemId !== importSelection.systemId
+      || targetComponentId !== importSelection.componentId
+    if (targetChanged) {
+      setImportJob((current) => {
+        if (!current || current.status !== 'writing') return current
+        const remaining = current.entries.slice(current.nextIndex).map((entry) => ({
+          id: entry.row.name,
+          reason: t('parameter.importTargetChanged'),
+        }))
+        return { ...current, status: 'done', pendingRequestId: null, failed: [...current.failed, ...remaining] }
+      })
+      return
+    }
+    if (importJob.nextIndex >= importJob.entries.length) {
+      importResyncPending.current = true
+      setImportJob((current) => current ? { ...current, status: 'done' } : current)
+      return
+    }
+
+    const entry = importJob.entries[importJob.nextIndex]
+    if (!entry) return
+    const requestId = `param-import-${importRunSequence.current}-${importJob.nextIndex}-${Date.now().toString(36)}`
+    setImportJob((current) => current ? { ...current, pendingRequestId: requestId } : current)
+    if (!send({
+      type: 'param_set',
+      requestId,
+      data: { id: entry.row.name, value: entry.row.value, paramType: entry.row.type },
+    })) {
+      setImportJob((current) => {
+        if (!current || current.pendingRequestId !== requestId) return current
+        return {
+          ...current,
+          nextIndex: current.nextIndex + 1,
+          pendingRequestId: null,
+          failed: [...current.failed, { id: entry.row.name, reason: t('parameter.importSendFailed') }],
+        }
+      })
+    }
+  }, [canWrite, importJob, importSelection, send, t, targetComponentId, targetSystemId])
+
+  useEffect(() => {
+    if (importJob?.status !== 'done' || !importResyncPending.current || !canAccess) return
+    importResyncPending.current = false
+    useParameterStore.getState().clear()
+    useParameterStore.getState().setLoading(true)
+    send({ type: 'param_request_list' })
+  }, [canAccess, importJob?.status, send])
+
   const requestParams = () => {
-    if (!canAccess) return
+    if (!canAccess || importWriting) return
     useParameterStore.getState().clear()
     useParameterStore.getState().setLoading(true)
     send({ type: 'param_request_list' })
@@ -95,7 +223,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   }, [filteredParams])
 
   const saveParam = (id: string) => {
-    if (!canWrite) return
+    if (!canWrite || importWriting) return
     const param = params.get(id)
     if (!param) return
     const rawValue = editValue.trim()
@@ -130,15 +258,81 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   }
 
   const exportParams = () => {
-    const content = Array.from(params.values()).map((param) => [param.id, param.value, param.type].join(',')).join('\n')
-    const blob = new Blob([content], { type: 'text/plain' })
+    if (targetSystemId === null || targetComponentId === null) return
+    const content = serializeQgcParameterFile({
+      systemId: targetSystemId,
+      componentId: targetComponentId,
+      params: params.values(),
+      identity: vehicleIdentity,
+      firmwareVersion,
+    })
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `${vehicleIdentity?.family ?? 'autopilot'}_params.params`
+    anchor.download = `${vehicleIdentity?.family ?? 'autopilot'}_${targetSystemId}.params`
     anchor.click()
+    anchor.remove()
     URL.revokeObjectURL(url)
   }
+
+  const selectImportFile = async (file: File) => {
+    if (targetSystemId === null || targetComponentId === null) {
+      setWriteError(t('parameter.importTargetUnavailable'))
+      return
+    }
+    if (file.size > QGC_PARAMETER_FILE_MAX_BYTES) {
+      setWriteError(t('parameter.importFileTooLarge'))
+      return
+    }
+    try {
+      const parsed = parseQgcParameterFile(await file.text())
+      const preview = buildQgcParameterPreview(parsed, params, targetSystemId, targetComponentId)
+      setWriteError(null)
+      setDangerousImportAcknowledged(false)
+      setImportJob(null)
+      setImportSelection({ fileName: file.name, preview, systemId: targetSystemId, componentId: targetComponentId })
+    } catch {
+      setWriteError(t('parameter.importReadFailed'))
+    }
+  }
+
+  const startImport = () => {
+    if (
+      !importSelection
+      || !canWrite
+      || loading
+      || pendingWrite !== null
+      || importSelection.preview.writable.length === 0
+      || targetSystemId !== importSelection.systemId
+      || targetComponentId !== importSelection.componentId
+      || (importSelection.preview.dangerousCount > 0 && !dangerousImportAcknowledged)
+    ) return
+    importRunSequence.current += 1
+    importResyncPending.current = false
+    setImportJob({
+      entries: importSelection.preview.writable,
+      nextIndex: 0,
+      pendingRequestId: null,
+      succeeded: [],
+      failed: [],
+      status: 'writing',
+    })
+  }
+
+  const closeImportDialog = () => {
+    if (importWriting) return
+    setImportSelection(null)
+    setImportJob(null)
+    setDangerousImportAcknowledged(false)
+  }
+
+  const preview = importSelection?.preview ?? null
+  const unchangedImportCount = preview?.entries.filter((entry) => entry.status === 'unchanged').length ?? 0
+  const skippedImportCount = preview
+    ? preview.entries.length - preview.writable.length - unchangedImportCount + preview.issues.length
+    : 0
+  const completedImportCount = importJob ? importJob.succeeded.length + importJob.failed.length : 0
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
@@ -147,10 +341,36 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
           {loading ? t('parameter.receiving', { received: receivedCount, total: totalCount }) : t('parameter.paramCount', { count: params.size || totalCount })}
         </span>
         <span className="flex-1" />
-        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canAccess || loading}>
+        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canAccess || loading || importWriting}>
           <Icon name="refresh" size={15} />{loading ? `${receivedCount}/${totalCount}` : t('parameter.resync')}
         </button>
-        <button type="button" className="mc-btn mc-btn-ghost" onClick={exportParams} disabled={params.size === 0}><Icon name="log" size={15} />{t('parameter.exportParams')}</button>
+        <input
+          ref={importInput}
+          type="file"
+          accept=".params,text/plain"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (file) void selectImportFile(file)
+          }}
+        />
+        <button
+          type="button"
+          className="mc-btn mc-btn-ghost"
+          onClick={() => importInput.current?.click()}
+          disabled={!canWrite || loading || pendingWrite !== null || params.size === 0 || targetSystemId === null || targetComponentId === null || importWriting}
+        >
+          <Icon name="upload" size={15} />{t('parameter.importParams')}
+        </button>
+        <button
+          type="button"
+          className="mc-btn mc-btn-ghost"
+          onClick={exportParams}
+          disabled={loading || params.size === 0 || targetSystemId === null || targetComponentId === null || importWriting}
+        >
+          <Icon name="download" size={15} />{t('parameter.exportParams')}
+        </button>
       </div>
 
       {!canAccess && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>{t('parameter.connectToSync')}</span></div>}
@@ -230,10 +450,10 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                                 {editRaw ? t('parameter.options') : t('parameter.rawValue')}
                               </button>
                             )}
-                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null} onClick={() => saveParam(param.id)}>{t('parameter.save')}</button>
+                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null || importWriting} onClick={() => saveParam(param.id)}>{t('parameter.save')}</button>
                           </div>
                         ) : (
-                          <button type="button" disabled={!canWrite || pendingWrite !== null} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)); setEditRaw(false) }}>
+                          <button type="button" disabled={!canWrite || pendingWrite !== null || importWriting} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)); setEditRaw(false) }}>
                             {pendingWrite?.id === param.id ? t('parameter.confirming') : enumLabel ? `${param.value}: ${enumLabel}` : param.value}
                           </button>
                         )}
@@ -250,6 +470,115 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
               </section>
             )
           })}
+        </div>
+      )}
+
+      {importSelection && preview && (
+        <div className="mc-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="parameter-import-title">
+          <div className="mc-card mc-modal mc-param-import-modal">
+            <div>
+              <h3 id="parameter-import-title" className="mc-section-title">{t('parameter.importDialogTitle')}</h3>
+              <p className="mc-param-import-file mc-mono">{importSelection.fileName}</p>
+            </div>
+
+            <div className="mc-param-import-summary">
+              <span data-state="write">{t('parameter.importSummaryWrite', { count: preview.writable.length })}</span>
+              <span data-state="same">{t('parameter.importSummaryUnchanged', { count: unchangedImportCount })}</span>
+              <span data-state="skip">{t('parameter.importSummarySkipped', { count: skippedImportCount })}</span>
+            </div>
+
+            {!importJob ? (
+              <>
+                <ul className="mc-modal__list mc-param-import-list">
+                  {preview.entries.map((entry) => (
+                    <li key={`${entry.row.line}:${entry.row.name}`} data-state={entry.status}>
+                      <span>
+                        <code>{entry.row.name}</code>
+                        <small>{t(`parameter.importStatus.${entry.status}`)}</small>
+                      </span>
+                      <span className="mc-mono">
+                        {entry.current ? `${entry.current.value} → ${entry.row.value}` : String(entry.row.value)}
+                      </span>
+                    </li>
+                  ))}
+                  {preview.issues.map((issue) => (
+                    <li key={`issue:${issue.line}`} data-state="invalid_value">
+                      <span>
+                        <code>{t('parameter.importLine', { line: issue.line })}</code>
+                        <small>{t(`parameter.importIssue.${issue.reason}`)}</small>
+                      </span>
+                    </li>
+                  ))}
+                  {preview.entries.length === 0 && preview.issues.length === 0 && (
+                    <li>{t('parameter.importEmptyFile')}</li>
+                  )}
+                </ul>
+
+                {preview.dangerousCount > 0 && (
+                  <label className="mc-param-import-danger">
+                    <input
+                      type="checkbox"
+                      checked={dangerousImportAcknowledged}
+                      onChange={(event) => setDangerousImportAcknowledged(event.target.checked)}
+                    />
+                    <span>{t('parameter.importDangerousConfirm', { count: preview.dangerousCount })}</span>
+                  </label>
+                )}
+
+                <div className="flex justify-end gap-2 mt-4">
+                  <button type="button" className="mc-btn mc-btn-ghost" onClick={closeImportDialog}>{t('parameter.importCancel')}</button>
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn-primary"
+                    onClick={startImport}
+                    disabled={preview.writable.length === 0
+                      || !canWrite
+                      || loading
+                      || pendingWrite !== null
+                      || targetSystemId !== importSelection.systemId
+                      || targetComponentId !== importSelection.componentId
+                      || (preview.dangerousCount > 0 && !dangerousImportAcknowledged)}
+                  >
+                    <Icon name="upload" size={15} />{t('parameter.importStartWrite', { count: preview.writable.length })}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="mc-param-import-progress" aria-live="polite">
+                  <div>
+                    <strong>{importJob.status === 'writing' ? t('parameter.importWriting') : t('parameter.importDone')}</strong>
+                    <span>{completedImportCount}/{importJob.entries.length}</span>
+                  </div>
+                  <div className="mc-param-import-progress__track">
+                    <i style={{ width: `${importJob.entries.length ? completedImportCount / importJob.entries.length * 100 : 100}%` }} />
+                  </div>
+                  {importJob.status === 'writing' && importJob.entries[importJob.nextIndex] && (
+                    <code>{importJob.entries[importJob.nextIndex].row.name}</code>
+                  )}
+                </div>
+
+                {importJob.status === 'done' && (
+                  <p className="mc-param-import-result">
+                    {t('parameter.importDoneSummary', { succeeded: importJob.succeeded.length, failed: importJob.failed.length })}
+                  </p>
+                )}
+                {importJob.failed.length > 0 && (
+                  <ul className="mc-modal__list mc-param-import-failures">
+                    {importJob.failed.map((failure, index) => (
+                      <li key={`${failure.id}:${index}`}><code>{failure.id}</code><span>{failure.reason}</span></li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="flex justify-end gap-2 mt-4">
+                  <button type="button" className="mc-btn mc-btn-primary" onClick={closeImportDialog} disabled={importWriting}>
+                    {t('parameter.importClose')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

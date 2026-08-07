@@ -31,6 +31,8 @@ interface ConnectionState {
   port: string | null
   type: string | null
   baudRate: number | null
+  targetSystemId: number | null
+  targetComponentId: number | null
   clientId: string | null
   controllerClientId: string | null
   controllerExpiresAt: number | null
@@ -57,6 +59,7 @@ interface ConnectionState {
   }) => void
   setClientId: (clientId: string) => void
   setController: (clientId: string | null, expiresAt: number | null) => void
+  setTarget: (systemId: number | null, componentId: number | null) => void
   setReconnecting: (info: ReconnectInfo) => void
   setDisconnected: () => void
   setLinkStats: (stats: LinkStats) => void
@@ -73,6 +76,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   port: null,
   type: null,
   baudRate: null,
+  targetSystemId: null,
+  targetComponentId: null,
   clientId: null,
   controllerClientId: null,
   controllerExpiresAt: null,
@@ -107,12 +112,18 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     controllerExpiresAt,
     canControl: controllerClientId === null || controllerClientId === state.clientId,
   })),
+  setTarget: (targetSystemId, targetComponentId) => set({
+    targetSystemId,
+    targetComponentId: targetSystemId === null ? null : targetComponentId,
+  }),
   // Keep port/type so the UI can show which device is being retried.
   setReconnecting: (info) => set({
     status: 'reconnecting',
     transportOpen: false,
     vehicleReady: false,
     rawSessionActive: false,
+    targetSystemId: null,
+    targetComponentId: null,
     reconnect: info,
   }),
   setDisconnected: () => set({
@@ -123,6 +134,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     port: null,
     type: null,
     baudRate: null,
+    targetSystemId: null,
+    targetComponentId: null,
     reconnect: null,
     linkStats: null,
     controllerClientId: null,

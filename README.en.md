@@ -14,63 +14,63 @@
   <a href="README.md">中文说明</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a> ·
-  <a href="THIRD_PARTY_NOTICES.md">Third-party notices</a>
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The browser or desktop client uses REST plus one WebSocket; the service owns USB serial/Bluetooth SPP, MAVLink v1/v2, log transfer, and ESC sessions.
-
 > [!TIP]
-> The [live demo](https://bakesheep.github.io/OpenConfigurator/) is a static, read-only preview: every value is synthetic, there is no backend, no device can be connected, and no write operation is performed. Download the desktop build from the [latest Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest).
+> The [live demo](https://bakesheep.github.io/OpenConfigurator/) is a static, read-only preview with synthetic data. It has no backend and cannot connect to devices or perform writes. To connect a flight controller, run the local web service or download the desktop build from the [latest Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest).
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" alt="Flight overview workspace with demo data" width="860" />
+  <img src="docs/screenshots/dashboard.png" alt="Flight overview with demo data" width="860" />
 </p>
 
 > [!WARNING]
 > OpenConfigurator is pre-release software, not a certified aviation safety system. Remove all propellers before connecting to motor or ESC controls, and validate changes on real hardware in a controlled environment.
 
-## Current capabilities
+## Overview
 
-- USB serial and Windows Bluetooth SPP discovery, reconnect, diagnostics, and target selection
-- MAVLink v1/v2 negotiation, optional MAVLink 2 signing, telemetry, parameter sync, and single-controller leasing
-- PX4 and ArduPilot identification from HEARTBEAT with profile-specific modes, parameters, capabilities, and safety gates
-- Frame and actuator views, sensor calibration, PID/EKF/serial configuration, RC monitoring, gamepad input, and guarded flight commands
-- PX4 ULog browsing and analysis; ArduPilot DataFlash listing, download, erase-all, and `.bin` analysis
-- AM32 ESC settings over ArduPilot passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial, including multi-ESC reads, batch writes, and full read-back verification
-- Windows x64 Electron desktop prerelease using the same frontend and local service
+OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The frontend reaches the service through REST plus one WebSocket; the service owns serial, Windows Bluetooth SPP, MAVLink, log transfer, and ESC sessions. It listens on `127.0.0.1` by default, so device data does not need to pass through a cloud service.
 
-PX4 is supported across the existing configuration surfaces. ArduCopter 4.7 is the current ArduPilot acceptance target. ArduPlane, Rover, Sub, and Tracker remain read-only for safety-critical operations. ArduPilot compass calibration, frame writes, and mission/fence/rally editing are not implemented.
+The flight controller stack is identified only from HEARTBEAT. PX4 and ArduPilot use separate vehicle profiles, parameters, and command paths; unknown or unadapted vehicle types remain read-only.
 
-The ESC page is settings-only: it does not flash firmware or edit startup tones. Its software path recognizes AM32 signatures `0x1F06`, `0x3506`, and `0x1506` with layout revisions 1–3. Check the [hardware validation matrix](docs/ESC-COMPATIBILITY.md) before use; code support is not a hardware-safety guarantee.
+## Highlights
+
+- USB serial and Windows Bluetooth SPP connections with MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
+- Realtime attitude, position, battery, sensor, RC, actuator, EKF, and MAVLink message monitoring
+- Parameter sync and search, QGC parameter-file import/export, PID/EKF tuning, sensor calibration, and serial-port configuration
+- Safety-gated arming, mode changes, takeoff, landing, RTL, motor tests, and gamepad RC override
+- PX4 ULog and ArduPilot DataFlash browsing, download, and offline analysis
+- AM32 ESC settings over ArduPilot passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial
+- The same frontend delivered through a local web service or a portable Windows x64 Electron build
+
+The ESC page configures settings only; it does not flash firmware or edit startup tones. Writes preserve unknown EEPROM bytes and verify the complete block by reading it back. Check the [ESC compatibility matrix](docs/ESC-COMPATIBILITY.md) before use.
+
+## Support boundaries
+
+- PX4: the current connection, monitoring, parameter, tuning, calibration, flight-operation, ULog, and NSH terminal paths are available.
+- ArduPilot: ArduCopter is the current adaptation and acceptance target for safety-critical writes. Plane, Rover, Sub, and Tracker can be identified and can show common data and DataFlash logs, but remain read-only.
+- Mission, fence, rally-point, and airframe writing are not currently provided.
+- Software paths and automated tests do not mean that a specific flight controller, ESC, and firmware combination has passed HIL or flight validation.
+
+See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md) and the [ESC compatibility matrix](docs/ESC-COMPATIBILITY.md) for detailed boundaries.
 
 ## Workspaces
 
-| Workspace | Contents |
+| Workspace | Main contents |
 |---|---|
-| Overview | Attitude, flight state, key telemetry, and system health |
-| Flight control | Preflight checks, mode switching, and guarded flight commands |
-| Vehicle setup | Frame, sensors, actuators, ESC, receiver, gamepad, and ports |
-| Tuning & diagnostics | Parameters, PID, EKF, waveforms, MAVLink messages, and flight logs |
-
-The following images are synthetic demo-mode captures:
-
-| Flight control | Tuning & diagnostics |
-|---|---|
-| ![Flight control](docs/screenshots/flight.png) | ![Parameter management](docs/screenshots/diagnostics.png) |
-
-| Live waveforms | Vehicle setup |
-|---|---|
-| ![Live waveforms](docs/screenshots/waveforms.png) | ![Vehicle setup](docs/screenshots/settings.png) |
+| Overview | Attitude, key telemetry, system health, and a custom data board |
+| Flight Operations | Preflight checks, mode switching, and safety-gated flight commands |
+| Vehicle Settings | Airframe identification, sensors, actuators, ESCs, receiver, gamepad, and ports |
+| Tuning & Diagnostics | Parameters, PID, EKF, waveforms, MAVLink messages, and flight logs |
 
 ## Quick start
 
-Development and build requirements: Node.js `>=22.12.0`, npm, and Chrome or Edge 89+ for the Web Serial picker. The picker is available only on HTTPS or localhost.
+Node.js `>=22.12.0` and npm are required. The Web Serial picker needs Chrome or Edge 89+ and an HTTPS or localhost page.
 
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git
 cd OpenConfigurator
-npm ci
+npm install
 npm run dev
 ```
 
@@ -85,61 +85,56 @@ npm start
 
 Open <http://localhost:3000>. To view synthetic demo data only, run `npm run dev:web` and open <http://localhost:5173/?demo=1>.
 
-### Windows desktop prerelease
+Common commands:
 
-The Electron package bundles the runtime, so end users do not need Node.js or npm. Version `1.0.0-beta.1` currently produces a Windows x64 portable EXE:
+| Command | Purpose |
+|---|---|
+| `npm run dev` | Start the frontend and backend development servers |
+| `npm run typecheck` | Run TypeScript type checks |
+| `npm run test:server` | Run hardware-free regression tests |
+| `npm run test:protocol` | Run MAVLink and ESC protocol tests |
+| `npm run build` | Type-check and build the production frontend |
+| `npm start` | Start the local production service |
+| `npm run dist:win` | Build a portable Windows x64 EXE |
+
+## Desktop build
+
+The Electron package bundles its runtime, so end users do not need Node.js or npm. The desktop shell starts the local service on a random `127.0.0.1` port and reuses the same React frontend. Build artifacts are written to `release/`:
 
 ```bash
 npm run dist:win
 ```
 
-Artifacts are written to `release/` with a `-portable.exe` suffix. Use `npm run dist:win:dir` for an unpacked build, `npm run test:desktop` to smoke-test it, and `npm run desktop` to launch a development desktop instance. The desktop shell starts the service on a random `127.0.0.1` port and ignores remote-deployment environment variables.
-
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Start frontend and backend development servers |
-| `npm run dev:web` | Start only the Vite frontend |
-| `npm run dev:server` | Start only the Node.js backend |
-| `npm run typecheck` | Run strict TypeScript checks |
-| `npm run test:server` | Run hardware-free regression tests |
-| `npm run test:protocol` | Run MAVLink and ESC protocol tests |
-| `npm run test:desktop` | Smoke-test the unpacked desktop build |
-| `npm run build` | Type-check and build the frontend |
-| `npm run build:desktop` | Build the frontend and Electron main process |
-| `npm run desktop` | Build and launch a desktop development instance |
-| `npm run dist:win` | Build a Windows x64 portable EXE |
-| `npm start` | Serve the production application |
-
 ## Architecture
 
 ```text
 Browser / Electron + React SPA
-          │ REST + WebSocket
-          ▼
+             │ REST + WebSocket
+             ▼
 Express / ws ── validation / controller lease
-          │
-          ├─ MAVLink bridge ── PX4 / ArduPilot
-          └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
+             │
+             ├─ MAVLink bridge ── PX4 / ArduPilot
+             └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
 ```
 
-- `src/shared/` is the framework-free frontend/backend boundary for protocol types, vehicle profiles, and ESC layouts.
-- `src/web/` contains the four workspaces, components, WebSocket dispatch, and Zustand stores.
-- `src/server/` owns HTTP/WS, connection lifecycle, MAVLink, log transfer, and ESC sessions.
-- `src/server/mavlink/codec.ts` is the only MAVLink framing, CRC, and signing entry point.
-- `electron/main.ts` starts the packaged local service and loads the bundled frontend.
+- `src/shared/` is the only frontend/backend shared boundary and contains protocol types, vehicle profiles, and ESC layouts.
+- `src/web/` contains the React workspaces, WebSocket dispatch, and Zustand stores.
+- `src/server/` owns connection lifecycle, MAVLink, log transfer, and ESC sessions.
 
-## Safety and limitations
+See the [architecture document](docs/ARCHITECTURE.md) for detailed design and constraints.
 
-- Remove all propellers before motor tests or ESC reads/writes.
-- Arming keeps its explicit confirmation; gamepad RC override must be enabled manually.
-- `transportOpen` means only that a serial transport is open; `vehicleReady` requires a valid heartbeat from the selected target.
-- ESC sessions pin the controller lease; do not disconnect the flight controller or ESC power during writes.
-- Remote mode requires HTTPS/WSS, a strong random token, an exact Origin allowlist, and network isolation.
+## Safety limitations
+
+- Remove all propellers before motor tests or ESC reads/writes. Do not interrupt power or the connection during an ESC write.
+- Arming requires explicit confirmation; gamepad RC override must be enabled manually by the operator.
+- An open serial transport does not mean the vehicle is ready. Writes require a valid heartbeat from the selected target and the controller lease.
+- Remote deployments require HTTPS/WSS, a strong random token, an exact Origin allowlist, and network isolation.
 - Unlisted or unvalidated combinations are not compatibility, airworthiness, or flight-safety guarantees.
 
 ## Documentation and license
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
 - [ESC compatibility](docs/ESC-COMPATIBILITY.md)
 - [ESC protocol sources](docs/ESC-PROTOCOL-SOURCES.md)
 - [Contributing](CONTRIBUTING.md)

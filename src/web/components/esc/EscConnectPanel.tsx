@@ -8,11 +8,8 @@ import { useTelemetryStore } from '../../stores/telemetryStore'
 import {
   escModeAllowedForProfile,
   passthroughParamWriteError,
-  type EscConnectionMode,
 } from '../../utils/escConnectionPolicy'
 import Icon from '../ui/Icon'
-
-type PanelMode = EscConnectionMode
 
 interface PassthroughBackup {
   paramId: string
@@ -20,7 +17,6 @@ interface PassthroughBackup {
   paramType: number
 }
 
-const PX4_DEFAULT_CHANNELS = [20, 21, 22, 23]
 const PASSTHROUGH_BACKUP_PREFIX = 'openconfigurator:esc-passthrough-backup:'
 
 function backupKey(paramId: string): string {
@@ -46,11 +42,7 @@ export default function EscConnectPanel() {
   const { t } = useTranslation()
   const session = useEscStore((state) => state.session)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
-  const family = vehicleIdentity?.family ?? 'unknown'
   const linkType = useConnectionStore((state) => state.type)
-  const port = useConnectionStore((state) => state.port)
-  const baudRate = useConnectionStore((state) => state.baudRate)
-  const transportOpen = useConnectionStore((state) => state.transportOpen)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
   const clientId = useConnectionStore((state) => state.clientId)
@@ -58,8 +50,6 @@ export default function EscConnectPanel() {
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
   const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
 
-  const defaultMode: PanelMode = family === 'px4' ? 'px4_serial_control' : 'ardupilot_passthrough'
-  const [mode, setMode] = useState<PanelMode>(defaultMode)
   const [backup, setBackup] = useState<PassthroughBackup | null>(null)
   const [pendingWrite, setPendingWrite] = useState<{ requestId: string; restoring: boolean } | null>(null)
   const [writeMessage, setWriteMessage] = useState<string | null>(null)
@@ -68,27 +58,16 @@ export default function EscConnectPanel() {
   const busy = session?.state === 'entering' || session?.state === 'exiting' || session?.activeJobId != null
   const ownsSession = session?.ownerClientId === clientId
   const isBluetooth = linkType === 'bluetooth'
-  const effectiveMode = active && session?.mode ? session.mode : mode
-
-  useEffect(() => {
-    if (!active) setMode(defaultMode)
-  }, [active, defaultMode])
+  const effectiveMode = active && session?.mode ? session.mode : 'ardupilot_passthrough'
 
   const blhAuto = params.get('SERVO_BLH_AUTO')
   const blhMask = params.get('SERVO_BLH_MASK')
-  const passthruEn = params.get('PASSTHRU_EN')
   const motorPwmType = params.get('MOT_PWM_TYPE')?.value
   const dshotReady = motorPwmType != null && motorPwmType >= 4 && motorPwmType <= 7
   const ardupilotReady = blhAuto?.value === 1 || (blhMask?.value != null && blhMask.value > 0)
-  const px4Ready = passthruEn?.value === 1
-  const directReady = transportOpen && linkType === 'serial' && baudRate === 19200
   const profileAllowsMode = escModeAllowedForProfile(vehicleIdentity, effectiveMode)
-  const setupParam = effectiveMode === 'ardupilot_passthrough'
-    ? blhAuto
-    : effectiveMode === 'px4_serial_control'
-      ? passthruEn
-      : null
-  const setupParamId = effectiveMode === 'ardupilot_passthrough' ? 'SERVO_BLH_AUTO' : 'PASSTHRU_EN'
+  const setupParam = blhAuto
+  const setupParamId = 'SERVO_BLH_AUTO'
   const setupEnabled = setupParam?.value === 1
 
   useEffect(() => {
@@ -160,13 +139,7 @@ export default function EscConnectPanel() {
   }
 
   const startSession = () => {
-    if (mode === 'direct') {
-      sendClientMessage({ type: 'esc_session_start', data: { mode: 'direct' } })
-    } else if (mode === 'px4_serial_control') {
-      sendClientMessage({ type: 'esc_session_start', data: { mode: 'px4_serial_control', channels: PX4_DEFAULT_CHANNELS } })
-    } else {
-      sendClientMessage({ type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
-    }
+    sendClientMessage({ type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
   }
 
   const exitSession = () => {
@@ -177,15 +150,15 @@ export default function EscConnectPanel() {
     if (session?.sessionId) sendClientMessage({ type: 'esc_devices_scan', data: { sessionId: session.sessionId } })
   }
 
-  const ardupilotBlocked = mode === 'ardupilot_passthrough' && isBluetooth
+  const ardupilotBlocked = isBluetooth
   const canStart = !active
     && !busy
     && canControl
     && !ardupilotBlocked
-    && escModeAllowedForProfile(vehicleIdentity, mode)
-    && (mode === 'direct' ? directReady : vehicleReady)
-    && (mode === 'ardupilot_passthrough' ? ardupilotReady && dshotReady : true)
-    && (mode === 'px4_serial_control' ? px4Ready : true)
+    && escModeAllowedForProfile(vehicleIdentity, 'ardupilot_passthrough')
+    && vehicleReady
+    && ardupilotReady
+    && dshotReady
 
   return (
     <section className="mc-card mc-esc-connect">
@@ -199,9 +172,11 @@ export default function EscConnectPanel() {
 
       <div className="mc-esc-connect__body">
         <div className="mc-esc-mode-picker" role="group" aria-label={t('escConnect.modeAriaLabel')}>
-          <ModeButton current={effectiveMode} value="ardupilot_passthrough" label={t('escConnect.modeArduPilot')} onSelect={setMode} disabled={active} />
-          <ModeButton current={effectiveMode} value="px4_serial_control" label="PX4 SERIAL_CONTROL" onSelect={setMode} disabled={active} />
-          <ModeButton current={effectiveMode} value="direct" label={t('escConnect.modeDirectUsb')} onSelect={setMode} disabled={active} />
+          <span className="mc-btn mc-btn-primary" aria-current="true">
+            {active && effectiveMode !== 'ardupilot_passthrough'
+              ? t('escConnect.existingSessionTitle')
+              : t('escConnect.modeArduPilot')}
+          </span>
         </div>
 
         <div className="mc-esc-connect__cards">
@@ -218,18 +193,12 @@ export default function EscConnectPanel() {
                 { ok: vehicleReady || active, text: vehicleReady ? t('escConnect.precondHeartbeatReady') : active ? t('escConnect.precondSessionExclusive') : t('escConnect.precondWaitingHeartbeat') },
               ]} />
             )}
-            {effectiveMode === 'px4_serial_control' && (
-              <PreconditionList items={[
-                { ok: px4Ready, text: px4Ready ? t('escConnect.precondPassthruEnEnabled') : t('escConnect.precondNeedPassthruEn') },
-                { ok: vehicleReady, text: vehicleReady ? t('escConnect.precondHeartbeatReady') : t('escConnect.precondWaitingHeartbeat') },
-              ]} />
-            )}
-            {effectiveMode === 'direct' && (
-              <div className="mc-esc-current-link" data-ready={directReady || undefined}>
-                <Icon name={directReady ? 'check' : 'warning'} size={16} />
+            {active && effectiveMode !== 'ardupilot_passthrough' && (
+              <div className="mc-esc-current-link" data-ready>
+                <Icon name="check" size={16} />
                 <div>
-                  <strong>{transportOpen && linkType === 'serial' ? (port ?? t('escConnect.currentUsbPort')) : t('escConnect.usbNotConnected')}</strong>
-                  <span>{directReady ? t('escConnect.directReuseReady') : (baudRate ? t('escConnect.directOpenHintWithBaud', { baudRate }) : t('escConnect.directOpenHint'))}</span>
+                  <strong>{t('escConnect.existingSessionTitle')}</strong>
+                  <span>{t('escConnect.existingSessionHint', { mode: effectiveMode })}</span>
                 </div>
               </div>
             )}
@@ -240,7 +209,7 @@ export default function EscConnectPanel() {
               <h3 id="esc-actions-title">{t('escConnect.actionsTitle')}</h3>
             </header>
 
-            {effectiveMode !== 'direct' && (
+            {effectiveMode === 'ardupilot_passthrough' && (
               <div className="mc-esc-toggle-row" data-enabled={setupEnabled || undefined}>
                 <div>
                   <strong>{setupEnabled ? t('escConnect.passthroughOn') : t('escConnect.passthroughOff')}</strong>
@@ -274,7 +243,7 @@ export default function EscConnectPanel() {
             )}
 
             {!canControl && !active && <p className="mc-esc-warning">{t('escConnect.needControlWarning')}</p>}
-            {effectiveMode !== 'direct' && !profileAllowsMode && !active && (
+            {!profileAllowsMode && !active && (
               <p className="mc-esc-warning">{t('escConnect.profileNotSupportedWarning')}</p>
             )}
 
@@ -304,26 +273,6 @@ export default function EscConnectPanel() {
         </div>
       </div>
     </section>
-  )
-}
-
-function ModeButton({ current, value, label, onSelect, disabled }: {
-  current: PanelMode
-  value: PanelMode
-  label: string
-  onSelect: (mode: PanelMode) => void
-  disabled?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      className={current === value ? 'mc-btn mc-btn-primary' : 'mc-btn mc-btn-ghost'}
-      aria-pressed={current === value}
-      disabled={disabled}
-      onClick={() => onSelect(value)}
-    >
-      {label}
-    </button>
   )
 }
 

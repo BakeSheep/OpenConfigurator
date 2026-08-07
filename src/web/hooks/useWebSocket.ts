@@ -431,6 +431,7 @@ function handleMessage(msg: ServerMessage) {
     case 'target':
       // Identity always tracks the backend's target lifecycle: cleared on
       // reset/deselection so a new vehicle can never inherit a stale profile.
+      connStore.setTarget(msg.data.systemId, msg.data.componentId)
       telemetryStore.setVehicleIdentity(msg.data.systemId === null ? null : msg.data.identity)
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
         telemetryStore.addStatusLog(
