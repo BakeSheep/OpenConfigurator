@@ -53,6 +53,7 @@ export interface ServerConfig {
   remoteEnabled: boolean
   authToken: string | null
   allowedOrigins: string[]
+  allowDevOrigin: boolean
   wsMaxPayload: number
   wsMaxClients: number
 }
@@ -914,6 +915,7 @@ export function parseServerConfig(
     remoteEnabled,
     authToken,
     allowedOrigins: [...new Set(allowedOrigins.map(normalizeConfiguredOrigin))],
+    allowDevOrigin: overrides.allowDevOrigin ?? env.NODE_ENV !== 'production',
     wsMaxPayload: overrides.wsMaxPayload === undefined
       ? parseEnvironmentInteger(
         env.SKYLAB_WS_MAX_PAYLOAD,
@@ -952,5 +954,6 @@ export function isAllowedOrigin(origin: string, config: ServerConfig): boolean {
   const hostname = url.hostname.toLowerCase()
   if (!isLoopbackHost(hostname)) return false
   const effectivePort = url.port || (url.protocol === 'https:' ? '443' : '80')
-  return effectivePort === '5173' || effectivePort === String(config.port)
+  return effectivePort === String(config.port)
+    || (config.allowDevOrigin && effectivePort === '5173')
 }

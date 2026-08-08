@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import {
   EnvelopeCollector,
+  appendBoundedTransition,
   VibrationAnalyzer,
   VIBRATION_FFT_SIZE,
   buildSegments,
@@ -13,7 +14,23 @@ import {
   parsePx4FileDate,
   parsePx4LogPathDate,
   quaternionToEuler,
+  normalizeUlogTimestamp,
 } from './ulogAnalysis'
+
+assert.equal(normalizeUlogTimestamp(Number.NaN), null)
+assert.equal(normalizeUlogTimestamp(undefined), null)
+assert.equal(normalizeUlogTimestamp(0), null)
+assert.equal(normalizeUlogTimestamp(123.9), 123n)
+assert.equal(normalizeUlogTimestamp(456n), 456n)
+
+{
+  const transitions: Array<{ label: string }> = []
+  assert.equal(appendBoundedTransition(transitions, { label: 'A' }, (a, b) => a.label === b.label, 2), 'appended')
+  assert.equal(appendBoundedTransition(transitions, { label: 'A' }, (a, b) => a.label === b.label, 2), 'unchanged')
+  assert.equal(appendBoundedTransition(transitions, { label: 'B' }, (a, b) => a.label === b.label, 2), 'appended')
+  assert.equal(appendBoundedTransition(transitions, { label: 'C' }, (a, b) => a.label === b.label, 2), 'full')
+  assert.deepEqual(transitions, [{ label: 'A' }, { label: 'B' }])
+}
 
 // ---------------------------------------------------------------------------
 // Quaternion -> Euler

@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { OrbitControls } from '@react-three/drei'
 import { Canvas, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { SeriesData } from '../../utils/ulogAnalysis'
+import { degreeAttitudeToModelRotation } from '../../utils/attitudeVisualization'
 import Icon from '../ui/Icon'
-
-const DEG_TO_RAD = Math.PI / 180
 
 interface EulerDegrees {
   roll: number
@@ -36,14 +35,15 @@ function sampleSeries(series: SeriesData, timeSec: number, wrapAngle = false): n
   return values[low] + delta * ratio
 }
 
-function LogDrone({ attitude }: { attitude: EulerDegrees }) {
+function LogDrone({ attitudeRef }: { attitudeRef: MutableRefObject<EulerDegrees> }) {
   const modelRef = useRef<THREE.Group>(null)
 
   useFrame(() => {
     if (!modelRef.current) return
-    modelRef.current.rotation.x = attitude.pitch * DEG_TO_RAD
-    modelRef.current.rotation.y = -attitude.yaw * DEG_TO_RAD
-    modelRef.current.rotation.z = attitude.roll * DEG_TO_RAD
+    const rotation = degreeAttitudeToModelRotation(attitudeRef.current)
+    modelRef.current.rotation.x = rotation.x
+    modelRef.current.rotation.y = rotation.y
+    modelRef.current.rotation.z = rotation.z
   })
 
   return (
@@ -100,51 +100,68 @@ export default function LogAttitudeVisualizer({
   const replayStartSec = Math.min(Math.max(startSec, 0), durationSec)
   const [timeSec, setTimeSec] = useState(replayStartSec)
   const [playing, setPlaying] = useState(false)
+  const playbackTimeRef = useRef(replayStartSec)
+  const attitudeRef = useRef<EulerDegrees>({ roll: 0, pitch: 0, yaw: 0 })
+
+  const sampleAttitude = useCallback((sampleTimeSec: number): EulerDegrees => ({
+    roll: rollSeries ? sampleSeries(rollSeries, sampleTimeSec) : 0,
+    pitch: pitchSeries ? sampleSeries(pitchSeries, sampleTimeSec) : 0,
+    yaw: yawSeries ? sampleSeries(yawSeries, sampleTimeSec, true) : 0,
+  }), [pitchSeries, rollSeries, yawSeries])
 
   useEffect(() => {
+    playbackTimeRef.current = replayStartSec
+    attitudeRef.current = sampleAttitude(replayStartSec)
     setTimeSec(replayStartSec)
     setPlaying(false)
-  }, [series, replayStartSec])
+  }, [series, replayStartSec, sampleAttitude])
 
   useEffect(() => {
     if (syncTimeSec == null || !Number.isFinite(syncTimeSec)) return
+    const next = Math.min(durationSec, Math.max(replayStartSec, syncTimeSec))
+    playbackTimeRef.current = next
+    attitudeRef.current = sampleAttitude(next)
     setPlaying(false)
-    setTimeSec(Math.min(durationSec, Math.max(replayStartSec, syncTimeSec)))
-  }, [durationSec, replayStartSec, syncTimeSec])
+    setTimeSec(next)
+  }, [durationSec, replayStartSec, sampleAttitude, syncTimeSec])
 
   useEffect(() => {
     if (!playing) return
     let frameId = 0
     let previous = performance.now()
+    let lastUiUpdate = previous
     const tick = (now: number) => {
       const elapsed = (now - previous) / 1000
       previous = now
-      setTimeSec((current) => {
-        const next = current + elapsed
-        if (next >= durationSec) {
-          setPlaying(false)
-          return durationSec
-        }
-        return next
-      })
+      const next = Math.min(durationSec, playbackTimeRef.current + elapsed)
+      playbackTimeRef.current = next
+      attitudeRef.current = sampleAttitude(next)
+      if (now - lastUiUpdate >= 100 || next >= durationSec) {
+        lastUiUpdate = now
+        setTimeSec(next)
+      }
+      if (next >= durationSec) {
+        setPlaying(false)
+        return
+      }
       frameId = requestAnimationFrame(tick)
     }
     frameId = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frameId)
-  }, [playing, durationSec])
+  }, [durationSec, playing, sampleAttitude])
 
   if (!rollSeries || !pitchSeries || !yawSeries) {
     return <p className="mc-explorer__notice">{t('logAnalysis.noAttitudeData')}</p>
   }
 
-  const attitude: EulerDegrees = {
-    roll: sampleSeries(rollSeries, timeSec),
-    pitch: sampleSeries(pitchSeries, timeSec),
-    yaw: sampleSeries(yawSeries, timeSec, true),
-  }
+  const attitude = sampleAttitude(timeSec)
 
   const togglePlayback = () => {
-    if (!playing && timeSec >= durationSec) setTimeSec(replayStartSec)
+    if (!playing && timeSec >= durationSec) {
+      playbackTimeRef.current = replayStartSec
+      attitudeRef.current = sampleAttitude(replayStartSec)
+      setTimeSec(replayStartSec)
+    }
     setPlaying((current) => !current)
   }
 
@@ -155,7 +172,7 @@ export default function LogAttitudeVisualizer({
           <ambientLight intensity={0.4} />
           <directionalLight position={[5, 5, 5]} intensity={0.8} />
           <pointLight position={[-3, 2, -3]} intensity={0.3} color="#3B82F6" />
-          <LogDrone attitude={attitude} />
+          <LogDrone attitudeRef={attitudeRef} />
           <gridHelper args={[4, 20, '#24243A', '#13131A']} position={[0, -1, 0]} />
           <OrbitControls enablePan={false} enableZoom minDistance={2} maxDistance={8} />
         </Canvas>
@@ -178,8 +195,11 @@ export default function LogAttitudeVisualizer({
           value={timeSec}
           aria-label={t('logAnalysis.attitudeTimeAria')}
           onChange={(event) => {
+            const next = Number(event.target.value)
+            playbackTimeRef.current = next
+            attitudeRef.current = sampleAttitude(next)
             setPlaying(false)
-            setTimeSec(Number(event.target.value))
+            setTimeSec(next)
           }}
         />
         <span className="mc-mono">
@@ -187,9 +207,9 @@ export default function LogAttitudeVisualizer({
         </span>
       </div>
       <div className="mc-log-attitude__values">
-        <span>Roll <strong>{attitude.roll.toFixed(1)}°</strong></span>
-        <span>Pitch <strong>{attitude.pitch.toFixed(1)}°</strong></span>
-        <span>Yaw <strong>{attitude.yaw.toFixed(1)}°</strong></span>
+        <span>{t('logAnalysis.label.roll')} <strong>{attitude.roll.toFixed(1)}°</strong></span>
+        <span>{t('logAnalysis.label.pitch')} <strong>{attitude.pitch.toFixed(1)}°</strong></span>
+        <span>{t('logAnalysis.label.yaw')} <strong>{attitude.yaw.toFixed(1)}°</strong></span>
       </div>
     </div>
   )

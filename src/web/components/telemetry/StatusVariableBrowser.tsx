@@ -495,17 +495,20 @@ export default function StatusVariableBrowser({ paused = false }: { paused?: boo
     [snapshot],
   )
   // While paused, keep rendering the snapshot captured at pause time.
-  const frozenRef = useRef<StatusGroup[] | null>(null)
-  if (paused) {
-    if (!frozenRef.current) frozenRef.current = liveGroups
-  } else {
-    frozenRef.current = null
-  }
-  const groups = frozenRef.current ?? liveGroups
+  const [frozenGroups, setFrozenGroups] = useState<StatusGroup[] | null>(null)
+  useEffect(() => {
+    if (paused) setFrozenGroups((current) => current ?? liveGroups)
+    else setFrozenGroups(null)
+  }, [liveGroups, paused])
+  const groups = paused ? frozenGroups ?? liveGroups : liveGroups
   const previousValuesRef = useRef(new Map<string, string | null>())
   const changedUntilRef = useRef(new Map<string, number>())
-  const changedKeys = useMemo(() => {
-    if (paused) return new Set<string>()
+  const [changedKeys, setChangedKeys] = useState<Set<string>>(() => new Set())
+  useEffect(() => {
+    if (paused) {
+      setChangedKeys((current) => current.size === 0 ? current : new Set())
+      return
+    }
     const changed = changedUntilRef.current
     const previous = previousValuesRef.current
     const nowMs = snapshot.sampledAt
@@ -517,7 +520,7 @@ export default function StatusVariableBrowser({ paused = false }: { paused?: boo
       }
     }
     for (const [key, until] of changed) if (until <= nowMs) changed.delete(key)
-    return new Set(changed.keys())
+    setChangedKeys(new Set(changed.keys()))
   }, [groups, paused, snapshot.sampledAt])
 
   const totalCount = groups.reduce((count, group) => count + group.entries.length, 0)

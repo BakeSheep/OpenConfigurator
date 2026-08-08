@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VehicleIdentity } from '../../shared/types'
+import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VfrHudData, GlobalPositionData, VehicleIdentity } from '../../shared/types'
 import type { ServerMessage } from '../../shared/types'
 import {
   appendGpsTrackPoint,
@@ -79,7 +79,7 @@ interface TelemetryState {
   climbRate: number
   heading: number
   throttle: number
-  globalPosition: { lat: number; lon: number; alt: number; relative_alt: number; vx: number; vy: number; vz: number; hdg: number | null } | null
+  globalPosition: GlobalPositionData | null
   statusLogs: StatusLogEntry[]
   lastOperationError: OperationErrorState | null
   lastCommandAck: CommandAckState | null
@@ -98,8 +98,8 @@ interface TelemetryState {
   setMotorOutputs: (data: MotorOutputData) => void
   setAutopilotVersion: (data: AutopilotVersionData | null) => void
   setVehicleIdentity: (identity: VehicleIdentity | null) => void
-  setVfrHud: (data: any) => void
-  setGlobalPosition: (data: any) => void
+  setVfrHud: (data: VfrHudData) => void
+  setGlobalPosition: (data: GlobalPositionData) => void
   setSysStatus: (data: SysStatusData) => void
   addStatusLog: (severity: number, text: string) => void
   setOperationError: (error: Omit<OperationErrorState, 'time'>) => void
@@ -119,6 +119,10 @@ const zeroLastUpdate = (): Record<TelemetryField, number> => ({
   attitude: 0, gps: 0, battery: 0, status: 0, ekfStatus: 0,
   rcChannels: 0, motorOutputs: 0, vfrHud: 0, globalPosition: 0, sysStatus: 0,
 })
+
+export function isValidBatteryVoltage(value: number | null): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
 
 export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   attitude: null,
@@ -173,7 +177,12 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   // unknown field from the previously displayed battery: independent battery
   // IDs may be interleaved on the same MAVLink link.
   setBattery: (data) => set((state) => ({
-    battery: data,
+    battery: {
+      ...data,
+      voltage: isValidBatteryVoltage(data.voltage) ? data.voltage : null,
+      cell_voltages: data.cell_voltages.map((voltage) =>
+        isValidBatteryVoltage(voltage) ? voltage : null),
+    },
     batterySource: 'battery_status',
     lastUpdate: { ...state.lastUpdate, battery: Date.now() },
   })),
@@ -213,7 +222,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
       && now - state.lastUpdate.battery <= STALE_THRESHOLDS.battery
     // Only synthesize a fallback battery when SYS_STATUS carries a valid
     // voltage; otherwise a monitor-less ArduPilot would show 0.0 V · 99%.
-    const sysStatusHasVoltage = data.voltageBattery != null
+    const sysStatusHasVoltage = isValidBatteryVoltage(data.voltageBattery)
     const fallbackBattery: BatteryData | null = batteryStatusFresh
       ? state.battery
       : sysStatusHasVoltage

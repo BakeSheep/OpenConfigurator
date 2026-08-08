@@ -71,6 +71,9 @@ export class MspClient {
     if (response.isError) {
       throw new EscError('nack', `MSP 命令 ${command} 返回错误`)
     }
+    if (response.command !== command) {
+      throw new EscError('target_mismatch', `MSP 响应命令 ${response.command} 与请求 ${command} 不匹配`)
+    }
     return response
   }
 

@@ -14,6 +14,7 @@ import { useCalibrationStore } from '../stores/calibrationStore'
 import { setDemoClientMessageInterceptor } from '../hooks/useWebSocket'
 import { createCalibrationDemo } from './calibrationDemo'
 import type { ParamData } from '../../shared/types'
+import { dashboardCustomVarsStorageKey } from '../runtime'
 
 const deg = Math.PI / 180
 
@@ -120,8 +121,8 @@ function seedStatics() {
   // Pre-select a few variables for the dashboard custom data board so the
   // showcase does not render an empty card (user picks are left untouched).
   try {
-    if (!localStorage.getItem('oc-dashboard-custom-vars')) {
-      localStorage.setItem('oc-dashboard-custom-vars', JSON.stringify([
+    if (!localStorage.getItem(dashboardCustomVarsStorageKey)) {
+      localStorage.setItem(dashboardCustomVarsStorageKey, JSON.stringify([
         'Vehicle.groundSpeed',
         'Vehicle.altitudeRelative',
         'Vehicle.throttlePct',
@@ -419,9 +420,10 @@ function pushSlowTelemetry() {
 }
 
 let started = false
+let activeCleanup: (() => void) | null = null
 
-export function startDemoMode() {
-  if (started) return
+export function startDemoMode(): () => void {
+  if (activeCleanup) return activeCleanup
   started = true
   console.log('[Demo] Synthetic telemetry enabled - no flight controller is connected')
   // Give the demo a stable client id so calibration ownership resolves; the
@@ -444,6 +446,15 @@ export function startDemoMode() {
   seedStatusLogs()
   pushFastTelemetry()
   pushSlowTelemetry()
-  window.setInterval(pushFastTelemetry, 100)
-  window.setInterval(pushSlowTelemetry, 500)
+  const fastInterval = window.setInterval(pushFastTelemetry, 100)
+  const slowInterval = window.setInterval(pushSlowTelemetry, 500)
+  activeCleanup = () => {
+    window.clearInterval(fastInterval)
+    window.clearInterval(slowInterval)
+    calibrationDemo.stop()
+    setDemoClientMessageInterceptor(null)
+    started = false
+    activeCleanup = null
+  }
+  return activeCleanup
 }

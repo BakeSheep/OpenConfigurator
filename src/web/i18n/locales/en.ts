@@ -325,6 +325,7 @@ export const en = {
     commandsHint: 'Click to send a command to the FC immediately',
     latestFcFeedback: 'Latest FC feedback',
     unrecognized: 'Unrecognized',
+    listSeparator: ', ',
   },
   settings: {
     title: 'Vehicle Settings',
@@ -446,6 +447,8 @@ export const en = {
     importClose: 'Close',
     importWriteRejected: 'The flight controller did not accept this value',
     importSendFailed: 'The WebSocket is disconnected; the message was not sent',
+    importWriteTimeout: 'Timed out waiting for the flight controller to confirm this write',
+    importCancelled: 'Import cancelled by the user',
     importTargetChanged: 'The vehicle target or controller lease changed; writing was stopped',
     importTargetUnavailable: 'No writable flight controller target has been identified',
     importFileTooLarge: 'The parameter file exceeds the 2 MiB limit',
@@ -490,6 +493,16 @@ export const en = {
     groupBattery: 'Battery',
     groupAccel: 'Accelerometer',
     groupOpticalFlow: 'Optical Flow',
+    live: 'Live',
+    paused: 'Paused',
+    offline: 'Offline',
+    channel: {
+      roll: 'Roll (°)', pitch: 'Pitch (°)', yaw: 'Yaw (°)',
+      altitude: 'Altitude (m)', climb: 'Climb (m/s)', speed: 'Ground speed (m/s)',
+      voltage: 'Voltage (V)', current: 'Current (A)', battery: 'Battery (%)',
+      accX: 'IMU 1 Acc X (m/s²/raw)', accY: 'IMU 1 Acc Y (m/s²/raw)', accZ: 'IMU 1 Acc Z (m/s²/raw)',
+      flowX: 'Flow X', flowY: 'Flow Y', quality: 'Quality',
+    },
   },
   ekf: {
     ekf2FusionConfig: 'EKF2 Fusion Configuration',
@@ -890,6 +903,7 @@ export const en = {
     firmware: 'Firmware',
     firmwareName: 'Firmware Name',
     firmwareVersion: 'Firmware Version',
+    bootloader: 'Bootloader',
     mcu: 'MCU',
     readonly: 'Read-Only',
     firmwareUnknown: 'Unrecognized',
@@ -994,6 +1008,7 @@ export const en = {
     writeEnabled: 'FC is disarmed and control is held; parameters can be submitted',
     writeFailed: 'Write Failed',
     writeSuccess: 'Write Succeeded',
+    invalidInput: 'Enter a finite numeric value; the draft has been kept.',
   },
   vehicleConfig: {
     fcDefault: 'FC Default',
@@ -1124,6 +1139,7 @@ export const en = {
     attitudeTimeAria: 'Log attitude time',
     dataflashParseFailed: 'DataFlash log parse failed: {{message}}',
     ulogHeaderError: 'Cannot parse ULog file header',
+    multipleBootsTruncated: 'A flight-controller reboot was detected; analysis was truncated at the first boot boundary.',
     ulogParseFailed: 'ULog parse failed: {{message}}',
     importFromFcTitle: 'Import log from flight controller',
     readingDir: 'Reading directory…',
@@ -1694,11 +1710,12 @@ export const en = {
       land: 'Land',
       stabilized: 'Stabilized Mode',
       acro: 'Acro Mode',
+      unavailableAssigned: 'Unavailable on the current vehicle',
     },
     enableControl: 'Enable Gamepad Control',
     connectFirst: 'Please connect the flight controller first.',
     readOnlyFc: 'The current flight controller type is read-only; gamepad control cannot be enabled.',
-    channelMapping: 'Channel Mapping & Response Curve',
+    channelMapping: 'Stick Coordinates & Channel Mapping',
     deadzone: 'Deadzone',
     expo: 'Expo',
     buttonAssignment: 'Button Assignment',
@@ -1720,6 +1737,8 @@ export const en = {
       disarmSent: 'B{{button}}: Disarm command sent',
       modeNotSupported: 'B{{button}}: Mode switch not supported on this FC',
       modeSwitch: 'B{{button}}: Switched to {{mode}}',
+      sendFailed: 'B{{button}}: Command was not sent; gamepad control disabled',
+      controlSendFailed: 'Manual control frame was not sent; gamepad control disabled',
     },
     visualizer: {
       aria: {
@@ -1804,6 +1823,7 @@ export const en = {
     serialWriteNotAdaptedSimple: 'The current FC type does not support serial configuration writes yet; controls are view-only.',
     valueLabel: 'Value {{value}}',
     waitingForParams: 'Waiting for parameters',
+    autoDetected: 'Auto-detected',
   },
   receiver: {
     description: 'RC receiver channel monitoring and signal quality',
@@ -1812,6 +1832,9 @@ export const en = {
     realtimeChannels: 'Realtime RC Channels',
     pwmRangeHint: 'PWM range 1000–2000 µs',
     rssi: ' · RSSI {{rssi}}%',
+    channel: {
+      roll: 'Roll', pitch: 'Pitch', throttle: 'Throttle', yaw: 'Yaw', aux: 'AUX{{index}}',
+    },
   },
   flightLogs: {
     title: 'Flight Logs',

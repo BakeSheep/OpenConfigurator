@@ -111,8 +111,8 @@ function Px4GpsFields({ instance, writable, params }: {
           }}
         >
           {!config && <option value="">{t('sensor.gps.waitingParam')}</option>}
-          <option value={0}>0: Disabled</option>
-          <option value={1}>1: Enabled</option>
+          <option value={0}>0: {t('common.disabled')}</option>
+          <option value={1}>1: {t('common.enabled')}</option>
         </select>
         <small>{t('sensor.gps.px4ConfigShared')}</small>
       </label>
@@ -186,8 +186,8 @@ function ArduPilotGpsFields({ instance, writable, params }: {
           }}
         >
           {!type && <option value="">{t('sensor.gps.waitingParam')}</option>}
-          <option value={0}>0: Disabled</option>
-          <option value={1}>1: Enabled</option>
+          <option value={0}>0: {t('common.disabled')}</option>
+          <option value={1}>1: {t('common.enabled')}</option>
         </select>
         <small>{t('sensor.gps.arduPilotTypeControlHint')}</small>
       </label>

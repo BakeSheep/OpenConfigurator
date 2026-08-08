@@ -20,7 +20,7 @@ function isPrearmSuccess(text: string): boolean {
   const detail = text.slice(match.index + match[0].length)
     .replace(/^\s*:\s*/, '')
     .trim()
-  return /^(?:(?:all\s+)?checks?\s+(?:passed|ok)|good|ok|ready)\b/i.test(detail)
+  return /^(?:(?:all\s+)?checks?\s+(?:passed|ok)|good|healthy|ok|ready)\b/i.test(detail)
 }
 
 function isAfterBoundary(entry: TimedStatusText, boundary: StatusSessionBoundary | null): boolean {

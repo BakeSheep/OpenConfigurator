@@ -18,7 +18,9 @@ async function bootstrap() {
 
   if (appRuntimeMode === 'demo') {
     const { startDemoMode } = await import('./demo/demoMode')
-    startDemoMode()
+    const stopDemoMode = startDemoMode()
+    window.addEventListener('pagehide', stopDemoMode, { once: true })
+    if (import.meta.hot) import.meta.hot.dispose(stopDemoMode)
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(

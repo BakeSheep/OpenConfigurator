@@ -1,23 +1,16 @@
 import { create } from 'zustand'
+import {
+  canRepeatGamepadAction,
+  isGamepadActionId,
+  type GamepadActionId,
+} from '../utils/gamepadActions'
 
-export type GamepadActionId =
-  | 'none' | 'arm' | 'disarm' | 'toggle_arm'
-  | 'manual' | 'altitude' | 'position' | 'mission' | 'hold'
-  | 'rtl' | 'land' | 'stabilized' | 'acro'
+export type { GamepadActionId } from '../utils/gamepadActions'
 
 export interface ButtonAssignment {
   action: GamepadActionId
   repeat: boolean
 }
-
-// Arm/disarm must fire exactly once per deliberate press. A repeating arm
-// command would defeat the single-press arming contract, so these actions can
-// never carry the repeat flag (enforced on write and on settings load).
-export const NON_REPEATABLE_ACTIONS: ReadonlySet<GamepadActionId> = new Set([
-  'arm',
-  'disarm',
-  'toggle_arm',
-])
 
 export interface GamepadMapping {
   throttle: number
@@ -96,11 +89,12 @@ function sanitizeAssignments(value: unknown): Record<number, ButtonAssignment> {
   const next: Record<number, ButtonAssignment> = {}
   if (typeof value !== 'object' || value === null) return next
   for (const [key, entry] of Object.entries(value as Record<string, Partial<ButtonAssignment>>)) {
-    if (!entry || typeof entry.action !== 'string') continue
-    const action = entry.action as GamepadActionId
-    next[Number(key)] = {
+    const button = Number(key)
+    if (!Number.isSafeInteger(button) || button < 0 || !entry || !isGamepadActionId(entry.action)) continue
+    const action = entry.action
+    next[button] = {
       action,
-      repeat: entry.repeat === true && !NON_REPEATABLE_ACTIONS.has(action),
+      repeat: entry.repeat === true && canRepeatGamepadAction(action),
     }
   }
   return next
@@ -153,7 +147,7 @@ export const useGamepadStore = create<GamepadState>((set) => ({
   actionNotice: '',
   setConnected: (connected, id) => set(connected
     ? { connected: true, id: id || null }
-    : { connected: false, id: null, axes: [], buttons: [], enabled: false, actionNotice: '' }),
+    : { connected: false, id: null, axes: [], buttons: [], actionNotice: '' }),
   setAxes: (axes) => set((state) =>
     state.axes.length === axes.length && axes.every((value, index) => Math.abs(value - state.axes[index]) < 0.001)
       ? state
@@ -175,10 +169,7 @@ export const useGamepadStore = create<GamepadState>((set) => ({
       repeat: state.buttonAssignments[button]?.repeat ?? false,
       ...assignment,
     }
-    // Switching a button to an arm-class action must clear any pre-existing
-    // repeat flag, otherwise holding the button would re-fire arm/disarm at
-    // the configured button frequency.
-    if (NON_REPEATABLE_ACTIONS.has(merged.action)) merged.repeat = false
+    if (!canRepeatGamepadAction(merged.action)) merged.repeat = false
     const next = { ...state.buttonAssignments, [button]: merged }
     writeStoredSettings({ ...pickStoredSettings(state), buttonAssignments: next })
     return { buttonAssignments: next }

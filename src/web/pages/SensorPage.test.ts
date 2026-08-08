@@ -12,6 +12,8 @@ import {
   calibrationSideInstruction,
   resolveCalibrationProgress,
   shouldShowCalibrationWizard,
+  displayImuValue,
+  imuDisplayUnit,
 } from './SensorPage'
 
 initI18n('zh')
@@ -22,6 +24,12 @@ assert.equal(
   initialHistory,
   'a missing telemetry frame must not refresh or mutate a live chart',
 )
+
+assert.equal(displayImuValue('accel', 2048, 'raw'), 2048)
+assert.equal(displayImuValue('gyro', -512, 'raw'), -512)
+assert.equal(imuDisplayUnit('accel', 'raw'), 'raw')
+assert.equal(imuDisplayUnit('gyro', 'raw'), 'raw')
+assert.ok(Math.abs(displayImuValue('accel', 1, 'normalized') - 9.80665) < 1e-9)
 assert.deepEqual(
   appendLiveSample(initialHistory, { x: 3 }, 2),
   [{ t: 1, x: 2 }, { t: 2, x: 3 }],

@@ -17,6 +17,15 @@ export function attitudeToModelRotation(attitude: AttitudeEuler) {
   }
 }
 
+export function degreeAttitudeToModelRotation(attitude: AttitudeEuler) {
+  const radians = Math.PI / 180
+  return attitudeToModelRotation({
+    roll: attitude.roll * radians,
+    pitch: attitude.pitch * radians,
+    yaw: attitude.yaw * radians,
+  })
+}
+
 /** The artificial horizon moves opposite to the aircraft's bank angle. */
 export function attitudeToHorizonTransform(rollDegrees: number, pitchDegrees: number): string {
   return `rotate(${(-rollDegrees).toFixed(1)}deg) translateY(${(-pitchDegrees * 1.15).toFixed(1)}%)`

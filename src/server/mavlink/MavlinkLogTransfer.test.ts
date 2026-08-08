@@ -13,6 +13,7 @@ import {
   type LogTransferRequest,
   type LogTransferTransport,
 } from './MavlinkLogTransfer'
+import { MAX_LOG_DOWNLOAD_BYTES } from './downloadLimits'
 import type { ServerMessage } from '../../shared/types'
 
 const wait = (milliseconds: number) =>
@@ -440,6 +441,27 @@ async function testWriteRejected(): Promise<void> {
   assert.equal(service.busy, false)
 }
 
+async function testOversizedDownloadRejectedBeforeTempFile(): Promise<void> {
+  const { transport, service, dir } = await makeService()
+  transport.responder = (request) => {
+    if (request.kind === 'list') {
+      transport.entry({
+        id: 8,
+        numLogs: 1,
+        lastLogNum: 8,
+        size: MAX_LOG_DOWNLOAD_BYTES + 1,
+      })
+    }
+  }
+  service.startDownload(8, 'oversized')
+  await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
+  assert.equal(transport.messagesOfType('log_op_error')[0].data.code, 'download_too_large')
+  assert.deepEqual(await fsp.readdir(dir), [])
+  assert.equal(service.busy, false)
+  await service.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+}
+
 async function main(): Promise<void> {
   await testListComplete()
   await testListEmpty()
@@ -458,6 +480,7 @@ async function main(): Promise<void> {
   await testMutualExclusion()
   await testInvalidLogId()
   await testWriteRejected()
+  await testOversizedDownloadRejectedBeforeTempFile()
   console.log('MavlinkLogTransfer protocol tests passed')
 }
 

@@ -139,6 +139,26 @@ export interface SysStatusData {
   unhealthySensors: string[]
 }
 
+export interface VfrHudData {
+  airspeed: number
+  groundspeed: number
+  alt: number
+  climb: number
+  heading: number
+  throttle: number
+}
+
+export interface GlobalPositionData {
+  lat: number
+  lon: number
+  alt: number
+  relative_alt: number
+  vx: number
+  vy: number
+  vz: number
+  hdg: number | null
+}
+
 export interface ImuData {
   /** Zero-based physical IMU instance (0 = IMU 1). */
   instance?: number
@@ -385,8 +405,10 @@ export type ServerMessage =
         reason?: string
       }
     }
-  | { type: 'telemetry'; msgType: string; data: any }
-  | { type: 'sensor'; msgType: string; data: any }
+  // MAVLink-derived payloads cross an untrusted JSON boundary. Consumers
+  // must validate data against msgType before writing it into application state.
+  | { type: 'telemetry'; msgType: string; data: unknown }
+  | { type: 'sensor'; msgType: string; data: unknown }
   | { type: 'message_rates'; data: MessageRateConfig }
   | { type: 'param'; data: ParamData }
   | { type: 'param_batch'; generation?: number; data: ParamData[] }

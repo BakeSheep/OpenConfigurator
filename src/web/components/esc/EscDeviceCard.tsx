@@ -28,7 +28,7 @@ export default function EscDeviceCard({ esc }: { esc: EscDeviceInfo }) {
     { label: t('escDevice.firmwareName'), value: esc.firmwareName ?? '-' },
     { label: t('escDevice.firmwareVersion'), value: esc.firmwareVersion ?? '-' },
     { label: t('escDevice.mcu'), value: esc.mcuName ?? formatSignature(esc.mcuSignature) },
-    { label: 'Bootloader', value: esc.bootloaderVersion ?? '-' },
+    { label: t('escDevice.bootloader'), value: esc.bootloaderVersion ?? '-' },
   ]
 
   return (

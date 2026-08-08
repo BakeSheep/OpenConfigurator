@@ -52,6 +52,7 @@ async function startDesktopBackend(): Promise<string> {
     remoteEnabled: false,
     authToken: null,
     allowedOrigins: [],
+    allowDevOrigin: false,
   })
   backend = await startServer({
     config,

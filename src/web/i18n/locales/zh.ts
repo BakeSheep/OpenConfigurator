@@ -325,6 +325,7 @@ export const zh = {
     commandsHint: '点击立即向飞控发送指令',
     latestFcFeedback: '飞控最新反馈',
     unrecognized: '未识别',
+    listSeparator: '、',
   },
   settings: {
     title: '飞行器设置',
@@ -446,6 +447,8 @@ export const zh = {
     importClose: '关闭',
     importWriteRejected: '飞控未接受该值',
     importSendFailed: 'WebSocket 未连接，消息未发送',
+    importWriteTimeout: '等待飞控确认该参数写入超时',
+    importCancelled: '用户已取消导入',
     importTargetChanged: '飞控目标或控制权限已变化，已停止写入',
     importTargetUnavailable: '尚未识别可写入的飞控目标',
     importFileTooLarge: '参数文件超过 2 MiB 限制',
@@ -490,6 +493,16 @@ export const zh = {
     groupBattery: '电池',
     groupAccel: '加速度计',
     groupOpticalFlow: '光流',
+    live: '实时',
+    paused: '已暂停',
+    offline: '离线',
+    channel: {
+      roll: '横滚（°）', pitch: '俯仰（°）', yaw: '偏航（°）',
+      altitude: '高度（m）', climb: '爬升率（m/s）', speed: '地速（m/s）',
+      voltage: '电压（V）', current: '电流（A）', battery: '电量（%）',
+      accX: 'IMU 1 加速度 X（m/s²/原始）', accY: 'IMU 1 加速度 Y（m/s²/原始）', accZ: 'IMU 1 加速度 Z（m/s²/原始）',
+      flowX: '光流 X', flowY: '光流 Y', quality: '质量',
+    },
   },
   ekf: {
     ekf2FusionConfig: 'EKF2 融合配置',
@@ -890,6 +903,7 @@ export const zh = {
     firmware: '固件',
     firmwareName: '固件名称',
     firmwareVersion: '固件版本',
+    bootloader: '引导加载程序',
     mcu: 'MCU',
     readonly: '仅可只读',
     firmwareUnknown: '未识别',
@@ -994,6 +1008,7 @@ export const zh = {
     writeEnabled: '飞控已上锁且具备控制权，可以提交参数',
     writeFailed: '写入失败',
     writeSuccess: '写入成功',
+    invalidInput: '请输入有限数值；当前草稿已保留。',
   },
   vehicleConfig: {
     fcDefault: '飞控默认',
@@ -1165,6 +1180,7 @@ export const zh = {
     attitudeTimeAria: '日志姿态时间',
     dataflashParseFailed: 'DataFlash 日志解析失败：{{message}}',
     ulogHeaderError: '无法解析 ULog 文件头',
+    multipleBootsTruncated: '检测到飞控重启；分析已在第一个启动边界处截断。',
     ulogParseFailed: 'ULog 解析失败：{{message}}',
     importFromFcTitle: '从飞控导入日志',
     readingDir: '正在读取目录…',
@@ -1694,11 +1710,12 @@ export const zh = {
       land: '降落 Land',
       stabilized: 'Stabilized 模式',
       acro: 'Acro 模式',
+      unavailableAssigned: '当前飞行器不可用',
     },
     enableControl: '启用手柄控制',
     connectFirst: '请先连接飞控。',
     readOnlyFc: '当前飞控类型为只读配置，不能启用手柄控制。',
-    channelMapping: '通道映射与响应曲线',
+    channelMapping: '摇杆坐标与通道映射',
     deadzone: '死区',
     expo: '指数',
     buttonAssignment: '按钮分配',
@@ -1720,6 +1737,8 @@ export const zh = {
       disarmSent: 'B{{button}}：已发送上锁指令',
       modeNotSupported: 'B{{button}}：当前飞控不支持该模式切换',
       modeSwitch: 'B{{button}}：切换至 {{mode}}',
+      sendFailed: 'B{{button}}：指令未发送，已停用手柄控制',
+      controlSendFailed: '手动控制帧未发送，已停用手柄控制',
     },
     visualizer: {
       aria: {
@@ -1782,6 +1801,7 @@ export const zh = {
   },
   portSettings: {
     advanced: '高级',
+    autoDetected: '自动检测',
     noBaudParam: '无波特率参数',
     ardupilotSerial: 'ArduPilot 串口',
     ardupilotSerialDesc: '串口功能、波特率与协议配置',
@@ -1812,6 +1832,9 @@ export const zh = {
     realtimeChannels: '实时 RC 通道',
     pwmRangeHint: 'PWM 范围 1000–2000 µs',
     rssi: ' · RSSI {{rssi}}%',
+    channel: {
+      roll: '横滚', pitch: '俯仰', throttle: '油门', yaw: '偏航', aux: '辅助{{index}}',
+    },
   },
   flightLogs: {
     title: '飞行日志',

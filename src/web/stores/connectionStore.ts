@@ -46,6 +46,7 @@ interface ConnectionState {
   scanning: boolean
   connectDialogOpen: boolean
   connectionError: string | null
+  activePresetId: string | null
   setStatus: (status: ConnectionStatus) => void
   setConnectionError: (error: string | null) => void
   setConnectionSnapshot: (snapshot: {
@@ -66,6 +67,7 @@ interface ConnectionState {
   setPorts: (serial: PortInfo[], bluetooth: PortInfo[]) => void
   setScanning: (scanning: boolean) => void
   setConnectDialogOpen: (open: boolean) => void
+  setActivePresetId: (presetId: string | null) => void
 }
 
 export const useConnectionStore = create<ConnectionState>((set) => ({
@@ -89,6 +91,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   scanning: false,
   connectDialogOpen: false,
   connectionError: null,
+  activePresetId: null,
   setStatus: (status) => set({ status }),
   setConnectionError: (connectionError) => set({ connectionError }),
   setConnectionSnapshot: (snapshot) => set((state) => ({
@@ -100,7 +103,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     type: snapshot.type ?? (snapshot.transportOpen ? state.type : null),
     baudRate: snapshot.baudRate ?? (snapshot.transportOpen ? state.baudRate : null),
     reconnect: snapshot.status === 'reconnecting' ? state.reconnect : null,
-    connectDialogOpen: snapshot.transportOpen ? false : state.connectDialogOpen,
+    connectDialogOpen: snapshot.transportOpen && !state.transportOpen
+      ? false
+      : state.connectDialogOpen,
     connectionError: snapshot.transportOpen ? null : state.connectionError,
   })),
   setClientId: (clientId) => set((state) => ({
@@ -141,9 +146,11 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     controllerClientId: null,
     controllerExpiresAt: null,
     canControl: true,
+    activePresetId: null,
   }),
   setLinkStats: (stats) => set({ linkStats: stats }),
   setPorts: (serial, bluetooth) => set({ serialPorts: serial, bluetoothPorts: bluetooth }),
   setScanning: (scanning) => set({ scanning }),
   setConnectDialogOpen: (open) => set({ connectDialogOpen: open }),
+  setActivePresetId: (activePresetId) => set({ activePresetId }),
 }))

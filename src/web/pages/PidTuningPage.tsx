@@ -59,6 +59,7 @@ export default function PidTuningPage() {
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const pidWritable = vehicleCapabilities(vehicleIdentity).pidConfig
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
   const [pending, setPending] = useState<{ requestId: string; id: string; value: number } | null>(null)
   const [feedback, setFeedback] = useState<{ id: string; kind: 'success' | 'error' } | null>(null)
   const timeoutRef = useRef<number | null>(null)
@@ -79,11 +80,13 @@ export default function PidTuningPage() {
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
     timeoutRef.current = null
     flashFeedback(pending.id, lastWriteResult.accepted ? 'success' : 'error')
-    setDrafts((current) => {
-      const next = { ...current }
-      delete next[pending.id]
-      return next
-    })
+    if (lastWriteResult.accepted) {
+      setDrafts((current) => {
+        const next = { ...current }
+        delete next[pending.id]
+        return next
+      })
+    }
     setPending(null)
   }, [lastWriteResult, pending])
 
@@ -124,13 +127,14 @@ export default function PidTuningPage() {
     const param = params.get(definition.id)
     if (!param || !canWrite || pending) return
     if (!Number.isFinite(value)) {
-      setDrafts((current) => {
-        const next = { ...current }
-        delete next[definition.id]
-        return next
-      })
+      setValidationErrors((current) => ({ ...current, [definition.id]: t('pidTuning.invalidInput') }))
       return
     }
+    setValidationErrors((current) => {
+      const next = { ...current }
+      delete next[definition.id]
+      return next
+    })
     const boundedValue = roundToStep(Math.min(definition.max, Math.max(definition.min, value)), definition.step)
     if (valuesEqual(boundedValue, param.value, definition.step)) {
       setDrafts((current) => {
@@ -145,11 +149,16 @@ export default function PidTuningPage() {
     setPending({ requestId, id: definition.id, value: boundedValue })
     setDrafts((current) => ({ ...current, [definition.id]: formatValue(boundedValue, definition.step) }))
     useParameterStore.getState().setWriteResult(null)
-    sendClientMessage({
+    const sent = sendClientMessage({
       type: 'param_set',
       requestId,
       data: { id: definition.id, value: boundedValue, paramType: param.type },
     })
+    if (!sent) {
+      setPending(null)
+      flashFeedback(definition.id, 'error')
+      return
+    }
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
     timeoutRef.current = window.setTimeout(() => {
       setPending((current) => {
@@ -253,7 +262,7 @@ export default function PidTuningPage() {
                       const isPending = pending?.id === definition.id
                       const isDirty = draft !== undefined && !isPending
                       return (
-                        <div key={definition.id} className="mc-pid-item" data-pending={isPending || undefined}>
+                        <div key={definition.id} className="mc-pid-item" data-pending={isPending || undefined} data-error={validationErrors[definition.id] ? true : undefined}>
                           <div className="mc-pid-item__top">
                             <label htmlFor={`pid-${definition.id}`} title={`${definition.id} — ${definition.hint}`}>
                               {definition.label}
@@ -273,8 +282,21 @@ export default function PidTuningPage() {
                                 className="mc-mono"
                                 value={displayValue}
                                 disabled={!canWrite || (pending !== null && !isPending)}
-                                onChange={(event) => setDrafts((current) => ({ ...current, [definition.id]: event.target.value }))}
-                                onBlur={(event) => { if (!isPending) commit(definition, Number(event.target.value)) }}
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  setDrafts((current) => ({ ...current, [definition.id]: value }))
+                                  setValidationErrors((current) => {
+                                    if (!current[definition.id]) return current
+                                    const next = { ...current }
+                                    delete next[definition.id]
+                                    return next
+                                  })
+                                }}
+                                onBlur={(event) => {
+                                  if (isPending) return
+                                  const raw = event.target.value.trim()
+                                  commit(definition, raw === '' ? Number.NaN : Number(raw))
+                                }}
                                 onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
                               />
                               <button
@@ -285,6 +307,7 @@ export default function PidTuningPage() {
                               >+</button>
                             </div>
                           </div>
+                          {validationErrors[definition.id] && <small role="alert">{validationErrors[definition.id]}</small>}
                           <input
                             type="range"
                             className="mc-pid-item__slider"

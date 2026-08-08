@@ -138,6 +138,26 @@ export const NAV_STATE_NAMES: Record<number, string> = {
 }
 
 export const RAD_TO_DEG = 180 / Math.PI
+export const MAX_STATE_TRANSITIONS = 4096
+
+export function appendBoundedTransition<T>(
+  samples: T[],
+  sample: T,
+  sameState: (previous: T, next: T) => boolean,
+  maxSamples = MAX_STATE_TRANSITIONS,
+): 'appended' | 'unchanged' | 'full' {
+  const previous = samples[samples.length - 1]
+  if (previous !== undefined && sameState(previous, sample)) return 'unchanged'
+  if (samples.length >= maxSamples) return 'full'
+  samples.push(sample)
+  return 'appended'
+}
+
+export function normalizeUlogTimestamp(value: unknown): bigint | null {
+  if (typeof value === 'bigint') return value > 0n ? value : null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  return BigInt(Math.trunc(value))
+}
 
 /**
  * Filelike over an in-memory ArrayBuffer that returns COPIES from read().

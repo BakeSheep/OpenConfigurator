@@ -125,8 +125,18 @@ const phaseLabel = (snapshot: CalibrationSnapshot, t: TFunction): string => {
   }
 }
 
-const displayImuValue = (kind: 'accel' | 'gyro', value: number) =>
-  kind === 'accel' ? value * STANDARD_GRAVITY : value * RADIANS_TO_DEGREES
+export const displayImuValue = (
+  kind: 'accel' | 'gyro',
+  value: number,
+  units: 'raw' | 'normalized' | undefined,
+) => units === 'raw'
+  ? value
+  : kind === 'accel' ? value * STANDARD_GRAVITY : value * RADIANS_TO_DEGREES
+
+export const imuDisplayUnit = (
+  kind: 'accel' | 'gyro',
+  units: 'raw' | 'normalized' | undefined,
+) => units === 'raw' ? 'raw' : kind === 'accel' ? 'm/s²' : '°/s'
 
 type LiveChartPoint = { t: number } & Record<string, number | null>
 type LiveChartSeries = { key: string; label: string; color: string; axis?: 'left' | 'right' }
@@ -226,9 +236,9 @@ const xyzSeries: LiveChartSeries[] = [
 
 function SensorChart({ kind, instance, imu }: { kind: 'accel' | 'gyro'; instance: number; imu: ReturnType<typeof useSensorStore.getState>['imu'] }) {
   const values = imu ? {
-    x: displayImuValue(kind, kind === 'accel' ? imu.xacc : imu.xgyro),
-    y: displayImuValue(kind, kind === 'accel' ? imu.yacc : imu.ygyro),
-    z: displayImuValue(kind, kind === 'accel' ? imu.zacc : imu.zgyro),
+    x: displayImuValue(kind, kind === 'accel' ? imu.xacc : imu.xgyro, imu.units),
+    y: displayImuValue(kind, kind === 'accel' ? imu.yacc : imu.ygyro, imu.units),
+    z: displayImuValue(kind, kind === 'accel' ? imu.zacc : imu.zgyro, imu.units),
   } : null
   return <LiveSensorChart sample={imu} values={values} series={xyzSeries} resetKey={`${kind}-${instance}`} />
 }
@@ -850,13 +860,13 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
 
           <div className="mc-sensor-chart-grid">
             <section className="mc-card mc-sensor-chart-card">
-              <header><strong>{t('common.accelerometer')}</strong><span>m/s²</span></header>
-              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('accel', imu.xacc) : null} color="var(--chart-4)" /><AxisValue axis="Y" value={imu ? displayImuValue('accel', imu.yacc) : null} color="var(--chart-2)" /><AxisValue axis="Z" value={imu ? displayImuValue('accel', imu.zacc) : null} color="var(--info)" /></div>
+              <header><strong>{t('common.accelerometer')}</strong><span>{imuDisplayUnit('accel', imu?.units)}</span></header>
+              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('accel', imu.xacc, imu.units) : null} color="var(--chart-4)" /><AxisValue axis="Y" value={imu ? displayImuValue('accel', imu.yacc, imu.units) : null} color="var(--chart-2)" /><AxisValue axis="Z" value={imu ? displayImuValue('accel', imu.zacc, imu.units) : null} color="var(--info)" /></div>
               <SensorChart kind="accel" instance={selectedImuInstance} imu={imu} />
             </section>
             <section className="mc-card mc-sensor-chart-card">
-              <header><strong>{t('common.gyroscope')}</strong><span>°/s</span></header>
-              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('gyro', imu.xgyro) : null} color="var(--warning)" /><AxisValue axis="Y" value={imu ? displayImuValue('gyro', imu.ygyro) : null} color="var(--chart-4)" /><AxisValue axis="Z" value={imu ? displayImuValue('gyro', imu.zgyro) : null} color="var(--accent)" /></div>
+              <header><strong>{t('common.gyroscope')}</strong><span>{imuDisplayUnit('gyro', imu?.units)}</span></header>
+              <div className="mc-sensor-axis-row"><AxisValue axis="X" value={imu ? displayImuValue('gyro', imu.xgyro, imu.units) : null} color="var(--warning)" /><AxisValue axis="Y" value={imu ? displayImuValue('gyro', imu.ygyro, imu.units) : null} color="var(--chart-4)" /><AxisValue axis="Z" value={imu ? displayImuValue('gyro', imu.zgyro, imu.units) : null} color="var(--accent)" /></div>
               <SensorChart kind="gyro" instance={selectedImuInstance} imu={imu} />
             </section>
           </div>

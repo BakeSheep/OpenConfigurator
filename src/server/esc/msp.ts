@@ -60,7 +60,8 @@ export interface MspResponse {
 export function mspFrameLength(buffered: Uint8Array): number | null {
   const start = findMspResponseStart(buffered)
   if (start === null || buffered.length < start + 4) return null
-  return start + 6 + buffered[start + 3]
+  const length = start + 6 + buffered[start + 3]
+  return buffered.length >= length ? length : null
 }
 
 /** Decode a complete MSP v1 response frame and verify its checksum. */

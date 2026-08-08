@@ -36,7 +36,7 @@ interface PickedPort {
 }
 
 export default function ConnectDialog() {
-  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen } = useConnectionStore()
+  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen, setActivePresetId } = useConnectionStore()
   const { t } = useTranslation()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
@@ -131,6 +131,7 @@ export default function ConnectDialog() {
   }
 
   const postConnect = async (body: any): Promise<void> => {
+    setActivePresetId(null)
     setConnectionError(null)
     setStatus('connecting')
     try {
@@ -250,7 +251,7 @@ export default function ConnectDialog() {
     const duplicate = existing.find((candidate) => samePresetDevice(candidate, preset))
     const updated = duplicate
       ? existing.map((candidate) => candidate.id === duplicate.id
-        ? { ...preset, id: duplicate.id }
+        ? { ...preset, id: duplicate.id, enableGamepad: duplicate.enableGamepad }
         : candidate)
       : [...existing, preset]
     saveConnectionPresets(updated)
@@ -293,6 +294,8 @@ export default function ConnectDialog() {
           </div>
           <button
             onClick={() => setConnectDialogOpen(false)}
+            aria-label={t('common.close')}
+            title={t('common.close')}
             className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-white/5"
             style={{ color: 'var(--text-secondary)' }}
           >

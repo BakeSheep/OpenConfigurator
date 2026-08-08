@@ -281,6 +281,32 @@ function buildLog(): Buffer {
   )
 }
 
+// A concatenated second boot resets TimeUS. Stop at that explicit boundary so
+// chart series never run backwards or blend two flights into one timeline.
+{
+  const log = Buffer.concat([
+    fmtFrame(ATT),
+    dataFrame(ATT, {
+      TimeUS: 1_000_000, DesRoll: 0, Roll: 1, DesPitch: 0, Pitch: 0,
+      DesYaw: 0, Yaw: 0, AEKF: 1,
+    }),
+    dataFrame(ATT, {
+      TimeUS: 2_000_000, DesRoll: 0, Roll: 2, DesPitch: 0, Pitch: 0,
+      DesYaw: 0, Yaw: 0, AEKF: 1,
+    }),
+    dataFrame(ATT, {
+      TimeUS: 500_000, DesRoll: 0, Roll: 99, DesPitch: 0, Pitch: 0,
+      DesYaw: 0, Yaw: 0, AEKF: 1,
+    }),
+  ])
+  const dataset = parseDataflashLog(toArrayBuffer(log))
+  const roll = dataset.attitude.find((series) => series.id === 'attitude.roll')
+  assert.deepEqual(roll?.times, [0, 1])
+  assert.deepEqual(roll?.values, [1, 2])
+  assert.equal(dataset.overview.durationSec, 1)
+  assert.ok(dataset.events.some((event) => /启动边界/.test(event.message)))
+}
+
 // GPS epoch reference: week 0, ms 0 minus the leap-second offset.
 assert.equal(gpsWeekToUtcMs(0, 0), 315_964_800_000 - 18_000)
 

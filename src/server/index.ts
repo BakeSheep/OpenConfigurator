@@ -64,6 +64,9 @@ const WS_HEARTBEAT_INTERVAL_MS = 15_000
 const RATE_LIMIT_CAPACITY = 80
 const RATE_LIMIT_REFILL_PER_SECOND = 40
 const MAX_RATE_LIMIT_VIOLATIONS = 3
+const HTTP_INSPECTION_RATE_WINDOW_MS = 10_000
+const HTTP_INSPECTION_RATE_MAX = 10
+const HTTP_INSPECTION_RATE_MAX_KEYS = 256
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000
 
 type ConnectionErrorDetail = {
@@ -421,6 +424,34 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   let lastConnectionError: ConnectionErrorDetail | null = null
   let shuttingDown = false
   let shutdownPromise: Promise<ShutdownResult> | null = null
+  const connectionInspectionRates = new Map<string, { count: number; resetAt: number }>()
+
+  function limitConnectionInspection(request: Request, _response: Response, next: NextFunction): void {
+    const now = Date.now()
+    const key = request.socket.remoteAddress ?? 'unknown'
+    let rate = connectionInspectionRates.get(key)
+    if (!rate || rate.resetAt <= now) {
+      rate = { count: 0, resetAt: now + HTTP_INSPECTION_RATE_WINDOW_MS }
+      connectionInspectionRates.set(key, rate)
+    }
+    rate.count += 1
+    if (rate.count > HTTP_INSPECTION_RATE_MAX) {
+      next(new HttpBoundaryError(429, 'rate_limited', '连接扫描请求过于频繁'))
+      return
+    }
+
+    if (connectionInspectionRates.size > HTTP_INSPECTION_RATE_MAX_KEYS) {
+      for (const [candidateKey, candidate] of connectionInspectionRates) {
+        if (candidate.resetAt <= now) connectionInspectionRates.delete(candidateKey)
+      }
+      while (connectionInspectionRates.size > HTTP_INSPECTION_RATE_MAX_KEYS) {
+        const oldestKey = connectionInspectionRates.keys().next().value
+        if (oldestKey === undefined) break
+        connectionInspectionRates.delete(oldestKey)
+      }
+    }
+    next()
+  }
 
   function connectionMessage(): LocalServerMessage {
     const manager = connManager as ConnectionManagerBoundary
@@ -1081,7 +1112,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
 
   app.use(express.json({ limit: JSON_BODY_LIMIT, strict: true }))
 
-  app.get('/api/connections/scan', async (_request, response, next) => {
+  app.get('/api/connections/scan', limitConnectionInspection, async (_request, response, next) => {
     try {
       const ports = await connManager.scanPorts()
       response.json({ success: true, data: ports })
@@ -1090,8 +1121,11 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
   })
 
-  app.get('/api/connections/debug-ports', async (_request, response, next) => {
+  app.get('/api/connections/debug-ports', limitConnectionInspection, async (_request, response, next) => {
     try {
+      if (!config.allowDevOrigin) {
+        throw new HttpBoundaryError(404, 'debug_disabled', '调试端点未启用')
+      }
       const { SerialPort } = await import('serialport')
       const ports = await SerialPort.list()
       response.json({

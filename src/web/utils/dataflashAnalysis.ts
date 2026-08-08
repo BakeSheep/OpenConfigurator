@@ -7,6 +7,7 @@
 import {
   EnvelopeCollector,
   VibrationAnalyzer,
+  appendBoundedTransition,
   buildSegments,
   type PidLoopData,
   type SeriesData,
@@ -274,11 +275,27 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
   // the per-message handler closures.
   const gpsUtcRef: { value: { utcMs: number; timeSec: number } | null } = { value: null }
   let resyncBytes = 0
+  let droppedStateSamples = 0
 
   let timeBaseUs: number | null = null
+  let lastTimeUs: number | null = null
+  let timelineTruncated = false
   let endSec = 0
-  const toSec = (timeUs: number): number => {
-    if (timeBaseUs === null || timeUs < timeBaseUs) timeBaseUs = timeUs
+  const toSec = (timeUs: number): number | null => {
+    if (timelineTruncated) return null
+    if (lastTimeUs !== null && timeUs < lastTimeUs) {
+      timelineTruncated = true
+      if (events.length < MAX_EVENTS) {
+        events.push({
+          timeSec: endSec,
+          level: 4,
+          message: t('logAnalysis.multipleBootsTruncated'),
+        })
+      }
+      return null
+    }
+    if (timeBaseUs === null) timeBaseUs = timeUs
+    lastTimeUs = timeUs
     const seconds = (timeUs - timeBaseUs) / 1e6
     if (seconds > endSec) endSec = seconds
     return seconds
@@ -436,18 +453,24 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
     MODE: (fields, timeSec) => {
       const mode = numField(fields, 'Mode')
       if (!Number.isFinite(mode)) return
-      if (modeSamples[modeSamples.length - 1]?.mode !== mode) {
-        modeSamples.push({ timeSec, mode })
-      }
+      const result = appendBoundedTransition(
+        modeSamples,
+        { timeSec, mode },
+        (previous, next) => previous.mode === next.mode,
+      )
+      if (result === 'full') droppedStateSamples++
     },
     EV: (fields, timeSec) => {
       const id = numField(fields, 'Id')
       if (!Number.isFinite(id)) return
       if (id === 10 || id === 11) {
         const label = id === 10 ? 'armed' : 'disarmed'
-        if (armedSamples[armedSamples.length - 1]?.label !== label) {
-          armedSamples.push({ timeSec, label })
-        }
+        const result = appendBoundedTransition(
+          armedSamples,
+          { timeSec, label },
+          (previous, next) => previous.label === next.label,
+        )
+        if (result === 'full') droppedStateSamples++
       }
       if (events.length < MAX_EVENTS) {
         events.push({ timeSec, level: 6, message: EVENT_NAMES[id] ?? `EV ${id}` })
@@ -554,7 +577,8 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
           ? fields.TimeMS * 1000
           : null
       if (timeUs !== null) {
-        handlers[handled.name](fields, toSec(timeUs))
+        const timeSec = toSec(timeUs)
+        if (timeSec !== null) handlers[handled.name](fields, timeSec)
       }
     }
     offset += fmt.length
@@ -601,7 +625,7 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
       hardware,
       sysName: frameInfo,
       totalArmedSec,
-      droppedMessages: resyncBytes,
+      droppedMessages: resyncBytes + droppedStateSamples,
     },
     modeSegments,
     armedSegments,

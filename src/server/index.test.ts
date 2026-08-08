@@ -237,6 +237,7 @@ function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     remoteEnabled: false,
     authToken: null,
     allowedOrigins: [],
+    allowDevOrigin: true,
     wsMaxPayload: 16 * 1024,
     wsMaxClients: 8,
     ...overrides,
@@ -494,6 +495,11 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
   assert.equal(isAllowedOrigin('http://[::1]:3000', ipv6Config), true)
   assert.equal(isAllowedOrigin('http://evil.example:3000', ipv6Config), false)
   assert.equal(isAllowedOrigin('http://127.evil.example:5173', ipv6Config), false)
+  assert.equal(isAllowedOrigin('http://localhost:5173', ipv6Config), true)
+  assert.equal(
+    isAllowedOrigin('http://localhost:5173', { ...ipv6Config, allowDevOrigin: false }),
+    false,
+  )
 
   assert.throws(
     () => parseServerConfig({ HOST: '0.0.0.0' }),
@@ -640,6 +646,30 @@ test('REST boundary returns stable JSON errors and accepts only validated connec
     })
     assert.equal(valid.status, 200)
     assert.equal(started.connManager.config?.port, 'COM_TEST')
+  } finally {
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('REST connection inspection endpoints hide debug metadata and enforce a bounded request rate', async () => {
+  const production = await startTestServer(testConfig({ allowDevOrigin: false }))
+  try {
+    const hidden = await fetch(`${production.httpUrl}/api/connections/debug-ports`)
+    assert.equal(hidden.status, 404)
+    assert.equal((await hidden.json() as any).error.code, 'debug_disabled')
+  } finally {
+    await production.runtime.shutdown('test')
+  }
+
+  const started = await startTestServer()
+  try {
+    for (let request = 0; request < 10; request += 1) {
+      const response = await fetch(`${started.httpUrl}/api/connections/scan`)
+      assert.equal(response.status, 200)
+    }
+    const limited = await fetch(`${started.httpUrl}/api/connections/scan`)
+    assert.equal(limited.status, 429)
+    assert.equal((await limited.json() as any).error.code, 'rate_limited')
   } finally {
     await started.runtime.shutdown('test')
   }

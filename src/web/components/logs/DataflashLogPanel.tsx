@@ -10,6 +10,7 @@ import Icon from '../ui/Icon'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useLogTransferStore } from '../../stores/logTransferStore'
 import { useParameterStore } from '../../stores/parameterStore'
+import { useConnectionStore } from '../../stores/connectionStore'
 import { stashLogBuffer } from '../../utils/logAnalysisSession'
 import { formatBytes } from '../../utils/formatBytes'
 import type { DataflashLogEntry } from '../../../shared/types'
@@ -46,6 +47,8 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
   const download = useLogTransferStore((state) => state.download)
   const erase = useLogTransferStore((state) => state.erase)
   const parameterSyncActive = useParameterStore((state) => state.loading)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
 
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortAsc, setSortAsc] = useState(false)
@@ -53,6 +56,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
   const [eraseDialogOpen, setEraseDialogOpen] = useState(false)
   const [eraseAcknowledged, setEraseAcknowledged] = useState(false)
   const handledDownloadRef = useRef<string | null>(null)
+  const listedTargetRef = useRef<string | null>(null)
 
   const requestList = useCallback(() => {
     useLogTransferStore.getState().setLoading(true)
@@ -63,8 +67,16 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
   // the MAVLink channel. DataFlash and parameter transfers intentionally do
   // not overlap; waiting here avoids a nondeterministic startup ftp_busy race.
   useEffect(() => {
-    if (vehicleReady && !parameterSyncActive) requestList()
-  }, [parameterSyncActive, vehicleReady, requestList])
+    if (!vehicleReady) {
+      listedTargetRef.current = null
+      return
+    }
+    if (parameterSyncActive || targetSystemId === null || targetComponentId === null) return
+    const targetKey = `${targetSystemId}:${targetComponentId}`
+    if (listedTargetRef.current === targetKey) return
+    listedTargetRef.current = targetKey
+    requestList()
+  }, [parameterSyncActive, requestList, targetComponentId, targetSystemId, vehicleReady])
 
   // Erase finished: the backend already pushed the fresh (empty) list;
   // dismiss the task shortly after.

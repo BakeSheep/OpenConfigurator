@@ -168,7 +168,7 @@ export class DirectSerialTransport implements EscByteTransport {
       const timer = setTimeout(() => {
         fail(new EscError('timeout', `ESC 请求超时（${options.label ?? 'transact'}）`))
       }, options.timeoutMs)
-      signal.addEventListener('abort', onAbort)
+      signal.addEventListener('abort', onAbort, { once: true })
       this.pump = () => {
         const buffered = concatChunks(this.rxChunks)
         // Single-wire echo: the first request.length bytes mirror what we
@@ -193,6 +193,7 @@ export class DirectSerialTransport implements EscByteTransport {
           return
         }
         if (length === null) return
+        if (body.length < length) return
         finish(body.subarray(0, length))
       }
       if (!link.write(Buffer.from(request), 'high')) {

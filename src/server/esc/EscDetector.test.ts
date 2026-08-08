@@ -90,6 +90,16 @@ async function run(): Promise<void> {
     assert.equal(count, 4)
   }
 
+  // A stale MSP response for a different command is rejected.
+  {
+    const transport = new ScriptedTransport(() => mspResponse(MSP_COMMANDS.API_VERSION, [1, 2, 3]))
+    const msp = new MspClient(transport)
+    await assert.rejects(
+      () => msp.setPassthrough(signal),
+      (error: unknown) => error instanceof EscError && error.code === 'target_mismatch',
+    )
+  }
+
   // A stale or cross-command response must never be accepted as the reply.
   {
     const transport = new ScriptedTransport(() =>

@@ -71,9 +71,10 @@ function defaultWait(ms: number, signal: AbortSignal): Promise<void> {
     }, ms)
     const onAbort = () => {
       clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
       reject(new EscError('cancelled', 'ESC 会话已取消'))
     }
-    signal.addEventListener('abort', onAbort)
+    signal.addEventListener('abort', onAbort, { once: true })
   })
 }
 
@@ -205,7 +206,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
         const timer = setTimeout(() => {
           fail(new EscError('timeout', `ESC 请求超时（${options.label ?? 'transact'}）`))
         }, options.timeoutMs)
-        signal.addEventListener('abort', onAbort)
+        signal.addEventListener('abort', onAbort, { once: true })
         this.pump = () => {
           const buffered = concatChunks(this.rxChunks)
           let length: number | null
@@ -216,6 +217,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
             return
           }
           if (length === null) return
+          if (buffered.length < length) return
           finish(buffered.subarray(0, length))
         }
         // Send the request in <=70-byte chunks; each asks for a response.

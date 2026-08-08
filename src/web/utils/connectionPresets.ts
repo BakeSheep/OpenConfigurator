@@ -8,6 +8,7 @@ export interface ConnectionPreset {
   baudRate: number
   vendorId?: string
   productId?: string
+  enableGamepad?: boolean
 }
 
 export const CONNECTION_PRESETS_KEY = 'oc-connection-presets'
@@ -22,6 +23,21 @@ export function loadConnectionPresets(): ConnectionPreset[] {
 
 export function saveConnectionPresets(presets: ConnectionPreset[]): void {
   try { localStorage.setItem(CONNECTION_PRESETS_KEY, JSON.stringify(presets)) } catch { /* ignore */ }
+}
+
+export function connectionPresetEnablesGamepad(preset: ConnectionPreset): boolean {
+  return preset.enableGamepad === true
+}
+
+export function updateConnectionPresetGamepadPreference(
+  presets: ConnectionPreset[],
+  presetId: string,
+  enableGamepad: boolean,
+): ConnectionPreset[] {
+  if (!presets.some((preset) => preset.id === presetId)) return presets
+  return presets.map((preset) => preset.id === presetId
+    ? { ...preset, enableGamepad }
+    : preset)
 }
 
 function canonicalUsbId(value: string | undefined): string | null {

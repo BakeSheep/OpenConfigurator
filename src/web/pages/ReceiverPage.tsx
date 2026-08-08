@@ -5,8 +5,6 @@ import { PageHeader } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
-const channelNames = ['Roll', 'Pitch', 'Throttle', 'Yaw', 'AUX1', 'AUX2', 'AUX3', 'AUX4', 'AUX5', 'AUX6', 'AUX7', 'AUX8', 'AUX9', 'AUX10', 'AUX11', 'AUX12']
-
 export default function ReceiverPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
   const rcChannels = useTelemetryStore((state) => state.rcChannels)
@@ -17,6 +15,12 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
     return rcChannels?.[key] ?? 0
   }
   const rssi = rcChannels?.rssi ?? null
+  const channelNames = Array.from({ length: 16 }, (_, index) => {
+    const primary = ['roll', 'pitch', 'throttle', 'yaw'] as const
+    return index < primary.length
+      ? t(`receiver.channel.${primary[index]}`)
+      : t('receiver.channel.aux', { index: index - 3 })
+  })
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in'}>

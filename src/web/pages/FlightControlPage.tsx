@@ -110,7 +110,7 @@ export default function FlightControlPage() {
   const hasFlowPosition = hasValidOpticalFlow && hasValidRangefinder
   const sysStatusFresh = !isTelemetryStale('sysStatus')
   const systemHealthLabel = unhealthySensors.length > 0
-    ? t('flight.systemHealthAbnormal', { sensors: unhealthySensors.join('、') })
+    ? t('flight.systemHealthAbnormal', { sensors: unhealthySensors.join(t('common.listSeparator')) })
     : t('flight.systemHealth')
   const checks = [
     { label: t('flight.checkPositionSource'), ok: hasGpsPosition || hasFlowPosition },

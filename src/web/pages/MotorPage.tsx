@@ -147,7 +147,12 @@ function getFallbackRotor(index: number, count: number) {
 export default function MotorPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
   const send = sendClientMessage
-  const connected = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const canControl = useConnectionStore((state) => state.canControl)
+  const rawSessionActive = useConnectionStore((state) => state.rawSessionActive)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const connected = vehicleReady && canControl
   const { params, loading, receivedCount, totalCount } = useParameterStore()
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -170,20 +175,29 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   // True once the user enabled motor testing or a non-zero test command was
   // sent. Merely opening/leaving this page must emit no motor-test command.
   const testActivatedRef = useRef(false)
+  const safetyEpochRef = useRef(
+    `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}:${vehicleReady}:${rawSessionActive}`,
+  )
 
   const outputChannels = useMemo<FrameOutputChannel[]>(() => {
     const channels = frameView?.outputChannels ?? []
     if (channels.length > 0 || params.size > 0) return channels
     // No parameters yet: show placeholder rows so the table shape is visible.
     return Array.from({ length: 8 }, (_, index) => ({
-      label: `MAIN${index + 1}`,
-      paramId: `PWM_MAIN_FUNC${index + 1}`,
+      label: vehicleIdentity?.family === 'px4'
+        ? `MAIN${index + 1}`
+        : vehicleIdentity?.family === 'ardupilot' ? `SERVO${index + 1}` : `OUT${index + 1}`,
+      paramId: vehicleIdentity?.family === 'px4'
+        ? `PWM_MAIN_FUNC${index + 1}`
+        : vehicleIdentity?.family === 'ardupilot'
+          ? `SERVO${index + 1}_FUNCTION`
+          : `OUTPUT_${index + 1}_FUNCTION`,
       functionValue: 0,
       motorInstance: null,
       port: 0,
       channel: index + 1,
     }))
-  }, [frameView, params])
+  }, [frameView, params, vehicleIdentity?.family])
 
   const outputByMotor = useMemo(() => {
     const mapping = new Map<number, string>()
@@ -233,6 +247,19 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
     motorCountRef.current = nextCount
     setLevels((current) => Array.from({ length: motorCount ?? 0 }, (_, index) => current[index] || 0))
   }, [motorCount, send])
+
+  useEffect(() => {
+    const epoch = `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}:${vehicleReady}:${rawSessionActive}`
+    if (epoch === safetyEpochRef.current) return
+    safetyEpochRef.current = epoch
+
+    // Target/readiness changes and every ESC raw-session boundary invalidate
+    // the physical props-removed confirmation. Never carry that acknowledgement
+    // into a resumed MAVLink session, even when the motor count is unchanged.
+    testActivatedRef.current = false
+    setSafetyConfirmed(false)
+    setLevels(Array.from({ length: motorCountRef.current }, () => 0))
+  }, [rawSessionActive, targetComponentId, targetSystemId, vehicleReady])
 
   useEffect(() => () => {
     // Stop frames are sent only after motor testing was actually activated;

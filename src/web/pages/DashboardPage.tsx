@@ -10,12 +10,13 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { attitudeToHorizonTransform } from '../utils/attitudeVisualization'
 import { statusGroupDescription, statusVariableDescription } from '../utils/statusVariableMetadata'
 import type { RcChannelsData } from '../../shared/types'
+import { dashboardCustomVarsStorageKey } from '../runtime'
 
 const radToDegrees = (radians: number) => radians * 180 / Math.PI
 const AttitudeIndicator = lazy(() => import('../components/telemetry/AttitudeIndicator'))
 
 // Selected variable ids ("GROUP.name") for the custom data board.
-const CUSTOM_VARS_KEY = 'oc-dashboard-custom-vars'
+const CUSTOM_VARS_KEY = dashboardCustomVarsStorageKey
 
 const LEGACY_CUSTOM_VAR_IDS: Record<string, string> = {
   'GPS.satellitesVisible': 'Gps.count',

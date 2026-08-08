@@ -33,6 +33,7 @@ import { formatBytes } from '../utils/formatBytes'
 import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetadata'
 import { localizeLogSeries, logLoopLabel } from '../utils/logSeriesLabels'
 import { backendEnabled } from '../runtime'
+import { roundedDurationParts } from '../utils/duration'
 import type {
   SeriesData,
   UlogAnalysisDataset,
@@ -54,20 +55,6 @@ interface SeriesSelectionGroup {
   seriesIds: string[]
 }
 
-function getAttitudeGroups(): SeriesSelectionGroup[] {
-  return [
-    { id: 'roll', label: t('common.roll'), seriesIds: ['attitude.roll', 'attitude.rollSp'] },
-    { id: 'pitch', label: t('common.pitch'), seriesIds: ['attitude.pitch', 'attitude.pitchSp'] },
-    { id: 'yaw', label: t('common.yaw'), seriesIds: ['attitude.yaw', 'attitude.yawSp'] },
-  ]
-}
-function getRateGroups(): SeriesSelectionGroup[] {
-  return [
-    { id: 'roll', label: t('common.roll'), seriesIds: ['rates.roll', 'rates.rollSp'] },
-    { id: 'pitch', label: t('common.pitch'), seriesIds: ['rates.pitch', 'rates.pitchSp'] },
-    { id: 'yaw', label: t('common.yaw'), seriesIds: ['rates.yaw', 'rates.yawSp'] },
-  ]
-}
 const BATTERY_SECONDARY_SERIES_IDS = ['battery.power']
 const ALTITUDE_SECONDARY_SERIES_IDS = ['altitude.baro', 'altitude.gps']
 
@@ -131,10 +118,10 @@ function analyzeInWorker(
   })
 }
 
-function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
-  const minutes = Math.floor(seconds / 60)
-  const rest = Math.round(seconds - minutes * 60)
+export function formatDuration(seconds: number): string {
+  const parts = roundedDurationParts(seconds)
+  if (!parts) return '—'
+  const { minutes, seconds: rest } = parts
   return minutes > 0 ? t('logAnalysis.durationMinutesSeconds', { minutes, seconds: rest }) : t('logAnalysis.durationSeconds', { seconds: rest })
 }
 
@@ -839,10 +826,10 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     if (!dataset || dataset.overview.durationSec <= 0) return []
     return dataset.modeSegments.map((segment, index) => ({
       label: segment.label,
-      widthPct: Math.max(
+      widthPct: Math.min(100, Math.max(
         0.5,
         ((segment.endSec - segment.startSec) / dataset.overview.durationSec) * 100,
-      ),
+      )),
       color: seriesColor(index),
       durationSec: segment.endSec - segment.startSec,
     }))
@@ -858,6 +845,20 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     velocity: localizeLogSeries(dataset.velocity, t),
     rawAcc: localizeLogSeries(dataset.rawAcc, t),
   } : null, [dataset, t])
+
+  // Keep these references stable while the chart cursor advances. Recreating
+  // them on every render causes ChartPanel's selection reconciliation effect
+  // to run and can rebuild the underlying uPlot instance unnecessarily.
+  const attitudeGroups = useMemo<SeriesSelectionGroup[]>(() => [
+    { id: 'roll', label: t('common.roll'), seriesIds: ['attitude.roll', 'attitude.rollSp'] },
+    { id: 'pitch', label: t('common.pitch'), seriesIds: ['attitude.pitch', 'attitude.pitchSp'] },
+    { id: 'yaw', label: t('common.yaw'), seriesIds: ['attitude.yaw', 'attitude.yawSp'] },
+  ], [t])
+  const rateGroups = useMemo<SeriesSelectionGroup[]>(() => [
+    { id: 'roll', label: t('common.roll'), seriesIds: ['rates.roll', 'rates.rollSp'] },
+    { id: 'pitch', label: t('common.pitch'), seriesIds: ['rates.pitch', 'rates.pitchSp'] },
+    { id: 'yaw', label: t('common.yaw'), seriesIds: ['rates.yaw', 'rates.yawSp'] },
+  ], [t])
 
   const vibrationSeries = useMemo<SeriesData[]>(() => {
     if (!dataset?.vibration) return []
@@ -1096,14 +1097,14 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
             unit="°"
             onCursorTimeChange={handleChartCursorTimeChange}
             bands={dataset.armedSegments}
-            selectionGroups={getAttitudeGroups()}
+            selectionGroups={attitudeGroups}
           />
           <ChartPanel
             title={t('logAnalysis.rateTracking')}
             series={localizedSeries?.rates}
             unit="°/s"
             bands={dataset.armedSegments}
-            selectionGroups={getRateGroups()}
+            selectionGroups={rateGroups}
           />
 
           {/* PID loop tracking: one loop (target/actual/error) at a time. */}

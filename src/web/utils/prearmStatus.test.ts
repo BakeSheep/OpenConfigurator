@@ -19,6 +19,13 @@ describe('resolveRecentPrearmFailure', () => {
     assert.equal(resolveRecentPrearmFailure(logs, { now: NOW }), null)
   })
 
+  test('recognizes the explicit ArduPilot Healthy success text', () => {
+    assert.equal(
+      resolveRecentPrearmFailure([entry(1, 'PreArm: Healthy', NOW - 100)], { now: NOW }),
+      null,
+    )
+  })
+
   test('returns the newest relevant failure even when entries are not sorted', () => {
     const newest = entry(3, 'Pre-arm: Throttle below failsafe', NOW - 500)
     const logs = [

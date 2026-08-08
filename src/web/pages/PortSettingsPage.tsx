@@ -63,6 +63,14 @@ const BAUD_PARAMS: Record<number, string> = {
 
 const baudParamForPort = (portValue: number | undefined) => BAUD_PARAMS[portValue ?? -1]
 
+function localizedOptionLabel(label: string, t: ReturnType<typeof useTranslation>['t']): string {
+  if (label === 'Disabled') return t('common.disabled')
+  if (label === 'Enabled') return t('common.enabled')
+  if (label === 'Auto') return t('common.auto')
+  if (label === 'Auto-detected') return t('portSettings.autoDetected')
+  return label
+}
+
 function ParamSelect({ id, options, writable = true }: { id: string; options: ReadonlyArray<readonly [number, string]>; writable?: boolean }) {
   const { t } = useTranslation()
   const param = useParameterStore((state) => state.params.get(id))
@@ -84,7 +92,7 @@ function ParamSelect({ id, options, writable = true }: { id: string; options: Re
     >
       {!param && <option value="">{t('portSettings.waitingForParams')}</option>}
       {param && !known && <option value={value}>{t('portSettings.valueLabel', { value })}</option>}
-      {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
+      {options.map(([option, label]) => <option key={option} value={option}>{localizedOptionLabel(label, t)}</option>)}
     </select>
   )
 }
@@ -207,7 +215,7 @@ function ArduPilotSerialSelect({ id, options, writable }: { id: string; options:
       {!param && <option value="">{t('portSettings.waitingForParams')}</option>}
       {/* Preserve a protocol/baud value the UI does not know, never drop it. */}
       {param && !known && <option value={value}>{t('portSettings.valueLabel', { value })}</option>}
-      {options.map(([option, label]) => <option key={option} value={option}>{label}</option>)}
+      {options.map(([option, label]) => <option key={option} value={option}>{localizedOptionLabel(label, t)}</option>)}
     </select>
   )
 }

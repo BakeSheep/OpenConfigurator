@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import {
+  connectionPresetEnablesGamepad,
   resolveSerialPreset,
   samePresetDevice,
+  updateConnectionPresetGamepadPreference,
   type ConnectionPreset,
 } from './connectionPresets'
 
@@ -49,5 +51,15 @@ assert.ok(samePresetDevice(identified, {
   vendorId: '1B8C',
   productId: '0036',
 }))
+assert.equal(connectionPresetEnablesGamepad(legacy), false)
+assert.equal(connectionPresetEnablesGamepad({ ...legacy, enableGamepad: true }), true)
+assert.equal(connectionPresetEnablesGamepad({ ...legacy, enableGamepad: 'yes' } as unknown as ConnectionPreset), false)
+
+const anotherPreset: ConnectionPreset = { ...legacy, id: 'another', port: 'COM12' }
+assert.deepEqual(updateConnectionPresetGamepadPreference([legacy, anotherPreset], 'legacy', true), [
+  { ...legacy, enableGamepad: true },
+  anotherPreset,
+])
+assert.deepEqual(updateConnectionPresetGamepadPreference([legacy], 'missing', true), [legacy])
 
 console.log('connectionPresets unit tests passed')

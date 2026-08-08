@@ -1,38 +1,23 @@
 import { useEffect, useRef } from 'react'
 import i18next from 'i18next'
-import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import type { ClientMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
-  NON_REPEATABLE_ACTIONS,
   useGamepadStore,
   type GamepadActionId,
   type GamepadMapping,
 } from '../stores/gamepadStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { canRepeatGamepadAction, resolveGamepadModeAction } from '../utils/gamepadActions'
 import { smoothGamepadThrottle } from './gamepadThrottle'
-
-// Gamepad actions map to semantic mode names per autopilot family; the id of
-// the resolved profile mode option is sent through set_flight_mode and the
-// server performs the stack-specific command encoding.
-const actionModeNames: Partial<Record<GamepadActionId, { px4: string; ardupilot: string }>> = {
-  manual: { px4: 'Manual', ardupilot: 'Stabilize' },
-  altitude: { px4: 'Altitude', ardupilot: 'AltHold' },
-  position: { px4: 'Position', ardupilot: 'PosHold' },
-  mission: { px4: 'Mission', ardupilot: 'Auto' },
-  hold: { px4: 'Hold', ardupilot: 'Loiter' },
-  rtl: { px4: 'RTL', ardupilot: 'RTL' },
-  land: { px4: 'Land', ardupilot: 'Land' },
-  stabilized: { px4: 'Stabilized', ardupilot: 'Stabilize' },
-  acro: { px4: 'Acro', ardupilot: 'Acro' },
-}
 
 /**
  * Owns the browser Gamepad polling loop for the lifetime of the application.
  * Keeping this at App level prevents manual-control input from stopping when
  * the user leaves the gamepad settings tab to arm or monitor the vehicle.
  */
-export function useGamepadController(send: (message: ClientMessage) => void) {
+export function useGamepadController(send: (message: ClientMessage) => boolean) {
   const t = i18next.t.bind(i18next)
   const rafRef = useRef(0)
   const lastAxisSendRef = useRef(0)
@@ -46,7 +31,7 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
   sendRef.current = send
 
   useEffect(() => useConnectionStore.subscribe((state) => {
-    if ((!state.vehicleReady || !state.canControl) && useGamepadStore.getState().enabled) {
+    if (state.status === 'disconnected' && useGamepadStore.getState().enabled) {
       smoothedThrottleRef.current = null
       useGamepadStore.getState().setEnabled(false)
     }
@@ -54,6 +39,8 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
 
   useEffect(() => useTelemetryStore.subscribe((state) => {
     if (
+      state.vehicleIdentity !== null
+      &&
       !vehicleCapabilities(state.vehicleIdentity).writeOperations
       && useGamepadStore.getState().enabled
     ) {
@@ -79,34 +66,37 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
         // a single deliberate press fires immediately, no double-press
         // confirmation. Button presses only reach here when the user has
         // manually enabled gamepad control on a ready, controllable vehicle.
-        armCommand(true)
-        gamepadActions.setActionNotice(t('joystick.actionNotice.armSent', { button }))
+        const sent = armCommand(true)
+        gamepadActions.setActionNotice(sent
+          ? t('joystick.actionNotice.armSent', { button })
+          : t('joystick.actionNotice.sendFailed', { button }))
+        if (!sent) gamepadActions.setEnabled(false)
         return
       }
       if (action === 'disarm' || action === 'toggle_arm') {
-        armCommand(false)
-        gamepadActions.setActionNotice(t('joystick.actionNotice.disarmSent', { button }))
+        const sent = armCommand(false)
+        gamepadActions.setActionNotice(sent
+          ? t('joystick.actionNotice.disarmSent', { button })
+          : t('joystick.actionNotice.sendFailed', { button }))
+        if (!sent) gamepadActions.setEnabled(false)
         return
       }
-      const modeNames = actionModeNames[action]
-      if (modeNames) {
-        const identity = useTelemetryStore.getState().vehicleIdentity
-        const targetName = identity?.family === 'px4'
-          ? modeNames.px4
-          : identity?.family === 'ardupilot' ? modeNames.ardupilot : null
-        const option = targetName
-          ? availableModes(identity).find((candidate) => candidate.name === targetName)
-          : undefined
-        if (!option) {
-          gamepadActions.setActionNotice(t('joystick.actionNotice.modeNotSupported', { button }))
-          return
-        }
-        sendRef.current({
-          type: 'set_flight_mode',
-          data: { modeId: option.id },
-        })
-        gamepadActions.setActionNotice(t('joystick.actionNotice.modeSwitch', { button, mode: option.name }))
+      const option = resolveGamepadModeAction(
+        action,
+        useTelemetryStore.getState().vehicleIdentity,
+      )
+      if (!option) {
+        gamepadActions.setActionNotice(t('joystick.actionNotice.modeNotSupported', { button }))
+        return
       }
+      const sent = sendRef.current({
+        type: 'set_flight_mode',
+        data: { modeId: option.id },
+      })
+      gamepadActions.setActionNotice(sent
+        ? t('joystick.actionNotice.modeSwitch', { button, mode: option.name })
+        : t('joystick.actionNotice.sendFailed', { button }))
+      if (!sent) gamepadActions.setEnabled(false)
     }
 
     const pollGamepad = () => {
@@ -136,7 +126,7 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
             // re-send arm/disarm at the button frequency.
             const repeatDue = pressed
               && assignment?.repeat
-              && !NON_REPEATABLE_ACTIONS.has(assignment.action)
+              && canRepeatGamepadAction(assignment.action)
               && now - (lastButtonFireRef.current[index] ?? 0) >= buttonDelay
             if (assignment && (downTransition || repeatDue)) {
               lastButtonFireRef.current[index] = now
@@ -145,9 +135,8 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
           })
 
           const axisDelay = 1000 / Math.max(1, current.advanced.axisFrequencyHz)
-          if (now - lastAxisSendRef.current >= axisDelay) {
+          if (useGamepadStore.getState().enabled && now - lastAxisSendRef.current >= axisDelay) {
             const deltaSeconds = Math.min((now - lastAxisSendRef.current) / 1000, 0.1)
-            lastAxisSendRef.current = now
             const shape = (value: number) => {
               let result = value
               if (current.advanced.useDeadband) {
@@ -172,9 +161,8 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
               deltaSeconds,
               current.advanced.throttleSmoothing,
             )
-            smoothedThrottleRef.current = smoothedThrottle.next
             throttle = smoothedThrottle.output
-            sendRef.current({
+            const sent = sendRef.current({
               type: 'manual_control',
               data: {
                 x: toManualAxis(-axis('pitch')),
@@ -184,6 +172,14 @@ export function useGamepadController(send: (message: ClientMessage) => void) {
                 buttons: 0,
               },
             })
+            if (sent) {
+              lastAxisSendRef.current = now
+              smoothedThrottleRef.current = smoothedThrottle.next
+            } else {
+              smoothedThrottleRef.current = null
+              current.setActionNotice(t('joystick.actionNotice.controlSendFailed'))
+              current.setEnabled(false)
+            }
           }
         } else {
           // A disable or loss of the FC controller lease ends this input

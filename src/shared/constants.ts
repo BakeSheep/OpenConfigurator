@@ -49,15 +49,30 @@ export const MAG_CAL_STATUS = {
 } as const
 
 export const PX4_MODES = {
-  MANUAL: { id: 1, mainMode: 1, subMode: 0, name: 'Manual' },
-  ALTCTL: { id: 2, mainMode: 2, subMode: 0, name: 'Altitude' },
-  POSCTL: { id: 3, mainMode: 3, subMode: 0, name: 'Position' },
-  AUTO_MISSION: { id: 4, mainMode: 4, subMode: 4, name: 'Mission' },
-  AUTO_LOITER: { id: 5, mainMode: 4, subMode: 3, name: 'Hold' },
-  AUTO_RTL: { id: 6, mainMode: 4, subMode: 5, name: 'RTL' },
-  ACRO: { id: 8, mainMode: 5, subMode: 0, name: 'Acro' },
-  STABILIZED: { id: 10, mainMode: 7, subMode: 0, name: 'Stabilized' },
-  AUTO_LAND: { id: 12, mainMode: 4, subMode: 6, name: 'Land' },
+  // The ids are stable OpenConfigurator wire ids. mainMode/subMode and the
+  // QGC flags mirror PX4's px4_custom_mode.h and PX4FirmwarePlugin.cc.
+  MANUAL: { id: 1, mainMode: 1, subMode: 0, name: 'Manual', qgcSettable: true, multiRotor: true, fixedWing: true },
+  STABILIZED: { id: 10, mainMode: 7, subMode: 0, name: 'Stabilized', qgcSettable: true, multiRotor: true, fixedWing: true },
+  ACRO: { id: 8, mainMode: 5, subMode: 0, name: 'Acro', qgcSettable: true, multiRotor: true, fixedWing: true },
+  RATTITUDE: { id: 7, mainMode: 8, subMode: 0, name: 'Rattitude', qgcSettable: true, multiRotor: true, fixedWing: true },
+  ALTCTL: { id: 2, mainMode: 2, subMode: 0, name: 'Altitude', qgcSettable: true, multiRotor: true, fixedWing: true },
+  OFFBOARD: { id: 9, mainMode: 6, subMode: 0, name: 'Offboard', qgcSettable: true, multiRotor: true, fixedWing: true },
+  SIMPLE: { id: 15, mainMode: 9, subMode: 0, name: 'Simple', qgcSettable: false, multiRotor: true, fixedWing: false },
+  POSCTL: { id: 3, mainMode: 3, subMode: 0, name: 'Position', qgcSettable: true, multiRotor: true, fixedWing: true },
+  POSCTL_SLOW: { id: 11, mainMode: 3, subMode: 2, name: 'Position Slow', qgcSettable: true, multiRotor: true, fixedWing: false },
+  ALTITUDE_CRUISE: { id: 13, mainMode: 11, subMode: 0, name: 'Altitude Cruise', qgcSettable: true, multiRotor: false, fixedWing: true },
+  POSCTL_ORBIT: { id: 16, mainMode: 3, subMode: 1, name: 'Orbit', qgcSettable: false, multiRotor: false, fixedWing: false },
+  AUTO_LOITER: { id: 5, mainMode: 4, subMode: 3, name: 'Hold', qgcSettable: true, multiRotor: true, fixedWing: true },
+  AUTO_MISSION: { id: 4, mainMode: 4, subMode: 4, name: 'Mission', qgcSettable: true, multiRotor: true, fixedWing: true },
+  AUTO_RTL: { id: 6, mainMode: 4, subMode: 5, name: 'Return', qgcSettable: true, multiRotor: true, fixedWing: true },
+  AUTO_FOLLOW_TARGET: { id: 18, mainMode: 4, subMode: 8, name: 'Follow Me', qgcSettable: false, multiRotor: true, fixedWing: false },
+  AUTO_LAND: { id: 12, mainMode: 4, subMode: 6, name: 'Land', qgcSettable: false, multiRotor: true, fixedWing: true },
+  AUTO_PRECLAND: { id: 14, mainMode: 4, subMode: 9, name: 'Precision Land', qgcSettable: true, multiRotor: true, fixedWing: false },
+  AUTO_READY: { id: 19, mainMode: 4, subMode: 1, name: 'Ready', qgcSettable: false, multiRotor: true, fixedWing: true },
+  AUTO_TAKEOFF: { id: 20, mainMode: 4, subMode: 2, name: 'Takeoff', qgcSettable: false, multiRotor: true, fixedWing: true },
+  AUTO_VTOL_TAKEOFF: { id: 21, mainMode: 4, subMode: 10, name: 'VTOL Takeoff', qgcSettable: false, multiRotor: false, fixedWing: true },
+  TERMINATION: { id: 17, mainMode: 10, subMode: 0, name: 'Termination', qgcSettable: false, multiRotor: true, fixedWing: true },
+  AUTO_GUIDED_COURSE: { id: 22, mainMode: 4, subMode: 11, name: 'Guided Course', qgcSettable: false, multiRotor: false, fixedWing: true },
 } as const
 
 export const MAV_RESULT = {

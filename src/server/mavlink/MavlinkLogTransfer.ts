@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { subtractInterval } from './MavlinkFtp'
 import type { DataflashLogEntry, ServerMessage } from '../../shared/types'
+import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
 
 // LOG_DATA carries at most 90 payload bytes; a shorter chunk marks the end of
 // the log (count === 0 is an explicit end-of-log marker).
@@ -440,6 +441,15 @@ export class MavlinkLogTransfer {
         throw new LogTransferError('log_not_found', `飞控上不存在日志 ${logId}`, false)
       }
       const fileSize = entry.sizeBytes
+
+      try {
+        await assertDownloadCapacity(this.downloadDir, fileSize)
+      } catch (error) {
+        if (error instanceof DownloadCapacityError) {
+          throw new LogTransferError(error.code, error.message)
+        }
+        throw error
+      }
 
       handle = await fsp.open(partPath, 'w')
       // LOG_ENTRY sizes may be approximate for the newest (still-open) log;

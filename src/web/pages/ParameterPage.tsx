@@ -22,6 +22,7 @@ import {
 // them by accident must require an explicit confirmation.
 const DANGEROUS_PARAM_PREFIXES = ['CBRK_']
 const QGC_PARAMETER_FILE_MAX_BYTES = 2 * 1024 * 1024
+const PARAM_IMPORT_WRITE_TIMEOUT_MS = 5000
 
 interface ParameterImportSelection {
   fileName: string
@@ -145,6 +146,30 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       }
     })
   }, [importJob, lastOperationError])
+
+  useEffect(() => {
+    if (!importJob || importJob.status !== 'writing' || !importJob.pendingRequestId) return
+    const requestId = importJob.pendingRequestId
+    const timer = window.setTimeout(() => {
+      setImportJob((current) => {
+        if (!current || current.status !== 'writing' || current.pendingRequestId !== requestId) {
+          return current
+        }
+        const entry = current.entries[current.nextIndex]
+        if (!entry) return { ...current, status: 'done', pendingRequestId: null }
+        return {
+          ...current,
+          nextIndex: current.nextIndex + 1,
+          pendingRequestId: null,
+          failed: [...current.failed, {
+            id: entry.row.name,
+            reason: t('parameter.importWriteTimeout'),
+          }],
+        }
+      })
+    }, PARAM_IMPORT_WRITE_TIMEOUT_MS)
+    return () => window.clearTimeout(timer)
+  }, [importJob?.pendingRequestId, importJob?.status, t])
 
   useEffect(() => {
     if (!importJob || importJob.status !== 'writing' || importJob.pendingRequestId) return
@@ -325,6 +350,24 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     setImportSelection(null)
     setImportJob(null)
     setDangerousImportAcknowledged(false)
+  }
+
+  const cancelImport = () => {
+    if (!importJob || importJob.status !== 'writing') return
+    importResyncPending.current = true
+    setImportJob((current) => {
+      if (!current || current.status !== 'writing') return current
+      const remaining = current.entries.slice(current.nextIndex).map((entry) => ({
+        id: entry.row.name,
+        reason: t('parameter.importCancelled'),
+      }))
+      return {
+        ...current,
+        status: 'done',
+        pendingRequestId: null,
+        failed: [...current.failed, ...remaining],
+      }
+    })
   }
 
   const preview = importSelection?.preview ?? null
@@ -572,8 +615,12 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                 )}
 
                 <div className="flex justify-end gap-2 mt-4">
-                  <button type="button" className="mc-btn mc-btn-primary" onClick={closeImportDialog} disabled={importWriting}>
-                    {t('parameter.importClose')}
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn-primary"
+                    onClick={importWriting ? cancelImport : closeImportDialog}
+                  >
+                    {importWriting ? t('parameter.importCancel') : t('parameter.importClose')}
                   </button>
                 </div>
               </>

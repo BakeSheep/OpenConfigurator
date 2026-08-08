@@ -176,20 +176,33 @@ export class ArduPilotRawTransport implements EscByteTransport {
         const timer = setTimeout(() => {
           fail(new EscError('timeout', `ESC 请求超时（${options.label ?? 'transact'}）`))
         }, options.timeoutMs)
-        signal.addEventListener('abort', onAbort)
+        signal.addEventListener('abort', onAbort, { once: true })
         // Re-evaluate framing whenever new bytes arrive (and once for any
         // bytes buffered before the pump was installed).
         this.pump = () => {
           const buffered = concatChunks(this.rxChunks)
+          let bodyStart = 0
+          if (this.targetMode === 'direct') {
+            if (buffered.length < request.length) return
+            for (let index = 0; index < request.length; index++) {
+              if (buffered[index] !== request[index]) {
+                fail(new EscError('echo_mismatch', '单线回显与发送内容不一致'))
+                return
+              }
+            }
+            bodyStart = request.length
+          }
+          const body = buffered.subarray(bodyStart)
           let length: number | null
           try {
-            length = options.frameLength(buffered)
+            length = options.frameLength(body)
           } catch (error) {
             fail(toEscError(error, 'crc_mismatch'))
             return
           }
           if (length === null) return
-          finish(buffered.subarray(0, length))
+          if (body.length < length) return
+          finish(body.subarray(0, length))
         }
         if (!handle.write(Buffer.from(request))) {
           fail(new EscError('link_lost', 'ESC 写入失败'))

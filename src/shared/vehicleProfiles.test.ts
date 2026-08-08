@@ -86,7 +86,9 @@ assert.equal(decodeFlightMode('ardupilot', 'unknown', 3).known, false)
 // ---------------------------------------------------------------------------
 assert.equal(decodeFlightMode('px4', 'copter', 0x04040000).name, 'Mission')
 assert.equal(decodeFlightMode('px4', 'copter', 0x03040000).name, 'Hold')
-assert.equal(decodeFlightMode('px4', 'copter', 0x05040000).name, 'RTL')
+assert.equal(decodeFlightMode('px4', 'copter', 0x05040000).name, 'Return')
+assert.equal(decodeFlightMode('px4', 'copter', 0x09040000).name, 'Precision Land')
+assert.equal(decodeFlightMode('px4', 'plane', 0x000b0000).name, 'Altitude Cruise')
 assert.equal(decodeFlightMode('px4', 'copter', 0x00010000).name, 'Manual')
 assert.equal(decodeFlightMode('px4', 'copter', 0x00030000).name, 'Position')
 assert.equal(decodeFlightMode('px4', 'unknown', 0x00010000).name, 'Manual')
@@ -111,18 +113,42 @@ assert.equal(formatFirmwareLabel('px4', '1.17.0'), 'PX4 v1.17.0')
 assert.equal(formatFirmwareLabel('unknown', '2.0.1'), 'Autopilot v2.0.1')
 
 // ---------------------------------------------------------------------------
-// Profile-driven mode lists: only commonly safe, understood modes for the
-// first ArduCopter release; PX4 keeps its existing list; unknown gets none.
+// Profile-driven mode lists match QGC's canBeSet surface and vehicle filters.
 // ---------------------------------------------------------------------------
 const apModes = availableModes(arducopter)
 assert.deepEqual(
   apModes.map((mode) => mode.name),
-  ['Stabilize', 'AltHold', 'Loiter', 'PosHold', 'Auto', 'Guided', 'RTL', 'Land', 'Acro'],
+  [
+    'Stabilize', 'Acro', 'AltHold', 'Auto', 'Guided', 'Loiter', 'RTL', 'Circle',
+    'Land', 'Drift', 'Sport', 'Flip', 'AutoTune', 'PosHold', 'Brake', 'Throw',
+    'Avoid_ADSB', 'Guided_NoGPS', 'Smart_RTL', 'FlowHold', 'Follow', 'ZigZag',
+    'SystemID', 'AutoRotate', 'Auto RTL', 'Turtle',
+  ],
 )
 assert.equal(apModes.find((mode) => mode.name === 'Loiter')?.id, 5)
 assert.equal(apModes.find((mode) => mode.name === 'Stabilize')?.id, 0)
-assert.ok(availableModes(px4Copter).some((mode) => mode.name === 'Position'))
-assert.ok(availableModes(px4Copter).some((mode) => mode.name === 'Mission'))
+assert.deepEqual(
+  availableModes(px4Copter).map((mode) => mode.name),
+  [
+    'Manual', 'Stabilized', 'Acro', 'Rattitude', 'Altitude', 'Offboard',
+    'Position', 'Position Slow', 'Hold', 'Mission', 'Return', 'Precision Land',
+  ],
+)
+assert.deepEqual(
+  availableModes(buildVehicleIdentity(12, 1)).map((mode) => mode.name),
+  [
+    'Manual', 'Stabilized', 'Acro', 'Rattitude', 'Altitude', 'Offboard',
+    'Position', 'Altitude Cruise', 'Hold', 'Mission', 'Return',
+  ],
+)
+assert.deepEqual(
+  availableModes(buildVehicleIdentity(12, 19)).map((mode) => mode.name),
+  [
+    'Manual', 'Stabilized', 'Acro', 'Rattitude', 'Altitude', 'Offboard',
+    'Position', 'Position Slow', 'Altitude Cruise', 'Hold', 'Mission', 'Return',
+    'Precision Land',
+  ],
+)
 assert.deepEqual(availableModes(unknownIdentity), [])
 assert.deepEqual(availableModes(null), [])
 assert.deepEqual(availableModes(buildVehicleIdentity(3, 1)), []) // ArduPlane deferred
@@ -145,6 +171,22 @@ const px4Mission = encodeModeCommand(px4Copter, 4)
 assert.equal(px4Mission.ok, true)
 if (px4Mission.ok) assert.deepEqual(px4Mission.params, [1, 4, 4, 0, 0, 0, 0])
 
+// QGC-settable additions retain PX4's main/sub-mode encoding.
+const px4Offboard = encodeModeCommand(px4Copter, 9)
+assert.equal(px4Offboard.ok, true)
+if (px4Offboard.ok) assert.deepEqual(px4Offboard.params, [1, 6, 0, 0, 0, 0, 0])
+const px4PrecisionLand = encodeModeCommand(px4Copter, 14)
+assert.equal(px4PrecisionLand.ok, true)
+if (px4PrecisionLand.ok) assert.deepEqual(px4PrecisionLand.params, [1, 4, 9, 0, 0, 0, 0])
+const px4AltitudeCruise = encodeModeCommand(buildVehicleIdentity(12, 1), 13)
+assert.equal(px4AltitudeCruise.ok, true)
+if (px4AltitudeCruise.ok) assert.deepEqual(px4AltitudeCruise.params, [1, 11, 0, 0, 0, 0, 0])
+
+// All QGC-settable ArduCopter modes are accepted through the same guarded path.
+const apFlip = encodeModeCommand(arducopter, 14)
+assert.equal(apFlip.ok, true)
+if (apFlip.ok) assert.deepEqual(apFlip.params, [1, 14, 0, 0, 0, 0, 0])
+
 // Unknown family / missing identity / unimplemented class: reject before
 // anything reaches the serial link.
 assert.deepEqual(encodeModeCommand(null, 0), {
@@ -154,12 +196,16 @@ assert.deepEqual(encodeModeCommand(null, 0), {
 })
 assert.equal(encodeModeCommand(unknownIdentity, 0).ok, false)
 assert.equal(encodeModeCommand(buildVehicleIdentity(3, 1), 0).ok, false) // plane
-const apUnknownMode = encodeModeCommand(arducopter, 14) // Flip not exposed
+const apUnknownMode = encodeModeCommand(arducopter, 10)
 assert.equal(apUnknownMode.ok, false)
 if (!apUnknownMode.ok) assert.equal(apUnknownMode.code, 'unknown_mode')
 const px4UnknownMode = encodeModeCommand(px4Copter, 99)
 assert.equal(px4UnknownMode.ok, false)
 if (!px4UnknownMode.ok) assert.equal(px4UnknownMode.code, 'unknown_mode')
+// Recognized-but-not-settable and vehicle-inapplicable PX4 modes stay blocked.
+assert.equal(encodeModeCommand(px4Copter, 12).ok, false) // Land
+assert.equal(encodeModeCommand(px4Copter, 13).ok, false) // Altitude Cruise
+assert.equal(encodeModeCommand(buildVehicleIdentity(12, 1), 11).ok, false) // Position Slow
 
 // ---------------------------------------------------------------------------
 // Capability matrix: computed from family + vehicle class only. Parameters

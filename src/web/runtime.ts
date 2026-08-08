@@ -10,3 +10,6 @@ export const appRuntimeMode = resolveRuntimeMode({
 
 export const backendEnabled = shouldConnectBackend(appRuntimeMode)
 export const readOnlyRuntime = isReadOnlyRuntime(appRuntimeMode)
+export const dashboardCustomVarsStorageKey = appRuntimeMode === 'demo'
+  ? 'oc-demo-dashboard-custom-vars'
+  : 'oc-dashboard-custom-vars'

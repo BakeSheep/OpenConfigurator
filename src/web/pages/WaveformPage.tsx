@@ -4,9 +4,10 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import Icon from '../components/ui/Icon'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import { useConnectionStore } from '../stores/connectionStore'
 
 type ChannelKey = 'roll' | 'pitch' | 'yaw' | 'altitude' | 'climb' | 'speed' | 'voltage' | 'current' | 'battery' | 'accX' | 'accY' | 'accZ' | 'flowX' | 'flowY' | 'quality'
-type WavePoint = Record<ChannelKey, number> & { time: number }
+type WavePoint = Record<ChannelKey, number | null> & { time: number }
 
 const SAMPLE_RATE_HZ = 20
 const SAMPLE_INTERVAL_MS = 1000 / SAMPLE_RATE_HZ
@@ -14,12 +15,12 @@ const MAX_WINDOW_SECONDS = 60
 const MAX_POINTS = SAMPLE_RATE_HZ * MAX_WINDOW_SECONDS
 const STANDARD_GRAVITY = 9.80665
 
-const channelGroups: Array<{ title: string; channels: Array<{ key: ChannelKey; label: string }> }> = [
-  { title: 'waveform.groupAttitude', channels: [{ key: 'roll', label: 'Roll(°)' }, { key: 'pitch', label: 'Pitch(°)' }, { key: 'yaw', label: 'Yaw(°)' }] },
-  { title: 'waveform.groupFlightData', channels: [{ key: 'altitude', label: 'Alt(m)' }, { key: 'climb', label: 'Climb(m/s)' }, { key: 'speed', label: 'GndSpd(m/s)' }] },
-  { title: 'waveform.groupBattery', channels: [{ key: 'voltage', label: 'Volt(V)' }, { key: 'current', label: 'Curr(A)' }, { key: 'battery', label: 'Batt(%)' }] },
-  { title: 'waveform.groupAccel', channels: [{ key: 'accX', label: 'IMU0 AccX(m/s²)' }, { key: 'accY', label: 'IMU0 AccY(m/s²)' }, { key: 'accZ', label: 'IMU0 AccZ(m/s²)' }] },
-  { title: 'waveform.groupOpticalFlow', channels: [{ key: 'flowX', label: 'Flow X' }, { key: 'flowY', label: 'Flow Y' }, { key: 'quality', label: 'Quality' }] },
+const channelGroups: Array<{ title: string; channels: Array<{ key: ChannelKey }> }> = [
+  { title: 'waveform.groupAttitude', channels: [{ key: 'roll' }, { key: 'pitch' }, { key: 'yaw' }] },
+  { title: 'waveform.groupFlightData', channels: [{ key: 'altitude' }, { key: 'climb' }, { key: 'speed' }] },
+  { title: 'waveform.groupBattery', channels: [{ key: 'voltage' }, { key: 'current' }, { key: 'battery' }] },
+  { title: 'waveform.groupAccel', channels: [{ key: 'accX' }, { key: 'accY' }, { key: 'accZ' }] },
+  { title: 'waveform.groupOpticalFlow', channels: [{ key: 'flowX' }, { key: 'flowY' }, { key: 'quality' }] },
 ]
 
 const colors: Record<ChannelKey, string> = {
@@ -37,28 +38,45 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
   const startRef = useRef(Date.now())
   const pausedRef = useRef(paused)
   pausedRef.current = paused
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
 
   useEffect(() => {
     const id = setInterval(() => {
       if (pausedRef.current) return
+      if (!useConnectionStore.getState().vehicleReady) return
       const tele = useTelemetryStore.getState()
       const sensors = useSensorStore.getState()
       const attitude = tele.attitude
       const imu = sensors.imu
       const flow = sensors.opticalFlow
       const battery = tele.battery
+      const attitudeFresh = !tele.isStale('attitude')
+      const positionFresh = !tele.isStale('globalPosition')
+      const vfrFresh = !tele.isStale('vfrHud')
+      const batteryFresh = !tele.isStale('battery') && battery !== null
+      const imuFresh = !sensors.isStale('imu') && imu !== null
+      const flowFresh = !sensors.isStale('opticalFlow') && flow !== null
       const point: WavePoint = {
         time: (Date.now() - startRef.current) / 1000,
-        roll: (attitude?.roll ?? 0) * 180 / Math.PI,
-        pitch: (attitude?.pitch ?? 0) * 180 / Math.PI,
-        yaw: (attitude?.yaw ?? 0) * 180 / Math.PI,
-        altitude: tele.relativeAlt, climb: tele.climbRate, speed: tele.groundSpeed,
-        voltage: battery?.voltage ?? 0, current: battery?.current ?? 0, battery: battery?.remaining ?? 0,
-        accX: (imu?.xacc ?? 0) * STANDARD_GRAVITY,
-        accY: (imu?.yacc ?? 0) * STANDARD_GRAVITY,
-        accZ: (imu?.zacc ?? 0) * STANDARD_GRAVITY,
-        flowX: flow?.flow_x ?? 0, flowY: flow?.flow_y ?? 0, quality: flow?.quality ?? 0,
+        roll: attitudeFresh && attitude ? attitude.roll * 180 / Math.PI : null,
+        pitch: attitudeFresh && attitude ? attitude.pitch * 180 / Math.PI : null,
+        yaw: attitudeFresh && attitude ? attitude.yaw * 180 / Math.PI : null,
+        altitude: positionFresh ? tele.relativeAlt : null,
+        climb: vfrFresh ? tele.climbRate : null,
+        speed: vfrFresh ? tele.groundSpeed : null,
+        voltage: batteryFresh ? battery.voltage : null,
+        current: batteryFresh ? battery.current : null,
+        battery: batteryFresh ? battery.remaining : null,
+        accX: imuFresh ? imu.xacc * (imu.units === 'raw' ? 1 : STANDARD_GRAVITY) : null,
+        accY: imuFresh ? imu.yacc * (imu.units === 'raw' ? 1 : STANDARD_GRAVITY) : null,
+        accZ: imuFresh ? imu.zacc * (imu.units === 'raw' ? 1 : STANDARD_GRAVITY) : null,
+        flowX: flowFresh ? flow.flow_x : null,
+        flowY: flowFresh ? flow.flow_y : null,
+        quality: flowFresh ? flow.quality : null,
       }
+      if (!selectedRef.current.some((channel) => point[channel] !== null)) return
       setData((current) => [...current.slice(-(MAX_POINTS - 1)), point])
     }, SAMPLE_INTERVAL_MS)
     return () => clearInterval(id)
@@ -85,7 +103,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
                   <label key={channel.key}>
                     <input type="checkbox" checked={selected.includes(channel.key)} onChange={() => toggleChannel(channel.key)} />
                     <i style={{ background: colors[channel.key] }} />
-                    <span>{channel.label}</span>
+                    <span>{t(`waveform.channel.${channel.key}`)}</span>
                     <strong className="mc-mono" style={{ color: colors[channel.key] }}>{latest?.[channel.key]?.toFixed(1) ?? '—'}</strong>
                   </label>
                 ))}
@@ -101,6 +119,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
             <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label={t('waveform.clearData')}><Icon name="trash" size={15} /></button>
             <div><button type="button" data-active>{t('waveform.chartSampleRate', { rate: SAMPLE_RATE_HZ })}</button></div>
             <span>{t('waveform.channelSampleSummary', { channels: selected.length, samples: visibleData.length })}</span>
+            <span>{!vehicleReady ? t('waveform.offline') : paused ? t('waveform.paused') : t('waveform.live')}</span>
           </div>
           <div className="mc-card mc-wave-chart">
             <ResponsiveContainer width="100%" height="100%">
@@ -113,7 +132,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="mc-wave-legend">{selected.map((channel) => <span key={channel}><i style={{ background: colors[channel] }} />{channel} <strong className="mc-mono" style={{ color: colors[channel] }}>{latest?.[channel]?.toFixed(1) ?? '—'}</strong></span>)}</div>
+          <div className="mc-wave-legend">{selected.map((channel) => <span key={channel}><i style={{ background: colors[channel] }} />{t(`waveform.channel.${channel}`)} <strong className="mc-mono" style={{ color: colors[channel] }}>{latest?.[channel]?.toFixed(1) ?? '—'}</strong></span>)}</div>
         </section>
       </div>
     </div>

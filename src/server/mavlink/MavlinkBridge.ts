@@ -59,6 +59,7 @@ const SERIAL_PARAM_RETRY_BATCH_SIZE = 32
 const BLUETOOTH_PARAM_RETRY_BATCH_SIZE = 8
 const PARAM_MAX_STALL_RETRIES = 12
 const PARAM_MAX_COUNT = 8192
+const PARAM_VALUE_CACHE_MAX_ENTRIES = PARAM_MAX_COUNT
 const PARAM_MAX_READ_REQUESTS = 4096
 const SERIAL_PARAM_DEADLINE_MS = 60_000
 const BLUETOOTH_PARAM_DEADLINE_MS = 120_000
@@ -256,6 +257,7 @@ export class MavlinkBridge extends EventEmitter {
   private readonly commandQuarantineUntil = new Map<number, number>()
   private readonly pendingParamSets = new Map<string, PendingParamSet>()
   private readonly parameterValues = new Map<string, number>()
+  private parameterCacheLimitWarned = false
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
   // Active calibration session, if any. Owned lifecycle-wise by the server's
@@ -321,6 +323,18 @@ export class MavlinkBridge extends EventEmitter {
   /** Latest validated PARAM_VALUE for the selected target. */
   getParameterValue(id: string): number | null {
     return this.parameterValues.get(id) ?? null
+  }
+
+  private cacheParameterValue(id: string, value: number): boolean {
+    if (!this.parameterValues.has(id) && this.parameterValues.size >= PARAM_VALUE_CACHE_MAX_ENTRIES) {
+      if (!this.parameterCacheLimitWarned) {
+        this.parameterCacheLimitWarned = true
+        console.warn(`[MAVLink] parameter cache reached ${PARAM_VALUE_CACHE_MAX_ENTRIES} entries; dropping new ids`)
+      }
+      return false
+    }
+    this.parameterValues.set(id, value)
+    return true
   }
 
   /** Last known armed flag of the selected autopilot; null until known. */
@@ -642,6 +656,7 @@ export class MavlinkBridge extends EventEmitter {
     this.telemetryProfile = null
     this.selectedIdentity = null
     this.parameterValues.clear()
+    this.parameterCacheLimitWarned = false
     this.lastArmedState = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
@@ -1889,7 +1904,7 @@ export class MavlinkBridge extends EventEmitter {
     // 0xffff = unknown/not populated; 0xfffe = cell present but the voltage
     // exceeds the field range (would otherwise read as a bogus 65.534 V).
     const baseCellVoltages = (d.voltages ?? []).map((voltage) =>
-      voltage >= 0xfffe ? null : voltage / 1000
+      voltage === 0 || voltage >= 0xfffe ? null : voltage / 1000
     )
     const extendedCellVoltages = (d.voltagesExt ?? []).map((voltage, index) => {
       // MAVLink 2 trims trailing zero bytes, including the high byte of a
@@ -1963,7 +1978,7 @@ export class MavlinkBridge extends EventEmitter {
       || [...actualIdBytes].some((byte) => byte < 0x20 || byte > 0x7e)
     ) return
     const id = actualIdBytes.toString('ascii')
-    this.parameterValues.set(id, value)
+    this.cacheParameterValue(id, value)
 
     this.emit('message', {
       type: 'param',

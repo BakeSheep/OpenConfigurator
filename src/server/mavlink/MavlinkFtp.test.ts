@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
 import { crc32Buffer, MavlinkFtp, subtractInterval, type FtpTransport } from './MavlinkFtp'
+import { MAX_LOG_DOWNLOAD_BYTES } from './downloadLimits'
 import type { ServerMessage } from '../../shared/types'
 
 // Independent, bit-at-a-time reference for PX4's crc32part convention. Keep
@@ -589,6 +590,33 @@ await (async () => {
   assert.equal(transport.messagesOf('fs_op_error')[0].data.code, 'write_rejected')
   assert.ok(!ftp.busy)
   ftp.destroy()
+})()
+
+// ---------------------------------------------------------------------------
+// Advertised files over the product limit are rejected before temp-file IO.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  transport.responder = (request) => {
+    if (request.opcode === FTP_OPCODES.ResetSessions) {
+      transport.reply(request, { opcode: FTP_OPCODES.Ack })
+    } else if (request.opcode === FTP_OPCODES.OpenFileRO) {
+      const size = Buffer.alloc(4)
+      size.writeUInt32LE(MAX_LOG_DOWNLOAD_BYTES + 1)
+      transport.reply(request, { opcode: FTP_OPCODES.Ack, session: 9, data: size })
+    } else if (request.opcode === FTP_OPCODES.TerminateSession) {
+      transport.reply(request, { opcode: FTP_OPCODES.Ack })
+    } else {
+      assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
+  ftp.startDownload('/fs/microsd/log/oversized.ulg', 'oversized')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  assert.equal(transport.messagesOf('fs_op_error')[0].data.code, 'download_too_large')
+  assert.deepEqual(await fsp.readdir(dir), [])
+  assert.equal(ftp.busy, false)
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
 })()
 
 console.log('MavlinkFtp protocol tests passed')

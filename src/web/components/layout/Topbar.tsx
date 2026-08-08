@@ -9,11 +9,13 @@ import { useLanguageStore } from '../../stores/languageStore'
 import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
 import { appRuntimeMode } from '../../runtime'
 import {
+  connectionPresetEnablesGamepad,
   loadConnectionPresets,
   resolveSerialPreset,
   saveConnectionPresets,
   type ConnectionPreset,
 } from '../../utils/connectionPresets'
+import { useGamepadStore } from '../../stores/gamepadStore'
 import Icon from '../ui/Icon'
 import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from '../../utils/gpsTelemetry'
 
@@ -21,10 +23,11 @@ const radToDeg = (r: number) => r * 180 / Math.PI
 
 export default function Topbar() {
   const { t } = useTranslation()
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError } = useConnectionStore()
+  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
   const { theme, toggleTheme } = useThemeStore()
   const { language, toggleLanguage } = useLanguageStore()
   const isDemo = appRuntimeMode === 'demo'
+  const setGamepadEnabled = useGamepadStore((state) => state.setEnabled)
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
     ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? t('topbar.connection.ready'))
@@ -48,6 +51,7 @@ export default function Topbar() {
 
   const connectPreset = async (preset: ConnectionPreset) => {
     setConnectDropdown(false)
+    setActivePresetId(null)
     setConnectionError(null)
     setStatus('connecting')
     try {
@@ -101,12 +105,18 @@ export default function Topbar() {
         setConnectionError(t('topbar.connection.presetFailed', { reason }))
         setStatus('error')
         setConnectDialogOpen(true)
+        setGamepadEnabled(false)
+      } else {
+        setActivePresetId(resolved.id)
+        setGamepadEnabled(connectionPresetEnablesGamepad(resolved))
       }
     } catch (error) {
       console.error('[Connect] preset connect failed:', error)
       setConnectionError(t('topbar.connection.presetFailed', { reason: error instanceof Error ? error.message : String(error) }))
       setStatus('error')
       setConnectDialogOpen(true)
+      setActivePresetId(null)
+      setGamepadEnabled(false)
     }
   }
 
@@ -343,7 +353,7 @@ export default function Topbar() {
                   {vehicleReady && !canControl && <p>{t('topbar.arm.readOnly')}</p>}
                   {vehicleReady && canControl && !caps.writeOperations && <p>{t('topbar.arm.noWriteOps')}</p>}
                   {vehicleReady && canControl && preflightCheck === false && recentArmErrors.length === 0 && <p>{t('topbar.arm.preflightFailed')}</p>}
-                  {unhealthySensors.length > 0 && <p>{t('topbar.arm.sensorAbnormal', { sensors: unhealthySensors.join('、') })}</p>}
+                  {unhealthySensors.length > 0 && <p>{t('topbar.arm.sensorAbnormal', { sensors: unhealthySensors.join(t('common.listSeparator')) })}</p>}
                   {recentArmErrors.map((entry) => <p key={entry.id}>{entry.text}</p>)}
                 </div>
               )}

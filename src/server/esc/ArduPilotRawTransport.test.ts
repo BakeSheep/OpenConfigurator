@@ -129,7 +129,8 @@ async function run(): Promise<void> {
   }
 
   // Direct USB reuse borrows the same raw link without requiring a MAVLink
-  // heartbeat or arming state from a directly attached ESC.
+  // heartbeat or arming state from a directly attached ESC, and consumes the
+  // single-wire request echo before framing the response.
   {
     const conn = new FakeRawSession()
     conn.vehicleReady = false
@@ -139,6 +140,16 @@ async function run(): Promise<void> {
     await t.open({ mode: 'direct', port: 'COM9', baudRate: 19200 }, new AbortController().signal)
     assert.equal(t.kind, 'direct')
     assert.equal(conn.beginCalls, 1)
+    const request = Uint8Array.of(0x2f, 0x10)
+    const pending = t.transact(request, {
+      timeoutMs: 200,
+      frameLength: fixedFrame(3),
+    }, new AbortController().signal)
+    await wait(5)
+    conn.deliver([...request])
+    conn.deliver([0x2e])
+    conn.deliver([0x01, 0x02])
+    assert.deepEqual([...(await pending)], [0x2e, 0x01, 0x02])
     await t.close('done')
     assert.equal(conn.released, 1)
     assert.equal(bridge.resumeCalls, 1)

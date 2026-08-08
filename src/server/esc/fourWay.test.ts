@@ -45,19 +45,11 @@ import {
 {
   assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START)), null)
   // cmd,addr,addr,param_len=3 -> 5 + 3 + 1(ack) + 2(crc) = 11
-  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 3)), 11)
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 3)), null)
   // param_len sentinel 0 -> 256 bytes.
-  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 0)), 5 + 256 + 3)
-  assert.throws(
-    () => fourWayFrameLength(Uint8Array.of(FOUR_WAY_REQUEST_START)),
-    (e: unknown) => e instanceof EscError,
-    'a local/request escape byte is not a response prefix',
-  )
-  assert.throws(
-    () => fourWayFrameLength(Uint8Array.of(0x00)),
-    (e: unknown) => e instanceof EscError,
-    'bad start byte rejected',
-  )
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_RESPONSE_START, 0x3a, 0, 0, 0)), null)
+  assert.equal(fourWayFrameLength(Uint8Array.of(FOUR_WAY_REQUEST_START)), null)
+  assert.equal(fourWayFrameLength(Uint8Array.of(0x00)), null)
 }
 
 // Build a valid response frame and round-trip decode it.
@@ -74,6 +66,16 @@ function buildResponse(command: number, address: number, params: number[], ack: 
   )
   const crc = crc16Xmodem(head)
   return Uint8Array.of(...head, (crc >> 8) & 0xff, crc & 0xff)
+}
+
+{
+  const response = buildResponse(FOUR_WAY_COMMANDS.DeviceRead, 0, [1, 2, 3], FOUR_WAY_ACK.OK)
+  assert.equal(fourWayFrameLength(response.subarray(0, 5)), null, 'partial header is not a frame')
+  assert.equal(fourWayFrameLength(response.subarray(0, response.length - 1)), null, 'partial body is not a frame')
+  assert.equal(fourWayFrameLength(response), response.length)
+  const noisy = Uint8Array.of(0xfe, 0x09, ...response)
+  assert.equal(fourWayFrameLength(noisy), noisy.length, 'leading link noise is included in framed length')
+  assert.deepEqual([...decodeFourWay(noisy).params], [1, 2, 3], 'decoder resynchronizes after leading noise')
 }
 
 {

@@ -11,8 +11,10 @@ import {
   NAV_STATE_NAMES,
   RAD_TO_DEG,
   VibrationAnalyzer,
+  appendBoundedTransition,
   buildSegments,
   quaternionToEuler,
+  normalizeUlogTimestamp,
   type UlogAnalysisDataset,
   type UlogEvent,
   type UlogWorkerRequest,
@@ -67,9 +69,12 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   // open() builds a complete timestamp index. Use it for duration and the
   // origin so valid logs without our chart topics do not incorrectly show -.
   const timeRange = ulog.timeRange()
-  const indexedStartUs = timeRange?.[0] ?? header.timestamp
-  const indexedDurationSec = timeRange
-    ? Math.max(0, Number(timeRange[1] - timeRange[0]) / 1e6)
+  const validTimeRange = timeRange && timeRange[0] > 0n && timeRange[1] >= timeRange[0]
+    ? timeRange
+    : null
+  const indexedStartUs = validTimeRange?.[0] ?? header.timestamp
+  const indexedDurationSec = validTimeRange
+    ? Math.max(0, Number(validTimeRange[1] - validTimeRange[0]) / 1e6)
     : 0
 
   // --- collectors -----------------------------------------------------
@@ -343,16 +348,20 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       const navState = num(value.nav_state)
       if (Number.isFinite(navState)) {
         const label = NAV_STATE_NAMES[navState] ?? `Mode ${navState}`
-        if (modeSamples[modeSamples.length - 1]?.label !== label) {
-          modeSamples.push({ timeSec, label })
-        }
+        if (appendBoundedTransition(
+          modeSamples,
+          { timeSec, label },
+          (previous, next) => previous.label === next.label,
+        ) === 'full') droppedMessages++
       }
       const armingState = num(value.arming_state)
       if (Number.isFinite(armingState)) {
         const label = armingState === 2 ? 'armed' : 'disarmed'
-        if (armedSamples[armedSamples.length - 1]?.label !== label) {
-          armedSamples.push({ timeSec, label })
-        }
+        if (appendBoundedTransition(
+          armedSamples,
+          { timeSec, label },
+          (previous, next) => previous.label === next.label,
+        ) === 'full') droppedMessages++
       }
     },
   }
@@ -369,9 +378,11 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       const subscription = ulog.subscriptions.get(message.msgId)
       if (!subscription) continue
       const value = message.value
-      const timestamp = typeof value.timestamp === 'bigint'
-        ? value.timestamp
-        : BigInt(Math.trunc(num(value.timestamp) || 0))
+      const timestamp = normalizeUlogTimestamp(value.timestamp)
+      if (timestamp === null) {
+        droppedMessages++
+        continue
+      }
       handlers[subscription.name]?.(value, toSec(timestamp))
     } else if (message.type === MessageType.Log || message.type === MessageType.LogTagged) {
       if (message.logLevel <= LogLevel.Info && events.length < MAX_EVENTS) {

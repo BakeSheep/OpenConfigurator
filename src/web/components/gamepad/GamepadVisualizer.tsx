@@ -2,59 +2,28 @@ import { useTranslation } from 'react-i18next'
 
 interface GamepadVisualizerProps {
   connected: boolean
-  controllerId: string | null
-  flightControllerConnected: boolean
-  enabled: boolean
   axes: number[]
   buttons: boolean[]
-  mapping: {
-    throttle: number
-    yaw: number
-    pitch: number
-    roll: number
-    armButton: number
-    disarmButton: number
-    modeButton: number
-    rtlButton: number
-  }
 }
 
 const clampAxis = (value: number | undefined) => Math.max(-1, Math.min(1, value || 0))
 
-function ConnectionRow({ label, value, active, accent = false }: { label: string; value: string; active: boolean; accent?: boolean }) {
-  const tone = active ? (accent ? 'var(--accent)' : 'var(--success)') : 'var(--text-disabled)'
-  return (
-    <div className="flex min-w-0 items-center justify-between gap-3 border-b py-2.5 last:border-0" style={{ borderColor: 'var(--border)' }}>
-      <span className="shrink-0 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{label}</span>
-      <span className="flex min-w-0 items-center gap-2 text-[11px] font-semibold" style={{ color: tone }}>
-        <i className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: tone }} />
-        <span className="truncate">{value}</span>
-      </span>
-    </div>
-  )
-}
-
 export default function GamepadVisualizer({
   connected,
-  controllerId,
-  flightControllerConnected,
-  enabled,
   axes,
   buttons,
-  mapping,
 }: GamepadVisualizerProps) {
   const { t } = useTranslation()
-  const leftX = clampAxis(axes[mapping.yaw])
-  const leftY = clampAxis(axes[mapping.throttle])
-  const rightX = clampAxis(axes[mapping.roll])
-  const rightY = clampAxis(axes[mapping.pitch])
+  const leftX = clampAxis(axes[0])
+  const leftY = clampAxis(axes[1])
+  const rightX = clampAxis(axes[2])
+  const rightY = clampAxis(axes[3])
   const buttonFill = (index: number) => buttons[index] ? 'var(--accent)' : 'var(--bg-hover)'
   const buttonStroke = (index: number) => buttons[index] ? 'var(--accent-hover)' : 'var(--border-strong)'
   const dpadFill = (index: number) => buttons[index] ? 'var(--accent)' : 'var(--bg-hover)'
 
   return (
-    <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(360px,0.9fr)_minmax(360px,1.1fr)]">
-      <div className="relative flex min-h-[260px] items-center overflow-hidden rounded-2xl border p-3" style={{ background: 'linear-gradient(145deg, var(--bg-tertiary), var(--bg-secondary))', borderColor: 'var(--border)' }}>
+    <div className="relative flex min-h-[320px] items-center overflow-hidden rounded-2xl border p-3" style={{ background: 'linear-gradient(145deg, var(--bg-tertiary), var(--bg-secondary))', borderColor: 'var(--border)' }}>
         <div className="absolute left-4 top-4 z-10 flex items-center gap-2 text-[9px] font-bold tracking-[0.16em]" style={{ color: connected ? 'var(--success)' : 'var(--text-disabled)' }}>
           <i className="h-1.5 w-1.5 rounded-full" style={{ background: connected ? 'var(--success)' : 'var(--text-disabled)', boxShadow: connected ? '0 0 10px var(--success)' : 'none' }} />
           {connected ? 'LIVE INPUT' : 'WAITING'}
@@ -117,30 +86,6 @@ export default function GamepadVisualizer({
             </g>
           ))}
         </svg>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <section className="rounded-xl border px-4 py-3" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
-          <p className="mc-section-title mb-1">{t('joystick.visualizer.connectionStatus')}</p>
-          <ConnectionRow label={t('joystick.visualizer.gamepad')} value={connected ? controllerId ?? t('joystick.visualizer.connected') : t('joystick.visualizer.noDevice')} active={connected} />
-          <ConnectionRow label={t('joystick.visualizer.fcLink')} value={flightControllerConnected ? t('joystick.visualizer.connected') : t('joystick.visualizer.disconnected')} active={flightControllerConnected} />
-          <ConnectionRow label={t('joystick.visualizer.mavlinkManualInput')} value={enabled ? t('joystick.visualizer.manuallyEnabled') : t('joystick.visualizer.notEnabled')} active={enabled} accent />
-        </section>
-
-        <section className="rounded-xl border p-4" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
-          <p className="mc-section-title mb-3">{t('joystick.visualizer.stickCoords')}</p>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              [t('joystick.visualizer.leftX'), leftX], [t('joystick.visualizer.leftY'), leftY], [t('joystick.visualizer.rightX'), rightX], [t('joystick.visualizer.rightY'), rightY],
-            ].map(([label, value]) => (
-              <div key={label as string} className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-tertiary)' }}>
-                <p className="text-[9px]" style={{ color: 'var(--text-disabled)' }}>{label}</p>
-                <p className="mc-mono mt-0.5 text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{(value as number).toFixed(3)}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
     </div>
   )
 }

@@ -98,17 +98,18 @@ export interface FourWayResponse {
  *   0x2E cmd addr_hi addr_lo param_len param[...] ack crc_hi crc_lo
  */
 export function fourWayFrameLength(buffered: Uint8Array): number | null {
-  if (buffered.length < 1) return null
-  if (buffered[0] !== FOUR_WAY_RESPONSE_START) {
-    throw new EscError('crc_mismatch', '4-way 帧起始字节错误')
-  }
-  if (buffered.length < 5) return null
-  const paramLen = buffered[4] === 0 ? 256 : buffered[4]
-  return 5 + paramLen + 1 /* ack */ + 2 /* crc */
+  const start = findFourWayResponseStart(buffered)
+  if (start === null || buffered.length < start + 5) return null
+  const paramLen = buffered[start + 4] === 0 ? 256 : buffered[start + 4]
+  const length = start + 5 + paramLen + 1 /* ack */ + 2 /* crc */
+  return buffered.length >= length ? length : null
 }
 
 /** Decode and CRC-check a complete 4-way response frame. */
 export function decodeFourWay(frame: Uint8Array): FourWayResponse {
+  const start = findFourWayResponseStart(frame)
+  if (start === null) throw new EscError('crc_mismatch', '未找到 4-way 响应帧')
+  frame = frame.subarray(start)
   if (frame.length < 8) throw new EscError('crc_mismatch', '4-way 帧过短')
   if (frame[0] !== FOUR_WAY_RESPONSE_START) {
     throw new EscError('crc_mismatch', '4-way 帧起始字节错误')
@@ -129,4 +130,11 @@ export function decodeFourWay(frame: Uint8Array): FourWayResponse {
     throw new EscError('crc_mismatch', `4-way CRC 错误：期望 ${computed}，实际 ${receivedCrc}`)
   }
   return { command, address, params: Uint8Array.from(params), ack }
+}
+
+function findFourWayResponseStart(bytes: Uint8Array): number | null {
+  for (let index = 0; index < bytes.length; index++) {
+    if (bytes[index] === FOUR_WAY_RESPONSE_START) return index
+  }
+  return null
 }

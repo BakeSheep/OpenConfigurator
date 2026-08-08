@@ -16,6 +16,18 @@ import { useMessageRateStore } from '../stores/messageRateStore'
 import { recordMavlinkServerMessage, useMavlinkMessageStore } from '../stores/mavlinkMessageStore'
 import { useShellStore } from '../stores/shellStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
+import {
+  parseAttitudeData,
+  parseBaroData,
+  parseBatteryData,
+  parseDistanceSensorData,
+  parseGlobalPositionData,
+  parseGpsData,
+  parseImuData,
+  parseOpticalFlowData,
+  parseSysStatusData,
+  parseVfrHudData,
+} from '../utils/wireTelemetry'
 
 /**
  * Resolve a server error to the current language:
@@ -42,6 +54,7 @@ let autoParamRequestPending = false
 // Tracks the last vehicleReady seen so parameter downloads trigger only on the
 // false→true edge, not on every re-broadcast connection snapshot.
 let lastVehicleReady = false
+let preserveParamsOnReadyRecovery = false
 let activeParamGeneration: number | null = null
 let restControlToken: string | null = null
 let escReclaimAttempt: string | null = null
@@ -102,7 +115,7 @@ function sendToServer(msg: ClientMessage) {
   return true
 }
 
-function handleMessage(msg: ServerMessage) {
+export function handleMessage(msg: ServerMessage) {
   const connStore = useConnectionStore.getState()
   const telemetryStore = useTelemetryStore.getState()
   const sensorStore = useSensorStore.getState()
@@ -141,7 +154,7 @@ function handleMessage(msg: ServerMessage) {
         // Only the false→true edge starts a download - the backend re-broadcasts
         // connection snapshots (e.g. when another client joins), and clearing an
         // already-downloaded parameter list on every snapshot would wipe it.
-        if (!lastVehicleReady) {
+        if (!lastVehicleReady && !preserveParamsOnReadyRecovery) {
           discardParamBatch()
           paramStore.clear()
           paramStore.setLoading(true)
@@ -155,6 +168,7 @@ function handleMessage(msg: ServerMessage) {
             console.log('[FC] Automatic parameter download started')
           }
         }
+        preserveParamsOnReadyRecovery = false
       } else if (msg.data.rawSessionActive || (transportOpenNow && wasRawSessionActive)) {
         // An ESC raw session deliberately pauses MAVLink and drops
         // vehicleReady while keeping the same serial transport open. Preserve
@@ -165,6 +179,17 @@ function handleMessage(msg: ServerMessage) {
         discardParamBatch()
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
+        preserveParamsOnReadyRecovery = false
+      } else if (transportOpenNow) {
+        // A soft heartbeat timeout can lower vehicleReady before the transport
+        // is actually closed. Keep target-bound state until a later snapshot
+        // confirms a link drop; a recovered heartbeat from the same open
+        // transport must not wipe and re-download an otherwise valid cache.
+        autoParamRequestPending = false
+        discardParamBatch()
+        telemetryStore.markAllStale()
+        sensorStore.markAllOffline()
+        preserveParamsOnReadyRecovery = true
       } else if (msg.data.reconnect) {
         // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
         // last-known telemetry visible (greyed) instead of a full reset: the
@@ -176,6 +201,7 @@ function handleMessage(msg: ServerMessage) {
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
         paramStore.clear()
+        preserveParamsOnReadyRecovery = false
       } else {
         autoParamRequestPending = false
         discardParamBatch()
@@ -203,6 +229,7 @@ function handleMessage(msg: ServerMessage) {
         // transient WS disconnect, this permanently invalidates recovery.
         useCalibrationStore.getState().clearRecovery()
         useCalibrationStore.getState().reset()
+        preserveParamsOnReadyRecovery = false
       }
       lastVehicleReady = vehicleReadyNow
       break
@@ -525,37 +552,58 @@ function handleMessage(msg: ServerMessage) {
   }
 }
 
-function handleTelemetry(msgType: string, data: any) {
+function handleTelemetry(msgType: string, wireData: unknown) {
   const telemetryStore = useTelemetryStore.getState()
   const sensorStore = useSensorStore.getState()
 
   switch (msgType) {
-    case 'ATTITUDE':
+    case 'ATTITUDE': {
+      const data = parseAttitudeData(wireData)
+      if (!data) break
       telemetryStore.setAttitude(data)
       break
-    case 'GPS_RAW_INT':
+    }
+    case 'GPS_RAW_INT': {
+      const data = parseGpsData(wireData)
+      if (!data) break
       telemetryStore.setGps(data)
       sensorStore.setSensorHealth('gps', data.fix_type >= 3 ? 'ok' : 'warning')
       break
-    case 'BATTERY_STATUS':
+    }
+    case 'BATTERY_STATUS': {
+      const data = parseBatteryData(wireData)
+      if (!data) break
       telemetryStore.setBattery(data)
       // Do not claim battery health without a valid voltage source: ArduPilot
       // without a battery monitor sends all-unknown voltages.
-      sensorStore.setSensorHealth('battery', data.voltage == null ? 'offline' : 'ok')
+      sensorStore.setSensorHealth(
+        'battery',
+        typeof data.voltage === 'number' && Number.isFinite(data.voltage) && data.voltage > 0 ? 'ok' : 'offline',
+      )
       break
-    case 'SYS_STATUS':
+    }
+    case 'SYS_STATUS': {
+      const data = parseSysStatusData(wireData)
+      if (!data) break
       telemetryStore.setSysStatus(data)
       break
-    case 'VFR_HUD':
+    }
+    case 'VFR_HUD': {
+      const data = parseVfrHudData(wireData)
+      if (!data) break
       telemetryStore.setVfrHud(data)
       break
-    case 'GLOBAL_POSITION_INT':
+    }
+    case 'GLOBAL_POSITION_INT': {
+      const data = parseGlobalPositionData(wireData)
+      if (!data) break
       telemetryStore.setGlobalPosition(data)
       break
+    }
   }
 }
 
-function handleSensor(msgType: string, data: any) {
+function handleSensor(msgType: string, wireData: unknown) {
   const sensorStore = useSensorStore.getState()
 
   switch (msgType) {
@@ -563,7 +611,9 @@ function handleSensor(msgType: string, data: any) {
     case 'SCALED_IMU2':
     case 'SCALED_IMU3':
     case 'RAW_IMU':
-    case 'HIGHRES_IMU':
+    case 'HIGHRES_IMU': {
+      const data = parseImuData(wireData)
+      if (!data) break
       sensorStore.setImu(
         data,
         data.instance ?? (msgType === 'SCALED_IMU2' ? 1 : msgType === 'SCALED_IMU3' ? 2 : 0),
@@ -572,21 +622,31 @@ function handleSensor(msgType: string, data: any) {
         msgType === 'HIGHRES_IMU' ? 'HIGHRES_IMU' : msgType === 'RAW_IMU' ? 'RAW_IMU' : 'SCALED_IMU',
       )
       break
+    }
     case 'SCALED_PRESSURE':
     // Baro sample lifted out of HIGHRES_IMU for PX4 profiles that do not
     // stream SCALED_PRESSURE. The store arbitrates: SCALED_PRESSURE wins
     // while fresh, the HIGHRES fallback fills in only when it goes quiet.
-    case 'HIGHRES_IMU_PRESSURE':
+    case 'HIGHRES_IMU_PRESSURE': {
+      const data = parseBaroData(wireData)
+      if (!data) break
       sensorStore.setBaro(data, msgType)
       break
+    }
     case 'OPTICAL_FLOW':
-    case 'OPTICAL_FLOW_RAD':
+    case 'OPTICAL_FLOW_RAD': {
+      const data = parseOpticalFlowData(wireData)
+      if (!data) break
       sensorStore.setOpticalFlow(data)
       break
+    }
     case 'RANGEFINDER':
-    case 'DISTANCE_SENSOR':
+    case 'DISTANCE_SENSOR': {
+      const data = parseDistanceSensorData(wireData)
+      if (!data) break
       sensorStore.setDistanceSensor(data)
       break
+    }
   }
 }
 
@@ -615,20 +675,14 @@ function connectSocket() {
     console.log('[WS] Connected to server')
   }
 
-  ws.onmessage = (event) => {
-    try {
-      const msg: ServerMessage = JSON.parse(event.data)
-      handleMessage(msg)
-    } catch (err) {
-      console.error('[WS] Parse error:', err)
-    }
-  }
+  ws.onmessage = (event) => processServerMessage(event.data)
 
   ws.onclose = () => {
     if (wsInstance === ws) {
       restControlToken = null
       autoParamRequestPending = false
       lastVehicleReady = false
+      preserveParamsOnReadyRecovery = false
       activeParamGeneration = null
       discardParamBatch()
       useConnectionStore.getState().setDisconnected()
@@ -656,6 +710,23 @@ function connectSocket() {
 
   ws.onerror = () => {
     ws.close()
+  }
+}
+
+/** Parse and dispatch one wire message without letting either failure escape the event callback. */
+export function processServerMessage(raw: string): void {
+  let msg: ServerMessage
+  try {
+    msg = JSON.parse(raw) as ServerMessage
+  } catch (error) {
+    console.error('[WS] Parse error:', error)
+    return
+  }
+
+  try {
+    handleMessage(msg)
+  } catch (error) {
+    console.error('[WS] Message handler error:', error)
   }
 }
 

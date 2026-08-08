@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
 import type { FsEntry, ServerMessage } from '../../shared/types'
+import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
 
 const FTP_HEADER_SIZE = 12
 const FTP_MAX_DATA = 239
@@ -566,6 +567,15 @@ export class MavlinkFtp {
       if (openReply.size < 4) throw new FtpError('ftp_protocol', 'OpenFileRO 应答缺少文件大小')
       session = openReply.session
       const fileSize = openReply.data.readUInt32LE(0)
+
+      try {
+        await assertDownloadCapacity(this.downloadDir, fileSize)
+      } catch (error) {
+        if (error instanceof DownloadCapacityError) {
+          throw new FtpError(error.code, error.message)
+        }
+        throw error
+      }
 
       handle = await fsp.open(partPath, 'w')
       let missing: Array<[number, number]> =

@@ -114,9 +114,12 @@ function decodePx4Mode(customMode: number): FlightModeInfo {
   const exact = Object.values(PX4_MODES).find((mode) =>
     mode.mainMode === mainMode && mode.subMode === subMode
   )
-  const mainOnly = Object.values(PX4_MODES).find((mode) =>
-    mode.mainMode === mainMode && mode.subMode === 0
-  )
+  // Only fall back to a main-only entry when the heartbeat actually carries
+  // no sub-mode. A packed but unknown sub-mode must remain unknown rather than
+  // being mislabeled as the main mode (for example Simple 9.99).
+  const mainOnly = subMode === 0
+    ? Object.values(PX4_MODES).find((mode) => mode.mainMode === mainMode && mode.subMode === 0)
+    : undefined
   const mode = exact ?? mainOnly
   if (mode) return { id: mode.id, name: mode.name, known: true }
   return {
@@ -167,11 +170,6 @@ export interface FlightModeOption {
   name: string
 }
 
-// First-release ArduCopter mode surface: only commonly safe, understood
-// modes. Anything else stays reachable through the RC transmitter but is
-// deliberately not offered (or encoded) by this GCS yet.
-const ARDUCOPTER_SELECTABLE_MODE_IDS = [0, 2, 5, 16, 3, 4, 6, 9, 1] as const
-
 /**
  * Modes this GCS offers for the selected profile. An empty list means mode
  * switching is not supported for the vehicle (UI must explain, not hide).
@@ -179,10 +177,21 @@ const ARDUCOPTER_SELECTABLE_MODE_IDS = [0, 2, 5, 16, 3, 4, 6, 9, 1] as const
 export function availableModes(identity: VehicleIdentity | null): FlightModeOption[] {
   if (!identity) return []
   if (identity.family === 'px4') {
-    return Object.values(PX4_MODES).map((mode) => ({ id: mode.id, name: mode.name }))
+    // QGC treats a pure fixed wing and a multirotor as distinct filters. VTOL,
+    // rover, sub and generic PX4 vehicles use QGC's "other" path and receive
+    // every mode marked canBeSet.
+    const pureFixedWing = identity.vehicleTypeId === 1
+    const multiRotor = identity.vehicleClass === 'copter'
+    return Object.values(PX4_MODES)
+      .filter((mode) => mode.qgcSettable)
+      .filter((mode) => !pureFixedWing || mode.fixedWing)
+      .filter((mode) => !multiRotor || mode.multiRotor)
+      .map((mode) => ({ id: mode.id, name: mode.name }))
   }
   if (identity.family === 'ardupilot' && identity.vehicleClass === 'copter') {
-    return ARDUCOPTER_SELECTABLE_MODE_IDS.map((id) => ({ id, name: ARDUCOPTER_MODES[id] }))
+    // QGC marks every mode in its ArduCopter table as canBeSet. Numeric object
+    // keys enumerate in ascending mode order, matching the firmware enum.
+    return Object.entries(ARDUCOPTER_MODES).map(([id, name]) => ({ id: Number(id), name }))
   }
   return []
 }
@@ -210,14 +219,15 @@ export function encodeModeCommand(
   }
   if (identity.family === 'px4') {
     const mode = Object.values(PX4_MODES).find((candidate) => candidate.id === modeId)
-    if (!mode) {
+    const selectable = availableModes(identity).some((candidate) => candidate.id === modeId)
+    if (!mode || !selectable) {
       return { ok: false, code: 'unknown_mode', message: 'errors.encode.unknownPx4Mode' }
     }
     // PX4: param1=CUSTOM_MODE_ENABLED, param2=main mode, param3=sub mode.
     return { ok: true, params: [1, mode.mainMode, mode.subMode, 0, 0, 0, 0] }
   }
   if (identity.vehicleClass === 'copter') {
-    if (!ARDUCOPTER_SELECTABLE_MODE_IDS.includes(modeId as never)) {
+    if (ARDUCOPTER_MODES[modeId] === undefined) {
       return { ok: false, code: 'unknown_mode', message: 'errors.encode.unsupportedArduCopterMode' }
     }
     // ArduPilot: param1=MAV_MODE_FLAG_CUSTOM_MODE_ENABLED(1), param2=raw

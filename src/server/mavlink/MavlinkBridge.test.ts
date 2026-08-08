@@ -356,6 +356,8 @@ type PrivateBridge = {
   targetCompId: number | null
   pendingCommands: Map<number, unknown>
   pendingParamSets: Map<string, unknown>
+  parameterValues: Map<string, number>
+  cacheParameterValue: (id: string, value: number) => boolean
   paramDownloadActive: boolean
   discoveredTargets: Map<string, unknown>
   paramEncoding: string
@@ -2518,4 +2520,22 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 
   magBridge.destroy()
   console.log('MAVLink ArduPilot compass calibration wiring checks passed')
+}
+
+// A noisy or malicious target cannot grow the parameter cache without bound.
+{
+  const cacheConnection = new FakeConnection()
+  const cacheBridge = new MavlinkBridge(cacheConnection as never, {
+    codec: { protocol: 'v2' },
+  })
+  const internals = cacheBridge as unknown as PrivateBridge
+  for (let index = 0; index < 8192; index += 1) {
+    assert.equal(internals.cacheParameterValue(`P${index}`, index), true)
+  }
+  assert.equal(internals.parameterValues.size, 8192)
+  assert.equal(internals.cacheParameterValue('OVER_LIMIT', 1), false)
+  assert.equal(internals.parameterValues.has('OVER_LIMIT'), false)
+  assert.equal(internals.cacheParameterValue('P0', 99), true)
+  assert.equal(internals.parameterValues.get('P0'), 99)
+  cacheBridge.destroy()
 }
