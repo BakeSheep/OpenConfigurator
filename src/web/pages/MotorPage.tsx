@@ -15,6 +15,7 @@ import {
   normalizeAuthoritativeMotorCount,
   type FrameOutputChannel,
 } from '../utils/vehicleConfig'
+import { hasCompleteRotorGeometry } from '../utils/motorGeometry'
 
 const t = i18next.t.bind(i18next)
 
@@ -207,23 +208,30 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
     return mapping
   }, [frameView])
 
-  const rotors = useMemo<RotorGeometry[]>(() => {
-    if (motorCount === null) return []
-    return Array.from({ length: motorCount }, (_, index) => {
+  const rotorLayout = useMemo(() => {
+    if (motorCount === null) return { rotors: [] as RotorGeometry[], fromParameters: false }
+    const parameterGeometry = Array.from({ length: motorCount }, (_, index) => ({
+      px: params.get(`CA_ROTOR${index}_PX`)?.value,
+      py: params.get(`CA_ROTOR${index}_PY`)?.value,
+      km: params.get(`CA_ROTOR${index}_KM`)?.value,
+    }))
+    // Never mix a partially published CA_ROTOR* set with inferred positions.
+    // A hybrid set produces a physically misleading frame drawing.
+    const fromParameters = hasCompleteRotorGeometry(parameterGeometry)
+    const rotors = Array.from({ length: motorCount }, (_, index) => {
       const fallback = getFallbackRotor(index, motorCount)
-      const px = params.get(`CA_ROTOR${index}_PX`)?.value
-      const py = params.get(`CA_ROTOR${index}_PY`)?.value
-      const km = params.get(`CA_ROTOR${index}_KM`)?.value
-      const hasPosition = Number.isFinite(px) && Number.isFinite(py)
+      const { px, py, km } = parameterGeometry[index]
       return {
         index,
-        px: hasPosition ? px! : fallback.px,
-        py: hasPosition ? py! : fallback.py,
+        px: fromParameters ? px! : fallback.px,
+        py: fromParameters ? py! : fallback.py,
         ccw: Number.isFinite(km) && km !== 0 ? km! > 0 : fallback.ccw,
         output: outputByMotor.get(index + 1),
       }
     })
+    return { rotors, fromParameters }
   }, [motorCount, outputByMotor, params])
+  const rotors = rotorLayout.rotors
 
   useEffect(() => {
     const nextCount = motorCount ?? 0
@@ -446,7 +454,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
               airframeName={airframeName}
               geometrySource={vehicleIdentity?.family === 'ardupilot'
                 ? t('motor.geometryArduPilot')
-                : t('motor.geometryPx4')}
+                : rotorLayout.fromParameters ? t('motor.geometryPx4') : t('motor.geometryFallback')}
             />
           )}
 
@@ -534,20 +542,20 @@ function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: Rot
   const scale = Math.max(1, ...rotors.flatMap((rotor) => [Math.abs(rotor.px), Math.abs(rotor.py)]))
   const points = rotors.map((rotor) => ({
     ...rotor,
-    x: 50 + rotor.py / scale * 33,
-    y: 50 - rotor.px / scale * 33,
+    x: 60 + rotor.py / scale * 37,
+    y: 60 - rotor.px / scale * 37,
   }))
 
   return (
     <div className="mc-airframe-diagram">
-      <svg viewBox="0 0 100 100" role="img" aria-label={t('motor.airframeAria', {count: rotors.length})}>
-        <text x="50" y="7" className="mc-airframe-front">FRONT</text>
-        <path d="M47 12 L50 8 L53 12" className="mc-airframe-front-arrow" />
+      <svg viewBox="0 0 120 120" role="img" aria-label={t('motor.airframeAria', {count: rotors.length})}>
+        <text x="60" y="5" className="mc-airframe-front">FRONT</text>
+        <path d="M56.5 12 L60 7.5 L63.5 12" className="mc-airframe-front-arrow" />
         {points.map((rotor) => (
-          <line key={`arm-${rotor.index}`} x1="50" y1="50" x2={rotor.x} y2={rotor.y} className="mc-airframe-arm" />
+          <line key={`arm-${rotor.index}`} x1="60" y1="60" x2={rotor.x} y2={rotor.y} className="mc-airframe-arm" />
         ))}
-        <rect x="44" y="44" width="12" height="12" rx="2" className="mc-airframe-body" />
-        <path d="M47 44 L50 40 L53 44" className="mc-airframe-nose" />
+        <rect x="53" y="53" width="14" height="14" rx="2.5" className="mc-airframe-body" />
+        <path d="M56.5 53 L60 48 L63.5 53" className="mc-airframe-nose" />
         {points.map((rotor) => (
           <g
             key={rotor.index}
@@ -556,12 +564,12 @@ function AirframeDiagram({ rotors, airframeName, geometrySource }: { rotors: Rot
             transform={`translate(${rotor.x} ${rotor.y})`}
           >
             <title>{`Motor ${rotor.index + 1} · ${rotor.ccw ? 'CCW' : 'CW'}${rotor.output ? ` · ${rotor.output}` : ''}`}</title>
-            <circle r="10.5" className="mc-airframe-rotor-ring" />
-            <circle r="7.2" className="mc-airframe-prop" />
-            <circle r="4.2" className="mc-airframe-hub" />
-            <text y="1.6" className="mc-airframe-motor-number">{rotor.index + 1}</text>
-            <text y="-13" className="mc-airframe-direction">{rotor.ccw ? '↺ CCW' : 'CW ↻'}</text>
-            <text y="15.5" className="mc-airframe-output">{rotor.output || t('motor.unassigned')}</text>
+            <circle r="9.5" className="mc-airframe-rotor-ring" />
+            <circle r="6.6" className="mc-airframe-prop" />
+            <circle r="4" className="mc-airframe-hub" />
+            <text y="1.5" className="mc-airframe-motor-number">{rotor.index + 1}</text>
+            <text y="-12" className="mc-airframe-direction">{rotor.ccw ? '↺  CCW' : 'CW  ↻'}</text>
+            <text y="13.5" className="mc-airframe-output">{rotor.output || t('motor.unassigned')}</text>
           </g>
         ))}
       </svg>

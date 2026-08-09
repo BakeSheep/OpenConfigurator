@@ -14,6 +14,7 @@ import type {
   ClientMessage,
   ConnectionConfig,
   MessageRateConfig,
+  VehicleConfigFeature,
 } from '../shared/types'
 
 const MAX_FLOAT32 = 3.4028234663852886e38
@@ -24,6 +25,7 @@ const REMOTE_TOKEN_MIN_BYTES = 32
 const REMOTE_TOKEN_MAX_BYTES = 512
 const MESSAGE_RATE_KEYS = ['attitude', 'position', 'sensors', 'rc', 'status', 'hud', 'auxiliary'] as const
 const MESSAGE_RATE_VALUES = new Set<number>(MESSAGE_RATE_OPTIONS)
+const VEHICLE_CONFIG_FEATURES = new Set<VehicleConfigFeature>(['flight_modes', 'power', 'safety'])
 
 export const DEFAULT_SERVER_HOST = '127.0.0.1'
 export const DEFAULT_SERVER_PORT = 3000
@@ -354,6 +356,85 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         type: 'param_set',
         data: { id: paramId, value: paramValue, paramType },
       }, id) as BoundaryClientMessage
+    }
+
+    case 'vehicle_config_set': {
+      if (id === undefined) fail('missing_request_id', 'vehicle_config_set 必须携带 requestId', 'requestId')
+      const feature = text(input.feature, 'feature', { minBytes: 1, maxBytes: 32, pattern: /^[a-z_]+$/ }) as VehicleConfigFeature
+      if (!VEHICLE_CONFIG_FEATURES.has(feature)) fail('invalid_feature', `不支持的配置功能：${feature}`, 'feature')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['id', 'value'], 'data')
+      const configId = text(data.id, 'data.id', { minBytes: 1, maxBytes: 16, pattern: /^[A-Z0-9_]+$/ })
+      const configValue = finiteNumber(data.value, 'data.value', { min: -MAX_FLOAT32, max: MAX_FLOAT32 })
+      const confirmation = input.safetyConfirmation
+      if (confirmation !== undefined && confirmation !== 'reduce_failsafe_protection') {
+        fail('invalid_safety_confirmation', '配置安全确认值无效', 'safetyConfirmation')
+      }
+      return {
+        type: 'vehicle_config_set',
+        requestId: id,
+        feature,
+        data: { id: configId, value: configValue },
+        ...(confirmation ? { safetyConfirmation: 'reduce_failsafe_protection' as const } : {}),
+      }
+    }
+
+    case 'airframe_apply': {
+      if (id === undefined) fail('missing_request_id', 'airframe_apply 必须携带 requestId', 'requestId')
+      if (input.safetyConfirmation !== 'apply_airframe') {
+        fail('safety_confirmation_required', '应用机架必须显式确认 apply_airframe', 'safetyConfirmation')
+      }
+      const data = record(input.data, 'data')
+      if (data.family === 'px4') {
+        restrictKeys(data, ['family', 'autostartId'], 'data')
+        return {
+          type: 'airframe_apply', requestId: id, safetyConfirmation: 'apply_airframe',
+          data: { family: 'px4', autostartId: finiteNumber(data.autostartId, 'data.autostartId', { min: 1, max: 100000, integer: true }) },
+        }
+      }
+      if (data.family === 'ardupilot') {
+        restrictKeys(data, ['family', 'frameClass', 'frameType'], 'data')
+        return {
+          type: 'airframe_apply', requestId: id, safetyConfirmation: 'apply_airframe',
+          data: {
+            family: 'ardupilot',
+            frameClass: finiteNumber(data.frameClass, 'data.frameClass', { min: 0, max: 255, integer: true }),
+            frameType: finiteNumber(data.frameType, 'data.frameType', { min: 0, max: 255, integer: true }),
+          },
+        }
+      }
+      return fail('invalid_airframe_family', 'data.family 必须是 px4 或 ardupilot', 'data.family')
+    }
+
+    case 'radio_calibration_start': {
+      if (id === undefined) fail('missing_request_id', 'radio_calibration_start 必须携带 requestId', 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['transmitterMode'], 'data')
+      return {
+        type: 'radio_calibration_start', requestId: id,
+        data: { transmitterMode: finiteNumber(data.transmitterMode, 'data.transmitterMode', { min: 1, max: 4, integer: true }) as 1 | 2 | 3 | 4 },
+      }
+    }
+
+    case 'radio_calibration_advance':
+    case 'radio_calibration_cancel': {
+      if (id === undefined) fail('missing_request_id', `${type} 必须携带 requestId`, 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId'], 'data')
+      return { type, requestId: id, data: { sessionId: calibrationSessionId(data.sessionId) } } as BoundaryClientMessage
+    }
+
+    case 'radio_calibration_reclaim': {
+      if (id === undefined) fail('missing_request_id', 'radio_calibration_reclaim 必须携带 requestId', 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId', 'recoveryToken'], 'data')
+      return {
+        type: 'radio_calibration_reclaim', requestId: id,
+        data: {
+          sessionId: calibrationSessionId(data.sessionId),
+          recoveryToken: text(data.recoveryToken, 'data.recoveryToken', { minBytes: 16, maxBytes: 128, pattern: /^[A-Za-z0-9_-]+$/ }),
+        },
+      }
     }
 
     case 'param_request_list':

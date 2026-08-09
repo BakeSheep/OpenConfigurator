@@ -397,12 +397,6 @@ export const magPrecheckStatus = (
     : { state: 'good', text: t('sensor.magPrecheck.good', { value }) }
 }
 
-function HealthPill({ state, label }: { state: 'ok' | 'warning' | 'error' | 'offline'; label: string }) {
-  const { t } = useTranslation()
-  const stateLabel = state === 'ok' ? t('sensor.health.ok') : state === 'warning' ? t('sensor.health.warning') : state === 'error' ? t('sensor.health.error') : t('sensor.health.offline')
-  return <span className="mc-sensor-health" data-state={state}><i aria-hidden="true" /><span>{label}</span><strong>{stateLabel}</strong></span>
-}
-
 function CalibrationTaskCard({
   item,
   vehicleReady,
@@ -704,7 +698,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const opticalFlowFrame = useMemo(() => normalizeOpticalFlow(opticalFlow), [opticalFlow])
   const distance = useSensorStore((state) => state.distanceSensor)
-  const sensorHealth = useSensorStore((state) => state.sensorHealth)
   const gps = useTelemetryStore((state) => state.gps)
   const armed = useTelemetryStore((state) => state.status?.armed ?? false)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -824,15 +817,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   ) : null
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace mc-sensor-workbench' : 'mc-workspace mc-fade-in mc-data-workspace mc-sensor-workbench'}>
-      <div className="mc-sensor-health-strip" aria-label={t('sensor.healthStrip.ariaLabel')}>
-        <HealthPill label="IMU" state={sensorHealth.imu ?? 'offline'} />
-        <HealthPill label={t('common.compass')} state={sensorHealth.mag ?? 'offline'} />
-        <HealthPill label={t('common.barometer')} state={sensorHealth.baro ?? 'offline'} />
-        <HealthPill label="GPS" state={sensorHealth.gps ?? 'offline'} />
-        <HealthPill label={t('sensor.label.opticalFlow')} state={sensorHealth.opticalFlow ?? 'offline'} />
-        <HealthPill label={t('sensor.label.ranging')} state={sensorHealth.rangefinder ?? 'offline'} />
-      </div>
-
       <section className="mc-sensor-diagnostics">
         <header className="mc-sensor-section-heading"><div><span className="mc-eyebrow">DIAGNOSTICS</span><h2>{t('sensor.diagnostics.title')}</h2></div><p>{t('sensor.diagnostics.description')}</p></header>
         <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />

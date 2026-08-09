@@ -261,6 +261,11 @@ export interface VehicleCapabilities {
   ekfConfig: boolean
   serialConfig: boolean
   gpsConfig: boolean
+  airframeSelection: boolean
+  radioCalibration: boolean
+  flightModeConfig: boolean
+  powerConfig: boolean
+  safetyConfig: boolean
   logFormat: 'ulog' | 'dataflash' | 'unknown'
   /** Interactive shell exposed by the selected firmware over MAVLink. */
   mavlinkShell: 'px4-nsh' | 'none'
@@ -279,6 +284,11 @@ const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
   ekfConfig: false,
   serialConfig: false,
   gpsConfig: false,
+  airframeSelection: false,
+  radioCalibration: false,
+  flightModeConfig: false,
+  powerConfig: false,
+  safetyConfig: false,
   logFormat: 'unknown',
   mavlinkShell: 'none',
 }
@@ -300,6 +310,11 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
       ekfConfig: true,
       serialConfig: true,
       gpsConfig: true,
+      airframeSelection: true,
+      radioCalibration: true,
+      flightModeConfig: true,
+      powerConfig: true,
+      safetyConfig: true,
       logFormat: 'ulog',
       mavlinkShell: 'px4-nsh',
     }
@@ -319,6 +334,11 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
         ekfConfig: true,
         serialConfig: true,
         gpsConfig: true,
+        airframeSelection: true,
+        radioCalibration: true,
+        flightModeConfig: true,
+        powerConfig: true,
+        safetyConfig: true,
         logFormat: 'dataflash',
         mavlinkShell: 'none',
       }

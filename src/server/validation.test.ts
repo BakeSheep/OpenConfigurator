@@ -291,4 +291,46 @@ expectFail(
   'empty shell input',
 )
 
+const configSet = parseClientMessage({
+  type: 'vehicle_config_set', requestId: 'cfg-1', feature: 'safety',
+  data: { id: 'NAV_RCL_ACT', value: 2 },
+  safetyConfirmation: 'reduce_failsafe_protection',
+})
+assert.equal(configSet.type, 'vehicle_config_set')
+if (configSet.type === 'vehicle_config_set') assert.equal(configSet.data.id, 'NAV_RCL_ACT')
+expectFail(
+  { type: 'vehicle_config_set', requestId: 'cfg-x', feature: 'camera', data: { id: 'X', value: 1 } },
+  'invalid_feature',
+  'unknown vehicle config feature',
+)
+expectFail(
+  { type: 'vehicle_config_set', requestId: 'cfg-x', feature: 'power', data: { id: '../BAD', value: 1 } },
+  'invalid_format',
+  'invalid config parameter id',
+)
+
+const px4Airframe = parseClientMessage({
+  type: 'airframe_apply', requestId: 'frame-1', safetyConfirmation: 'apply_airframe',
+  data: { family: 'px4', autostartId: 4001 },
+})
+assert.equal(px4Airframe.type, 'airframe_apply')
+expectFail(
+  { type: 'airframe_apply', requestId: 'frame-x', data: { family: 'px4', autostartId: 4001 } },
+  'safety_confirmation_required',
+  'airframe without confirmation',
+)
+
+assert.equal(parseClientMessage({
+  type: 'radio_calibration_start', requestId: 'radio-1', data: { transmitterMode: 2 },
+}).type, 'radio_calibration_start')
+expectFail(
+  { type: 'radio_calibration_start', requestId: 'radio-x', data: { transmitterMode: 5 } },
+  'out_of_range',
+  'unsupported transmitter mode',
+)
+assert.equal(parseClientMessage({
+  type: 'radio_calibration_reclaim', requestId: 'radio-r',
+  data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
+}).type, 'radio_calibration_reclaim')
+
 console.log('calibration boundary validation checks passed')

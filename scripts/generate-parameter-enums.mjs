@@ -3,7 +3,7 @@ import path from 'node:path'
 
 const PX4_SOURCE = 'https://github.com/mavlink/qgroundcontrol/raw/refs/heads/master/src/FirmwarePlugin/PX4/PX4ParameterFactMetaData.json'
 const ARDUPILOT_SOURCE = 'https://autotest.ardupilot.org/Parameters/Copter/apm.pdef.json'
-const outputDir = path.resolve('src/web/data/parameterEnums')
+const outputDir = path.resolve('src/shared/data/parameterEnums')
 
 function argumentValue(name) {
   const index = process.argv.indexOf(name)

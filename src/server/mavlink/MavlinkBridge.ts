@@ -43,7 +43,14 @@ import {
   type CalibrationKind,
   type VehicleIdentity,
 } from '../../shared/vehicleProfiles'
-import type { ServerMessage, ClientMessage, ManualControlData, MessageRateConfig, RcChannelsData } from '../../shared/types'
+import type { ServerMessage, ClientMessage, ManualControlData, MessageRateConfig, RcChannelsData, RadioCalibrationChannel } from '../../shared/types'
+import {
+  isAllowedVehicleConfigParameter,
+  isSafetyReduction,
+  validateVehicleConfigValue,
+} from '../../shared/vehicleSetupProfiles'
+import { getPx4AirframeInfo, isSupportedArduCopterFrame } from '../../shared/airframes'
+import { parameterEnumOptions, parameterEnumValuesMatch } from '../../shared/parameterEnumMetadata'
 import { CalibrationSession } from './CalibrationSession'
 import type { CalibrationStartRequest } from './CalibrationSessionManager'
 
@@ -153,6 +160,7 @@ interface PendingParamSet {
   timeout: ReturnType<typeof setTimeout> | null
   lastMismatch?: 'value_mismatch' | 'type_mismatch'
   lastAcceptedValue?: number
+  completion?: (accepted: boolean, acceptedValue?: number, reason?: string) => void
 }
 
 interface StatustextAssembly {
@@ -257,7 +265,9 @@ export class MavlinkBridge extends EventEmitter {
   private readonly commandQuarantineUntil = new Map<number, number>()
   private readonly pendingParamSets = new Map<string, PendingParamSet>()
   private readonly parameterValues = new Map<string, number>()
+  private readonly parameterTypes = new Map<string, number>()
   private parameterCacheLimitWarned = false
+  private activeAirframeRequestId: string | null = null
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setImmediate> | null = null
   // Active calibration session, if any. Owned lifecycle-wise by the server's
@@ -323,6 +333,11 @@ export class MavlinkBridge extends EventEmitter {
   /** Latest validated PARAM_VALUE for the selected target. */
   getParameterValue(id: string): number | null {
     return this.parameterValues.get(id) ?? null
+  }
+
+  /** MAV_PARAM_TYPE from the latest validated PARAM_VALUE for this target. */
+  getParameterType(id: string): number | null {
+    return this.parameterTypes.get(id) ?? null
   }
 
   private cacheParameterValue(id: string, value: number): boolean {
@@ -656,6 +671,7 @@ export class MavlinkBridge extends EventEmitter {
     this.telemetryProfile = null
     this.selectedIdentity = null
     this.parameterValues.clear()
+    this.parameterTypes.clear()
     this.parameterCacheLimitWarned = false
     this.lastArmedState = null
     this.messageIntervalSupport = 'unknown'
@@ -719,8 +735,10 @@ export class MavlinkBridge extends EventEmitter {
           reason,
         },
       } as ServerMessage)
+      pending.completion?.(false, undefined, reason)
     }
     this.pendingParamSets.clear()
+    this.activeAirframeRequestId = null
   }
 
   private selectTarget(systemId: number, componentId: number, requestId?: string): void {
@@ -1979,6 +1997,7 @@ export class MavlinkBridge extends EventEmitter {
     ) return
     const id = actualIdBytes.toString('ascii')
     this.cacheParameterValue(id, value)
+    this.parameterTypes.set(id, paramType)
 
     this.emit('message', {
       type: 'param',
@@ -2287,6 +2306,20 @@ export class MavlinkBridge extends EventEmitter {
           this.sendTelemetryIntervalRequests()
           this.emit('message', this.getMessageRatesMessage())
         }
+        break
+      case 'vehicle_config_set':
+        this.setVehicleConfiguration(msg)
+        break
+      case 'airframe_apply':
+        this.applyAirframe(msg)
+        break
+      case 'radio_calibration_start':
+      case 'radio_calibration_advance':
+      case 'radio_calibration_cancel':
+      case 'radio_calibration_reclaim':
+        // Radio calibration is owned by the WebSocket-level session manager,
+        // just like sensor calibration. Reaching this boundary is a routing bug.
+        this.emitOperationError(msg.type, 'unsupported_operation', '遥控器校准请求必须经由会话管理器发起', msg.requestId)
         break
       case 'shell_open':
         if (this.requireReadyTarget('shell', msg.requestId)) this.openShell(msg.requestId)
@@ -2632,15 +2665,306 @@ export class MavlinkBridge extends EventEmitter {
     )
   }
 
+  private emitVehicleConfigResult(
+    requestId: string,
+    feature: Extract<ClientMessage, { type: 'vehicle_config_set' }>['feature'],
+    id: string,
+    accepted: boolean,
+    acceptedValue?: number,
+    reason?: string,
+  ): void {
+    this.emit('message', {
+      type: 'vehicle_config_set_result',
+      data: { requestId, feature, id, accepted, acceptedValue, reason },
+    } as ServerMessage)
+  }
+
+  /** Notify the FC that GCS-side RC calibration is entering/leaving sampling. */
+  notifyRadioCalibration(active: boolean): void {
+    if (!this.selectedHeartbeatReady) return
+    this.sendInternalCommand(MAVLINK_COMMANDS.MAV_CMD_PREFLIGHT_CALIBRATION, [0, 0, 0, active ? 1 : 0, 0, 0, 0])
+  }
+
+  /**
+   * Commit a completed GCS-side radio calibration as one verified transaction.
+   * The browser never supplies parameter names or types.
+   */
+  applyRadioCalibration(
+    requestId: string,
+    channels: RadioCalibrationChannel[],
+    mapped: Partial<Record<'roll' | 'pitch' | 'throttle' | 'yaw', number>>,
+    completion: (accepted: boolean, reason?: string, rollbackFailures?: string[]) => void,
+  ): void {
+    if (!this.selectedHeartbeatReady || !vehicleCapabilities(this.selectedIdentity).radioCalibration) {
+      completion(false, 'unsupported_vehicle_profile')
+      return
+    }
+    if (this.lastArmedState !== false) {
+      completion(false, this.lastArmedState === true ? 'armed' : 'arming_state_unknown')
+      return
+    }
+    if (!mapped.roll || !mapped.pitch || !mapped.throttle || !mapped.yaw) {
+      completion(false, 'primary_mapping_incomplete')
+      return
+    }
+    if (this.selectedIdentity?.family === 'ardupilot') {
+      const throttle = channels.find((channel) => channel.function === 'throttle')
+      if (throttle?.reversed) {
+        completion(false, 'arducopter_reversed_throttle')
+        return
+      }
+    }
+
+    const entries: Array<{ id: string; value: number }> = []
+    for (const channel of channels) {
+      for (const [suffix, value] of [['MIN', channel.min], ['MAX', channel.max], ['TRIM', channel.trim]] as const) {
+        const id = `RC${channel.channel}_${suffix}`
+        if (this.parameterValues.has(id)) entries.push({ id, value })
+      }
+      if (this.selectedIdentity?.family === 'px4') {
+        const id = `RC${channel.channel}_REV`
+        if (this.parameterValues.has(id)) entries.push({ id, value: channel.reversed ? -1 : 1 })
+      } else {
+        const modern = `RC${channel.channel}_REVERSED`
+        const legacy = `RC${channel.channel}_REV`
+        const effectiveReverse = channel.function === 'pitch' ? !channel.reversed : channel.reversed
+        if (this.parameterValues.has(modern)) entries.push({ id: modern, value: effectiveReverse ? 1 : 0 })
+        else if (this.parameterValues.has(legacy)) entries.push({ id: legacy, value: effectiveReverse ? -1 : 1 })
+      }
+    }
+    const mappingNames = this.selectedIdentity?.family === 'px4'
+      ? { roll: 'RC_MAP_ROLL', pitch: 'RC_MAP_PITCH', throttle: 'RC_MAP_THROTTLE', yaw: 'RC_MAP_YAW' }
+      : { roll: 'RCMAP_ROLL', pitch: 'RCMAP_PITCH', throttle: 'RCMAP_THROTTLE', yaw: 'RCMAP_YAW' }
+    for (const key of ['roll', 'pitch', 'throttle', 'yaw'] as const) {
+      const id = mappingNames[key]
+      if (!this.parameterValues.has(id)) {
+        completion(false, `parameter_missing:${id}`)
+        return
+      }
+      entries.push({ id, value: mapped[key]! })
+    }
+    if (this.selectedIdentity?.family === 'px4' && this.parameterValues.has('RC_CHAN_CNT')) {
+      entries.push({ id: 'RC_CHAN_CNT', value: Math.max(...channels.map((channel) => channel.channel)) })
+    }
+    if (entries.length === 0 || entries.some(({ id }) => !this.parameterTypes.has(id))) {
+      completion(false, 'parameter_missing')
+      return
+    }
+
+    const previous = new Map(entries.map(({ id }) => [id, this.parameterValues.get(id)!]))
+    const confirmed: string[] = []
+    const rollbackFailures: string[] = []
+    const rollback = (index: number, reason: string): void => {
+      if (index < 0) {
+        completion(false, reason, rollbackFailures)
+        return
+      }
+      const id = confirmed[index]
+      this.sendParamSet(id, previous.get(id)!, this.parameterTypes.get(id)!, `${requestId}-rc-rollback-${index}`, (accepted) => {
+        if (!accepted) rollbackFailures.push(id)
+        rollback(index - 1, reason)
+      })
+    }
+    const writeNext = (index: number): void => {
+      if (index >= entries.length) {
+        completion(true)
+        return
+      }
+      const entry = entries[index]
+      this.sendParamSet(entry.id, entry.value, this.parameterTypes.get(entry.id)!, `${requestId}-rc-${index}`, (accepted, _value, reason) => {
+        if (!accepted) {
+          rollback(confirmed.length - 1, reason ?? 'write_failed')
+          return
+        }
+        confirmed.push(entry.id)
+        writeNext(index + 1)
+      })
+    }
+    writeNext(0)
+  }
+
+  private setVehicleConfiguration(msg: Extract<ClientMessage, { type: 'vehicle_config_set' }>): void {
+    if (!this.requireReadyTarget(msg.type, msg.requestId) || !this.requireWritableVehicle(msg.type, msg.requestId)) return
+    const caps = vehicleCapabilities(this.selectedIdentity)
+    const capability = msg.feature === 'flight_modes'
+      ? caps.flightModeConfig
+      : msg.feature === 'power' ? caps.powerConfig : caps.safetyConfig
+    if (!capability || !isAllowedVehicleConfigParameter(this.selectedIdentity, msg.feature, msg.data.id)) {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, undefined, 'unsupported_vehicle_profile')
+      return
+    }
+    if (this.lastArmedState !== false) {
+      this.emitVehicleConfigResult(
+        msg.requestId,
+        msg.feature,
+        msg.data.id,
+        false,
+        undefined,
+        this.lastArmedState === true ? 'armed' : 'arming_state_unknown',
+      )
+      return
+    }
+    const oldValue = this.parameterValues.get(msg.data.id)
+    const paramType = this.parameterTypes.get(msg.data.id)
+    if (oldValue === undefined || paramType === undefined) {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, undefined, 'parameter_missing')
+      return
+    }
+    const parameterView = new Map([...this.parameterValues].map(([id, value]) => [id, { value }]))
+    const validationError = validateVehicleConfigValue(
+      this.selectedIdentity,
+      msg.feature,
+      msg.data.id,
+      msg.data.value,
+      parameterView,
+    )
+    if (validationError) {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, oldValue, validationError)
+      return
+    }
+    const enumOptions = parameterEnumOptions(msg.data.id, this.selectedIdentity)
+    if (enumOptions?.length && !enumOptions.some((option) => parameterEnumValuesMatch(option.value, msg.data.value))) {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, oldValue, 'unknown_enum_value')
+      return
+    }
+    if (
+      msg.feature === 'safety'
+      && isSafetyReduction(msg.data.id, oldValue, msg.data.value)
+      && msg.safetyConfirmation !== 'reduce_failsafe_protection'
+    ) {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, oldValue, 'safety_confirmation_required')
+      return
+    }
+    this.sendParamSet(msg.data.id, msg.data.value, paramType, msg.requestId, (accepted, acceptedValue, reason) => {
+      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, accepted, acceptedValue, reason)
+    })
+  }
+
+  private emitAirframeStatus(
+    requestId: string,
+    phase: Extract<ServerMessage, { type: 'airframe_apply_status' }>['data']['phase'],
+    completed: number,
+    total: number,
+    currentId?: string,
+    reason?: string,
+    rollbackFailures?: string[],
+  ): void {
+    this.emit('message', {
+      type: 'airframe_apply_status',
+      data: { requestId, phase, completed, total, currentId, reason, rollbackFailures },
+    } as ServerMessage)
+  }
+
+  private applyAirframe(msg: Extract<ClientMessage, { type: 'airframe_apply' }>): void {
+    const total = 2
+    if (!this.requireReadyTarget(msg.type, msg.requestId) || !this.requireWritableVehicle(msg.type, msg.requestId)) return
+    if (!vehicleCapabilities(this.selectedIdentity).airframeSelection) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'unsupported_vehicle_profile')
+      return
+    }
+    if (this.lastArmedState !== false) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, this.lastArmedState === true ? 'armed' : 'arming_state_unknown')
+      return
+    }
+    if (this.activeAirframeRequestId) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'airframe_transaction_busy')
+      return
+    }
+    if (msg.data.family !== this.selectedIdentity?.family) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'airframe_family_mismatch')
+      return
+    }
+
+    const entries = msg.data.family === 'px4'
+      ? [
+          { id: 'SYS_AUTOSTART', value: msg.data.autostartId },
+          { id: 'SYS_AUTOCONFIG', value: 1 },
+        ]
+      : [
+          { id: 'FRAME_CLASS', value: msg.data.frameClass },
+          { id: 'FRAME_TYPE', value: msg.data.frameType },
+        ]
+    if (msg.data.family === 'px4' && !getPx4AirframeInfo(msg.data.autostartId)) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'unknown_airframe')
+      return
+    }
+    if (msg.data.family === 'ardupilot' && !isSupportedArduCopterFrame(msg.data.frameClass, msg.data.frameType)) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'unsupported_airframe_combination')
+      return
+    }
+    if (entries.some(({ id }) => !this.parameterValues.has(id) || !this.parameterTypes.has(id))) {
+      this.emitAirframeStatus(msg.requestId, 'failed', 0, total, undefined, 'parameter_missing')
+      return
+    }
+
+    const previous = new Map(entries.map(({ id }) => [id, this.parameterValues.get(id)!]))
+    const confirmed: string[] = []
+    this.activeAirframeRequestId = msg.requestId
+    this.emitAirframeStatus(msg.requestId, 'validating', 0, total)
+
+    const finishFailure = (reason: string): void => {
+      const rollbackFailures: string[] = []
+      const rollback = (index: number): void => {
+        if (index < 0) {
+          this.activeAirframeRequestId = null
+          this.emitAirframeStatus(msg.requestId, 'failed', confirmed.length, total, undefined, reason, rollbackFailures)
+          return
+        }
+        const id = confirmed[index]
+        this.sendParamSet(id, previous.get(id)!, this.parameterTypes.get(id)!, `${msg.requestId}-rollback-${index}`, (accepted) => {
+          if (!accepted) rollbackFailures.push(id)
+          rollback(index - 1)
+        })
+      }
+      rollback(confirmed.length - 1)
+    }
+
+    const writeNext = (index: number): void => {
+      if (index >= entries.length) {
+        this.activeAirframeRequestId = null
+        if (msg.data.family === 'ardupilot') {
+          this.emitAirframeStatus(msg.requestId, 'reboot_required', total, total)
+          return
+        }
+        this.emitAirframeStatus(msg.requestId, 'rebooting', total, total)
+        const queued = this.sendCommand('MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN', [1, 0, 0, 0, 0, 0, 0], msg.requestId)
+        if (!queued) {
+          this.emitAirframeStatus(msg.requestId, 'failed', total, total, undefined, 'reboot_write_rejected')
+        } else {
+          this.selectedHeartbeatReady = false
+        }
+        return
+      }
+      const entry = entries[index]
+      this.emitAirframeStatus(msg.requestId, 'writing', index, total, entry.id)
+      this.sendParamSet(entry.id, entry.value, this.parameterTypes.get(entry.id)!, `${msg.requestId}-${entry.id}`, (accepted, _value, reason) => {
+        if (!accepted) {
+          finishFailure(reason ?? 'write_failed')
+          return
+        }
+        confirmed.push(entry.id)
+        writeNext(index + 1)
+      })
+    }
+    writeNext(0)
+  }
+
   private sendInternalCommand(commandId: number, params: number[], targetComponent?: number): void {
     this.writeMessage(this.buildCommand(commandId, params, 0, targetComponent))
   }
 
-  private sendParamSet(id: string, value: number, paramType: number, requestId?: string) {
+  private sendParamSet(
+    id: string,
+    value: number,
+    paramType: number,
+    requestId?: string,
+    completion?: (accepted: boolean, acceptedValue?: number, reason?: string) => void,
+  ): boolean {
     const validationError = this.validateParamSet(id, value, paramType)
     if (validationError) {
       this.emitOperationError('param_set', 'invalid_param', validationError, requestId)
-      return
+      completion?.(false, undefined, validationError)
+      return false
     }
     if (this.pendingParamSets.has(id)) {
       this.emitOperationError(
@@ -2650,7 +2974,8 @@ export class MavlinkBridge extends EventEmitter {
         requestId,
         true,
       )
-      return
+      completion?.(false, undefined, 'param_busy')
+      return false
     }
     if (this.pendingParamSets.size >= MAX_PENDING_PARAM_SETS) {
       this.emitOperationError(
@@ -2660,7 +2985,8 @@ export class MavlinkBridge extends EventEmitter {
         requestId,
         true,
       )
-      return
+      completion?.(false, undefined, 'param_queue_full')
+      return false
     }
     const pending: PendingParamSet = {
       requestId,
@@ -2669,9 +2995,11 @@ export class MavlinkBridge extends EventEmitter {
       paramType,
       attempt: 0,
       timeout: null,
+      completion,
     }
     this.pendingParamSets.set(id, pending)
     this.transmitPendingParamSet(pending)
+    return true
   }
 
   private validateParamSet(id: string, value: number, paramType: number): string | null {
@@ -2756,6 +3084,7 @@ export class MavlinkBridge extends EventEmitter {
         reason,
       },
     } as ServerMessage)
+    pending.completion?.(accepted, acceptedValue, reason)
   }
 
   private sendParamRequestList() {

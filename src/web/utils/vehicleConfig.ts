@@ -190,7 +190,7 @@ function buildPx4View(params: Map<string, ParamData>): FrameConfigView {
 
   return {
     name: getPx4AirframeInfo(sysAutostart)?.name
-      ?? (motorCount === 4 || motorCount === null ? 'Quadrotor' : `${motorCount} Motor Geometry`),
+      ?? (autostartId !== null ? `PX4 Airframe #${autostartId}` : (motorCount === 4 || motorCount === null ? 'Quadrotor' : `${motorCount} Motor Geometry`)),
     motorCount,
     outputChannels,
     protocolLabel: px4BusProtocol(params, 'PWM_MAIN'),

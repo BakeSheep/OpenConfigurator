@@ -11,7 +11,7 @@ import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useLogTransferStore } from '../../stores/logTransferStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import { useConnectionStore } from '../../stores/connectionStore'
-import { stashLogBuffer } from '../../utils/logAnalysisSession'
+import { stashLogBlob } from '../../utils/logAnalysisSession'
 import { formatBytes } from '../../utils/formatBytes'
 import type { DataflashLogEntry } from '../../../shared/types'
 
@@ -107,9 +107,9 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
       try {
         const response = await fetch(url)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const buffer = await response.arrayBuffer()
+        const blob = await response.blob()
         if (cancelled) return
-        stashLogBuffer(download.fileName ?? 'log.bin', buffer)
+        stashLogBlob(download.fileName ?? 'log.bin', blob)
         useLogTransferStore.getState().clearDownload()
         navigate('/log-analysis')
       } catch (error) {

@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-// DataFlash analysis worker: parses an ArduPilot .bin ArrayBuffer off the
+// DataFlash analysis worker: materializes the Blob only inside the worker,
 // main thread and returns the same UlogAnalysisDataset shape as ulogWorker,
 // so the analysis page renders both formats with identical chart components.
 import { parseDataflashLog } from '../utils/dataflashAnalysis'
@@ -20,7 +20,7 @@ self.onmessage = (event: MessageEvent<UlogWorkerRequest>) => {
   void (async () => {
     try {
       await i18next.changeLanguage(event.data.language)
-      const dataset = parseDataflashLog(event.data.buffer)
+      const dataset = await parseDataflashLog(event.data.blob)
       ;(self as unknown as { postMessage(message: UlogWorkerResult): void })
         .postMessage({ dataset })
     } catch (error) {

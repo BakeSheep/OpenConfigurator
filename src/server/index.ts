@@ -36,6 +36,7 @@ import {
   type CalibrationSessionHandle,
   type CalibrationStartRequest,
 } from './mavlink/CalibrationSessionManager'
+import { RadioCalibrationSessionManager } from './mavlink/RadioCalibrationSessionManager'
 import { EscService } from './esc/EscService'
 import {
   InputValidationError,
@@ -111,6 +112,13 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   getMessageRatesMessage?(): Extract<ServerMessage, { type: 'message_rates' }>
   readonly vehicleIdentity?: VehicleIdentity | null
   getParameterValue?(id: string): number | null
+  notifyRadioCalibration?(active: boolean): void
+  applyRadioCalibration?(
+    requestId: string,
+    channels: import('../shared/types').RadioCalibrationChannel[],
+    mapped: Partial<Record<'roll' | 'pitch' | 'throttle' | 'yaw', number>>,
+    completion: (accepted: boolean, reason?: string, rollbackFailures?: string[]) => void,
+  ): void
   /**
    * Create (but not start) a calibration session after bridge-side gates
    * (identity, capability, armed). Returns null after emitting its own
@@ -260,6 +268,11 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
     // to a new client and must not be blocked by the old owner's pinned lease.
     || message.type === 'calibration_action'
     || message.type === 'param_set'
+    || message.type === 'vehicle_config_set'
+    || message.type === 'airframe_apply'
+    || message.type === 'radio_calibration_start'
+    || message.type === 'radio_calibration_advance'
+    || message.type === 'radio_calibration_cancel'
     || message.type === 'param_request_list'
     || message.type === 'message_rates_set'
     || message.type === 'shell_open'
@@ -278,7 +291,7 @@ function isMutatingMessage(message: BoundaryClientMessage): boolean {
 }
 
 function requiresReadyTarget(message: BoundaryClientMessage): boolean {
-  return message.type !== 'release_control'
+  return message.type !== 'release_control' && message.type !== 'radio_calibration_reclaim'
 }
 
 type EscBoundaryMessage = Extract<BoundaryClientMessage, { type: `esc_${string}` }>
@@ -416,6 +429,8 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   // are mutually exclusive because ESC sessions and calibration sessions
   // refuse to start while the other is active.
   let calControllerPin: { clientId: string; sessionId: string } | null = null
+  let radioControllerPin: { clientId: string; sessionId: string } | null = null
+  let radioManager: RadioCalibrationSessionManager
   let parameterSync: ParamSyncState | null = null
   let parameterSyncTimer: ReturnType<typeof setTimeout> | null = null
   let nextParameterGeneration = 0
@@ -571,7 +586,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // While an ESC or calibration session pins the lease, it never expires
     // and stays with the session owner; it is released via the session
     // lifecycle.
-    const pin = escControllerPin ?? calControllerPin
+    const pin = escControllerPin ?? calControllerPin ?? radioControllerPin
     if (pin) {
       if (controllerLease?.clientId === pin.clientId) {
         controllerLease.expiresAt = now + controllerLeaseMs
@@ -625,6 +640,23 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     expireController()
   }
 
+  function pinControllerToRadioSession(ownerClientId: string, sessionId: string): void {
+    radioControllerPin = { clientId: ownerClientId, sessionId }
+    const now = Date.now()
+    if (!controllerLease || controllerLease.clientId !== ownerClientId) {
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      broadcast(controllerMessage('claimed'))
+    } else {
+      controllerLease.expiresAt = now + controllerLeaseMs
+    }
+  }
+
+  function releaseRadioSessionController(sessionId: string): void {
+    if (radioControllerPin?.sessionId !== sessionId) return
+    radioControllerPin = null
+    expireController()
+  }
+
   function ensureController(ws: WebSocket, context: ClientContext, requestId?: string): boolean {
     const now = Date.now()
     expireController(now)
@@ -644,6 +676,17 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         ws,
         'controller_conflict',
         '校准会话所有者当前持有飞控控制权',
+        requestId,
+        true,
+        { expiresAt: controllerLease?.expiresAt ?? null },
+      )
+      return false
+    }
+    if (radioControllerPin && radioControllerPin.clientId !== context.id) {
+      sendClientError(
+        ws,
+        'controller_conflict',
+        '遥控器校准会话所有者当前持有飞控控制权',
         requestId,
         true,
         { expiresAt: controllerLease?.expiresAt ?? null },
@@ -678,6 +721,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // releases it.
     if (escControllerPin?.clientId === context.id) return false
     if (calControllerPin?.clientId === context.id) return false
+    if (radioControllerPin?.clientId === context.id) return false
     controllerLease = null
     broadcast(controllerMessage(reason))
     return true
@@ -858,6 +902,13 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       paramRunId?: number
     }
 
+    if (message.type === 'rc_channels') {
+      radioManager?.handleRcChannels(message.data as import('../shared/types').RcChannelsData)
+    }
+    if (message.type === 'airframe_apply_status' && message.data.phase === 'rebooting') {
+      connManager.expectVehicleReboot?.()
+    }
+
     if (message.type === 'message_rates') {
       messageRateLimiter.setRates(message.data)
     } else if (!messageRateLimiter.shouldForward(message)) {
@@ -938,6 +989,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       // Terminate first so the session releases its lease pin before the
       // generic lease reset below.
       calibrationManager.handleLinkDown()
+      radioManager.handleLinkDown()
       if (controllerLease) {
         controllerLease = null
         broadcast(controllerMessage('connection_changed'))
@@ -961,6 +1013,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // process and would otherwise block the automatic refresh after recovery.
     // Raw ESC passthrough intentionally lowers readiness without losing its
     // vehicle session, so preserve its isolated state.
+    if (!ready && connManager.rawSessionActive !== true) radioManager.handleLinkDown()
     if (!ready && connManager.rawSessionActive !== true && parameterSync) {
       cancelBridgeParameterDownload('vehicle_not_ready')
       clearParamBatch()
@@ -1027,6 +1080,29 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
           : null
     ),
     logger,
+  })
+
+  radioManager = new RadioCalibrationSessionManager({
+    broadcast: (message) => broadcast(message),
+    emitToClient: (clientId, message) => sendToClientId(clientId, message),
+    pinController: pinControllerToRadioSession,
+    releaseController: releaseRadioSessionController,
+    notifyCalibration: (active) => mavlinkBridge.notifyRadioCalibration?.(active),
+    applyCalibration: (requestId, channels, mapped, completion) => {
+      const apply = mavlinkBridge.applyRadioCalibration
+      if (!apply) {
+        completion(false, 'unsupported_operation')
+        return
+      }
+      apply.call(mavlinkBridge, requestId, channels, mapped, completion)
+    },
+    isLinkBusy: () => parameterSync
+      ? 'parameter_sync'
+      : escService.blocksMavlinkMutations()
+        ? 'esc_session'
+        : calibrationManager.blocksMavlinkMutations()
+          ? 'sensor_calibration'
+          : null,
   })
 
   mavlinkBridge.on('message', onBridgeMessage)
@@ -1344,6 +1420,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能释放控制权', requestId)
         return
       }
+      if (radioManager.blocksControllerRelease()) {
+        sendClientError(ws, 'radio_calibration_active', '遥控器校准进行中，暂不能释放控制权', requestId)
+        return
+      }
       if (!releaseController(context, 'released')) {
         sendClientError(ws, 'not_controller', '当前客户端未持有控制权', requestId)
       }
@@ -1354,7 +1434,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // ready-target gate: direct-mode sessions have no MAVLink target, and
     // subsequent commands are governed by the session's own ownership state.
     if (isEscClientMessage(message)) {
-      if (message.type === 'esc_session_start' && calibrationManager.blocksMavlinkMutations()) {
+      if (message.type === 'esc_session_start' && (calibrationManager.blocksMavlinkMutations() || radioManager.blocksMavlinkMutations())) {
         sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能启动 ESC 会话', requestId, true)
         return
       }
@@ -1408,6 +1488,24 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
 
     if (
+      radioManager.blocksMavlinkMutations()
+      && isMutatingMessage(message)
+      && message.type !== 'radio_calibration_advance'
+      && message.type !== 'radio_calibration_cancel'
+      && message.type !== 'radio_calibration_start'
+    ) {
+      const emergencyDisarm = message.type === 'command'
+        && message.cmd === 'MAV_CMD_COMPONENT_ARM_DISARM'
+        && (message.params[0] ?? 0) < 0.5
+      const vehicleReboot = message.type === 'reboot_vehicle'
+      if (!emergencyDisarm && !vehicleReboot) {
+        sendClientError(ws, 'radio_calibration_active', '遥控器校准进行中，暂不能执行该操作', requestId, true)
+        return
+      }
+      if (vehicleReboot) radioManager.handleLinkDown()
+    }
+
+    if (
       requiresReadyTarget(message)
       && (
         connManager.status !== 'connected'
@@ -1429,6 +1527,10 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // gate, mirroring esc_session_reclaim.
     if (message.type === 'calibration_reclaim') {
       calibrationManager.reclaim(context.id, message.data, message.requestId)
+      return
+    }
+    if (message.type === 'radio_calibration_reclaim') {
+      radioManager.reclaim(context.id, message)
       return
     }
 
@@ -1457,6 +1559,18 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
     if (message.type === 'calibration_action') {
       calibrationManager.handleAction(context.id, message)
+      return
+    }
+    if (message.type === 'radio_calibration_start') {
+      radioManager.requestStart(context.id, message)
+      return
+    }
+    if (message.type === 'radio_calibration_advance') {
+      radioManager.advance(context.id, message)
+      return
+    }
+    if (message.type === 'radio_calibration_cancel') {
+      radioManager.cancel(context.id, message)
       return
     }
 
@@ -1507,6 +1621,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       clientContexts.delete(ws)
       escService.handleClientDisconnected(context.id)
       calibrationManager.handleClientDisconnected(context.id)
+      radioManager.handleClientDisconnected(context.id)
       releaseController(context, 'disconnected')
       if (parameterSync?.ownerClientId === context.id) {
         cancelBridgeParameterDownload('owner_disconnected')
@@ -1531,6 +1646,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
           'rest-control-token',
           'esc-configurator',
           'calibration-session',
+          'radio-calibration-session',
         ],
         maxPayload: config.wsMaxPayload,
         controllerLeaseMs,
@@ -1547,6 +1663,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // Replay the active or recently finished calibration session so page
     // remounts and late joiners can render the wizard state.
     calibrationManager.replayTo((message) => safeSend(ws, message))
+    radioManager.replayTo((message) => safeSend(ws, message))
     if (parameterSync) {
       safeSend(ws, {
         type: 'param_sync',
@@ -1670,6 +1787,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       const cleanupWork = Promise.allSettled([
         Promise.resolve().then(() => calibrationManager.destroy()).catch((error) => {
           logger.error('[Server] Calibration manager cleanup failed:', error)
+        }),
+        Promise.resolve().then(() => radioManager.destroy()).catch((error) => {
+          logger.error('[Server] Radio calibration manager cleanup failed:', error)
         }),
         Promise.resolve().then(() => escService.destroy()).catch((error) => {
           logger.error('[Server] ESC service cleanup failed:', error)
