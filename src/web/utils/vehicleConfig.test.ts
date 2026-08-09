@@ -128,7 +128,7 @@ const px4QuadX = params({
 })
 const px4View = buildFrameConfigView(px4, px4QuadX)
 assert.ok(px4View)
-assert.equal(px4View.name, 'Generic Quadrotor X')
+assert.equal(px4View.name, 'Generic Quadcopter')
 assert.equal(px4View.motorCount, 4)
 assert.equal(px4View.outputChannels.length, 4)
 for (let motor = 1; motor <= 4; motor += 1) {

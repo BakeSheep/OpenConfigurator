@@ -37,7 +37,7 @@ OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Elec
 
 - USB 串口与 Windows Bluetooth SPP 连接，支持 MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
 - 姿态、定位、电池、传感器、RC、执行器、EKF 和 MAVLink 消息实时监控
-- 参数同步、搜索、QGC 参数文件导入/导出、PID/EKF 调整、传感器校准与串口配置
+- 参数同步、搜索、QGC 参数文件导入/导出、机架选择、遥控器校准、飞行模式、电源/电池、安全保护、PID/EKF 调整、传感器校准与串口配置
 - 带安全门控的解锁/上锁、模式切换、起飞、降落、返航、电机测试和手柄 RC override
 - PX4 ULog 与 ArduPilot DataFlash 日志浏览、下载和离线分析
 - 通过 ArduPilot passthrough、PX4 `SERIAL_CONTROL` 或 19200 波特直连配置 AM32 ESC 参数
@@ -49,7 +49,7 @@ ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会�
 
 - PX4：覆盖当前已有的连接、监控、参数、调参、校准、飞行操作、ULog 和 NSH 终端路径。
 - ArduPilot：ArduCopter 是当前安全关键写操作的适配与验收目标；Plane、Rover、Sub 和 Tracker 可识别并查看通用数据与 DataFlash 日志，但保持只读。
-- 当前不提供任务、围栏或集结点编辑，也不提供机架写入。
+- 当前不提供任务、围栏、集结点、相机/云台配置、PX4 ESC PWM 校准或 UAVCAN 执行器分配。
 - 软件路径和自动化测试不等于具体飞控、ESC、固件组合已通过 HIL 或飞行验证。
 
 详细边界见 [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md) 和 [ESC 兼容性矩阵](docs/ESC-COMPATIBILITY.md)。
@@ -60,7 +60,7 @@ ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会�
 |---|---|
 | 总览 | 姿态、关键遥测、系统健康与自定义数据板 |
 | 飞行操作 | 预检、模式切换与带安全门控的飞行指令 |
-| 飞行器设置 | 机架识别、传感器、执行器、ESC、接收机、手柄与端口 |
+| 飞行器设置 | 机架、传感器、遥控器、飞行模式、电源/电池、安全保护、执行器、ESC、手柄与端口 |
 | 调参与诊断 | 参数、PID、EKF、波形、MAVLink 消息与飞行日志 |
 
 ## 快速开始
@@ -135,6 +135,8 @@ Express / ws ── validation / controller lease
 
 - [架构](docs/ARCHITECTURE.md)
 - [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
+- [QGC 配置行为与参数来源](docs/VEHICLE-CONFIG-SOURCES.md)
+- [参数枚举元数据](docs/PARAMETER-ENUM-METADATA.md)
 - [ESC 兼容性](docs/ESC-COMPATIBILITY.md)
 - [ESC 协议来源](docs/ESC-PROTOCOL-SOURCES.md)
 - [贡献指南](CONTRIBUTING.md)

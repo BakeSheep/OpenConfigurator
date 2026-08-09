@@ -162,14 +162,6 @@ export default function EscConnectPanel() {
 
   return (
     <section className="mc-card mc-esc-connect">
-      <div className="mc-esc-connect__header">
-        <div>
-          <div className="mc-section-title">{t('escConnect.title')}</div>
-          <p>{t('escConnect.subtitle')}</p>
-        </div>
-        {active && <span className="mc-esc-session-badge">{session?.state}</span>}
-      </div>
-
       <div className="mc-esc-connect__body">
         <div className="mc-esc-mode-picker" role="group" aria-label={t('escConnect.modeAriaLabel')}>
           <span className="mc-btn mc-btn-primary" aria-current="true">
@@ -177,6 +169,7 @@ export default function EscConnectPanel() {
               ? t('escConnect.existingSessionTitle')
               : t('escConnect.modeArduPilot')}
           </span>
+          {active && <span className="mc-esc-session-badge">{session?.state}</span>}
         </div>
 
         <div className="mc-esc-connect__cards">

@@ -34,6 +34,21 @@ import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetada
 import { localizeLogSeries, logLoopLabel } from '../utils/logSeriesLabels'
 import { backendEnabled } from '../runtime'
 import { roundedDurationParts } from '../utils/duration'
+import {
+  buildChartCsv,
+  chartExportBaseName,
+  createChartPng,
+  downloadBlob,
+  type ChartExportFormat,
+} from '../utils/chartExport'
+import {
+  MAX_BLOB_EXPORT_SOURCE_BYTES,
+  canUseBlobExportFallback,
+  startStructuredLogExport,
+  type StructuredLogExportTask,
+} from '../utils/structuredLogExportClient'
+import { structuredLogBaseName, structuredLogFileName } from '../utils/structuredLogExport'
+import type { StructuredLogProgress } from '../../shared/logs'
 import type {
   SeriesData,
   UlogAnalysisDataset,
@@ -72,7 +87,7 @@ const LOG_LEVEL_LABELS: Record<number, { label: string; color: string }> = {
 type LogFormat = 'ulog' | 'dataflash'
 
 function analyzeInWorker(
-  buffer: ArrayBuffer,
+  blob: Blob,
   signal: AbortSignal,
   format: LogFormat,
   language: UlogWorkerRequest['language'],
@@ -113,10 +128,19 @@ function analyzeInWorker(
       abort()
       return
     }
-    const request: UlogWorkerRequest = { buffer, language }
-    worker.postMessage(request, [buffer])
+    const request: UlogWorkerRequest = { blob, language }
+    worker.postMessage(request)
   })
 }
+
+interface SaveFileHandle {
+  createWritable(): Promise<WritableStream<Uint8Array>>
+}
+
+type SaveFilePicker = (options: {
+  suggestedName: string
+  types: Array<{ description: string; accept: Record<string, string[]> }>
+}) => Promise<SaveFileHandle>
 
 export function formatDuration(seconds: number): string {
   const parts = roundedDurationParts(seconds)
@@ -174,6 +198,7 @@ function ChartPanel({
   headerAside,
   children,
   onCursorTimeChange,
+  frequencyAxis = false,
 }: {
   title: string
   series?: SeriesData[]
@@ -187,11 +212,22 @@ function ChartPanel({
   selectionMode?: 'multi' | 'single'
   headerAside?: React.ReactNode
   onCursorTimeChange?: (timeSec: number) => void
+  /** Use frequency rather than elapsed time for the horizontal axis. */
+  frequencyAxis?: boolean
   children?: React.ReactNode
 }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [stretched, setStretched] = useState(false)
+  const [chartExportOpen, setChartExportOpen] = useState(false)
+  const [chartExportFormat, setChartExportFormat] = useState<ChartExportFormat>('csv')
+  const [chartExportName, setChartExportName] = useState(() => chartExportBaseName(title))
+  const [chartExportSaving, setChartExportSaving] = useState(false)
+  const [chartExportError, setChartExportError] = useState<string | null>(null)
+  const chartCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const handleCanvasChange = useCallback((canvas: HTMLCanvasElement | null) => {
+    chartCanvasRef.current = canvas
+  }, [])
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(
     () => selectionMode === 'single'
       ? new Set(selectionGroups?.slice(0, 1).map((group) => group.id) ?? [])
@@ -228,6 +264,47 @@ function ChartPanel({
   const expandedHeight = typeof window === 'undefined'
     ? 520
     : Math.max(360, Math.min(640, window.innerHeight - 250))
+
+  const openChartExport = () => {
+    setChartExportName(chartExportBaseName(title))
+    setChartExportFormat('csv')
+    setChartExportError(null)
+    setChartExportOpen(true)
+  }
+
+  const saveChart = async () => {
+    const baseName = chartExportBaseName(chartExportName)
+    setChartExportName(baseName)
+    setChartExportSaving(true)
+    setChartExportError(null)
+    try {
+      if (chartExportFormat === 'csv') {
+        const csv = buildChartCsv(visibleSeries, {
+          axisLabel: frequencyAxis ? 'frequency_hz' : 'time_s',
+          unit,
+        })
+        downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `${baseName}.csv`)
+      } else {
+        const canvas = chartCanvasRef.current
+        if (!canvas) throw new Error('Chart canvas is unavailable')
+        const blob = await createChartPng({
+          source: canvas,
+          title,
+          legend: visibleSeries.map((entry, index) => ({
+            label: entry.label,
+            color: seriesColor(entry.colorIndex ?? index),
+          })),
+        })
+        downloadBlob(blob, `${baseName}.png`)
+      }
+      setChartExportOpen(false)
+    } catch (error) {
+      console.error('[Analysis] chart export failed:', error)
+      setChartExportError(t('logAnalysis.chartExportFailed'))
+    } finally {
+      setChartExportSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (!expanded) return
@@ -287,6 +364,17 @@ function ChartPanel({
           </div>
           <div className="mc-analysis-panel__actions">
             {seriesToggles}
+            {hasChart && (
+              <button
+                type="button"
+                className="mc-icon-btn mc-icon-btn--bordered"
+                aria-label={t('logAnalysis.saveChartAria', { title })}
+                title={t('logAnalysis.saveChart')}
+                onClick={openChartExport}
+              >
+                <Icon name="download" size={14} />
+              </button>
+            )}
             {series && (
               <button
                 type="button"
@@ -321,6 +409,9 @@ function ChartPanel({
             height={height}
             secondaryScaleIds={secondaryScaleIds}
             onCursorTimeChange={onCursorTimeChange}
+            frequencyAxis={frequencyAxis}
+            noSync={frequencyAxis}
+            onCanvasChange={handleCanvasChange}
           />
         )}
         {children}
@@ -346,6 +437,15 @@ function ChartPanel({
                 <button
                   type="button"
                   className="mc-icon-btn mc-icon-btn--bordered"
+                  aria-label={t('logAnalysis.saveChartAria', { title })}
+                  title={t('logAnalysis.saveChart')}
+                  onClick={openChartExport}
+                >
+                  <Icon name="download" size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="mc-icon-btn mc-icon-btn--bordered"
                   aria-label={t('logAnalysis.closeExpandedChart')}
                   title={t('logAnalysis.closeEsc')}
                   autoFocus
@@ -364,9 +464,113 @@ function ChartPanel({
                 height={expandedHeight}
                 secondaryScaleIds={secondaryScaleIds}
                 onCursorTimeChange={onCursorTimeChange}
+                frequencyAxis={frequencyAxis}
+                noSync={frequencyAxis}
               />
             </div>
           </section>
+        </div>,
+        document.body,
+      )}
+      {chartExportOpen && hasChart && createPortal(
+        <div
+          className="mc-modal-backdrop mc-chart-export-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="chart-export-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !chartExportSaving) setChartExportOpen(false)
+          }}
+        >
+          <div className="mc-card mc-modal mc-chart-export-modal">
+            <header className="mc-chart-export-modal__header">
+              <div>
+                <span className="mc-eyebrow">CHART EXPORT</span>
+                <h3 id="chart-export-title">{t('logAnalysis.saveChartTitle')}</h3>
+              </div>
+              <button
+                type="button"
+                className="mc-icon-btn"
+                aria-label={t('common.close')}
+                disabled={chartExportSaving}
+                onClick={() => setChartExportOpen(false)}
+              >
+                <Icon name="close" size={15} />
+              </button>
+            </header>
+            <p className="mc-chart-export-modal__description">
+              {t('logAnalysis.saveChartDescription', { title })}
+            </p>
+            <fieldset className="mc-chart-export-formats">
+              <legend>{t('logAnalysis.chartExportFormat')}</legend>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={chartExportFormat === 'csv'}
+                data-active={chartExportFormat === 'csv'}
+                disabled={chartExportSaving}
+                onClick={() => setChartExportFormat('csv')}
+              >
+                <strong>CSV</strong>
+                <span>{t('logAnalysis.chartExportCsvHint')}</span>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={chartExportFormat === 'png'}
+                data-active={chartExportFormat === 'png'}
+                disabled={chartExportSaving}
+                onClick={() => setChartExportFormat('png')}
+              >
+                <strong>PNG</strong>
+                <span>{t('logAnalysis.chartExportPngHint')}</span>
+              </button>
+            </fieldset>
+            <label className="mc-chart-export-name">
+              <span>{t('logAnalysis.exportFileName')}</span>
+              <div>
+                <input
+                  type="text"
+                  className="mc-input"
+                  value={chartExportName}
+                  disabled={chartExportSaving}
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) => setChartExportName(event.target.value)}
+                  onBlur={() => setChartExportName(chartExportBaseName(chartExportName))}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void saveChart()
+                  }}
+                />
+                <span className="mc-mono">.{chartExportFormat}</span>
+              </div>
+            </label>
+            {chartExportError && (
+              <p className="mc-chart-export-error" role="alert">
+                <Icon name="warning" size={14} /> {chartExportError}
+              </p>
+            )}
+            <footer>
+              <button
+                type="button"
+                className="mc-btn mc-btn-ghost"
+                disabled={chartExportSaving}
+                onClick={() => setChartExportOpen(false)}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className="mc-btn mc-btn-primary"
+                disabled={chartExportSaving}
+                onClick={() => void saveChart()}
+              >
+                <Icon name="download" size={14} />
+                {chartExportSaving ? t('logAnalysis.chartExportSaving') : t('logAnalysis.saveChart')}
+              </button>
+            </footer>
+          </div>
         </div>,
         document.body,
       )}
@@ -616,10 +820,17 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const logDownload = useLogTransferStore((state) => state.download)
   const [dataset, setDataset] = useState<UlogAnalysisDataset | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
+  const [logSource, setLogSource] = useState<Blob | null>(null)
   const [parsing, setParsing] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportFileBaseName, setExportFileBaseName] = useState('flight-log')
+  const [includeSource, setIncludeSource] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState<StructuredLogProgress | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [paramFilter, setParamFilter] = useState('')
   const [expandedParamGroups, setExpandedParamGroups] = useState<Set<string>>(() => new Set())
   const [eventsOpen, setEventsOpen] = useState(false)
@@ -627,6 +838,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
   const analysisAbortRef = useRef<AbortController | null>(null)
+  const exportTaskRef = useRef<StructuredLogExportTask | null>(null)
   const unmountAbortTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const replayStartSec = useMemo(() => {
@@ -647,9 +859,9 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     setEventsOpen(false)
   }, [dataset])
 
-  const analyzeBuffer = useCallback((
+  const analyzeBlob = useCallback((
     name: string,
-    buffer: ArrayBuffer,
+    blob: Blob,
     options?: { sourcePath?: string; fileModifiedMs?: number },
   ) => {
     analysisAbortRef.current?.abort()
@@ -659,8 +871,9 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     setParsing(true)
     setParseError(null)
     setFileName(name)
+    setLogSource(blob)
     const language = i18n.resolvedLanguage === 'en' ? 'en' : 'zh'
-    analyzeInWorker(buffer, controller.signal, format, language)
+    analyzeInWorker(blob, controller.signal, format, language)
       .then((result) => {
         if (controller.signal.aborted) return
         if (result.overview.startTimeUtcMs === null) {
@@ -707,6 +920,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       unmountAbortTimerRef.current = setTimeout(() => {
         analysisAbortRef.current?.abort()
         analysisAbortRef.current = null
+        exportTaskRef.current?.cancel()
+        exportTaskRef.current = null
         unmountAbortTimerRef.current = null
       }, 0)
     }
@@ -715,8 +930,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   // Hand-off from the flight-log explorer ("download & analyze").
   useEffect(() => {
     const stashed = takeStashedLog()
-    if (stashed) analyzeBuffer(stashed.name, stashed.buffer, { sourcePath: stashed.sourcePath })
-  }, [analyzeBuffer])
+    if (stashed) analyzeBlob(stashed.name, stashed.blob, { sourcePath: stashed.sourcePath })
+  }, [analyzeBlob])
 
   // FC import completed while this page is open: fetch and analyze in place.
   useEffect(() => {
@@ -729,12 +944,12 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       try {
         const response = await fetch(`/api/logs/downloads/${downloadId}`)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const buffer = await response.arrayBuffer()
+        const blob = await response.blob()
         if (cancelled) return
         handledDownloadRef.current = downloadId
         useFileExplorerStore.getState().clearDownload()
         setImportOpen(false)
-        analyzeBuffer(download.fileName ?? 'log.ulg', buffer, { sourcePath: download.path })
+        analyzeBlob(download.fileName ?? 'log.ulg', blob, { sourcePath: download.path })
       } catch (error) {
         if (!cancelled) {
           useFileExplorerStore.getState().failDownload(t('logAnalysis.readFileFailed'))
@@ -745,7 +960,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     return () => {
       cancelled = true
     }
-  }, [download, analyzeBuffer])
+  }, [download, analyzeBlob])
 
   // ArduPilot DataFlash FC import completed: fetch and analyze in place.
   useEffect(() => {
@@ -758,12 +973,12 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       try {
         const response = await fetch(`/api/logs/downloads/${downloadId}`)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const buffer = await response.arrayBuffer()
+        const blob = await response.blob()
         if (cancelled) return
         handledDownloadRef.current = downloadId
         useLogTransferStore.getState().clearDownload()
         setImportOpen(false)
-        analyzeBuffer(logDownload.fileName ?? 'log.bin', buffer)
+        analyzeBlob(logDownload.fileName ?? 'log.bin', blob)
       } catch (error) {
         if (!cancelled) {
           useLogTransferStore.getState().failDownload(t('logAnalysis.readFileFailed'))
@@ -774,7 +989,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     return () => {
       cancelled = true
     }
-  }, [logDownload, analyzeBuffer])
+  }, [logDownload, analyzeBlob])
 
   const handleFiles = useCallback((files: FileList | null) => {
     const file = files?.[0]
@@ -784,11 +999,82 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       setParseError(t('logAnalysis.selectFileError'))
       return
     }
-    void file.arrayBuffer().then((buffer) => analyzeBuffer(file.name, buffer, {
+    analyzeBlob(file.name, file, {
       sourcePath: file.name,
       fileModifiedMs: file.lastModified,
-    }))
-  }, [analyzeBuffer, t])
+    })
+  }, [analyzeBlob, t])
+
+  const startExport = useCallback(async () => {
+    if (!dataset || !logSource || !fileName || exporting) return
+    setExportError(null)
+    setExportProgress(null)
+    setExporting(true)
+    const format: LogFormat = isDataflashFileName(fileName) ? 'dataflash' : 'ulog'
+    const archiveName = structuredLogFileName(exportFileBaseName)
+    const picker = (window as unknown as { showSaveFilePicker?: SaveFilePicker }).showSaveFilePicker
+    let output: WritableStream<Uint8Array> | undefined
+    try {
+      if (picker) {
+        const handle = await picker.call(window, {
+          suggestedName: archiveName,
+          types: [{ description: 'OpenConfigurator structured flight log', accept: { 'application/zip': ['.zip'] } }],
+        })
+        output = await handle.createWritable()
+      } else if (!canUseBlobExportFallback(logSource.size)) {
+        throw new Error(t('logAnalysis.exportStreamingRequired', {
+          size: formatBytes(logSource.size),
+          limit: formatBytes(MAX_BLOB_EXPORT_SOURCE_BYTES),
+        }))
+      }
+      const request = {
+        source: logSource,
+        name: fileName,
+        format,
+        summary: dataset,
+        vehicleIdentity,
+        options: { includeSource, privacyMode: 'full' },
+      } as const
+      let task = startStructuredLogExport({ ...request, output }, setExportProgress)
+      exportTaskRef.current = task
+      let result: Awaited<typeof task.result>
+      try {
+        result = await task.result
+      } catch (error) {
+        const transferUnsupported = output !== undefined && error instanceof Error
+          && (error.name === 'DataCloneError' || /transfer|clone/i.test(error.message))
+        if (!transferUnsupported || !canUseBlobExportFallback(logSource.size)) throw error
+        await output!.abort(error).catch(() => undefined)
+        setExportProgress(null)
+        task = startStructuredLogExport(request, setExportProgress)
+        exportTaskRef.current = task
+        result = await task.result
+      }
+      if (result.blob) {
+        const url = URL.createObjectURL(result.blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = archiveName
+        anchor.click()
+        setTimeout(() => URL.revokeObjectURL(url), 0)
+      }
+      setExportOpen(false)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      if (error instanceof Error && error.name === 'AbortError') return
+      setExportError(error instanceof Error ? error.message : String(error))
+    } finally {
+      exportTaskRef.current = null
+      setExporting(false)
+    }
+  }, [dataset, exportFileBaseName, exporting, fileName, includeSource, logSource, t, vehicleIdentity])
+
+  const cancelExport = useCallback(() => {
+    exportTaskRef.current?.cancel()
+    exportTaskRef.current = null
+    setExporting(false)
+    setExportProgress(null)
+  }, [])
 
   const filteredParams = useMemo(() => {
     if (!dataset) return []
@@ -888,6 +1174,50 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     [dataset, t],
   )
 
+  const pageHeaderActions = <>
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept=".ulg,.bin"
+      hidden
+      onChange={(event) => {
+        handleFiles(event.target.files)
+        event.target.value = ''
+      }}
+    />
+    <button
+      type="button"
+      className="mc-btn mc-btn-ghost"
+      onClick={() => fileInputRef.current?.click()}
+    >
+      <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
+    </button>
+    <button
+      type="button"
+      className="mc-btn mc-btn-ghost"
+      disabled={!dataset || !logSource || parsing}
+      onClick={() => {
+        setExportError(null)
+        setExportProgress(null)
+        setExportFileBaseName(structuredLogBaseName(fileName ?? 'flight-log'))
+        setExportOpen(true)
+      }}
+    >
+      <Icon name="download" size={15} /> {t('logAnalysis.exportStructured')}
+    </button>
+    <button
+      type="button"
+      className="mc-btn mc-btn-primary"
+      disabled={!backendEnabled || !vehicleReady}
+      title={!backendEnabled
+        ? t('logAnalysis.demoModeHint')
+        : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
+      onClick={() => setImportOpen(true)}
+    >
+      <Icon name="download" size={15} /> {t('logAnalysis.importFromFc')}
+    </button>
+  </>
+
   return (
     <div
       className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}
@@ -905,38 +1235,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       <PageHeader
         title={t('logAnalysis.title')}
         description={t('logAnalysis.description')}
-        actions={
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".ulg,.bin"
-              hidden
-              onChange={(event) => {
-                handleFiles(event.target.files)
-                event.target.value = ''
-              }}
-            />
-            <button
-              type="button"
-              className="mc-btn mc-btn-ghost"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
-            </button>
-            <button
-              type="button"
-              className="mc-btn mc-btn-primary"
-              disabled={!backendEnabled || !vehicleReady}
-              title={!backendEnabled
-                ? t('logAnalysis.demoModeHint')
-                : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
-              onClick={() => setImportOpen(true)}
-            >
-              <Icon name="download" size={15} /> {t('logAnalysis.importFromFc')}
-            </button>
-          </>
-        }
+        actions={pageHeaderActions}
       />
 
       {parseError && (
@@ -957,6 +1256,11 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         <div
           className={`mc-analysis-dropzone${dragOver ? ' is-over' : ''}`}
           onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            fileInputRef.current?.click()
+          }}
           role="button"
           tabIndex={0}
         >
@@ -1180,6 +1484,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               series={vibrationSeries}
               unit="m/s²"
               height={240}
+              frequencyAxis
             >
               <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-secondary)' }}>
                 {t('logAnalysis.vibrationHint', { segments: dataset.vibration.segments })}
@@ -1256,6 +1561,96 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       {importOpen && (logs.format === 'dataflash'
         ? <FcDataflashImportDialog onClose={() => setImportOpen(false)} />
         : <FcImportDialog onClose={() => setImportOpen(false)} />)}
+      {exportOpen && dataset && logSource && fileName && (
+        <div className="mc-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="structured-export-title">
+          <div className="mc-card mc-modal mc-structured-export-modal">
+            <div className="flex items-center justify-between">
+              <h3 id="structured-export-title" className="mc-section-title">{t('logAnalysis.exportStructuredTitle')}</h3>
+              <button
+                type="button"
+                className="mc-icon-btn"
+                aria-label={t('common.close')}
+                disabled={exporting}
+                onClick={() => setExportOpen(false)}
+              >
+                <Icon name="close" size={15} />
+              </button>
+            </div>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)' }}>
+              {t('logAnalysis.exportStructuredDescription')}
+            </p>
+            <label className="mc-structured-export-name">
+              <span>{t('logAnalysis.exportFileName')}</span>
+              <div>
+                <input
+                  type="text"
+                  className="mc-input"
+                  value={exportFileBaseName}
+                  disabled={exporting}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(event) => setExportFileBaseName(event.target.value)}
+                  onBlur={() => setExportFileBaseName(structuredLogBaseName(exportFileBaseName))}
+                />
+                <span className="mc-mono">.zip</span>
+              </div>
+            </label>
+            <div className="mc-card" style={{ borderColor: 'var(--warning)', padding: 12 }}>
+              <p style={{ margin: 0, color: 'var(--warning)', fontSize: 12.5 }}>
+                <Icon name="warning" size={14} /> {t('logAnalysis.exportPrivacyWarning')}
+              </p>
+            </div>
+            <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={includeSource}
+                disabled={exporting}
+                onChange={(event) => setIncludeSource(event.target.checked)}
+              />
+              <span>{t('logAnalysis.includeOriginalLog', { size: formatBytes(logSource.size) })}</span>
+            </label>
+            {exportProgress && (
+              <div className="mc-explorer__transfer" style={{ padding: 0 }}>
+                <progress
+                  value={exportProgress.totalBytes > 0 ? exportProgress.processedBytes : undefined}
+                  max={exportProgress.totalBytes > 0 ? exportProgress.totalBytes : undefined}
+                />
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {t(`logAnalysis.exportPhase.${exportProgress.phase}`)}
+                </span>
+              </div>
+            )}
+            {exportError && (
+              <p style={{ color: 'var(--danger)', fontSize: 12.5, margin: 0 }}>
+                <Icon name="warning" size={14} /> {exportError}
+              </p>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="mc-mono" style={{ fontSize: 11.5, color: 'var(--text-disabled)' }}>
+                {fileName} · {formatBytes(logSource.size)}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="mc-btn mc-btn-ghost"
+                  onClick={exporting ? cancelExport : () => setExportOpen(false)}
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  type="button"
+                  className="mc-btn mc-btn-primary"
+                  disabled={exporting}
+                  onClick={() => void startExport()}
+                >
+                  <Icon name="download" size={14} />
+                  {exportError ? t('logAnalysis.retryExport') : t('logAnalysis.beginExport')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

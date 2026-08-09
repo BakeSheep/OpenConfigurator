@@ -106,7 +106,7 @@ export interface UlogWorkerResult {
 }
 
 export interface UlogWorkerRequest {
-  buffer: ArrayBuffer
+  blob: Blob
   language: 'zh' | 'en'
 }
 
@@ -157,38 +157,6 @@ export function normalizeUlogTimestamp(value: unknown): bigint | null {
   if (typeof value === 'bigint') return value > 0n ? value : null
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
   return BigInt(Math.trunc(value))
-}
-
-/**
- * Filelike over an in-memory ArrayBuffer that returns COPIES from read().
- * @foxglove/ulog's own DataReader returns zero-copy subarrays whose
- * byteOffset is file-absolute, but ULog.#readParsedMessage treats
- * data.byteOffset as chunk-relative - once the internal chunk no longer
- * starts at offset 0 every parsed value is shifted (or reads out of bounds).
- * Copying restores the chunk-relative invariant the parser relies on.
- */
-export class CopyingBufferReader {
-  private readonly buffer: ArrayBuffer
-
-  constructor(buffer: ArrayBuffer) {
-    this.buffer = buffer
-  }
-
-  async open(): Promise<number> {
-    return this.buffer.byteLength
-  }
-
-  async close(): Promise<void> {
-    // no-op
-  }
-
-  async read(offset: number, length: number): Promise<Uint8Array> {
-    return new Uint8Array(this.buffer.slice(offset, offset + length))
-  }
-
-  size(): number {
-    return this.buffer.byteLength
-  }
 }
 
 /** Convert a PX4 attitude quaternion [w, x, y, z] to Euler angles (rad). */

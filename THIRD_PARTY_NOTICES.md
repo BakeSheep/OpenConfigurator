@@ -21,3 +21,12 @@ OpenConfigurator 采用 [MIT License](LICENSE)。ESC 协议实现基于公开协
 | QGroundControl `resources/calibration/accel_*.png`、`src/AutoPilotPlugins/PX4/Images/Vehicle*Rotate.png` | Apache License 2.0 | 六面加速度计方位图与 PX4 罗盘六面旋转引导图，未修改 |
 
 素材来自 [QGroundControl 加速度计素材](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/resources/calibration)及 [PX4 校准素材](https://github.com/mavlink/qgroundcontrol/tree/ae7717a3d19c557fe7ca0c23dae2c8ab19c92668/src/AutoPilotPlugins/PX4/Images)，固定于提交 `ae7717a3d19c557fe7ca0c23dae2c8ab19c92668`。许可证全文随素材保存在 [`public/assets/calibration/LICENSE-APACHE-2.0.txt`](public/assets/calibration/LICENSE-APACHE-2.0.txt)。
+
+## 飞行器配置参考数据
+
+| 项目 | 许可证/性质 | 本项目用途 |
+|---|---|---|
+| QGroundControl `AirframeFactMetaData.xml`，提交 `f4d5cb0bc975294b51d050fc8878e5600e93b907` | Apache License 2.0 双许可选项 | 构建时生成 PX4 机架名称、分组、autostart ID 与输出描述目录 |
+| QGroundControl 配置控制器与 QML，提交 `f4d5cb0bc975294b51d050fc8878e5600e93b907` | 外部行为参考 | 核对参数映射、开关分段和遥控器校准阈值；未复制 QML 或控制器代码 |
+
+生成后的机架目录保留来源提交和许可证标识。实现细节与逐项来源见 [docs/VEHICLE-CONFIG-SOURCES.md](docs/VEHICLE-CONFIG-SOURCES.md)。

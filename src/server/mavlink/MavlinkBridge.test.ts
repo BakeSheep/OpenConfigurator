@@ -355,6 +355,7 @@ type PrivateBridge = {
   targetSysId: number | null
   targetCompId: number | null
   pendingCommands: Map<number, unknown>
+  commandQuarantineUntil: Map<number, number>
   pendingParamSets: Map<string, unknown>
   parameterValues: Map<string, number>
   cacheParameterValue: (id: string, value: number) => boolean
@@ -961,6 +962,51 @@ const successfulParamSet = findLast(
 )
 assert.equal(successfulParamSet.data.accepted, true)
 assert.equal(successfulParamSet.data.acceptedValue, 12.5)
+
+// Semantic vehicle configuration derives MAV_PARAM_TYPE from the validated
+// server cache and requires a matching PARAM_VALUE before accepting the UI write.
+inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 1))
+const configFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+bridge.handleClientMessage({
+  type: 'vehicle_config_set', requestId: 'cfg-rcl', feature: 'safety',
+  data: { id: 'NAV_RCL_ACT', value: 2 },
+})
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 23).length, configFramesBefore + 1)
+inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 2))
+assert.ok(messages.some((message) => message.type === 'vehicle_config_set_result'
+  && message.data.requestId === 'cfg-rcl' && message.data.accepted))
+
+inject(bridge, 22, paramValuePayload('COM_LOW_BAT_ACT', 2))
+const reductionFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+bridge.handleClientMessage({
+  type: 'vehicle_config_set', requestId: 'cfg-reduce', feature: 'safety',
+  data: { id: 'COM_LOW_BAT_ACT', value: 0 },
+})
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 23).length, reductionFramesBefore)
+assert.ok(messages.some((message) => message.type === 'vehicle_config_set_result'
+  && message.data.requestId === 'cfg-reduce' && message.data.reason === 'safety_confirmation_required'))
+
+// PX4 airframe application is a verified two-parameter transaction. The
+// reboot command is not queued until both echoes match.
+inject(bridge, 22, paramValuePayload('SYS_AUTOSTART', 4001))
+inject(bridge, 22, paramValuePayload('SYS_AUTOCONFIG', 0))
+;(bridge as unknown as PrivateBridge).commandQuarantineUntil.delete(246)
+const rebootCommandsBeforeAirframe = connection.frames.filter((frame) => frameMessageId(frame) === 76
+  && framePayload(frame).readUInt16LE(28) === 246).length
+bridge.handleClientMessage({
+  type: 'airframe_apply', requestId: 'frame-px4', safetyConfirmation: 'apply_airframe',
+  data: { family: 'px4', autostartId: 5001 },
+})
+inject(bridge, 22, paramValuePayload('SYS_AUTOSTART', 5001))
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 76
+  && framePayload(frame).readUInt16LE(28) === 246).length, rebootCommandsBeforeAirframe)
+inject(bridge, 22, paramValuePayload('SYS_AUTOCONFIG', 1))
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 76
+  && framePayload(frame).readUInt16LE(28) === 246).length, rebootCommandsBeforeAirframe + 1)
+assert.ok(messages.some((message) => message.type === 'airframe_apply_status'
+  && message.data.requestId === 'frame-px4' && message.data.phase === 'rebooting'))
+connection.vehicleReady = false
+inject(bridge, 0, heartbeatPayload(), 42, 1)
 
 const framesBeforeInvalidParam = connection.frames.length
 bridge.handleClientMessage({

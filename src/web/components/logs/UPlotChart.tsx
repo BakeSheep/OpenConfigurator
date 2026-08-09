@@ -25,6 +25,8 @@ interface UPlotChartProps {
   secondaryScaleIds?: string[]
   /** Absolute log time reported whenever the shared cursor moves. */
   onCursorTimeChange?: (timeSec: number) => void
+  /** Exposes the rendered plot canvas for local image export. */
+  onCanvasChange?: (canvas: HTMLCanvasElement | null) => void
 }
 
 function cssVar(name: string, fallback: string): string {
@@ -71,6 +73,7 @@ export default function UPlotChart({
   noSync = false,
   secondaryScaleIds,
   onCursorTimeChange,
+  onCanvasChange,
 }: UPlotChartProps) {
   const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -192,6 +195,7 @@ export default function UPlotChart({
 
     const plot = new uPlot(options, data, container)
     plotRef.current = plot
+    onCanvasChange?.(plot.ctx.canvas)
     // Legend text inherits the theme colors.
     container.style.setProperty('--uplot-text', textColor)
 
@@ -205,9 +209,10 @@ export default function UPlotChart({
       observer.disconnect()
       plot.destroy()
       plotRef.current = null
+      onCanvasChange?.(null)
     }
     // Recreate on theme switch so colors are re-read from CSS variables.
-  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleIds, onCursorTimeChange, theme, t])
+  }, [data, series, height, unit, bands, frequencyAxis, noSync, secondaryScaleIds, onCursorTimeChange, onCanvasChange, theme, t])
 
   if (!data) {
     return <p className="mc-explorer__notice">{t('logAnalysis.noChartData')}</p>
