@@ -23,6 +23,8 @@ import {
 } from './seriesCompression'
 import { decodeFlightMode, type VehicleClass } from '../../shared/vehicleProfiles'
 import i18next from 'i18next'
+import { BlobLogSource, StructuredDataflashDecoder } from '../../shared/logs'
+import type { StructuredLogStreamSchema } from '../../shared/logs'
 
 const t = i18next.t.bind(i18next)
 
@@ -32,7 +34,6 @@ const FMT_MSG_ID = 0x80
 // FMT wire layout: 3-byte frame header + Type(1) Length(1) Name(4) Format(16)
 // Columns(64) = 89 bytes total.
 const FMT_MSG_LENGTH = 89
-const MIN_FRAME_LENGTH = 3
 
 const MAX_EVENTS = 500
 const ENVELOPE_BUCKET_SEC = 0.05
@@ -62,84 +63,7 @@ const FIELD_SIZES: Record<string, number> = {
   a: 64,
 }
 
-interface MessageFormat {
-  type: number
-  /** Full frame length including the 3-byte header. */
-  length: number
-  name: string
-  format: string
-  columns: string[]
-  /** Byte offset of each field inside the payload. */
-  offsets: number[]
-  /** True when every format char is known and fits the declared length. */
-  decodable: boolean
-}
-
 type FieldValue = number | string
-
-function readString(bytes: Uint8Array, start: number, length: number): string {
-  let end = start
-  const limit = Math.min(start + length, bytes.length)
-  while (end < limit && bytes[end] !== 0) end++
-  let out = ''
-  for (let index = start; index < end; index++) out += String.fromCharCode(bytes[index])
-  return out
-}
-
-function readField(view: DataView, offset: number, code: string, bytes: Uint8Array): FieldValue {
-  switch (code) {
-    case 'b': return view.getInt8(offset)
-    case 'B': case 'M': return view.getUint8(offset)
-    case 'h': return view.getInt16(offset, true)
-    case 'H': return view.getUint16(offset, true)
-    case 'i': return view.getInt32(offset, true)
-    case 'I': return view.getUint32(offset, true)
-    case 'f': return view.getFloat32(offset, true)
-    case 'd': return view.getFloat64(offset, true)
-    // Fixed-point centi-units and 1e-7-degree coordinates.
-    case 'c': return view.getInt16(offset, true) / 100
-    case 'C': return view.getUint16(offset, true) / 100
-    case 'e': return view.getInt32(offset, true) / 100
-    case 'E': return view.getUint32(offset, true) / 100
-    case 'L': return view.getInt32(offset, true) / 1e7
-    case 'q': return Number(view.getBigInt64(offset, true))
-    case 'Q': return Number(view.getBigUint64(offset, true))
-    case 'n': return readString(bytes, offset, 4)
-    case 'N': return readString(bytes, offset, 16)
-    case 'Z': return readString(bytes, offset, 64)
-    default: return Number.NaN // 'a' and future codes: skipped, never consumed
-  }
-}
-
-function parseFmtPayload(
-  view: DataView,
-  bytes: Uint8Array,
-  offset: number,
-): MessageFormat | null {
-  const type = view.getUint8(offset)
-  const length = view.getUint8(offset + 1)
-  // The declared length includes the three-byte frame header. Keeping an
-  // invalid zero-length definition in the format table would make the main
-  // loop add zero forever when a matching data-frame header is encountered.
-  if (length < MIN_FRAME_LENGTH) return null
-  const name = readString(bytes, offset + 2, 4)
-  const format = readString(bytes, offset + 6, 16)
-  const columns = readString(bytes, offset + 22, 64).split(',').filter(Boolean)
-  const offsets: number[] = []
-  let fieldOffset = 0
-  let decodable = format.length > 0 && format.length === columns.length
-  for (const code of format) {
-    const size = FIELD_SIZES[code]
-    if (size === undefined) {
-      decodable = false
-      break
-    }
-    offsets.push(fieldOffset)
-    fieldOffset += size
-  }
-  if (fieldOffset > length - 3) decodable = false
-  return { type, length, name, format, columns, offsets, decodable }
-}
 
 const EVENT_NAMES: Record<number, string> = {
   7: 'AP state',
@@ -191,11 +115,7 @@ const PID_LOOP_DEFS = [
  * Corrupt bytes trigger a one-byte resync; a truncated final frame is
  * silently ignored, so partially downloaded logs still analyze.
  */
-export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
-  const bytes = new Uint8Array(buffer)
-  const view = new DataView(buffer)
-  const formats = new Map<number, MessageFormat>()
-
+export async function parseDataflashLog(source: Blob | ArrayBuffer): Promise<UlogAnalysisDataset> {
   // --- collectors (mirror the ULog worker) ------------------------------
   const attitude = {
     roll: makeRaw('attitude.roll', t('logAnalysis.label.roll')),
@@ -277,29 +197,8 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
   let resyncBytes = 0
   let droppedStateSamples = 0
 
-  let timeBaseUs: number | null = null
-  let lastTimeUs: number | null = null
   let timelineTruncated = false
   let endSec = 0
-  const toSec = (timeUs: number): number | null => {
-    if (timelineTruncated) return null
-    if (lastTimeUs !== null && timeUs < lastTimeUs) {
-      timelineTruncated = true
-      if (events.length < MAX_EVENTS) {
-        events.push({
-          timeSec: endSec,
-          level: 4,
-          message: t('logAnalysis.multipleBootsTruncated'),
-        })
-      }
-      return null
-    }
-    if (timeBaseUs === null) timeBaseUs = timeUs
-    lastTimeUs = timeUs
-    const seconds = (timeUs - timeBaseUs) / 1e6
-    if (seconds > endSec) endSec = seconds
-    return seconds
-  }
 
   const handleActuatorSample = (fields: Record<string, FieldValue>, timeSec: number) => {
     // RCOU logs PWM per channel; value 0 means "output not driven".
@@ -519,69 +418,48 @@ export function parseDataflashLog(buffer: ArrayBuffer): UlogAnalysisDataset {
     }
   }
 
-  // Message ids we decode (handlers above); everything else is skipped fast.
-  const handledIds = new Map<number, MessageFormat>()
-
-  // --- single streaming pass ---------------------------------------------
-  let offset = 0
-  const total = bytes.length
-  while (offset + 3 <= total) {
-    if (bytes[offset] !== FRAME_HEAD_0 || bytes[offset + 1] !== FRAME_HEAD_1) {
-      offset++
-      resyncBytes++
+  // --- unified structured decoder pass ----------------------------------
+  // Charts and structured export share source parsing. This reducer retains
+  // only bounded chart aggregates; the export consumer keeps every record.
+  const blob = source instanceof Blob ? source : new Blob([source])
+  const schemas = new Map<string, StructuredLogStreamSchema>()
+  for await (const envelope of new StructuredDataflashDecoder().decode(
+    new BlobLogSource('analysis.bin', blob),
+  )) {
+    if (envelope.kind === 'schema') {
+      schemas.set(envelope.schema.streamId, envelope.schema)
       continue
     }
-    const msgId = bytes[offset + 2]
-    if (msgId === FMT_MSG_ID) {
-      if (offset + FMT_MSG_LENGTH > total) break // truncated trailing frame
-      const fmt = parseFmtPayload(view, bytes, offset + 3)
-      if (fmt) {
-        formats.set(fmt.type, fmt)
-        if (fmt.decodable && fmt.name in handlers) handledIds.set(fmt.type, fmt)
+    if (envelope.kind === 'integrity') {
+      if (envelope.issue.code === 'dataflash_resync_bytes') {
+        resyncBytes += envelope.issue.count ?? 0
+      } else if (envelope.issue.code.includes('truncated')) {
+        resyncBytes++
       }
-      offset += FMT_MSG_LENGTH
       continue
     }
-    const fmt = formats.get(msgId)
-    if (!fmt) {
-      // Data before its FMT definition (or corruption): resync byte-wise.
-      offset++
-      resyncBytes++
-      continue
-    }
-    // Defensive progress guard: parseFmtPayload currently rejects these
-    // definitions, but never trust a format-table value to advance by zero.
-    if (fmt.length < MIN_FRAME_LENGTH) {
-      formats.delete(msgId)
-      handledIds.delete(msgId)
-      offset++
-      resyncBytes++
-      continue
-    }
-    if (offset + fmt.length > total) break // truncated trailing frame
-    const handled = handledIds.get(msgId)
-    if (handled) {
-      const payloadOffset = offset + 3
-      const fields: Record<string, FieldValue> = {}
-      for (let index = 0; index < handled.format.length; index++) {
-        fields[handled.columns[index]] = readField(
-          view,
-          payloadOffset + handled.offsets[index],
-          handled.format[index],
-          bytes,
-        )
+    if (envelope.kind !== 'record') continue
+    // Keep the historical page behavior for a concatenated multi-boot file;
+    // the structured export still contains every boot and its boundary event.
+    if (envelope.record.bootId > 0) {
+      if (!timelineTruncated) {
+        timelineTruncated = true
+        if (events.length < MAX_EVENTS) {
+          events.push({ timeSec: endSec, level: 4, message: t('logAnalysis.multipleBootsTruncated') })
+        }
       }
-      const timeUs = typeof fields.TimeUS === 'number' && Number.isFinite(fields.TimeUS)
-        ? fields.TimeUS
-        : typeof fields.TimeMS === 'number' && Number.isFinite(fields.TimeMS)
-          ? fields.TimeMS * 1000
-          : null
-      if (timeUs !== null) {
-        const timeSec = toSec(timeUs)
-        if (timeSec !== null) handlers[handled.name](fields, timeSec)
-      }
+      continue
     }
-    offset += fmt.length
+    const schema = schemas.get(envelope.record.streamId)
+    if (!schema || !(schema.sourceName in handlers) || envelope.record.elapsedUs === null) continue
+    const timeSec = Number(envelope.record.elapsedUs) / 1e6
+    if (!Number.isFinite(timeSec)) continue
+    if (timeSec > endSec) endSec = timeSec
+    const fields: Record<string, FieldValue> = {}
+    for (const [name, value] of Object.entries(envelope.record.data)) {
+      if (typeof value === 'number' || typeof value === 'string') fields[name] = value
+    }
+    handlers[schema.sourceName](fields, timeSec)
   }
 
   // --- assemble dataset ----------------------------------------------------

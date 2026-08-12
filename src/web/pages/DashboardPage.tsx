@@ -3,8 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { NavLink } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
 import { WorkspaceFrame } from '../components/ui/PageFrame'
-import { Button } from '../components/ui/Button'
-import StatePanel from '../components/ui/StatePanel'
 import { buildGroups, readStatusVariableSnapshot, STATUS_SNAPSHOT_INTERVAL_MS } from '../components/telemetry/StatusVariableBrowser'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -283,7 +281,6 @@ export default function DashboardPage() {
     return () => window.clearInterval(timer)
   }, [])
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
-  const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const {
     attitude, gps, battery, isStale,
     sensorHealth, imu, magData, baro, opticalFlow, distanceSensor,
@@ -322,18 +319,8 @@ export default function DashboardPage() {
     <WorkspaceFrame
       title={t('dashboard.title')}
       className="mc-workspace-frame--dashboard"
-      actions={vehicleReady ? <NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />{t('dashboard.enterFlight')}</NavLink> : undefined}
+      actions={<NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />{t('dashboard.enterFlight')}</NavLink>}
     >
-      {!vehicleReady ? (
-        <StatePanel
-          kind="disconnected"
-          headingLevel={2}
-          title={t('dashboard.waitingFc')}
-          description={t('dashboard.connectPrompt')}
-          action={<Button tone="primary" size="default" onClick={() => setConnectDialogOpen(true)}>{t('common.connect')}</Button>}
-        />
-      ) : (
-      <>
       <section className="mc-dashboard-primary-grid">
         <div className="mc-card mc-dashboard-visual overflow-hidden">
           <Suspense fallback={<div className="mc-attitude-view mc-route-loading">{t('dashboard.loadingAttitude3d')}</div>}><AttitudeIndicator /></Suspense>
@@ -345,7 +332,7 @@ export default function DashboardPage() {
           <Horizon roll={roll} pitch={pitch} yaw={yaw} frozen={isStale('attitude')} />
         </div>
         <aside className="mc-card mc-dashboard-sensors overflow-hidden">
-          <header><div><h2>{t('dashboard.systemHealth')}</h2><p>{t('dashboard.realtimeData')}</p></div><span data-ready>{t('dashboard.ready')}</span></header>
+          <header><div><h2>{t('dashboard.systemHealth')}</h2><p>{t('dashboard.realtimeData')}</p></div><span data-ready={vehicleReady || undefined}>{vehicleReady ? t('dashboard.ready') : t('dashboard.offline')}</span></header>
           <div className="mc-dashboard-health-list">
             <HealthRow label="IMU" value={imu ? `${imu.xacc.toFixed(1)} / ${imu.yacc.toFixed(1)} / ${imu.zacc.toFixed(1)}` : '—'} ok={sensorHealth.imu === 'ok'} />
             <HealthRow label={t('dashboard.compass')} value={magData ? `${magData.x.toFixed(0)} / ${magData.y.toFixed(0)} / ${magData.z.toFixed(0)}` : '-'} ok={sensorHealth.mag === 'ok'} />
@@ -360,8 +347,6 @@ export default function DashboardPage() {
         <VerticalBarsCard title={t('dashboard.motorOutput')} subtitle="SERVO_OUTPUT_RAW · µs" live={motorLive} bars={motorBars} />
         <CustomDataCard />
       </section>
-      </>
-      )}
     </WorkspaceFrame>
   )
 }

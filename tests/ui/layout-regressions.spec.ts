@@ -145,3 +145,40 @@ test('saved preset delete action is visible without hover and keyboard accessibl
   await expect(deletePreset).toBeFocused()
   await expect(deletePreset).toBeVisible()
 })
+
+test('section workspaces stack below a visible horizontal navigator at compact widths', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'This regression sets the two boundary viewports explicitly.')
+
+  for (const width of [1024, 1180]) {
+    await page.setViewportSize({ width, height: 768 })
+    await openDemo(page, '/diagnostics?section=log-analysis')
+
+    const nav = page.getByRole('navigation', { name: '调参与诊断子页面' })
+    const active = nav.getByRole('link', { name: '日志分析' })
+    const frame = page.locator('.mc-section-frame')
+    await expect(active).toBeVisible()
+    await expect(frame).toBeVisible()
+
+    const geometry = await page.locator('.mc-section-layout').evaluate((layout) => {
+      const navElement = layout.querySelector<HTMLElement>('.mc-section-nav')!
+      const activeElement = navElement.querySelector<HTMLElement>('[data-active="true"]')!
+      const frameElement = layout.querySelector<HTMLElement>('.mc-section-frame')!
+      const navRect = navElement.getBoundingClientRect()
+      const activeRect = activeElement.getBoundingClientRect()
+      const frameRect = frameElement.getBoundingClientRect()
+      return {
+        navBottom: navRect.bottom,
+        frameTop: frameRect.top,
+        frameLeft: frameRect.left,
+        frameRight: frameRect.right,
+        viewportWidth: window.innerWidth,
+        activeVisible: activeRect.left >= navRect.left - 1 && activeRect.right <= navRect.right + 1,
+      }
+    })
+
+    expect(geometry.frameTop).toBeGreaterThanOrEqual(geometry.navBottom)
+    expect(geometry.frameLeft).toBeGreaterThanOrEqual(0)
+    expect(geometry.frameRight).toBeLessThanOrEqual(geometry.viewportWidth)
+    expect(geometry.activeVisible).toBe(true)
+  }
+})

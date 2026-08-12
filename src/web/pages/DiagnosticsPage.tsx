@@ -1,7 +1,6 @@
-import { useLocation, useSearchParams } from 'react-router-dom'
+import { Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import SectionNav, { sectionLocation } from '../components/layout/SectionNav'
-import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
 import type { IconName } from '../components/ui/Icon'
 import { SectionFrame, WorkspaceFrame } from '../components/ui/PageFrame'
 import MessagesPage from './MessagesPage'
@@ -11,14 +10,13 @@ import WaveformPage from './WaveformPage'
 import FlightLogsPage from './FlightLogsPage'
 import LogAnalysisPage from './LogAnalysisPage'
 
-type DiagnosticSection = 'parameters' | 'pid' | 'ekf' | 'waveforms' | 'messages' | 'logs' | 'log-analysis'
+type DiagnosticSection = 'parameters' | 'pid' | 'waveforms' | 'messages' | 'logs' | 'log-analysis'
 
 const DEFAULT_SECTION: DiagnosticSection = 'parameters'
 
 const sections: Array<{ id: DiagnosticSection; label: string; icon: IconName }> = [
   { id: 'parameters', label: 'diagnostics.section.parameters.label', icon: 'parameters' },
   { id: 'pid', label: 'diagnostics.section.pid.label', icon: 'tune' },
-  { id: 'ekf', label: 'diagnostics.section.ekf.label', icon: 'settings' },
   { id: 'waveforms', label: 'diagnostics.section.waveforms.label', icon: 'waveform' },
   { id: 'messages', label: 'diagnostics.section.messages.label', icon: 'message' },
   { id: 'logs', label: 'diagnostics.section.logs.label', icon: 'folder' },
@@ -37,6 +35,15 @@ export default function DiagnosticsPage() {
   const activeSection: DiagnosticSection = isDiagnosticSection(sectionParam) ? sectionParam : DEFAULT_SECTION
   const activeSectionConfig = sections.find((section) => section.id === activeSection) ?? sections[0]
 
+  // Preserve old bookmarks while moving EKF into the consolidated Settings
+  // workspace. Unrelated query state is retained.
+  if (sectionParam === 'ekf') {
+    const next = new URLSearchParams(searchParams)
+    next.set('section', 'other')
+    next.set('tab', 'ekf')
+    return <Navigate replace to={{ pathname: '/settings', search: `?${next.toString()}` }} />
+  }
+
   return (
     <WorkspaceFrame title={t('diagnostics.title')}>
       <div className="mc-section-layout">
@@ -50,10 +57,13 @@ export default function DiagnosticsPage() {
             to: sectionLocation(location.pathname, searchParams, section.id, DEFAULT_SECTION),
           }))}
         />
-        <SectionFrame title={t(activeSectionConfig.label)} focusKey={activeSection}>
+        <SectionFrame
+          title={t(activeSectionConfig.label)}
+          description={t(`diagnostics.section.${activeSection}.description`)}
+          focusKey={activeSection}
+        >
           {activeSection === 'parameters' && <ParameterPage embedded />}
           {activeSection === 'pid' && <PidTuningPage />}
-          {activeSection === 'ekf' && <section className="mc-card mc-diagnostics-ekf"><header><h3>{t('diagnostics.ekfSettingsTitle')}</h3><p>{t('diagnostics.ekfSettingsHint')}</p></header><EkfFusionPanel /></section>}
           {activeSection === 'waveforms' && <WaveformPage embedded />}
           {activeSection === 'messages' && <MessagesPage embedded />}
           {activeSection === 'logs' && <FlightLogsPage embedded />}

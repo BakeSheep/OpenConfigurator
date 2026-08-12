@@ -20,6 +20,7 @@ function expectFail(value: unknown, code: string, label: string): void {
 
 const SESSION_ID = 'a1b2c3d4-e5f6-4711-8123-456789abcdef'
 const RECOVERY_TOKEN = 'tok_ABCDEF0123456789'
+const SAFETY_AUTHORITY_ID = '123e4567-e89b-42d3-a456-426614174000'
 
 // Calibration protocol commands are session-manager-only. The generic
 // command surface must not bypass stack, armed-state or owner gates.
@@ -290,5 +291,69 @@ expectFail(
   'out_of_range',
   'empty shell input',
 )
+
+const configSet = parseClientMessage({
+  type: 'vehicle_config_set',
+  requestId: 'cfg-1',
+  feature: 'safety',
+  data: { id: 'NAV_RCL_ACT', value: 0 },
+  safetyConfirmation: 'reduce_failsafe_protection',
+  expectedSafetyEpoch: 4,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+})
+assert.equal(configSet.type, 'vehicle_config_set')
+if (configSet.type === 'vehicle_config_set') {
+  assert.equal(configSet.data.id, 'NAV_RCL_ACT')
+  assert.equal(configSet.expectedSafetyEpoch, 4)
+}
+expectFail(
+  {
+    type: 'vehicle_config_set', requestId: 'cfg-x', feature: 'safety',
+    data: { id: 'NAV_RCL_ACT', value: 0 },
+    safetyConfirmation: 'reduce_failsafe_protection',
+  },
+  'safety_epoch_required',
+  'safety reduction without authority context',
+)
+expectFail(
+  { type: 'vehicle_config_set', requestId: 'cfg-x', feature: 'camera', data: { id: 'X', value: 1 } },
+  'invalid_feature',
+  'unknown vehicle config feature',
+)
+
+const px4Airframe = parseClientMessage({
+  type: 'airframe_apply',
+  requestId: 'frame-1',
+  safetyConfirmation: 'apply_airframe',
+  expectedSafetyEpoch: 5,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  data: { family: 'px4', autostartId: 4001 },
+})
+assert.equal(px4Airframe.type, 'airframe_apply')
+expectFail(
+  {
+    type: 'airframe_apply', requestId: 'frame-x', safetyConfirmation: 'apply_airframe',
+    data: { family: 'px4', autostartId: 4001 },
+  },
+  'safety_epoch_required',
+  'airframe without authority context',
+)
+
+assert.equal(parseClientMessage({
+  type: 'radio_calibration_start',
+  requestId: 'radio-1',
+  expectedSafetyEpoch: 6,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  data: { transmitterMode: 2 },
+}).type, 'radio_calibration_start')
+expectFail(
+  { type: 'radio_calibration_start', requestId: 'radio-x', data: { transmitterMode: 2 } },
+  'safety_epoch_required',
+  'radio calibration without authority context',
+)
+assert.equal(parseClientMessage({
+  type: 'radio_calibration_reclaim', requestId: 'radio-r',
+  data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
+}).type, 'radio_calibration_reclaim')
 
 console.log('calibration boundary validation checks passed')

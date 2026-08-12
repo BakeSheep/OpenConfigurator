@@ -58,6 +58,15 @@ test('explicit default and invalid tab queries are canonicalized without losing 
   await expectQuery(page, { section: 'messages', tab: null, probe: 'keep' })
 })
 
+test('legacy EKF diagnostics deep link redirects to Other Settings EKF task', async ({ page }) => {
+  await openDemo(page, '/diagnostics?section=ekf&probe=keep')
+
+  await expect(page.locator('main h1')).toHaveText('飞行器设置')
+  await expect(page.locator('.mc-section-frame__header h2')).toHaveText('其他设置')
+  await expect(page.getByRole('tab', { name: 'EKF 融合', selected: true })).toBeVisible()
+  await expectQuery(page, { section: 'other', tab: 'ekf', probe: 'keep' })
+})
+
 test('Sensor busy calibration switches tasks without trapping browser history', async ({ page }) => {
   await openDemo(page, '/dashboard')
   await page.evaluate(() => { window.location.hash = '/settings?section=sensors' })

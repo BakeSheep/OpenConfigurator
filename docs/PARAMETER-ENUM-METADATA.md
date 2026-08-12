@@ -5,7 +5,7 @@ parameter is rendered as a single-choice dropdown only when firmware metadata
 provides value/description pairs and does not describe the parameter as a
 bitmask. Continuous numeric values and bitmasks keep the raw numeric editor.
 
-The bundled catalogs are generated from:
+The shared catalogs in `src/shared/data/parameterEnums/` are generated from:
 
 - PX4 metadata bundled by QGroundControl:
   `src/FirmwarePlugin/PX4/PX4ParameterFactMetaData.json`
@@ -19,9 +19,12 @@ npm run generate:param-enums
 ```
 
 The generator removes all non-enum metadata, excludes bitmasks, and
-deduplicates repeated option sets. The runtime resolver selects a catalog only
-from the recognized HEARTBEAT firmware family. ArduPilot mappings are currently
-limited to ArduCopter, matching the project's write-support boundary.
+deduplicates repeated option sets. The framework-free runtime resolver lives in
+`src/shared/parameterEnumMetadata.ts`; the frontend keeps a compatibility
+re-export while the server uses the same catalog for its write whitelist. The
+resolver selects a catalog only from the recognized HEARTBEAT firmware family.
+ArduPilot mappings are currently limited to ArduCopter, matching the project's
+write-support boundary.
 
 If a connected firmware reports a value missing from the bundled catalog, the
 editor adds a temporary “current unknown value” option and preserves it. Users

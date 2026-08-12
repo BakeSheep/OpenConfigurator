@@ -17,7 +17,7 @@ import {
 } from '../../utils/connectionPresets'
 import { useGamepadStore } from '../../stores/gamepadStore'
 import Icon from '../ui/Icon'
-import { IconButton } from '../ui/Button'
+import { Button, IconButton } from '../ui/Button'
 import ArmSafetyControl from '../safety/ArmSafetyControl'
 import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from '../../utils/gpsTelemetry'
 
@@ -213,7 +213,7 @@ export default function Topbar() {
       expectedSafetyEpoch: connection.safetyEpoch,
       expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
-    closeStatusMenuAndRestoreFocus('tools')
+    setActiveStatusMenu(null)
   }
 
   useEffect(() => () => {
@@ -576,25 +576,32 @@ export default function Topbar() {
                 <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
                 <span>{theme === 'dark' ? t('topbar.theme.toLight') : t('topbar.theme.toDark')}</span>
               </button>
-              <div className="mc-topbar-menu__separator" role="separator" />
-              <button
-                type="button"
-                role="menuitem"
-                className="mc-topbar-menu__reboot"
-                data-confirm={rebootConfirm || undefined}
-                disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
-                title={!caps.writeOperations ? t('topbar.reboot.notSupported') : armed ? t('topbar.reboot.armed') : rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
-                onClick={requestVehicleReboot}
-              >
-                <span className="mc-topbar__reboot-icon" aria-hidden="true">
-                  <Icon name="refresh" size={16} />
-                  {rebootConfirm && <Icon className="mc-topbar__reboot-confirm-badge" name="check" size={9} strokeWidth={2.8} />}
-                </span>
-                <span>{rebootConfirm ? t('topbar.reboot.confirm') : t('topbar.reboot.title')}</span>
-              </button>
             </div>
           )}
         </div>
+        <Button
+          id="mc-topbar-reboot"
+          className="mc-topbar__reboot"
+          tone="secondary"
+          size="compact"
+          data-confirm={rebootConfirm || undefined}
+          disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
+          title={!caps.writeOperations ? t('topbar.reboot.notSupported') : armed ? t('topbar.reboot.armed') : rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
+          aria-label={rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
+          leadingIcon={(
+            <span className="mc-topbar__reboot-icon" aria-hidden="true">
+              <Icon name="refresh" size={15} />
+              {rebootConfirm && <Icon className="mc-topbar__reboot-confirm-badge" name="check" size={9} strokeWidth={2.8} />}
+            </span>
+          )}
+          onClick={() => {
+            setConnectDropdown(false)
+            setActiveStatusMenu(null)
+            requestVehicleReboot()
+          }}
+        >
+          {rebootConfirm ? t('topbar.reboot.confirm') : t('topbar.reboot.title')}
+        </Button>
         <div className="relative">
           {isDemo ? (
             // Static preview: read-only badge, no REST scan/connect/disconnect.

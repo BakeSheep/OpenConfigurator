@@ -1,6 +1,7 @@
 // MAVLink message types and shared interfaces between frontend and backend
 
 import type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind } from './vehicleProfiles'
+import type { VehicleConfigFeature } from './vehicleSetupProfiles'
 import type {
   EscSessionSnapshot,
   EscDeviceInfo,
@@ -12,7 +13,48 @@ import type {
 } from './esc/types'
 import type { EscOperationError } from './esc/errors'
 
-export type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind }
+export type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind, VehicleConfigFeature }
+
+export type AirframeApplyPhase = 'validating' | 'writing' | 'rebooting' | 'reboot_required' | 'done' | 'failed'
+
+export interface RadioCalibrationChannel {
+  channel: number
+  min: number
+  max: number
+  trim: number
+  reversed: boolean
+  function: 'roll' | 'pitch' | 'throttle' | 'yaw' | 'aux' | null
+}
+
+export type RadioCalibrationStep =
+  | 'center_throttle_low'
+  | 'throttle_high'
+  | 'throttle_low'
+  | 'yaw_right'
+  | 'yaw_left'
+  | 'roll_right'
+  | 'roll_left'
+  | 'pitch_up'
+  | 'pitch_down'
+  | 'aux_sweep'
+  | 'review'
+
+export interface RadioCalibrationSnapshot {
+  sessionId: string
+  seq: number
+  ownerClientId: string | null
+  recoverUntil: number | null
+  phase: 'sampling' | 'review' | 'writing' | 'done' | 'failed' | 'cancelled'
+  step: RadioCalibrationStep
+  stepIndex: number
+  stepCount: number
+  detectedChannels: number
+  channels: RadioCalibrationChannel[]
+  mapped: Partial<Record<'roll' | 'pitch' | 'throttle' | 'yaw', number>>
+  updatedAt: number
+  failureCode?: string
+  failureReason?: string
+}
 
 // -- Sensor calibration sessions ---------------------------------------------
 
@@ -488,6 +530,29 @@ export type ServerMessage =
       data: ParamSetResultData
     }
   | {
+      type: 'vehicle_config_set_result'
+      data: {
+        requestId: string
+        feature: VehicleConfigFeature
+        id: string
+        accepted: boolean
+        acceptedValue?: number
+        reason?: string
+      }
+    }
+  | {
+      type: 'airframe_apply_status'
+      data: {
+        requestId: string
+        phase: AirframeApplyPhase
+        completed: number
+        total: number
+        currentId?: string
+        reason?: string
+        rollbackFailures?: string[]
+      }
+    }
+  | {
       type: 'motor_test_status'
       data: {
         requestId?: string
@@ -643,6 +708,11 @@ export type ServerMessage =
       type: 'calibration_session_started'
       data: { sessionId: string; requestId: string; recoveryToken: string }
     }
+  | { type: 'radio_calibration_snapshot'; data: RadioCalibrationSnapshot }
+  | {
+      type: 'radio_calibration_started'
+      data: { sessionId: string; requestId: string; recoveryToken: string }
+    }
 
 // WebSocket message types (client -> server)
 export type ClientMessage =
@@ -657,6 +727,39 @@ export type ClientMessage =
       expectedSafetyAuthorityId?: string
     }
   | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | {
+      type: 'vehicle_config_set'
+      requestId: string
+      feature: VehicleConfigFeature
+      data: { id: string; value: number }
+      safetyConfirmation?: 'reduce_failsafe_protection'
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
+    }
+  | {
+      type: 'airframe_apply'
+      requestId: string
+      data:
+        | { family: 'px4'; autostartId: number }
+        | { family: 'ardupilot'; frameClass: number; frameType: number }
+      safetyConfirmation: 'apply_airframe'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
+  | {
+      type: 'radio_calibration_start'
+      requestId: string
+      data: { transmitterMode: 1 | 2 | 3 | 4 }
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
+  | { type: 'radio_calibration_advance'; requestId: string; data: { sessionId: string } }
+  | { type: 'radio_calibration_cancel'; requestId: string; data: { sessionId: string } }
+  | {
+      type: 'radio_calibration_reclaim'
+      requestId: string
+      data: { sessionId: string; recoveryToken: string }
+    }
   | { type: 'param_request_list'; requestId?: string }
   | { type: 'message_rates_set'; requestId?: string; data: MessageRateConfig }
   | { type: 'shell_open'; requestId?: string }

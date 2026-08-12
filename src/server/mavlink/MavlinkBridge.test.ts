@@ -359,6 +359,7 @@ type PrivateBridge = {
   targetSysId: number | null
   targetCompId: number | null
   pendingCommands: Map<number, unknown>
+  commandQuarantineUntil: Map<number, number>
   pendingParamSets: Map<string, unknown>
   parameterValues: Map<string, number>
   cacheParameterValue: (id: string, value: number) => boolean
@@ -967,6 +968,141 @@ const successfulParamSet = findLast(
 assert.equal(successfulParamSet.data.accepted, true)
 assert.equal(successfulParamSet.data.acceptedValue, 12.5)
 
+// Semantic vehicle configuration derives MAV_PARAM_TYPE from the validated
+// server cache and requires a matching PARAM_VALUE before accepting the write.
+inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 1))
+const configFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+bridge.handleClientMessage({
+  type: 'vehicle_config_set',
+  requestId: 'cfg-rcl',
+  feature: 'safety',
+  data: { id: 'NAV_RCL_ACT', value: 2 },
+})
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 23).length, configFramesBefore + 1)
+inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 2))
+assert.ok(messages.some((message) => message.type === 'vehicle_config_set_result'
+  && message.data.requestId === 'cfg-rcl' && message.data.accepted))
+
+inject(bridge, 22, paramValuePayload('COM_LOW_BAT_ACT', 2))
+const reductionFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+bridge.handleClientMessage({
+  type: 'vehicle_config_set',
+  requestId: 'cfg-reduce',
+  feature: 'safety',
+  data: { id: 'COM_LOW_BAT_ACT', value: 0 },
+})
+assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 23).length, reductionFramesBefore)
+assert.ok(messages.some((message) => message.type === 'vehicle_config_set_result'
+  && message.data.requestId === 'cfg-reduce'
+  && message.data.reason === 'safety_confirmation_required'))
+
+// A radio-calibration parameter transaction is bound to the exact target.
+// Switching targets completes the pending write as failed but must not send a
+// second write or attempt rollback against either vehicle.
+for (const id of ['RC_MAP_ROLL', 'RC_MAP_PITCH', 'RC_MAP_THROTTLE', 'RC_MAP_YAW']) {
+  inject(bridge, 22, paramValuePayload(id, 0))
+}
+const radioContext = bridge.getVehicleMutationSafetyContext()
+const radioParamFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+let radioTargetSwitchResult: { accepted: boolean; reason?: string } | null = null
+bridge.applyRadioCalibration(
+  'radio-target-switch',
+  [
+    { channel: 1, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'roll' },
+    { channel: 2, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'pitch' },
+    { channel: 3, min: 1000, max: 2000, trim: 1000, reversed: false, function: 'throttle' },
+    { channel: 4, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'yaw' },
+  ],
+  { roll: 1, pitch: 2, throttle: 3, yaw: 4 },
+  radioContext.fingerprint,
+  (accepted, reason) => { radioTargetSwitchResult = { accepted, reason } },
+)
+assert.equal(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+  radioParamFramesBefore + 1,
+)
+inject(bridge, 0, heartbeatPayload(), 43, 1)
+bridge.handleClientMessage({
+  type: 'select_target',
+  requestId: 'switch-during-radio-write',
+  data: { systemId: 43, componentId: 1 },
+})
+assert.deepEqual(radioTargetSwitchResult, {
+  accepted: false,
+  reason: 'safety_context_changed_no_rollback',
+})
+assert.equal(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+  radioParamFramesBefore + 1,
+  'target switch must not continue or roll back radio calibration writes',
+)
+bridge.handleClientMessage({
+  type: 'select_target',
+  requestId: 'restore-primary-target',
+  data: { systemId: 42, componentId: 1 },
+})
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+
+// PX4 airframe application is a verified two-parameter transaction. The
+// reboot command is not queued until both echoes match.
+inject(bridge, 22, paramValuePayload('SYS_AUTOSTART', 4001))
+inject(bridge, 22, paramValuePayload('SYS_AUTOCONFIG', 0))
+;(bridge as unknown as PrivateBridge).commandQuarantineUntil.delete(246)
+const paramFramesBeforeArmedAirframe = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
+const rebootsBeforeArmedAirframe = connection.frames.filter((frame) => (
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 246
+)).length
+bridge.handleClientMessage({
+  type: 'airframe_apply',
+  requestId: 'frame-armed-mid-transaction',
+  safetyConfirmation: 'apply_airframe',
+  ...TEST_SAFETY_EXPECTATION,
+  data: { family: 'px4', autostartId: 5001 },
+})
+assert.equal(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+  paramFramesBeforeArmedAirframe + 1,
+)
+const armedDuringAirframe = heartbeatPayload()
+armedDuringAirframe[6] = 0x80
+inject(bridge, 0, armedDuringAirframe, 42, 1)
+inject(bridge, 22, paramValuePayload('SYS_AUTOSTART', 5001))
+assert.equal(
+  connection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+  paramFramesBeforeArmedAirframe + 1,
+  'arming during airframe apply must prevent the second parameter write',
+)
+assert.equal(connection.frames.filter((frame) => (
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 246
+)).length, rebootsBeforeArmedAirframe)
+assert.ok(messages.some((message) => message.type === 'airframe_apply_status'
+  && message.data.requestId === 'frame-armed-mid-transaction'
+  && message.data.phase === 'failed'
+  && message.data.reason === 'safety_context_changed_no_rollback:vehicle_armed'))
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+
+const rebootCommandsBeforeAirframe = connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 246).length
+bridge.handleClientMessage({
+  type: 'airframe_apply',
+  requestId: 'frame-px4',
+  safetyConfirmation: 'apply_airframe',
+  ...TEST_SAFETY_EXPECTATION,
+  data: { family: 'px4', autostartId: 5001 },
+})
+inject(bridge, 22, paramValuePayload('SYS_AUTOSTART', 5001))
+assert.equal(connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 246).length,
+rebootCommandsBeforeAirframe)
+inject(bridge, 22, paramValuePayload('SYS_AUTOCONFIG', 1))
+assert.equal(connection.frames.filter((frame) =>
+  frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 246).length,
+rebootCommandsBeforeAirframe + 1)
+assert.ok(messages.some((message) => message.type === 'airframe_apply_status'
+  && message.data.requestId === 'frame-px4' && message.data.phase === 'rebooting'))
+connection.vehicleReady = false
+inject(bridge, 0, heartbeatPayload(), 42, 1)
+
 const framesBeforeInvalidParam = connection.frames.length
 bridge.handleClientMessage({
   type: 'param_set',
@@ -1380,7 +1516,9 @@ bridge.destroy()
   const progressConnection = new FakeConnection()
   const progressBridge = new MavlinkBridge(progressConnection as never, {
     codec: { protocol: 'v2' },
-    commandTimeoutMs: 10,
+    // Leave enough wall-clock margin for the interval to run when this file is
+    // executed in parallel with the full server suite on a busy CI runner.
+    commandTimeoutMs: 25,
     versionRetryMs: 20,
   })
   const progressMessages: any[] = []
@@ -1403,7 +1541,7 @@ bridge.destroy()
       message.type === 'operation_error'
       && message.data.requestId === 'bounded-progress'
       && message.data.code === 'command_timeout'
-    ), 500)
+    ), 1_000)
     assert.ok(progressCount >= 4)
     assert.equal(
       (progressBridge as unknown as PrivateBridge).pendingCommands.has(176),
@@ -2123,10 +2261,19 @@ bridge.destroy()
   planeBridge.handleClientMessage({ type: 'log_list', requestId: 'plane-list' })
   assert.ok(planeConnection.frames.some((frame) => frameMessageId(frame) === 117))
 
-  const mutationIds = new Set([23, 69, 76, 110, 121])
-  const mutationFrameCount = () => planeConnection.frames.filter(
-    (frame) => mutationIds.has(frameMessageId(frame)),
-  ).length
+  const mutationIds = new Set([23, 69, 110, 121])
+  const mutationFrameCount = () => planeConnection.frames.filter((frame) => {
+    const messageId = frameMessageId(frame)
+    if (mutationIds.has(messageId)) return true
+    if (messageId !== 76) return false
+    const command = framePayload(frame).readUInt16LE(28)
+    // Heartbeat discovery may asynchronously request AUTOPILOT_VERSION (512)
+    // or configure telemetry intervals (511). Neither is a vehicle mutation.
+    return command !== 511 && command !== 512
+  }).length
+  const messageIntervalFrameCount = () => planeConnection.frames.filter((frame) => (
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 511
+  )).length
   const beforeMutations = mutationFrameCount()
   planeBridge.handleClientMessage({
     type: 'param_set',
@@ -2145,11 +2292,13 @@ bridge.destroy()
     ...TEST_SAFETY_EXPECTATION,
   })
   assert.equal(planeRebootResult.vehicleRebootQueued, false)
+  const beforeRateCommands = messageIntervalFrameCount()
   planeBridge.handleClientMessage({
     type: 'message_rates_set',
     requestId: 'plane-rates',
     data: { attitude: 8, position: 2, sensors: 2, rc: 2, status: 1, hud: 1, auxiliary: 2 },
   })
+  assert.equal(messageIntervalFrameCount(), beforeRateCommands)
   planeBridge.handleClientMessage({
     type: 'fs_delete',
     requestId: 'plane-delete',

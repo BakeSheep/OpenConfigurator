@@ -1,12 +1,11 @@
 /// <reference lib="webworker" />
-// ULog analysis worker: parses a .ulg ArrayBuffer with @foxglove/ulog and
+// ULog analysis worker: parses a .ulg Blob with @foxglove/ulog and
 // streams every data message once into bounded collectors, so the main thread
 // only ever receives the pre-digested UlogAnalysisDataset (each series is
 // downsampled to a few thousand points).
-import { LogLevel, MessageType, ULog } from '@foxglove/ulog'
+import { LogLevel } from '@foxglove/ulog'
 import type { FieldStruct } from '@foxglove/ulog'
 import {
-  CopyingBufferReader,
   EnvelopeCollector,
   NAV_STATE_NAMES,
   RAD_TO_DEG,
@@ -14,12 +13,13 @@ import {
   appendBoundedTransition,
   buildSegments,
   quaternionToEuler,
-  normalizeUlogTimestamp,
   type UlogAnalysisDataset,
   type UlogEvent,
   type UlogWorkerRequest,
   type UlogWorkerResult,
 } from '../utils/ulogAnalysis'
+import { BlobLogSource, StructuredUlogDecoder } from '../../shared/logs'
+import type { StructuredJsonValue, StructuredLogStreamSchema } from '../../shared/logs'
 import {
   finishEnvelope,
   finishRaw,
@@ -46,6 +46,7 @@ const MAX_MOTORS = 12
 function num(value: unknown): number {
   if (typeof value === 'number') return value
   if (typeof value === 'bigint') return Number(value)
+  if (typeof value === 'string' && value.trim() !== '') return Number(value)
   if (typeof value === 'boolean') return value ? 1 : 0
   return Number.NaN
 }
@@ -54,29 +55,12 @@ function numArray(value: unknown): number[] | null {
   return Array.isArray(value) ? value.map(num) : null
 }
 
-function infoString(map: Map<string, unknown> | undefined, key: string): string | null {
-  const value = map?.get(key)
+function infoString(map: Record<string, StructuredJsonValue>, key: string): string | null {
+  const value = map[key]
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
-  // CopyingBufferReader instead of the library's DataReader: see its doc
-  // comment for the offset-semantics bug the copy avoids.
-  const ulog = new ULog(new CopyingBufferReader(buffer))
-  await ulog.open()
-  const header = ulog.header
-  if (!header) throw new Error(t('logAnalysis.ulogHeaderError'))
-  // open() builds a complete timestamp index. Use it for duration and the
-  // origin so valid logs without our chart topics do not incorrectly show -.
-  const timeRange = ulog.timeRange()
-  const validTimeRange = timeRange && timeRange[0] > 0n && timeRange[1] >= timeRange[0]
-    ? timeRange
-    : null
-  const indexedStartUs = validTimeRange?.[0] ?? header.timestamp
-  const indexedDurationSec = validTimeRange
-    ? Math.max(0, Number(validTimeRange[1] - validTimeRange[0]) / 1e6)
-    : 0
-
+async function analyze(blob: Blob): Promise<UlogAnalysisDataset> {
   // --- collectors -----------------------------------------------------
   const attitude = {
     roll: makeRaw('attitude.roll', t('logAnalysis.label.roll')),
@@ -149,14 +133,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
   // the topic-handler closures.
   const gpsUtcRef: { value: { utcMs: number; timeSec: number } | null } = { value: null }
   let droppedMessages = 0
-  let timeBaseUs: bigint = indexedStartUs
-  let endSec = indexedDurationSec
-
-  const toSec = (timestamp: bigint): number => {
-    const seconds = Number(timestamp - timeBaseUs) / 1e6
-    if (seconds > endSec) endSec = seconds
-    return seconds
-  }
+  let endSec = 0
+  let information: Record<string, StructuredJsonValue> = {}
 
   // --- topic handlers ---------------------------------------------------
   const handleGpsFix = (value: FieldStruct, timeSec: number) => {
@@ -366,34 +344,44 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     },
   }
 
-  // Only request the message ids we actually consume - readMessages skips the rest.
-  const wantedIds = new Set<number>()
-  for (const [msgId, subscription] of ulog.subscriptions) {
-    if (subscription.multiId === 0 && subscription.name in handlers) wantedIds.add(msgId)
-  }
-
-  for await (const message of ulog.readMessages()) {
-    if (message.type === MessageType.Data) {
-      if (!wantedIds.has(message.msgId)) continue
-      const subscription = ulog.subscriptions.get(message.msgId)
-      if (!subscription) continue
-      const value = message.value
-      const timestamp = normalizeUlogTimestamp(value.timestamp)
-      if (timestamp === null) {
+  const schemas = new Map<string, StructuredLogStreamSchema>()
+  const parameterValues = new Map<string, number>()
+  for await (const envelope of new StructuredUlogDecoder().decode(
+    new BlobLogSource('analysis.ulg', blob),
+  )) {
+    if (envelope.kind === 'schema') {
+      schemas.set(envelope.schema.streamId, envelope.schema)
+    } else if (envelope.kind === 'record') {
+      const schema = schemas.get(envelope.record.streamId)
+      if (!schema || schema.sourceInstance !== 0 || !(schema.sourceName in handlers)) continue
+      const timeSec = envelope.record.elapsedUs === null ? Number.NaN : Number(envelope.record.elapsedUs) / 1e6
+      if (!Number.isFinite(timeSec)) {
         droppedMessages++
         continue
       }
-      handlers[subscription.name]?.(value, toSec(timestamp))
-    } else if (message.type === MessageType.Log || message.type === MessageType.LogTagged) {
-      if (message.logLevel <= LogLevel.Info && events.length < MAX_EVENTS) {
+      if (timeSec > endSec) endSec = timeSec
+      handlers[schema.sourceName]?.(envelope.record.data as unknown as FieldStruct, timeSec)
+    } else if (envelope.kind === 'event') {
+      const timeSec = envelope.event.elapsedUs === null ? 0 : Number(envelope.event.elapsedUs) / 1e6
+      if (Number.isFinite(timeSec) && timeSec > endSec) endSec = timeSec
+      if ((envelope.event.type === 'log' || envelope.event.type === 'log-tagged')
+        && envelope.event.level !== null && envelope.event.level <= LogLevel.Info
+        && events.length < MAX_EVENTS) {
         events.push({
-          timeSec: Number(message.timestamp - timeBaseUs) / 1e6,
-          level: message.logLevel,
-          message: message.message,
+          timeSec,
+          level: envelope.event.level,
+          message: envelope.event.message ?? '',
         })
       }
-    } else if (message.type === MessageType.Dropout) {
-      droppedMessages++
+      if (envelope.event.type === 'dropout') droppedMessages++
+    } else if (envelope.kind === 'parameter' && envelope.parameter.kind !== 'default') {
+      const value = num(envelope.parameter.value)
+      if (Number.isFinite(value)) parameterValues.set(envelope.parameter.name, value)
+    } else if (envelope.kind === 'complete') {
+      information = envelope.metadata.information
+      if (envelope.metadata.firstTimeUs !== null && envelope.metadata.lastTimeUs !== null) {
+        endSec = Math.max(endSec, Number(BigInt(envelope.metadata.lastTimeUs) - BigInt(envelope.metadata.firstTimeUs)) / 1e6)
+      }
     }
   }
 
@@ -407,8 +395,8 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
     0,
   )
 
-  const params = [...header.parameters.entries()]
-    .map(([name, entry]) => ({ name, value: entry.value }))
+  const params = [...parameterValues.entries()]
+    .map(([name, value]) => ({ name, value }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
   const startTimeUtcMs = gpsUtcRef.value
@@ -428,11 +416,11 @@ async function analyze(buffer: ArrayBuffer): Promise<UlogAnalysisDataset> {
       durationSec: endSec,
       startTimeUtcMs,
       startTimeSource: startTimeUtcMs === null ? null : 'gps',
-      firmware: infoString(header.information, 'ver_sw_release')
-        ?? infoString(header.information, 'ver_sw'),
-      firmwareBranch: infoString(header.information, 'ver_sw_branch'),
-      hardware: infoString(header.information, 'ver_hw'),
-      sysName: infoString(header.information, 'sys_name'),
+      firmware: infoString(information, 'ver_sw_release')
+        ?? infoString(information, 'ver_sw'),
+      firmwareBranch: infoString(information, 'ver_sw_branch'),
+      hardware: infoString(information, 'ver_hw'),
+      sysName: infoString(information, 'sys_name'),
       totalArmedSec,
       droppedMessages,
     },
@@ -496,7 +484,7 @@ self.onmessage = (event: MessageEvent<UlogWorkerRequest>) => {
   void (async () => {
     try {
       await i18next.changeLanguage(event.data.language)
-      const dataset = await analyze(event.data.buffer)
+      const dataset = await analyze(event.data.blob)
       ;(self as unknown as { postMessage(message: UlogWorkerResult): void })
         .postMessage({ dataset })
     } catch (error) {

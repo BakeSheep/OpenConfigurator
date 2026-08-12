@@ -183,7 +183,7 @@ function buildLog(): Buffer {
 
 // --- tests --------------------------------------------------------------------
 {
-  const dataset = parseDataflashLog(toArrayBuffer(buildLog()))
+  const dataset = await parseDataflashLog(toArrayBuffer(buildLog()))
 
   // Duration is TimeUS span from the earliest (500_000) to the latest (3_500_000).
   assert.equal(dataset.overview.durationSec, 3)
@@ -249,7 +249,7 @@ function buildLog(): Buffer {
 {
   const full = buildLog()
   const truncated = full.subarray(0, full.length - 5)
-  const dataset = parseDataflashLog(toArrayBuffer(truncated))
+  const dataset = await parseDataflashLog(toArrayBuffer(truncated))
   assert.equal(dataset.overview.firmware, 'ArduCopter V4.7.0 (1511f271)')
   assert.ok(dataset.modeSegments.length >= 1)
 }
@@ -273,7 +273,7 @@ function buildLog(): Buffer {
     dataFrame(MSG, { TimeUS: 1_000_000, Message: validMessage }),
   ])
 
-  const dataset = parseDataflashLog(toArrayBuffer(log))
+  const dataset = await parseDataflashLog(toArrayBuffer(log))
   assert.equal(dataset.overview.firmware, validMessage)
   assert.ok(
     dataset.overview.droppedMessages >= danglingInvalidFrame.length,
@@ -299,7 +299,7 @@ function buildLog(): Buffer {
       DesYaw: 0, Yaw: 0, AEKF: 1,
     }),
   ])
-  const dataset = parseDataflashLog(toArrayBuffer(log))
+  const dataset = await parseDataflashLog(toArrayBuffer(log))
   const roll = dataset.attitude.find((series) => series.id === 'attitude.roll')
   assert.deepEqual(roll?.times, [0, 1])
   assert.deepEqual(roll?.values, [1, 2])

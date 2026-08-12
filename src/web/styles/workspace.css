@@ -188,7 +188,10 @@
   font-size: 15px;
 }
 
-@media (max-width: 959px) {
+/* Collapse before the content column becomes visually subordinate to the
+   section navigator. This also handles scaled Windows displays where the
+   screenshot's physical width understates the CSS viewport. */
+@media (max-width: 1180px) {
   .mc-workspace-frame {
     padding: 18px 16px 28px;
   }
@@ -201,6 +204,7 @@
   .mc-section-nav {
     position: static;
     width: 100%;
+    max-width: 100%;
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: thin;
@@ -214,6 +218,10 @@
 
   .mc-section-nav__link {
     min-width: 128px;
+  }
+
+  .mc-section-frame {
+    width: 100%;
   }
 }
 

@@ -106,6 +106,16 @@ export default function StatusBar() {
           <span className="mc-status-dot" style={{ background: linkQuality.color }} aria-hidden="true" />
           <span>{transportOpen ? `${t('statusbar.linkQuality')} ${linkQuality.percent}%` : t('statusbar.disconnected')}</span>
         </span>
+        <span className="mc-statusbar__metrics">
+          <span className="mc-statusbar__metric" title={t('statusbar.cpuLoad')}>
+            <span className="mc-statusbar__metric-label">CPU</span>
+            <strong className="mc-mono">{cpuLoad !== null && !sysStatusStale ? `${cpuLoad.toFixed(0)}%` : '—'}</strong>
+          </span>
+          <span className="mc-statusbar__metric" title={t('statusbar.avgTemp')}>
+            <span className="mc-statusbar__metric-label">{t('statusbar.avgTempLabel')}</span>
+            <strong className="mc-mono">{avgTemp !== null ? `${avgTemp.toFixed(1)}°C` : '—'}</strong>
+          </span>
+        </span>
         <span className="mc-statusbar__message" aria-live="polite">
           {latest?.text ?? t('statusbar.messageRateIdle')}
         </span>

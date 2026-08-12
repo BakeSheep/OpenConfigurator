@@ -13,6 +13,7 @@ import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useLogTransferStore } from '../stores/logTransferStore'
 import { useEscStore } from '../stores/escStore'
 import { useMessageRateStore } from '../stores/messageRateStore'
+import { useVehicleSetupStore } from '../stores/vehicleSetupStore'
 import { recordMavlinkServerMessage, useMavlinkMessageStore } from '../stores/mavlinkMessageStore'
 import { useShellStore } from '../stores/shellStore'
 import type { ServerMessage, ClientMessage, ParamData } from '../../shared/types'
@@ -60,6 +61,7 @@ let restControlToken: string | null = null
 let escReclaimAttempt: string | null = null
 // Same one-shot guard for calibration session reclaim after an owner reconnect.
 let calibrationReclaimAttempt: string | null = null
+let radioReclaimAttempt: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -294,6 +296,42 @@ export function handleMessage(msg: ServerMessage) {
     case 'param_set_result':
       paramStore.setWriteResult(msg.data)
       break
+    case 'vehicle_config_set_result':
+      useVehicleSetupStore.getState().applyConfigResult(msg.data)
+      break
+    case 'airframe_apply_status':
+      useVehicleSetupStore.getState().setAirframeStatus(msg.data)
+      break
+    case 'radio_calibration_snapshot': {
+      const setupStore = useVehicleSetupStore.getState()
+      setupStore.applyRadioSnapshot(msg.data)
+      const recovery = useVehicleSetupStore.getState().radioRecovery
+      if (
+        msg.data.ownerClientId === null
+        && msg.data.recoverUntil !== null
+        && recovery?.sessionId === msg.data.sessionId
+      ) {
+        const attemptKey = `${recovery.sessionId}:${msg.data.recoverUntil}`
+        if (
+          radioReclaimAttempt !== attemptKey
+          && sendToServer({
+            type: 'radio_calibration_reclaim',
+            requestId: `radio-reclaim-${Date.now().toString(36)}`,
+            data: recovery,
+          })
+        ) radioReclaimAttempt = attemptKey
+      } else if (msg.data.ownerClientId !== null) {
+        radioReclaimAttempt = null
+      }
+      break
+    }
+    case 'radio_calibration_started':
+      radioReclaimAttempt = null
+      useVehicleSetupStore.getState().setRadioRecovery({
+        sessionId: msg.data.sessionId,
+        recoveryToken: msg.data.recoveryToken,
+      })
+      break
     case 'ekf_status':
       telemetryStore.setEkfStatus(msg.data)
       break
@@ -427,6 +465,10 @@ export function handleMessage(msg: ServerMessage) {
       if (msg.data.operation === 'calibration_reclaim' && msg.data.code === 'reclaim_denied') {
         useCalibrationStore.getState().clearRecovery()
         calibrationReclaimAttempt = null
+      }
+      if (msg.data.operation === 'radio_calibration_reclaim' && msg.data.code === 'reclaim_denied') {
+        useVehicleSetupStore.getState().clearRadioRecovery()
+        radioReclaimAttempt = null
       }
       console.warn('[WS] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
       telemetryStore.addStatusLog(3, t('websocket.opFailed', { operation: msg.data.operation, message }))
@@ -707,7 +749,9 @@ function connectSocket() {
       useEscStore.getState().reset()
       useShellStore.getState().reset()
       useCalibrationStore.getState().reset()
+      useVehicleSetupStore.getState().reset()
       calibrationReclaimAttempt = null
+      radioReclaimAttempt = null
     }
     // Only reconnect while consumers are still mounted.
     if (refCount <= 0) return

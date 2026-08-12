@@ -16,7 +16,7 @@ import { useTelemetryStore } from '../stores/telemetryStore'
 import { PX4_ULOG_LOG_DIRECTORY } from '../../shared/constants'
 import { logSupport } from '../utils/logProfiles'
 import { parsePx4DirectoryDate, parsePx4FileDate } from '../utils/ulogAnalysis'
-import { stashLogBuffer } from '../utils/logAnalysisSession'
+import { stashLogBlob } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
 import { backendEnabled } from '../runtime'
 import type { FsEntry } from '../../shared/types'
@@ -202,9 +202,9 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
       try {
         const response = await fetch(url)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const buffer = await response.arrayBuffer()
+        const blob = await response.blob()
         if (cancelled) return
-        stashLogBuffer(download.fileName ?? 'log.ulg', buffer, download.path)
+        stashLogBlob(download.fileName ?? 'log.ulg', blob, download.path)
         useFileExplorerStore.getState().clearDownload()
         navigate('/log-analysis')
       } catch (error) {

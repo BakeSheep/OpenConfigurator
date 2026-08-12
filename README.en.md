@@ -37,9 +37,9 @@ The flight controller stack is identified only from HEARTBEAT. PX4 and ArduPilot
 
 - USB serial and Windows Bluetooth SPP connections with MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
 - Realtime attitude, position, battery, sensor, RC, actuator, EKF, and MAVLink message monitoring
-- Parameter sync and search, QGC parameter-file import/export, PID/EKF tuning, sensor calibration, and serial-port configuration
+- Parameter sync and search, QGC parameter-file import/export, airframe selection, radio calibration, flight modes, power/battery and safety setup, PID/EKF tuning, sensor calibration, and serial-port configuration
 - Safety-gated arming, mode changes, takeoff, landing, RTL, motor tests, and gamepad RC override
-- PX4 ULog and ArduPilot DataFlash browsing, download, and offline analysis
+- PX4 ULog and ArduPilot DataFlash browsing, download, offline analysis, chart CSV/PNG export, and complete structured ZIP export
 - AM32 ESC settings over ArduPilot passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial
 - The same frontend delivered through a local web service or a portable Windows x64 Electron build
 
@@ -49,7 +49,7 @@ The ESC page configures settings only; it does not flash firmware or edit startu
 
 - PX4: the current connection, monitoring, parameter, tuning, calibration, flight-operation, ULog, and NSH terminal paths are available.
 - ArduPilot: ArduCopter is the current adaptation and acceptance target for safety-critical writes. Plane, Rover, Sub, and Tracker can be identified and can show common data and DataFlash logs, but remain read-only.
-- Mission, fence, rally-point, and airframe writing are not currently provided.
+- Mission, fence, rally-point, camera/gimbal setup, PX4 ESC PWM calibration, and UAVCAN actuator assignment are not currently provided.
 - Software paths and automated tests do not mean that a specific flight controller, ESC, and firmware combination has passed HIL or flight validation.
 
 See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md) and the [ESC compatibility matrix](docs/ESC-COMPATIBILITY.md) for detailed boundaries.
@@ -60,8 +60,8 @@ See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md
 |---|---|
 | Overview | Attitude, key telemetry, system health, and a custom data board |
 | Flight Operations | Preflight checks, mode switching, and safety-gated flight commands |
-| Vehicle Settings | Airframe identification, sensors, actuators, ESCs, receiver, gamepad, and ports |
-| Tuning & Diagnostics | Parameters, PID, EKF, waveforms, MAVLink messages, and flight logs |
+| Vehicle Settings | Airframes, sensors, radio calibration, flight modes, power/battery, safety, EKF, actuators, ESCs, gamepad, and ports |
+| Tuning & Diagnostics | Parameters, PID, waveforms, MAVLink messages, flight logs, and structured export |
 
 ## Quick start
 
@@ -135,6 +135,9 @@ See the [architecture document](docs/ARCHITECTURE.md) for detailed design and co
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
+- [Vehicle configuration behavior and parameter sources](docs/VEHICLE-CONFIG-SOURCES.md)
+- [Parameter enum metadata](docs/PARAMETER-ENUM-METADATA.md)
+- [Structured flight logs](docs/STRUCTURED-FLIGHT-LOG.md)
 - [ESC compatibility](docs/ESC-COMPATIBILITY.md)
 - [ESC protocol sources](docs/ESC-PROTOCOL-SOURCES.md)
 - [Contributing](CONTRIBUTING.md)

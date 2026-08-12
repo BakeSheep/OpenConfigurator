@@ -91,7 +91,7 @@ export async function expectSharedWorkspaceLayout(page: Page, hasSectionNav: boo
 
     return {
       shouldHaveSectionNav,
-      compact: window.matchMedia('(max-width: 959px)').matches,
+      compact: window.matchMedia('(max-width: 1180px)').matches,
       viewportWidth: document.documentElement.clientWidth,
       workspace: {
         left: workspaceRect.left,

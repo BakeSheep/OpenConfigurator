@@ -181,6 +181,7 @@ class FakeCalibrationSession {
 
 class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   readonly messages: ClientMessage[] = []
+  readonly parameterValues = new Map<string, number>()
   readonly calibrationSessions: FakeCalibrationSession[] = []
   currentParamRunId = 0
   destroyed = false
@@ -220,6 +221,10 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
 
   cancelParameterDownload(): void {
     this.parameterCancellationCalls += 1
+  }
+
+  getParameterValue(id: string): number | null {
+    return this.parameterValues.get(id) ?? null
   }
 
   getFtpDownload(downloadId: string) {
@@ -1307,6 +1312,46 @@ test('stale safety confirmations expire before automatic claim and cannot dispat
     }
     assert.equal(started.bridge.messages.length, bridgeCount + 1)
     assert.equal(started.bridge.messages[started.bridge.messages.length - 1]?.type, 'log_erase')
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('unconfirmed safety reduction is rejected before controller auto-claim', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.bridge.parameterValues.set('NAV_RCL_ACT', 2)
+    started.connManager.emit('statusChange', 'connected')
+    await client.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    const startIndex = client.messages.length
+    client.ws.send(JSON.stringify({
+      type: 'vehicle_config_set',
+      requestId: 'unsafe-config-without-confirmation',
+      feature: 'safety',
+      data: { id: 'NAV_RCL_ACT', value: 0 },
+    }))
+    const rejected = await client.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'unsafe-config-without-confirmation',
+      1_000,
+      startIndex,
+    )
+    assert.equal(rejected.data?.code, 'safety_confirmation_required')
+    assert.equal(rejected.data?.retryable, false)
+    assert.equal(started.bridge.messages.length, 0)
+    assert.equal(
+      client.messages.slice(startIndex).some((message) =>
+        message.type === 'controller' && message.data?.reason === 'claimed'),
+      false,
+      'rejected reduction must not claim controller authority',
+    )
   } finally {
     await closeWs(client)
     await started.runtime.shutdown('test')

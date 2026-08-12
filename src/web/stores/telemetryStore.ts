@@ -54,6 +54,9 @@ interface TelemetryState {
   gpsTrack: GpsTrackPoint[]
   gpsTrackOrigin: GpsTrackOrigin | null
   battery: BatteryData | null
+  /** Latest BATTERY_STATUS values keyed by MAVLink battery instance. */
+  batteries: Map<number, BatteryData>
+  batteryLastUpdate: Map<number, number>
   // Which message currently feeds `battery`: BATTERY_STATUS is authoritative,
   // SYS_STATUS is only a fallback while BATTERY_STATUS is absent/stale.
   batterySource: 'battery_status' | 'sys_status' | null
@@ -110,6 +113,7 @@ interface TelemetryState {
   markAllStale: () => void
   // Selector: true if the field has not been updated within its threshold.
   isStale: (field: TelemetryField, thresholdMs?: number) => boolean
+  isBatteryStale: (id: number, thresholdMs?: number) => boolean
 }
 
 const severityNames: StatusSeverity[] = ['emergency', 'alert', 'critical', 'error', 'warning', 'notice', 'info', 'debug']
@@ -130,6 +134,8 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   gpsTrack: [],
   gpsTrackOrigin: null,
   battery: null,
+  batteries: new Map(),
+  batteryLastUpdate: new Map(),
   batterySource: null,
   status: null,
   ekfStatus: null,
@@ -176,16 +182,27 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   // Keep each BATTERY_STATUS instance intact. In particular, do not fill an
   // unknown field from the previously displayed battery: independent battery
   // IDs may be interleaved on the same MAVLink link.
-  setBattery: (data) => set((state) => ({
-    battery: {
+  setBattery: (data) => set((state) => {
+    const normalized: BatteryData = {
       ...data,
       voltage: isValidBatteryVoltage(data.voltage) ? data.voltage : null,
       cell_voltages: data.cell_voltages.map((voltage) =>
         isValidBatteryVoltage(voltage) ? voltage : null),
-    },
-    batterySource: 'battery_status',
-    lastUpdate: { ...state.lastUpdate, battery: Date.now() },
-  })),
+    }
+    const now = Date.now()
+    const batteries = new Map(state.batteries)
+    const batteryLastUpdate = new Map(state.batteryLastUpdate)
+    batteries.set(normalized.id, normalized)
+    batteryLastUpdate.set(normalized.id, now)
+    const primaryId = batteries.has(0) ? 0 : Math.min(...batteries.keys())
+    return {
+      batteries,
+      batteryLastUpdate,
+      battery: batteries.get(primaryId) ?? normalized,
+      batterySource: 'battery_status',
+      lastUpdate: { ...state.lastUpdate, battery: now },
+    }
+  }),
   setStatus: (data) => set((state) => ({
     status: data,
     // The heartbeat-derived status carries the authoritative identity; keep
@@ -197,7 +214,15 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   setRcChannels: (data) => set((state) => ({ rcChannels: data, lastUpdate: { ...state.lastUpdate, rcChannels: Date.now() } })),
   setMotorOutputs: (data) => set((state) => ({ motorOutputs: data, lastUpdate: { ...state.lastUpdate, motorOutputs: Date.now() } })),
   setAutopilotVersion: (data) => set({ autopilotVersion: data }),
-  setVehicleIdentity: (identity) => set({ vehicleIdentity: identity }),
+  setVehicleIdentity: (identity) => set(identity
+    ? { vehicleIdentity: identity }
+    : {
+        vehicleIdentity: null,
+        battery: null,
+        batteries: new Map(),
+        batteryLastUpdate: new Map(),
+        batterySource: null,
+      }),
   setVfrHud: (data) => set((state) => ({
     airSpeed: data.airspeed,
     groundSpeed: data.groundspeed,
@@ -237,6 +262,12 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
         : null
     return {
       battery: fallbackBattery,
+      ...(fallbackBattery && !batteryStatusFresh
+        ? {
+            batteries: new Map(state.batteries).set(0, fallbackBattery),
+            batteryLastUpdate: new Map(state.batteryLastUpdate).set(0, now),
+          }
+        : {}),
       batterySource: batteryStatusFresh
         ? state.batterySource
         : sysStatusHasVoltage ? 'sys_status' : state.batterySource,
@@ -269,11 +300,19 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   setCommandAck: (ack) => set({ lastCommandAck: { ...ack, time: Date.now() } }),
   setOperationError: (error) => set({ lastOperationError: { ...error, time: Date.now() } }),
   clearStatusLogs: () => set({ statusLogs: [] }),
-  markAllStale: () => set({ lastUpdate: zeroLastUpdate() }),
+  markAllStale: () => set((state) => ({
+    lastUpdate: zeroLastUpdate(),
+    batteryLastUpdate: new Map([...state.batteryLastUpdate.keys()].map((id) => [id, 0])),
+  })),
   isStale: (field, thresholdMs) => {
     const ts = get().lastUpdate[field]
     if (ts === 0) return true
     const threshold = thresholdMs ?? STALE_THRESHOLDS[field]
     return Date.now() - ts > threshold
+  },
+  isBatteryStale: (id, thresholdMs) => {
+    const ts = get().batteryLastUpdate.get(id) ?? 0
+    if (ts === 0) return true
+    return Date.now() - ts > (thresholdMs ?? STALE_THRESHOLDS.battery)
   },
 }))

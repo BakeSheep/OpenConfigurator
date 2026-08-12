@@ -14,6 +14,7 @@ import type {
   ClientMessage,
   ConnectionConfig,
   MessageRateConfig,
+  VehicleConfigFeature,
 } from '../shared/types'
 
 const MAX_FLOAT32 = 3.4028234663852886e38
@@ -24,6 +25,7 @@ const REMOTE_TOKEN_MIN_BYTES = 32
 const REMOTE_TOKEN_MAX_BYTES = 512
 const MESSAGE_RATE_KEYS = ['attitude', 'position', 'sensors', 'rc', 'status', 'hud', 'auxiliary'] as const
 const MESSAGE_RATE_VALUES = new Set<number>(MESSAGE_RATE_OPTIONS)
+const VEHICLE_CONFIG_FEATURES = new Set<VehicleConfigFeature>(['flight_modes', 'power', 'safety'])
 
 export const DEFAULT_SERVER_HOST = '127.0.0.1'
 export const DEFAULT_SERVER_PORT = 3000
@@ -135,6 +137,27 @@ function safetyAuthorityId(value: unknown): string {
     maxBytes: 36,
     pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
   })
+}
+
+function requiredSafetyContext(
+  input: Record<string, unknown>,
+  operation: string,
+): { expectedSafetyEpoch: number; expectedSafetyAuthorityId: string } {
+  if (input.expectedSafetyEpoch === undefined || input.expectedSafetyAuthorityId === undefined) {
+    fail(
+      'safety_epoch_required',
+      `${operation} 必须绑定当前 safety authority/epoch`,
+      'expectedSafetyEpoch',
+    )
+  }
+  return {
+    expectedSafetyEpoch: finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+      min: 0,
+      max: Number.MAX_SAFE_INTEGER,
+      integer: true,
+    }),
+    expectedSafetyAuthorityId: safetyAuthorityId(input.expectedSafetyAuthorityId),
+  }
 }
 
 function requestId(value: unknown): string | undefined {
@@ -387,6 +410,150 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         type: 'param_set',
         data: { id: paramId, value: paramValue, paramType },
       }, id) as BoundaryClientMessage
+    }
+
+    case 'vehicle_config_set': {
+      if (id === undefined) fail('missing_request_id', 'vehicle_config_set 必须携带 requestId', 'requestId')
+      const feature = text(input.feature, 'feature', {
+        minBytes: 1,
+        maxBytes: 32,
+        pattern: /^[a-z_]+$/,
+      }) as VehicleConfigFeature
+      if (!VEHICLE_CONFIG_FEATURES.has(feature)) {
+        fail('invalid_feature', `不支持的配置功能：${feature}`, 'feature')
+      }
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['id', 'value'], 'data')
+      const configId = text(data.id, 'data.id', {
+        minBytes: 1,
+        maxBytes: 16,
+        pattern: /^[A-Z0-9_]+$/,
+      })
+      const configValue = finiteNumber(data.value, 'data.value', {
+        min: -MAX_FLOAT32,
+        max: MAX_FLOAT32,
+      })
+      const confirmation = input.safetyConfirmation
+      if (confirmation !== undefined && confirmation !== 'reduce_failsafe_protection') {
+        fail('invalid_safety_confirmation', '配置安全确认值无效', 'safetyConfirmation')
+      }
+      if (confirmation !== undefined && feature !== 'safety') {
+        fail('unexpected_safety_confirmation', '仅安全配置接受降低保护确认', 'safetyConfirmation')
+      }
+      if (
+        confirmation === undefined
+        && (input.expectedSafetyEpoch !== undefined || input.expectedSafetyAuthorityId !== undefined)
+      ) {
+        fail('unexpected_safety_context', '未确认降低保护时不得携带 safety authority/epoch', 'expectedSafetyEpoch')
+      }
+      const context = confirmation === 'reduce_failsafe_protection'
+        ? requiredSafetyContext(input, '降低失效保护')
+        : null
+      return {
+        type: 'vehicle_config_set',
+        requestId: id,
+        feature,
+        data: { id: configId, value: configValue },
+        ...(confirmation ? { safetyConfirmation: 'reduce_failsafe_protection' as const, ...context! } : {}),
+      }
+    }
+
+    case 'airframe_apply': {
+      if (id === undefined) fail('missing_request_id', 'airframe_apply 必须携带 requestId', 'requestId')
+      if (input.safetyConfirmation !== 'apply_airframe') {
+        fail('safety_confirmation_required', '应用机架必须显式确认 apply_airframe', 'safetyConfirmation')
+      }
+      const context = requiredSafetyContext(input, '应用机架')
+      const data = record(input.data, 'data')
+      if (data.family === 'px4') {
+        restrictKeys(data, ['family', 'autostartId'], 'data')
+        return {
+          type: 'airframe_apply',
+          requestId: id,
+          safetyConfirmation: 'apply_airframe',
+          ...context,
+          data: {
+            family: 'px4',
+            autostartId: finiteNumber(data.autostartId, 'data.autostartId', {
+              min: 1,
+              max: 100000,
+              integer: true,
+            }),
+          },
+        }
+      }
+      if (data.family === 'ardupilot') {
+        restrictKeys(data, ['family', 'frameClass', 'frameType'], 'data')
+        return {
+          type: 'airframe_apply',
+          requestId: id,
+          safetyConfirmation: 'apply_airframe',
+          ...context,
+          data: {
+            family: 'ardupilot',
+            frameClass: finiteNumber(data.frameClass, 'data.frameClass', {
+              min: 0,
+              max: 255,
+              integer: true,
+            }),
+            frameType: finiteNumber(data.frameType, 'data.frameType', {
+              min: 0,
+              max: 255,
+              integer: true,
+            }),
+          },
+        }
+      }
+      return fail('invalid_airframe_family', 'data.family 必须是 px4 或 ardupilot', 'data.family')
+    }
+
+    case 'radio_calibration_start': {
+      if (id === undefined) fail('missing_request_id', 'radio_calibration_start 必须携带 requestId', 'requestId')
+      const context = requiredSafetyContext(input, '遥控器校准')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['transmitterMode'], 'data')
+      return {
+        type: 'radio_calibration_start',
+        requestId: id,
+        ...context,
+        data: {
+          transmitterMode: finiteNumber(data.transmitterMode, 'data.transmitterMode', {
+            min: 1,
+            max: 4,
+            integer: true,
+          }) as 1 | 2 | 3 | 4,
+        },
+      }
+    }
+
+    case 'radio_calibration_advance':
+    case 'radio_calibration_cancel': {
+      if (id === undefined) fail('missing_request_id', `${type} 必须携带 requestId`, 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId'], 'data')
+      return {
+        type,
+        requestId: id,
+        data: { sessionId: calibrationSessionId(data.sessionId) },
+      } as BoundaryClientMessage
+    }
+
+    case 'radio_calibration_reclaim': {
+      if (id === undefined) fail('missing_request_id', 'radio_calibration_reclaim 必须携带 requestId', 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId', 'recoveryToken'], 'data')
+      return {
+        type: 'radio_calibration_reclaim',
+        requestId: id,
+        data: {
+          sessionId: calibrationSessionId(data.sessionId),
+          recoveryToken: text(data.recoveryToken, 'data.recoveryToken', {
+            minBytes: 16,
+            maxBytes: 128,
+            pattern: /^[A-Za-z0-9_-]+$/,
+          }),
+        },
+      }
     }
 
     case 'param_request_list':

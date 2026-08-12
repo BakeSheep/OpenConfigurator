@@ -3,10 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
 import { WorkspaceFrame } from '../components/ui/PageFrame'
-import { Button } from '../components/ui/Button'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { Notice } from '../components/ui/Feedback'
-import StatePanel from '../components/ui/StatePanel'
 import ArmSafetyControl from '../components/safety/ArmSafetyControl'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -39,7 +37,6 @@ export default function FlightControlPage() {
   const canControl = useConnectionStore((state) => state.canControl)
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
-  const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const connected = vehicleReady && canControl
   const [takeoffAltitude, setTakeoffAltitude] = useState(2.5)
   const [, refreshPrearmExpiry] = useState(0)
@@ -161,24 +158,10 @@ export default function FlightControlPage() {
     /arm|arming|解锁|preflight|pre-arm/i.test(entry.text)
   )
 
-  if (!vehicleReady) {
-    return (
-      <WorkspaceFrame title={t('flight.title')}>
-        <StatePanel
-          kind="disconnected"
-          headingLevel={2}
-          title={t('flight.fcNotConnected')}
-          description={t('flight.connectPrompt')}
-          action={<Button tone="primary" size="default" onClick={() => setConnectDialogOpen(true)}>{t('common.connect')}</Button>}
-        />
-      </WorkspaceFrame>
-    )
-  }
-
   return (
     <WorkspaceFrame title={t('flight.title')} className="mc-workspace-frame--flight">
 
-      {!canControl && (
+      {vehicleReady && !canControl && (
         <Notice tone="warning" title={t('flight.readOnlyTitle')}>
           {t('flight.readOnlyControl')}
         </Notice>

@@ -93,6 +93,49 @@ test('closing StatusBar details restores focus to its summary', async ({ page },
   await expect(summary).toBeFocused()
 })
 
+test('reboot stays beside connection and CPU plus average temperature stay visible', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'Desktop geometry verifies the full labelled controls.')
+  await openDemo(page, '/dashboard')
+
+  const actions = page.locator('.mc-topbar__actions')
+  const reboot = actions.locator('#mc-topbar-reboot')
+  const connection = actions.locator('.mc-topbar__connect')
+  await expect(reboot).toBeVisible()
+  await expect(reboot).toHaveAccessibleName('重启飞控')
+  await expect(connection).toBeVisible()
+
+  const [rebootBox, connectionBox] = await Promise.all([reboot.boundingBox(), connection.boundingBox()])
+  expect(rebootBox).not.toBeNull()
+  expect(connectionBox).not.toBeNull()
+  expect(rebootBox!.x + rebootBox!.width).toBeLessThanOrEqual(connectionBox!.x + 1)
+
+  await page.locator('#mc-topbar-tools-trigger').click()
+  await expect(page.locator('#mc-topbar-tools-menu')).toBeVisible()
+  await expect(page.locator('#mc-topbar-tools-menu').getByRole('button', { name: /重启/ })).toHaveCount(0)
+
+  const metrics = page.locator('#mc-statusbar-summary .mc-statusbar__metrics')
+  await expect(metrics).toBeVisible()
+  await expect(metrics).toContainText('CPU')
+  await expect(metrics).toContainText('均温')
+  await expect(metrics).not.toContainText('—')
+})
+
+test('dashboard and flight keep their operational UI while disconnected', async ({ page }) => {
+  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
+
+  await page.goto('/#/dashboard')
+  await expect(page.locator('main h1')).toHaveCount(1)
+  await expect(page.locator('main .mc-dashboard-primary-grid')).toBeVisible()
+  await expect(page.locator('main')).not.toContainText('等待飞控连接')
+  await expect(page.locator('main').getByRole('link', { name: /进入飞行操作/ })).toBeVisible()
+
+  await page.goto('/#/flight')
+  await expect(page.locator('main h1')).toHaveCount(1)
+  await expect(page.locator('main .mc-flight-arm-safety')).toBeVisible()
+  await expect(page.locator('main')).not.toContainText('等待飞控连接')
+  await expect(page.locator('main').getByRole('button', { name: '起飞', exact: true })).toBeDisabled()
+})
+
 async function openLivePx4LogFixture(page: Page) {
   await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')
