@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AutopilotFamily, ParamData } from '../../../shared/types'
 import Icon from '../ui/Icon'
+import { TabPanel, Tabs } from '../ui/Tabs'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
@@ -19,6 +20,8 @@ import {
   px4GpsDefaultPort,
   type NumericOption,
 } from '../../utils/gpsConfiguration'
+
+const GPS_INSTANCES = [1, 2] as const
 
 function ParameterSelect({
   label,
@@ -242,19 +245,30 @@ export default function GpsConfigurationPanel({ family, writable, compact = fals
   return (
     <section className={`mc-card mc-gps-config${compact ? ' mc-gps-config--compact' : ''}`}>
       <header>
-        <div><span className="mc-eyebrow">CONFIGURATION</span><h2>{t('sensor.gps.configTitle')}</h2></div>
+        <div><h3>{t('sensor.gps.configTitle')}</h3></div>
         <span>{family === 'px4' ? 'PX4' : family === 'ardupilot' ? 'ArduPilot' : t('sensor.gps.waitingFcIdentify')}</span>
       </header>
-      <div className="mc-gps-config__tabs" role="tablist" aria-label={t('sensor.gps.instanceAria')}>
-        {([1, 2] as const).map((item) => (
-          <button key={item} type="button" role="tab" aria-selected={instance === item} data-active={instance === item} onClick={() => setInstance(item)}>
-            GPS {item}
-          </button>
-        ))}
-      </div>
-      {family === 'px4' && <Px4GpsFields instance={instance} writable={canWrite} params={params} />}
-      {family === 'ardupilot' && <ArduPilotGpsFields instance={instance} writable={canWrite} params={params} />}
-      {family === 'unknown' && <p className="mc-gps-config__empty">{t('sensor.gps.emptyHint')}</p>}
+      <Tabs
+        tabs={GPS_INSTANCES.map((item) => ({ id: String(item), label: `GPS ${item}` }))}
+        active={String(instance)}
+        onChange={(id) => setInstance(id === '2' ? 2 : 1)}
+        ariaLabel={t('sensor.gps.instanceAria')}
+        idBase="gps-configuration"
+        className="mc-gps-config__tabs"
+      />
+      {GPS_INSTANCES.map((item) => (
+        <TabPanel
+          key={item}
+          idBase="gps-configuration"
+          tabId={String(item)}
+          hidden={instance !== item}
+          tabIndex={instance === item ? 0 : -1}
+        >
+          {family === 'px4' && <Px4GpsFields instance={item} writable={canWrite} params={params} />}
+          {family === 'ardupilot' && <ArduPilotGpsFields instance={item} writable={canWrite} params={params} />}
+          {family === 'unknown' && <p className="mc-gps-config__empty">{t('sensor.gps.emptyHint')}</p>}
+        </TabPanel>
+      ))}
       <footer><Icon name="warning" size={14} /><span>{t('sensor.gps.footerHint')}</span></footer>
     </section>
   )

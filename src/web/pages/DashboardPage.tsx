@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { NavLink } from 'react-router-dom'
 import Icon from '../components/ui/Icon'
-import { PageHeader } from '../components/ui/PageFrame'
+import { WorkspaceFrame } from '../components/ui/PageFrame'
+import { Button } from '../components/ui/Button'
+import StatePanel from '../components/ui/StatePanel'
 import { buildGroups, readStatusVariableSnapshot, STATUS_SNAPSHOT_INTERVAL_MS } from '../components/telemetry/StatusVariableBrowser'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -108,9 +110,10 @@ function VerticalBarsCard({ title, subtitle, live, bars }: {
   live: boolean
   bars: Array<{ label: string; value: number | null }>
 }) {
+  const { t } = useTranslation()
   return (
     <aside className="mc-card mc-dashboard-sensors overflow-hidden">
-      <header><div><h2>{title}</h2><p>{subtitle}</p></div><span data-ready={live}>{live ? 'LIVE' : 'OFFLINE'}</span></header>
+      <header><div><h2>{title}</h2><p>{subtitle}</p></div><span data-ready={live}>{live ? t('dashboard.live') : t('dashboard.offline')}</span></header>
       <div className="mc-dashboard-bars">
         {bars.map((bar) => {
           const fresh = live && bar.value !== null
@@ -280,6 +283,7 @@ export default function DashboardPage() {
     return () => window.clearInterval(timer)
   }, [])
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const {
     attitude, gps, battery, isStale,
     sensorHealth, imu, magData, baro, opticalFlow, distanceSensor,
@@ -315,23 +319,33 @@ export default function DashboardPage() {
     : '—'
 
   return (
-    <div className="mc-workspace mc-workspace--full mc-fade-in">
-      <PageHeader
-        title={t('dashboard.title')}
-        actions={<NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />{t('dashboard.enterFlight')}</NavLink>}
-      />
+    <WorkspaceFrame
+      title={t('dashboard.title')}
+      className="mc-workspace-frame--dashboard"
+      actions={vehicleReady ? <NavLink to="/flight" className="mc-btn mc-btn-primary"><Icon name="flight" size={15} />{t('dashboard.enterFlight')}</NavLink> : undefined}
+    >
+      {!vehicleReady ? (
+        <StatePanel
+          kind="disconnected"
+          headingLevel={2}
+          title={t('dashboard.waitingFc')}
+          description={t('dashboard.connectPrompt')}
+          action={<Button tone="primary" size="default" onClick={() => setConnectDialogOpen(true)}>{t('common.connect')}</Button>}
+        />
+      ) : (
+      <>
       <section className="mc-dashboard-primary-grid">
         <div className="mc-card mc-dashboard-visual overflow-hidden">
           <Suspense fallback={<div className="mc-attitude-view mc-route-loading">{t('dashboard.loadingAttitude3d')}</div>}><AttitudeIndicator /></Suspense>
           <div className="mc-dashboard-attitude-values">
-            {[['ROLL', roll], ['PITCH', pitch], ['YAW', yaw]].map(([label, value]) => <div key={label as string} className="px-3 py-2 text-center"><p className="text-[10px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</p><p className="mt-0.5 mc-mono text-[13px] font-bold">{Number(value).toFixed(1)}°</p></div>)}
+            {[['ROLL', roll], ['PITCH', pitch], ['YAW', yaw]].map(([label, value]) => <div key={label as string} className="px-3 py-2 text-center"><p className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</p><p className="mt-0.5 mc-mono text-[13px] font-bold">{Number(value).toFixed(1)}°</p></div>)}
           </div>
         </div>
         <div className="mc-card mc-dashboard-visual overflow-hidden">
-          <Horizon roll={roll} pitch={pitch} yaw={yaw} frozen={!vehicleReady || isStale('attitude')} />
+          <Horizon roll={roll} pitch={pitch} yaw={yaw} frozen={isStale('attitude')} />
         </div>
         <aside className="mc-card mc-dashboard-sensors overflow-hidden">
-          <header><div><h2>{t('dashboard.systemHealth')}</h2><p>{vehicleReady ? t('dashboard.realtimeData') : t('dashboard.waitingFc')}</p></div><span data-ready={vehicleReady}>{vehicleReady ? 'READY' : 'OFFLINE'}</span></header>
+          <header><div><h2>{t('dashboard.systemHealth')}</h2><p>{t('dashboard.realtimeData')}</p></div><span data-ready>{t('dashboard.ready')}</span></header>
           <div className="mc-dashboard-health-list">
             <HealthRow label="IMU" value={imu ? `${imu.xacc.toFixed(1)} / ${imu.yacc.toFixed(1)} / ${imu.zacc.toFixed(1)}` : '—'} ok={sensorHealth.imu === 'ok'} />
             <HealthRow label={t('dashboard.compass')} value={magData ? `${magData.x.toFixed(0)} / ${magData.y.toFixed(0)} / ${magData.z.toFixed(0)}` : '-'} ok={sensorHealth.mag === 'ok'} />
@@ -339,13 +353,15 @@ export default function DashboardPage() {
             <HealthRow label="GPS" value={gps ? `${gps.satellites_visible} SAT · Fix ${gps.fix_type}` : '—'} ok={sensorHealth.gps === 'ok'} />
             <HealthRow label={t('dashboard.opticalFlow')} value={opticalFlow ? `Q ${opticalFlow.quality}/255` : '-'} ok={sensorHealth.opticalFlow === 'ok'} />
             <HealthRow label={t('dashboard.rangefinder')} value={distanceSensor ? `${distanceSensor.current_distance} cm` : '-'} ok={sensorHealth.rangefinder === 'ok'} />
-            <HealthRow label={t('dashboard.battery')} value={batteryValue} ok={Boolean(vehicleReady && battery)} />
+            <HealthRow label={t('dashboard.battery')} value={batteryValue} ok={Boolean(battery)} />
           </div>
         </aside>
         <VerticalBarsCard title={t('dashboard.rcInput')} subtitle="RC_CHANNELS · µs" live={rcLive} bars={rcBars} />
         <VerticalBarsCard title={t('dashboard.motorOutput')} subtitle="SERVO_OUTPUT_RAW · µs" live={motorLive} bars={motorBars} />
         <CustomDataCard />
       </section>
-    </div>
+      </>
+      )}
+    </WorkspaceFrame>
   )
 }

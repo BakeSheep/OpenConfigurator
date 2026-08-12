@@ -3,12 +3,15 @@ import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
+import { TabPanel } from '../components/ui/Tabs'
+import Toolbar from '../components/ui/Toolbar'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
 import FlightControllerTerminal from '../components/telemetry/FlightControllerTerminal'
 import { DEFAULT_MESSAGE_RATES, MESSAGE_RATE_OPTIONS } from '../../shared/constants'
 import type { MessageRateConfig } from '../../shared/types'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { sendClientMessage } from '../hooks/useWebSocket'
+import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
   isMavlinkMessageLive,
@@ -23,7 +26,9 @@ const TAB_KEYS = [
   { id: 'messages', label: 'messages.tabMessages' },
   { id: 'status', label: 'messages.tabStatus' },
   { id: 'terminal', label: 'messages.tabTerminal' },
-]
+] as const
+
+const MESSAGE_TAB_IDS = TAB_KEYS.map((tab) => tab.id)
 
 const streamRows = [
   { id: 0, name: 'HEARTBEAT' },
@@ -107,7 +112,7 @@ function imuUnitSummary(data: unknown, t: TFunction): string | null {
 export default function MessagesPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
   const tabs = useMemo(() => TAB_KEYS.map((tab) => ({ ...tab, label: t(tab.label) })), [t])
-  const [activeTab, setActiveTab] = useState('messages')
+  const [activeTab, setActiveTab] = useQueryTab(MESSAGE_TAB_IDS, 'messages')
   const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
@@ -187,12 +192,25 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
 
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
-      {activeTab !== 'terminal' && <div className="flex items-center justify-end gap-2 mb-3">
-        <span className="mc-toolbar-summary">{t('messages.activeSummary', { live: liveCount, logs: displayLogs.length })}</span>
-        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? t('messages.resume') : t('messages.pause')} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-        <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('messages.clear')} onClick={clearDiagnostics}><Icon name="trash" size={15} /></button>
-      </div>}
-      <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      <PageTabs
+        tabs={tabs}
+        active={activeTab}
+        onChange={setActiveTab}
+        ariaLabel={t('diagnostics.section.messages.label')}
+        idBase="message-diagnostics"
+      />
+      {activeTab !== 'terminal' && (
+        <Toolbar
+          summary={t('messages.activeSummary', { live: liveCount, logs: displayLogs.length })}
+          actions={(
+            <>
+              <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? t('messages.resume') : t('messages.pause')} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
+              <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('messages.clear')} onClick={clearDiagnostics}><Icon name="trash" size={15} /></button>
+            </>
+          )}
+        />
+      )}
+      <TabPanel idBase="message-diagnostics" tabId={activeTab}>
 
       {activeTab === 'messages' && (
         <div className="mc-message-layout">
@@ -213,7 +231,7 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
                   >{expanded ? '−' : '+'}&nbsp; #{row.id}</button>
                   <strong className="mc-mono">{row.name}</strong>
                   <span>{row.live ? t('messages.receiving') : t('messages.waiting')}</span>
-                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-disabled)' }}>{paused ? t('messages.paused') : row.rate}</span>
+                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-secondary)' }}>{paused ? t('messages.paused') : row.rate}</span>
                 </div>
                 {expanded && (
                   <div className="mc-message-details">
@@ -279,6 +297,8 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
       {activeTab === 'terminal' && (
         <FlightControllerTerminal />
       )}
+
+      </TabPanel>
 
     </div>
   )

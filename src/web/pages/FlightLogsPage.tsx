@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
 import Icon from '../components/ui/Icon'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { EmptyState, PageHeader } from '../components/ui/PageFrame'
 import DataflashLogPanel from '../components/logs/DataflashLogPanel'
 import { sendClientMessage } from '../hooks/useWebSocket'
@@ -26,6 +27,7 @@ interface ContextMenuState {
   x: number
   y: number
   entry: FsEntry
+  targetKey: string
 }
 
 function formatEntryDate(timestamp: number | null): string {
@@ -68,10 +70,28 @@ function entryTimestamp(entry: FsEntry, currentPath: string): number | null {
     : parsePx4FileDate(entry.name, dirName)
 }
 
+function fileDeleteConfirmationKey(
+  targetKey: string,
+  path: string,
+  entries: FsEntry[],
+  selection: Set<string>,
+): string {
+  const objects = entries
+    .filter((entry) => selection.has(entry.name))
+    .map((entry) => [entry.kind, entry.name] as const)
+    .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
+  return JSON.stringify([targetKey, path, objects])
+}
+
 export default function FlightLogsPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const canControl = useConnectionStore((state) => state.canControl)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const logs = logSupport(vehicleIdentity)
   const currentPath = useFileExplorerStore((state) => state.currentPath)
@@ -90,8 +110,49 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   const [sortAsc, setSortAsc] = useState(true)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const [deleteAcknowledged, setDeleteAcknowledged] = useState(false)
+  const [focusedEntryName, setFocusedEntryName] = useState<string | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const contextTriggerRef = useRef<HTMLDivElement | null>(null)
+  const targetKey = `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}`
+  const previousTargetKeyRef = useRef<string | null>(null)
+  const previousVehicleReadyRef = useRef(vehicleReady)
+  const [boundTargetKey, setBoundTargetKey] = useState<string | null>(null)
+  const targetStateCurrent = vehicleReady && boundTargetKey === targetKey
+
+  const closeContextMenu = useCallback((restoreFocus = false) => {
+    const trigger = contextTriggerRef.current
+    setContextMenu(null)
+    if (restoreFocus) requestAnimationFrame(() => trigger?.focus())
+  }, [])
+
+  // A listing, selection or destructive acknowledgement from one vehicle must
+  // never survive a target switch. A live page also refreshes on mount, because
+  // the store may have remained populated while this route was unmounted.
+  useEffect(() => {
+    const initialBinding = previousTargetKeyRef.current === null
+    const targetChanged = previousTargetKeyRef.current !== targetKey
+    const readinessChanged = previousVehicleReadyRef.current !== vehicleReady
+    previousTargetKeyRef.current = targetKey
+    previousVehicleReadyRef.current = vehicleReady
+    setBoundTargetKey(vehicleReady ? targetKey : null)
+    if (!initialBinding && !targetChanged && !readinessChanged) return
+    setDeleteDialogOpen(false)
+    closeContextMenu(false)
+    contextTriggerRef.current = null
+    handledDownloadRef.current = null
+    setFocusedEntryName(null)
+    if (backendEnabled) useFileExplorerStore.getState().reset()
+  }, [closeContextMenu, targetKey, vehicleReady])
+
+  // A destructive commitment also belongs to the current controller-lease
+  // epoch. Downloads remain available to read-only clients, but deletion must
+  // be reconfirmed whenever control is lost or reacquired.
+  useEffect(() => {
+    setDeleteDialogOpen(false)
+    closeContextMenu(false)
+    useFileExplorerStore.getState().clearSelection()
+  }, [canControl, closeContextMenu, safetyAuthorityId, safetyEpoch])
 
   const requestListing = useCallback((path: string) => {
     if (!backendEnabled) return
@@ -103,8 +164,14 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   // Only the PX4/ULog profile browses the filesystem over MAVLink FTP; the
   // DataFlash panel issues its own log_list requests.
   useEffect(() => {
-    if (backendEnabled && vehicleReady && logs.format === 'ulog') requestListing(currentPath)
-  }, [vehicleReady, logs.format, currentPath, requestListing])
+    if (
+      backendEnabled
+      && vehicleReady
+      && targetSystemId !== null
+      && targetComponentId !== null
+      && logs.format === 'ulog'
+    ) requestListing(currentPath)
+  }, [vehicleReady, targetSystemId, targetComponentId, targetKey, logs.format, currentPath, requestListing])
 
   // Deletion finished: refresh the listing and dismiss the task shortly after.
   useEffect(() => {
@@ -155,17 +222,28 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   // Close the context menu on any outside click / escape.
   useEffect(() => {
     if (!contextMenu) return
-    const close = () => setContextMenu(null)
+    const frame = requestAnimationFrame(() => {
+      const firstItem = contextMenuRef.current?.querySelector<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      )
+      if (firstItem) firstItem.focus()
+      else contextMenuRef.current?.focus()
+    })
+    const close = () => closeContextMenu(false)
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close()
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeContextMenu(true)
+      }
     }
     window.addEventListener('click', close)
     window.addEventListener('keydown', onKey)
     return () => {
+      cancelAnimationFrame(frame)
       window.removeEventListener('click', close)
       window.removeEventListener('keydown', onKey)
     }
-  }, [contextMenu])
+  }, [contextMenu, closeContextMenu])
 
   const sortedEntries = useMemo(() => {
     const factor = sortAsc ? 1 : -1
@@ -191,7 +269,18 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     () => sortedEntries.filter((entry) => selection.has(entry.name)),
     [sortedEntries, selection],
   )
-  const busy = download?.status === 'active' || deletion?.status === 'active'
+  const rovingEntryName = sortedEntries.some((entry) => entry.name === focusedEntryName)
+    ? focusedEntryName
+    : (sortedEntries[0]?.name ?? null)
+  const deleteConfirmationKey = fileDeleteConfirmationKey(
+    `${targetKey}@safety:${safetyAuthorityId ?? '-'}:${safetyEpoch}`,
+    currentPath,
+    sortedEntries,
+    selection,
+  )
+  const busy = !targetStateCurrent
+    || download?.status === 'active'
+    || deletion?.status === 'active'
   const singleFile = selectedEntries.length === 1 && selectedEntries[0].kind === 'file'
     ? selectedEntries[0]
     : null
@@ -207,6 +296,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
 
   const handleRowClick = (event: React.MouseEvent, entry: FsEntry) => {
     event.stopPropagation()
+    setFocusedEntryName(entry.name)
     const store = useFileExplorerStore.getState()
     if (event.ctrlKey || event.metaKey) {
       const next = new Set(selection)
@@ -244,29 +334,159 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     startDownload(entry, isUlgFile(entry) ? 'analyze' : 'save')
   }
 
-  const handleContextMenu = (event: React.MouseEvent, entry: FsEntry) => {
-    event.preventDefault()
-    event.stopPropagation()
+  const openContextMenu = (
+    entry: FsEntry,
+    x: number,
+    y: number,
+    trigger: HTMLDivElement,
+  ) => {
     if (!selection.has(entry.name)) {
       useFileExplorerStore.getState().setSelection(new Set([entry.name]), entry.name)
     }
-    setContextMenu({ x: event.clientX, y: event.clientY, entry })
+    contextTriggerRef.current = trigger
+    setContextMenu({ x, y, entry, targetKey })
+  }
+
+  const handleContextMenu = (event: React.MouseEvent, entry: FsEntry) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const row = event.currentTarget as HTMLDivElement
+    const rect = row.getBoundingClientRect()
+    const keyboardInvocation = event.clientX === 0 && event.clientY === 0
+    openContextMenu(
+      entry,
+      keyboardInvocation ? rect.left + 24 : event.clientX,
+      keyboardInvocation ? rect.top + 24 : event.clientY,
+      row,
+    )
+  }
+
+  const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, entry: FsEntry) => {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      const rows = Array.from(
+        event.currentTarget.parentElement?.querySelectorAll<HTMLDivElement>('[data-explorer-row]') ?? [],
+      )
+      if (rows.length === 0) return
+      event.preventDefault()
+      event.stopPropagation()
+      const currentIndex = rows.indexOf(event.currentTarget)
+      let nextIndex = currentIndex
+      if (event.key === 'Home') nextIndex = 0
+      else if (event.key === 'End') nextIndex = rows.length - 1
+      else if (event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1)
+      else if (event.key === 'ArrowDown') nextIndex = Math.min(rows.length - 1, currentIndex + 1)
+      rows[nextIndex]?.focus()
+      return
+    }
+
+    if (event.key === ' ') {
+      event.preventDefault()
+      event.stopPropagation()
+      const store = useFileExplorerStore.getState()
+      if (event.shiftKey && lastSelected) {
+        const names = sortedEntries.map((item) => item.name)
+        const from = names.indexOf(lastSelected)
+        const to = names.indexOf(entry.name)
+        if (from >= 0 && to >= 0) {
+          const [start, end] = from <= to ? [from, to] : [to, from]
+          store.setSelection(new Set(names.slice(start, end + 1)))
+          return
+        }
+      }
+      if (event.ctrlKey || event.metaKey) {
+        const next = new Set(selection)
+        if (next.has(entry.name)) next.delete(entry.name)
+        else next.add(entry.name)
+        store.setSelection(next, entry.name)
+        return
+      }
+      store.setSelection(new Set([entry.name]), entry.name)
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      useFileExplorerStore.getState().setSelection(new Set([entry.name]), entry.name)
+      handleRowDoubleClick(entry)
+      return
+    }
+
+    if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = event.currentTarget.getBoundingClientRect()
+      openContextMenu(entry, rect.left + 24, rect.top + 24, event.currentTarget)
+    }
+  }
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeContextMenu(true)
+      return
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeContextMenu(true)
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'),
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement)
+    let nextIndex = 0
+    if (event.key === 'End') nextIndex = items.length - 1
+    else if (event.key === 'ArrowUp') nextIndex = currentIndex <= 0 ? items.length - 1 : currentIndex - 1
+    else if (event.key === 'ArrowDown') nextIndex = currentIndex >= items.length - 1 ? 0 : currentIndex + 1
+    items[nextIndex]?.focus()
   }
 
   const confirmDelete = () => {
+    const connection = useConnectionStore.getState()
+    const liveTargetKey = `${connection.targetSystemId ?? '-'}:${connection.targetComponentId ?? '-'}`
     const store = useFileExplorerStore.getState()
-    const targets = selectedEntries.map((entry) => ({
-      path: joinPath(store.currentPath, entry.name),
-      kind: entry.kind,
-    }))
+    const liveConfirmationKey = fileDeleteConfirmationKey(
+      `${liveTargetKey}@safety:${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`,
+      store.currentPath,
+      store.entries,
+      store.selection,
+    )
+    if (
+      !targetStateCurrent
+      || !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.targetSystemId === null
+      || connection.targetComponentId === null
+      || logSupport(useTelemetryStore.getState().vehicleIdentity).format !== 'ulog'
+      || liveConfirmationKey !== deleteConfirmationKey
+    ) {
+      setDeleteDialogOpen(false)
+      return
+    }
+    const targets = store.entries
+      .filter((entry) => store.selection.has(entry.name))
+      .map((entry) => ({
+        path: joinPath(store.currentPath, entry.name),
+        kind: entry.kind,
+      }))
     if (targets.length === 0) return
     setDeleteDialogOpen(false)
-    setDeleteAcknowledged(false)
     store.beginDeletion()
     sendClientMessage({
       type: 'fs_delete',
       data: { entries: targets },
       safetyConfirmation: 'delete_files',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
   }
 
@@ -417,7 +637,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
             <button
               type="button"
               className="mc-btn mc-btn-danger"
-              disabled={selectedEntries.length === 0 || busy}
+              disabled={selectedEntries.length === 0 || busy || !canControl}
               onClick={() => setDeleteDialogOpen(true)}
             >
               <Icon name="trash" size={14} /> {t('flightLogs.delete')}
@@ -430,7 +650,12 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           </div>
 
           {/* Detail table */}
-          <div className="mc-explorer__table" role="grid">
+          <div
+            className="mc-explorer__table"
+            role="grid"
+            aria-colcount={4}
+            aria-rowcount={sortedEntries.length + 1}
+          >
             <div className="mc-explorer__row mc-explorer__row--header" role="row">
               {([
                 ['name', t('flightLogs.colName')],
@@ -447,28 +672,36 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                 </button>
               ))}
             </div>
-            <div className="mc-explorer__body">
+            <div className="mc-explorer__body" role="rowgroup">
               {loading && listedPath !== currentPath ? (
-                <p className="mc-explorer__notice">{t('flightLogs.readingDir')}</p>
+                <div className="mc-explorer__notice" role="row">
+                  <span role="gridcell" aria-colspan={4}>{t('flightLogs.readingDir')}</span>
+                </div>
               ) : sortedEntries.length === 0 ? (
-                <p className="mc-explorer__notice">
-                  {listError ? t('flightLogs.readFailed') : t('flightLogs.emptyDir')}
-                </p>
+                <div className="mc-explorer__notice" role="row">
+                  <span role="gridcell" aria-colspan={4}>
+                    {listError ? t('flightLogs.readFailed') : t('flightLogs.emptyDir')}
+                  </span>
+                </div>
               ) : (
                 sortedEntries.map((entry) => (
                   <div
                     key={entry.name}
                     role="row"
+                    data-explorer-row
+                    tabIndex={entry.name === rovingEntryName ? 0 : -1}
                     aria-selected={selection.has(entry.name)}
                     className={
                       'mc-explorer__row'
                       + (selection.has(entry.name) ? ' is-selected' : '')
                     }
                     onClick={(event) => handleRowClick(event, entry)}
+                    onFocus={() => setFocusedEntryName(entry.name)}
                     onDoubleClick={() => handleRowDoubleClick(entry)}
+                    onKeyDown={(event) => handleRowKeyDown(event, entry)}
                     onContextMenu={(event) => handleContextMenu(event, entry)}
                   >
-                    <span className="mc-explorer__name">
+                    <span className="mc-explorer__name" role="gridcell">
                       <Icon
                         name={entry.kind === 'dir' ? 'folder' : isUlgFile(entry) ? 'log' : 'file'}
                         size={16}
@@ -480,9 +713,9 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                       />
                       <span className="mc-mono">{entry.name}</span>
                     </span>
-                    <span className="mc-mono">{formatEntryDate(entryTimestamp(entry, currentPath))}</span>
-                    <span>{entryTypeLabel(entry)}</span>
-                    <span className="mc-mono">{entry.kind === 'dir' ? '—' : formatBytes(entry.sizeBytes)}</span>
+                    <span className="mc-mono" role="gridcell">{formatEntryDate(entryTimestamp(entry, currentPath))}</span>
+                    <span role="gridcell">{entryTypeLabel(entry)}</span>
+                    <span className="mc-mono" role="gridcell">{entry.kind === 'dir' ? '—' : formatBytes(entry.sizeBytes)}</span>
                   </div>
                 ))
               )}
@@ -579,20 +812,27 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
       )}
 
       {/* Context menu */}
-      {contextMenu && (
+      {contextMenu && contextMenu.targetKey === targetKey && (
         <div
+          ref={contextMenuRef}
           className="mc-context-menu"
+          role="menu"
+          aria-label={t('flightLogs.contextMenuLabel', { name: contextMenu.entry.name })}
+          tabIndex={-1}
           style={{
-            left: Math.min(contextMenu.x, window.innerWidth - 200),
-            top: Math.min(contextMenu.y, window.innerHeight - 160),
+            left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 200)),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 180)),
           }}
           onClick={(event) => event.stopPropagation()}
+          onKeyDown={handleMenuKeyDown}
         >
           {contextMenu.entry.kind === 'dir' && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               onClick={() => {
-                setContextMenu(null)
+                closeContextMenu(true)
                 useFileExplorerStore.getState().navigateTo(joinPath(currentPath, contextMenu.entry.name))
               }}
             >
@@ -602,9 +842,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           {contextMenu.entry.kind === 'file' && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               disabled={busy}
               onClick={() => {
-                setContextMenu(null)
+                closeContextMenu(true)
                 startDownload(contextMenu.entry, 'save')
               }}
             >
@@ -614,9 +856,11 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           {isUlgFile(contextMenu.entry) && (
             <button
               type="button"
+              role="menuitem"
+              tabIndex={-1}
               disabled={busy}
               onClick={() => {
-                setContextMenu(null)
+                closeContextMenu(true)
                 startDownload(contextMenu.entry, 'analyze')
               }}
             >
@@ -625,10 +869,13 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
           )}
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             className="is-danger"
-            disabled={busy}
+            disabled={busy || !canControl}
             onClick={() => {
-              setContextMenu(null)
+              contextTriggerRef.current?.focus()
+              closeContextMenu(false)
               setDeleteDialogOpen(true)
             }}
           >
@@ -637,56 +884,36 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
         </div>
       )}
 
-      {/* Delete confirmation dialog */}
-      {deleteDialogOpen && (
-        <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
-          <div className="mc-card mc-modal">
-            <h3 className="mc-section-title" style={{ color: 'var(--danger)' }}>
-              {t('flightLogs.deleteTitle')}
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              {t('flightLogs.deleteConfirm', { count: selectedEntries.length })}
-              {t('flightLogs.deleteConfirmText')}
-            </p>
-            <ul className="mc-modal__list mc-mono">
-              {selectedEntries.slice(0, 8).map((entry) => (
-                <li key={entry.name}>
-                  {entry.kind === 'dir' ? '📁 ' : ''}{joinPath(currentPath, entry.name)}
-                </li>
-              ))}
-              {selectedEntries.length > 8 && <li>{t('flightLogs.andMore', { count: selectedEntries.length - 8 })}</li>}
-            </ul>
-            <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
-              <input
-                type="checkbox"
-                checked={deleteAcknowledged}
-                onChange={(event) => setDeleteAcknowledged(event.target.checked)}
-              />
-              {t('flightLogs.deleteAcknowledge')}
-            </label>
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                type="button"
-                className="mc-btn mc-btn-ghost"
-                onClick={() => {
-                  setDeleteDialogOpen(false)
-                  setDeleteAcknowledged(false)
-                }}
-              >
-                {t('flightLogs.cancel')}
-              </button>
-              <button
-                type="button"
-                className="mc-btn mc-btn-danger"
-                disabled={!deleteAcknowledged}
-                onClick={confirmDelete}
-              >
-                <Icon name="trash" size={14} /> {t('flightLogs.permanentDelete')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        confirmationKey={deleteConfirmationKey}
+        title={t('flightLogs.deleteTitle')}
+        consequence={t('flightLogs.deleteConfirm', { count: selectedEntries.length })}
+        commitmentLabel={t('flightLogs.deleteAcknowledge')}
+        confirmLabel={t('flightLogs.permanentDelete')}
+        cancelLabel={t('flightLogs.cancel')}
+        closeLabel={t('common.close')}
+        confirmIcon={<Icon name="trash" size={14} />}
+        busy={deletion?.status === 'active'}
+        busyLabel={t('flightLogs.deleting', {
+          done: deletion?.done ?? 0,
+          total: deletion?.total || selectedEntries.length,
+        })}
+        details={(
+          <ul className="mc-modal__list mc-mono">
+            {selectedEntries.slice(0, 8).map((entry) => (
+              <li key={entry.name}>
+                {entry.kind === 'dir' ? '📁 ' : ''}{joinPath(currentPath, entry.name)}
+              </li>
+            ))}
+            {selectedEntries.length > 8 && (
+              <li>{t('flightLogs.andMore', { count: selectedEntries.length - 8 })}</li>
+            )}
+          </ul>
+        )}
+        onCancel={() => setDeleteDialogOpen(false)}
+        onConfirm={confirmDelete}
+      />
     </div>
   )
 }

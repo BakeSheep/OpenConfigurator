@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
 import { availableModes, vehicleCapabilities } from '../../../shared/vehicleProfiles'
@@ -17,13 +17,24 @@ import {
 } from '../../utils/connectionPresets'
 import { useGamepadStore } from '../../stores/gamepadStore'
 import Icon from '../ui/Icon'
+import { IconButton } from '../ui/Button'
+import ArmSafetyControl from '../safety/ArmSafetyControl'
 import { formatGpsCoordinate, gpsFixLabel, gpsHasPosition } from '../../utils/gpsTelemetry'
 
 const radToDeg = (r: number) => r * 180 / Math.PI
+type StatusMenu = 'mode' | 'arm' | 'gps' | 'tools'
+const statusMenuTriggerIds: Record<StatusMenu, string> = {
+  arm: 'mc-topbar-arm-trigger',
+  mode: 'mc-topbar-mode-trigger',
+  gps: 'mc-topbar-gps-trigger',
+  tools: 'mc-topbar-tools-trigger',
+}
 
 export default function Topbar() {
   const { t } = useTranslation()
   const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const { theme, toggleTheme } = useThemeStore()
   const { language, toggleLanguage } = useLanguageStore()
   const isDemo = appRuntimeMode === 'demo'
@@ -41,13 +52,12 @@ export default function Topbar() {
   const [presets, setPresets] = useState(loadConnectionPresets)
   const [connectDropdown, setConnectDropdown] = useState(false)
   const [rebootConfirm, setRebootConfirm] = useState(false)
-  const [activeStatusMenu, setActiveStatusMenu] = useState<'mode' | 'arm' | 'gps' | null>(null)
-  const [armDragProgress, setArmDragProgress] = useState(0)
-  const [armDragging, setArmDragging] = useState(false)
+  const [activeStatusMenu, setActiveStatusMenu] = useState<StatusMenu | null>(null)
   const topbarRef = useRef<HTMLElement | null>(null)
+  const toolsMenuRef = useRef<HTMLDivElement | null>(null)
+  const modeMenuRef = useRef<HTMLDivElement | null>(null)
   const rebootTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const armSliderRef = useRef<HTMLButtonElement | null>(null)
-  const armDraggingRef = useRef(false)
+  const rebootSafetyKeyRef = useRef<string | null>(null)
 
   const connectPreset = async (preset: ConnectionPreset) => {
     setConnectDropdown(false)
@@ -164,10 +174,17 @@ export default function Topbar() {
     .filter((entry) => /arm|arming|pre-arm|preflight|解锁|预检/i.test(entry.text))
     .slice(0, 4)
 
+  const closeStatusMenuAndRestoreFocus = (menu: StatusMenu) => {
+    setActiveStatusMenu(null)
+    requestAnimationFrame(() => document.getElementById(statusMenuTriggerIds[menu])?.focus())
+  }
+
   const requestVehicleReboot = () => {
     if (!vehicleReady || !canControl || !caps.writeOperations || armed) return
     if (!rebootConfirm) {
+      if (safetyAuthorityId === null) return
       setRebootConfirm(true)
+      rebootSafetyKeyRef.current = `${safetyAuthorityId}:${safetyEpoch}`
       if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
       rebootTimerRef.current = setTimeout(() => setRebootConfirm(false), 3000)
       return
@@ -175,11 +192,28 @@ export default function Topbar() {
     if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
     rebootTimerRef.current = null
     setRebootConfirm(false)
+    const connection = useConnectionStore.getState()
+    const telemetry = useTelemetryStore.getState()
+    const liveCaps = vehicleCapabilities(telemetry.vehicleIdentity)
+    if (
+      !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || rebootSafetyKeyRef.current !== `${connection.safetyAuthorityId}:${connection.safetyEpoch}`
+      || !liveCaps.writeOperations
+      || telemetry.status?.armed === true
+    ) return
+    rebootSafetyKeyRef.current = null
     sendClientMessage({
       type: 'reboot_vehicle',
       requestId: `reboot-${Date.now().toString(36)}`,
       safetyConfirmation: 'reboot_flight_controller',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
+    closeStatusMenuAndRestoreFocus('tools')
   }
 
   useEffect(() => () => {
@@ -188,10 +222,20 @@ export default function Topbar() {
 
   useEffect(() => {
     const closeOnOutside = (event: PointerEvent) => {
-      if (topbarRef.current && !topbarRef.current.contains(event.target as Node)) setActiveStatusMenu(null)
+      if (topbarRef.current && !topbarRef.current.contains(event.target as Node)) {
+        setActiveStatusMenu(null)
+        setConnectDropdown(false)
+      }
     }
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActiveStatusMenu(null)
+      if (event.key !== 'Escape') return
+      setConnectDropdown(false)
+      setActiveStatusMenu((current) => {
+        if (current) {
+          requestAnimationFrame(() => document.getElementById(statusMenuTriggerIds[current])?.focus())
+        }
+        return null
+      })
     }
     document.addEventListener('pointerdown', closeOnOutside)
     window.addEventListener('keydown', closeOnEscape)
@@ -202,10 +246,60 @@ export default function Topbar() {
   }, [])
 
   useEffect(() => {
-    setArmDragProgress(0)
-    setArmDragging(false)
-    armDraggingRef.current = false
-  }, [armed, canArm, vehicleReady])
+    setRebootConfirm(false)
+    rebootSafetyKeyRef.current = null
+    if (rebootTimerRef.current) clearTimeout(rebootTimerRef.current)
+    rebootTimerRef.current = null
+  }, [safetyAuthorityId, safetyEpoch])
+
+  useEffect(() => {
+    if (activeStatusMenu !== 'tools') return
+    const firstItem = toolsMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')
+    firstItem?.focus()
+  }, [activeStatusMenu])
+
+  useEffect(() => {
+    if (activeStatusMenu !== 'mode') return
+    const selected = modeMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"][data-active="true"]')
+    const first = modeMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')
+    ;(selected ?? first)?.focus()
+  }, [activeStatusMenu])
+
+  const handleToolsMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'),
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement)
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowDown'
+          ? (currentIndex + 1 + items.length) % items.length
+          : (currentIndex - 1 + items.length) % items.length
+    items[nextIndex]?.focus()
+  }
+
+  const handleModeMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])'),
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    const currentIndex = Math.max(0, items.indexOf(document.activeElement as HTMLElement))
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? items.length - 1
+        : event.key === 'ArrowDown' || event.key === 'ArrowRight'
+          ? (currentIndex + 1) % items.length
+          : (currentIndex - 1 + items.length) % items.length
+    items[nextIndex]?.focus()
+  }
 
   const selectMode = (modeId: number) => {
     if (!vehicleReady || !canControl) return
@@ -216,79 +310,48 @@ export default function Topbar() {
       requestId: `mode-${Date.now().toString(36)}`,
       data: { modeId },
     })
-    setActiveStatusMenu(null)
+    closeStatusMenuAndRestoreFocus('mode')
   }
 
-  const commitArmChange = () => {
-    if (confirmedArmed) {
-      if (!canChangeArmState) return
-      sendClientMessage({
-        type: 'command',
-        requestId: `disarm-${Date.now().toString(36)}`,
-        cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
-        params: [0, 0, 0, 0, 0, 0, 0],
-        safetyConfirmation: 'disarm',
-      })
-    } else {
-      if (!canArm) return
-      sendClientMessage({
-        type: 'command',
-        requestId: `arm-${Date.now().toString(36)}`,
-        cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
-        params: [1, 0, 0, 0, 0, 0, 0],
-        safetyConfirmation: 'arm',
-      })
-    }
-    setArmDragProgress(0)
-    setArmDragging(false)
-    armDraggingRef.current = false
-    setActiveStatusMenu(null)
+  const requestArm = () => {
+    const connection = useConnectionStore.getState()
+    const telemetry = useTelemetryStore.getState()
+    const liveCaps = vehicleCapabilities(telemetry.vehicleIdentity)
+    if (
+      !canArm
+      || !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || !liveCaps.writeOperations
+      || !liveCaps.arm
+      || telemetry.status?.armed === true
+      || telemetry.preflightCheck === false
+      || telemetry.sensorsHealthy === false
+    ) return
+    sendClientMessage({
+      type: 'command',
+      requestId: `arm-${Date.now().toString(36)}`,
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [1, 0, 0, 0, 0, 0, 0],
+      safetyConfirmation: 'arm',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
+    })
+    closeStatusMenuAndRestoreFocus('arm')
   }
 
-  const armProgressFromPointer = (clientX: number) => {
-    const rect = armSliderRef.current?.getBoundingClientRect()
-    if (!rect) return 0
-    const thumbCenter = 25
-    const travel = Math.max(1, rect.width - thumbCenter * 2)
-    return Math.max(0, Math.min(1, (clientX - rect.left - thumbCenter) / travel))
-  }
-
-  const startArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!canChangeArmState || (!confirmedArmed && !canArm)) return
-    const startProgress = armProgressFromPointer(event.clientX)
-    if (startProgress > 0.18) return
-    event.currentTarget.setPointerCapture(event.pointerId)
-    armDraggingRef.current = true
-    setArmDragging(true)
-    setArmDragProgress(startProgress)
-  }
-
-  const moveArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!armDraggingRef.current) return
-    setArmDragProgress(armProgressFromPointer(event.clientX))
-  }
-
-  const finishArmDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!armDraggingRef.current) return
-    const progress = armProgressFromPointer(event.clientX)
-    armDraggingRef.current = false
-    setArmDragging(false)
-    if (progress >= 0.88) commitArmChange()
-    else setArmDragProgress(0)
-  }
-
-  const cancelArmDrag = () => {
-    armDraggingRef.current = false
-    setArmDragging(false)
-    setArmDragProgress(0)
-  }
-
-  const handleArmSliderKey = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home') return
-    event.preventDefault()
-    const next = event.key === 'Home' ? 0 : Math.max(0, Math.min(1, armDragProgress + (event.key === 'ArrowRight' ? 0.2 : -0.2)))
-    if (next >= 0.99) commitArmChange()
-    else setArmDragProgress(next)
+  const requestDisarm = () => {
+    if (!canChangeArmState) return
+    sendClientMessage({
+      type: 'command',
+      requestId: `disarm-${Date.now().toString(36)}`,
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [0, 0, 0, 0, 0, 0, 0],
+      safetyConfirmation: 'disarm',
+    })
+    closeStatusMenuAndRestoreFocus('arm')
   }
 
   return (
@@ -301,10 +364,12 @@ export default function Topbar() {
       <div className="mc-topbar__status" aria-live="polite">
         <div className="mc-topbar__status-item mc-topbar__status-menu">
           <button
+            id="mc-topbar-arm-trigger"
             type="button"
             className="mc-topbar__status-trigger"
-            aria-haspopup="menu"
+            aria-haspopup="dialog"
             aria-expanded={activeStatusMenu === 'arm'}
+            aria-controls="mc-topbar-arm-popover"
             onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'arm' ? null : 'arm') }}
             style={{ color: armTone }}
           >
@@ -313,40 +378,29 @@ export default function Topbar() {
             <Icon name="chevronDown" size={11} />
           </button>
           {activeStatusMenu === 'arm' && (
-            <section className="mc-topbar-menu mc-topbar-menu--arm" aria-label={t('topbar.arm.armed')}>
+            <section id="mc-topbar-arm-popover" className="mc-topbar-menu mc-topbar-menu--arm" role="dialog" aria-label={t('topbar.arm.armed')}>
               <header>
-                <div><strong>{armLabel}</strong><small>{canChangeArmState && (confirmedArmed || canArm) ? t('topbar.arm.dragToConfirm') : t('topbar.arm.operationNotAllowed')}</small></div>
-                <span style={{ color: armTone }}>{confirmedArmed ? 'ARMED' : canArm ? 'READY' : 'BLOCKED'}</span>
+                <div><strong>{armLabel}</strong><small>{confirmedArmed ? t('topbar.arm.disarmImmediate') : canArm ? t('topbar.arm.dragToConfirm') : t('topbar.arm.operationNotAllowed')}</small></div>
+                <span style={{ color: armTone }}>{confirmedArmed ? t('topbar.arm.stateArmed') : canArm ? t('topbar.arm.stateReady') : t('topbar.arm.stateBlocked')}</span>
               </header>
-              {canChangeArmState && (confirmedArmed || canArm) ? (
-                <div className="mc-arm-control">
-                  <button
-                    ref={armSliderRef}
-                    type="button"
-                    role="slider"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(armDragProgress * 100)}
-                    aria-label={confirmedArmed ? t('topbar.arm.slideToDisarm') : t('topbar.arm.slideToArm')}
-                    className="mc-arm-slider"
-                    data-armed={confirmedArmed}
-                    data-dragging={armDragging}
-                    disabled={!canChangeArmState}
-                    onPointerDown={startArmDrag}
-                    onPointerMove={moveArmDrag}
-                    onPointerUp={finishArmDrag}
-                    onPointerCancel={cancelArmDrag}
-                    onLostPointerCapture={() => { if (armDraggingRef.current) cancelArmDrag() }}
-                    onKeyDown={handleArmSliderKey}
-                    style={{
-                      '--arm-slide-progress': armDragProgress,
-                      '--arm-slide-tone': confirmedArmed ? 'var(--success)' : 'var(--info)',
-                    } as CSSProperties}
-                  >
-                    <span className="mc-arm-slider__fill" />
-                    <i aria-hidden="true">››</i>
-                  </button>
-                </div>
+              {confirmedArmed || (canChangeArmState && canArm) ? (
+                <>
+                  <div className="mc-arm-control">
+                    <ArmSafetyControl
+                      armed={confirmedArmed}
+                      canArm={canArm}
+                      canChangeArmState={canChangeArmState}
+                      onArm={requestArm}
+                      onDisarm={requestDisarm}
+                      safetyKey={`${safetyAuthorityId ?? '-'}:${safetyEpoch}`}
+                    />
+                  </div>
+                  {confirmedArmed && !canChangeArmState && (
+                    <div className="mc-arm-errors" role="status">
+                      <p>{!canControl ? t('topbar.arm.readOnly') : t('topbar.arm.noWriteOps')}</p>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="mc-arm-errors" role="alert">
                   {!vehicleReady && <p>{t('topbar.arm.noHeartbeat')}</p>}
@@ -363,10 +417,12 @@ export default function Topbar() {
 
         <div className="mc-topbar__status-item mc-topbar__status-menu">
           <button
+            id="mc-topbar-mode-trigger"
             type="button"
             className="mc-topbar__status-trigger"
             aria-haspopup="menu"
             aria-expanded={activeStatusMenu === 'mode'}
+            aria-controls="mc-topbar-mode-menu"
             onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'mode' ? null : 'mode') }}
           >
             <span className="mc-topbar__status-label">{t('topbar.mode.label')}</span>
@@ -376,7 +432,7 @@ export default function Topbar() {
           {activeStatusMenu === 'mode' && (
             <section className="mc-topbar-menu mc-topbar-menu--mode" aria-label={t('topbar.mode.flightMode')}>
               <header><div><strong>{t('topbar.mode.flightMode')}</strong><small>{vehicleReady && canControl ? t('topbar.mode.selectHint') : t('topbar.mode.notReadyOrNoControl')}</small></div></header>
-              <div role="menu">
+              <div ref={modeMenuRef} id="mc-topbar-mode-menu" role="menu" onKeyDown={handleModeMenuKeyDown}>
                 {availableModes(vehicleIdentity).length === 0 && (
                   <p className="px-3 py-2 text-[11px]" style={{ gridColumn: '1 / -1', color: 'var(--text-secondary)' }}>
                     {vehicleReady ? t('topbar.mode.notSupported') : t('topbar.mode.connectToShow')}
@@ -387,6 +443,7 @@ export default function Topbar() {
                     key={mode.id}
                     type="button"
                     role="menuitem"
+                    tabIndex={vehicle?.modeId === mode.id ? 0 : -1}
                     disabled={!vehicleReady || !canControl}
                     data-active={vehicle?.modeId === mode.id}
                     onClick={() => selectMode(mode.id)}
@@ -416,10 +473,12 @@ export default function Topbar() {
             )}
             <div className="mc-topbar__status-item mc-topbar__status-menu mc-topbar__status-item--secondary">
               <button
+                id="mc-topbar-gps-trigger"
                 type="button"
                 className="mc-topbar__status-trigger"
-                aria-haspopup="menu"
+                aria-haspopup="dialog"
                 aria-expanded={activeStatusMenu === 'gps'}
+                aria-controls="mc-topbar-gps-popover"
                 onClick={() => { setConnectDropdown(false); setActiveStatusMenu((current) => current === 'gps' ? null : 'gps') }}
               >
                 <Icon name="satellite" size={13} />
@@ -427,7 +486,7 @@ export default function Topbar() {
                 <Icon name="chevronDown" size={11} />
               </button>
               {activeStatusMenu === 'gps' && (
-                <section className="mc-topbar-menu mc-topbar-menu--gps" aria-label={t('topbar.gps.details')}>
+                <section id="mc-topbar-gps-popover" className="mc-topbar-menu mc-topbar-menu--gps" role="dialog" aria-label={t('topbar.gps.details')}>
                   <header>
                     <div><strong>{t('topbar.gps.details')}</strong><small>{gpsLive ? t('topbar.gps.dataFromRaw') : t('topbar.gps.waiting')}</small></div>
                     <span data-fix={hasGpsPosition || undefined}>{gpsLive ? gpsFixLabel(gps.fix_type) : t('topbar.gps.noData')}</span>
@@ -459,48 +518,83 @@ export default function Topbar() {
       </div>
 
       <div className="mc-topbar__actions">
-        <a
-          className="mc-topbar__link"
-          href="https://github.com/BakeSheep/OpenConfigurator"
-          target="_blank"
-          rel="noreferrer"
-          title={t('topbar.github.title')}
-          aria-label={t('topbar.github.ariaLabel')}
-        >
-          <Icon name="github" size={16} />
-        </a>
-        <button
-          type="button"
-          className="mc-topbar__link"
-          title={language === 'zh' ? t('topbar.language.toEnglish') : t('topbar.language.toChinese')}
-          onClick={toggleLanguage}
-        >
-          <span style={{ fontSize: 11, fontWeight: 600 }}>{language === 'zh' ? 'EN' : '中'}</span>
-        </button>
-        <button
-          type="button"
-          className="mc-topbar__link"
-          title={theme === 'dark' ? t('topbar.theme.toLight') : t('topbar.theme.toDark')}
-          onClick={toggleTheme}
-        >
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
-        </button>
-        <button
-          type="button"
-          className="mc-topbar__reboot"
-          data-confirm={rebootConfirm || undefined}
-          aria-pressed={rebootConfirm}
-          disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
-          title={!caps.writeOperations ? t('topbar.reboot.notSupported') : armed ? t('topbar.reboot.armed') : rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
-          aria-label={rebootConfirm ? t('topbar.reboot.confirmTitle') : t('topbar.reboot.title')}
-          onClick={requestVehicleReboot}
-        >
-          <span className="mc-topbar__reboot-icon" aria-hidden="true">
-            <Icon name="refresh" size={15} />
-            {rebootConfirm && <Icon className="mc-topbar__reboot-confirm-badge" name="check" size={9} strokeWidth={2.8} />}
-          </span>
-          <span className="mc-topbar__reboot-label">{rebootConfirm ? t('topbar.reboot.confirm') : t('topbar.reboot.label')}</span>
-        </button>
+        <div className="mc-topbar__tools">
+          <IconButton
+            id="mc-topbar-tools-trigger"
+            className="mc-topbar__tools-trigger"
+            tone="quiet"
+            label={t('topbar.tools.open')}
+            icon={<Icon name="settings" size={16} />}
+            aria-haspopup="menu"
+            aria-expanded={activeStatusMenu === 'tools'}
+            aria-controls="mc-topbar-tools-menu"
+            onClick={() => {
+              setConnectDropdown(false)
+              setActiveStatusMenu((current) => current === 'tools' ? null : 'tools')
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown') {
+                event.preventDefault()
+                setConnectDropdown(false)
+                setActiveStatusMenu('tools')
+              }
+            }}
+          />
+          {activeStatusMenu === 'tools' && (
+            <div
+              ref={toolsMenuRef}
+              id="mc-topbar-tools-menu"
+              className="mc-topbar-menu mc-topbar-menu--tools"
+              role="menu"
+              aria-label={t('topbar.tools.menuLabel')}
+              onKeyDown={handleToolsMenuKeyDown}
+            >
+              <a
+                href="https://github.com/BakeSheep/OpenConfigurator"
+                target="_blank"
+                rel="noreferrer"
+                role="menuitem"
+                onClick={() => closeStatusMenuAndRestoreFocus('tools')}
+              >
+                <Icon name="github" size={16} />
+                <span>{t('topbar.tools.github')}</span>
+                <Icon name="external" size={13} />
+              </a>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { toggleLanguage(); closeStatusMenuAndRestoreFocus('tools') }}
+              >
+                <span className="mc-topbar-menu__language" aria-hidden="true">{language === 'zh' ? 'EN' : '中'}</span>
+                <span>{language === 'zh' ? t('topbar.language.toEnglish') : t('topbar.language.toChinese')}</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => { toggleTheme(); closeStatusMenuAndRestoreFocus('tools') }}
+              >
+                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={16} />
+                <span>{theme === 'dark' ? t('topbar.theme.toLight') : t('topbar.theme.toDark')}</span>
+              </button>
+              <div className="mc-topbar-menu__separator" role="separator" />
+              <button
+                type="button"
+                role="menuitem"
+                className="mc-topbar-menu__reboot"
+                data-confirm={rebootConfirm || undefined}
+                disabled={!vehicleReady || !canControl || !caps.writeOperations || armed}
+                title={!caps.writeOperations ? t('topbar.reboot.notSupported') : armed ? t('topbar.reboot.armed') : rebootConfirm ? t('topbar.reboot.confirmAgain') : t('topbar.reboot.title')}
+                onClick={requestVehicleReboot}
+              >
+                <span className="mc-topbar__reboot-icon" aria-hidden="true">
+                  <Icon name="refresh" size={16} />
+                  {rebootConfirm && <Icon className="mc-topbar__reboot-confirm-badge" name="check" size={9} strokeWidth={2.8} />}
+                </span>
+                <span>{rebootConfirm ? t('topbar.reboot.confirm') : t('topbar.reboot.title')}</span>
+              </button>
+            </div>
+          )}
+        </div>
         <div className="relative">
           {isDemo ? (
             // Static preview: read-only badge, no REST scan/connect/disconnect.
@@ -536,28 +630,37 @@ export default function Topbar() {
               <p className="mb-1.5 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('topbar.connect.currentConnection')}</p>
               <div className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--bg-tertiary)' }}>
                 <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? t('topbar.connect.bluetoothSPP') : t('topbar.connect.usbSerial')}</span>
-                <span className="ml-1.5 mc-mono text-[10px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
+                <span className="ml-1.5 mc-mono text-[11px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
               </div>
-              <button type="button" className="mc-btn mc-btn-danger w-full py-1.5 text-[11px]" onClick={disconnectTransport}>{t('topbar.connect.disconnect')}</button>
-              <button type="button" className="mc-btn mc-btn-ghost mt-1.5 w-full py-1.5 text-[11px]" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>{t('topbar.connect.manage')}</button>
+              <button type="button" className="mc-btn mc-btn-danger mc-btn--compact w-full" onClick={disconnectTransport}>{t('topbar.connect.disconnect')}</button>
+              <button type="button" className="mc-btn mc-btn-ghost mc-btn--compact mt-1.5 w-full" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>{t('topbar.connect.manage')}</button>
             </div>
           )}
           {connectDropdown && !transportOpen && (
             <div className="mc-topbar__arm-dropdown" style={{ right: 0, minWidth: 200 }} onMouseLeave={() => setConnectDropdown(false)}>
               <div className="flex items-center justify-between mb-1.5">
                 <p className="text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('topbar.connect.selectDevice')}</p>
-                <button type="button" className="text-[15px] font-bold leading-none" style={{ color: 'var(--accent)' }} onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }} title={t('topbar.connect.addDevice')}>+</button>
+                <button type="button" className="text-[14px] font-bold leading-none" style={{ color: 'var(--accent)' }} onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }} title={t('topbar.connect.addDevice')}>+</button>
               </div>
               {presets.length === 0 && (
-                <p className="text-[10px] py-1.5" style={{ color: 'var(--text-disabled)' }}>{t('topbar.connect.noPresets')}</p>
+                <p className="text-[11px] py-1.5" style={{ color: 'var(--text-secondary)' }}>{t('topbar.connect.noPresets')}</p>
               )}
               {presets.map((p) => (
                 <div key={p.id} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--bg-hover)] cursor-pointer group">
                   <button type="button" className="flex-1 text-left text-[11px]" style={{ color: 'var(--text-primary)' }} onClick={() => connectPreset(p)}>
                     <span className="font-semibold">{p.name}</span>
-                    <span className="ml-1.5 mc-mono text-[9px]" style={{ color: 'var(--text-disabled)' }}>{p.port}</span>
+                    <span className="ml-1.5 mc-mono text-[11px]" style={{ color: 'var(--text-secondary)' }}>{p.port}</span>
                   </button>
-                  <button type="button" className="opacity-0 group-hover:opacity-100 text-[10px]" style={{ color: 'var(--danger)' }} onClick={() => removePreset(p.id)}>×</button>
+                  <button
+                    type="button"
+                    className="mc-topbar__preset-delete text-[11px]"
+                    style={{ color: 'var(--danger)' }}
+                    aria-label={`${t('common.delete')} ${p.name}`}
+                    title={`${t('common.delete')} ${p.name}`}
+                    onClick={() => removePreset(p.id)}
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
             </div>

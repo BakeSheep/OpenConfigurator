@@ -3,7 +3,8 @@ import { PageHeader } from '../components/ui/PageFrame'
 import EscConnectPanel from '../components/esc/EscConnectPanel'
 import EscSettingsWorkbench from '../components/esc/EscSettingsWorkbench'
 import EscLogConsole from '../components/esc/EscLogConsole'
-import Icon from '../components/ui/Icon'
+import { Notice } from '../components/ui/Feedback'
+import StatePanel from '../components/ui/StatePanel'
 import { useEscStore } from '../stores/escStore'
 
 /** ESC configuration workspace, embedded directly in the vehicle settings page. */
@@ -17,32 +18,21 @@ export default function EscPage({ embedded = false }: { embedded?: boolean }) {
 
   const content = (
     <div className="mc-esc-page">
-      <EscConnectPanel />
-
       {lastError && (
-        <div className="mc-card mc-esc-alert" role="alert">
-          <Icon name="warning" size={17} />
-          <div>
-            <strong>{t('esc.commFailure')}</strong>
-            <span>{lastError.message}</span>
-          </div>
-        </div>
+        <Notice tone="danger" title={t('esc.commFailure')}>{lastError.message}</Notice>
       )}
+
+      <EscConnectPanel />
 
       {active && (
         devices.length > 0 ? (
           <EscSettingsWorkbench />
         ) : (
-          <section className="mc-esc-scan-stage" aria-live="polite">
-            {!scanFailed && <span className="mc-esc-scan-status__pulse" />}
-            <div>
-              <span className="mc-eyebrow">DISCOVERY</span>
-              <strong>{scanFailed ? t('esc.scanFailed') : t('esc.buildingWorkspace')}</strong>
-              <p>{scanFailed
-                ? t('esc.scanFailedHint')
-                : t('esc.identifyingMcu')}</p>
-            </div>
-          </section>
+          <StatePanel
+            kind={scanFailed ? 'error' : 'loading'}
+            title={scanFailed ? t('esc.scanFailed') : t('esc.buildingWorkspace')}
+            description={scanFailed ? t('esc.scanFailedHint') : t('esc.identifyingMcu')}
+          />
         )
       )}
 

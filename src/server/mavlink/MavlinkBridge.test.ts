@@ -18,6 +18,10 @@ const ALL_MOTOR_TEST_QUEUE_TAGS = Array.from(
   { length: 12 },
   (_, index) => `motor-test-start:${index + 1}`,
 )
+const TEST_SAFETY_EXPECTATION = {
+  expectedSafetyEpoch: 1,
+  expectedSafetyAuthorityId: '00000000-0000-4000-8000-000000000001',
+} as const
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -888,6 +892,7 @@ const rebootResult = bridge.handleClientMessage({
   type: 'reboot_vehicle',
   requestId: 'reboot-1',
   safetyConfirmation: 'reboot_flight_controller',
+  ...TEST_SAFETY_EXPECTATION,
 })
 assert.equal(rebootResult.vehicleRebootQueued, true)
 const rebootFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
@@ -2059,6 +2064,7 @@ bridge.destroy()
     type: 'reboot_vehicle',
     requestId: 'generic-reboot',
     safetyConfirmation: 'reboot_flight_controller',
+    ...TEST_SAFETY_EXPECTATION,
   })
   assert.equal(genericRebootResult.vehicleRebootQueued, false)
   genericBridge.handleClientMessage({
@@ -2071,11 +2077,13 @@ bridge.destroy()
     requestId: 'generic-delete',
     data: { entries: [{ path: '/fs/microsd/log/a.ulg', kind: 'file' }] },
     safetyConfirmation: 'delete_files',
+    ...TEST_SAFETY_EXPECTATION,
   })
   genericBridge.handleClientMessage({
     type: 'log_erase',
     requestId: 'generic-erase',
     safetyConfirmation: 'erase_all_logs',
+    ...TEST_SAFETY_EXPECTATION,
   })
   await wait(0)
   assert.equal(genericConnection.frames.length, genericMutationFrames)
@@ -2134,6 +2142,7 @@ bridge.destroy()
     type: 'reboot_vehicle',
     requestId: 'plane-reboot',
     safetyConfirmation: 'reboot_flight_controller',
+    ...TEST_SAFETY_EXPECTATION,
   })
   assert.equal(planeRebootResult.vehicleRebootQueued, false)
   planeBridge.handleClientMessage({
@@ -2146,11 +2155,13 @@ bridge.destroy()
     requestId: 'plane-delete',
     data: { entries: [{ path: '/fs/microsd/log/a.bin', kind: 'file' }] },
     safetyConfirmation: 'delete_files',
+    ...TEST_SAFETY_EXPECTATION,
   })
   planeBridge.handleClientMessage({
     type: 'log_erase',
     requestId: 'plane-erase',
     safetyConfirmation: 'erase_all_logs',
+    ...TEST_SAFETY_EXPECTATION,
   })
   await wait(0)
   assert.equal(mutationFrameCount(), beforeMutations)

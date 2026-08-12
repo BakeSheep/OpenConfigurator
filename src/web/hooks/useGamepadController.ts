@@ -9,7 +9,12 @@ import {
   type GamepadMapping,
 } from '../stores/gamepadStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
-import { canRepeatGamepadAction, resolveGamepadModeAction } from '../utils/gamepadActions'
+import {
+  canRepeatGamepadAction,
+  requiresGamepadArmHold,
+  resolveGamepadArmHoldTransition,
+  resolveGamepadModeAction,
+} from '../utils/gamepadActions'
 import { smoothGamepadThrottle } from './gamepadThrottle'
 
 /**
@@ -23,6 +28,8 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
   const lastAxisSendRef = useRef(0)
   const lastButtonFireRef = useRef<Record<number, number>>({})
   const previousButtonsRef = useRef<boolean[]>([])
+  const armHoldStartRef = useRef<Record<number, number>>({})
+  const armHoldSafetyKeyRef = useRef('')
   // null means manual input has not produced an active frame yet. The first
   // frame must start at the physical stick position rather than slewing from
   // an arbitrary default, which could command a transient non-zero throttle.
@@ -50,7 +57,7 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
   }), [])
 
   useEffect(() => {
-    const fireAction = (action: GamepadActionId, button: number) => {
+    const fireAction = (action: GamepadActionId, button: number, armingConfirmed = false) => {
       if (action === 'none') return
       const gamepadActions = useGamepadStore.getState()
       const armed = useTelemetryStore.getState().status?.armed ?? false
@@ -62,11 +69,30 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
       })
 
       if (action === 'arm' || (action === 'toggle_arm' && !armed)) {
-        // Physical controller arming mirrors an RC transmitter's arm switch:
-        // a single deliberate press fires immediately, no double-press
-        // confirmation. Button presses only reach here when the user has
-        // manually enabled gamepad control on a ready, controllable vehicle.
-        const sent = armCommand(true)
+        if (!armingConfirmed) return
+        const connection = useConnectionStore.getState()
+        const telemetry = useTelemetryStore.getState()
+        const caps = vehicleCapabilities(telemetry.vehicleIdentity)
+        const liveSafetyKey = `${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`
+        if (
+          !connection.vehicleReady
+          || !connection.canControl
+          || connection.safetyAuthorityId === null
+          || armHoldSafetyKeyRef.current !== liveSafetyKey
+          || !caps.writeOperations
+          || !caps.arm
+          || telemetry.status?.armed === true
+          || telemetry.preflightCheck === false
+          || telemetry.sensorsHealthy === false
+        ) return
+        const sent = sendRef.current({
+          type: 'command',
+          cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+          params: [1, 0, 0, 0, 0, 0, 0],
+          safetyConfirmation: 'arm',
+          expectedSafetyEpoch: connection.safetyEpoch,
+          expectedSafetyAuthorityId: connection.safetyAuthorityId,
+        })
         gamepadActions.setActionNotice(sent
           ? t('joystick.actionNotice.armSent', { button })
           : t('joystick.actionNotice.sendFailed', { button }))
@@ -112,6 +138,14 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
       if (gamepad) {
         if (!current.connected) current.setConnected(true, gamepad.id)
         const rawButtons = gamepad.buttons.map((button) => button.pressed)
+        const liveSafetyKey = `${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`
+        if (liveSafetyKey !== armHoldSafetyKeyRef.current) {
+          armHoldSafetyKeyRef.current = liveSafetyKey
+          armHoldStartRef.current = {}
+          // A held button must be released before it can start confirmation in
+          // the new authority epoch.
+          previousButtonsRef.current = rawButtons
+        }
         current.setAxes(Array.from(gamepad.axes))
         current.setButtons(rawButtons)
 
@@ -121,6 +155,29 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
           rawButtons.forEach((pressed, index) => {
             const assignment = current.buttonAssignments[index]
             const downTransition = pressed && !previousButtonsRef.current[index]
+            const armed = useTelemetryStore.getState().status?.armed ?? false
+            const requiresArmHold = assignment && requiresGamepadArmHold(assignment.action, armed)
+            if (requiresArmHold) {
+              const transition = resolveGamepadArmHoldTransition(
+                pressed,
+                previousButtonsRef.current[index] ?? false,
+                armHoldStartRef.current[index],
+                now,
+              )
+              if (transition.kind === 'started') {
+                armHoldStartRef.current[index] = transition.startedAt
+                current.setActionNotice(t('joystick.actionNotice.armHoldToConfirm', { button: index }))
+              } else if (transition.kind === 'confirmed') {
+                delete armHoldStartRef.current[index]
+                lastButtonFireRef.current[index] = now
+                fireAction(assignment.action, index, true)
+              } else if (transition.kind === 'cancelled') {
+                delete armHoldStartRef.current[index]
+                current.setActionNotice(t('joystick.actionNotice.armCancelled', { button: index }))
+              }
+              return
+            }
+            delete armHoldStartRef.current[index]
             // Arm-class actions fire on the press edge only, regardless of any
             // (legacy/corrupted) repeat flag: holding a button must never
             // re-send arm/disarm at the button frequency.
@@ -185,10 +242,12 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
           // A disable or loss of the FC controller lease ends this input
           // stream. Re-enabling must initialize from the then-current stick.
           smoothedThrottleRef.current = null
+          armHoldStartRef.current = {}
         }
         previousButtonsRef.current = rawButtons
       } else {
         smoothedThrottleRef.current = null
+        armHoldStartRef.current = {}
         if (current.connected) current.setConnected(false)
         previousButtonsRef.current = []
       }

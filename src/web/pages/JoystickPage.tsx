@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
+import { TabPanel } from '../components/ui/Tabs'
+import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
@@ -29,7 +31,9 @@ import {
 const TAB_KEYS = [
   { id: 'overview', label: 'joystick.tab.overview' },
   { id: 'buttons', label: 'joystick.tab.buttons' },
-]
+] as const
+
+const JOYSTICK_TAB_IDS = TAB_KEYS.map((tab) => tab.id)
 
 const STICK_AXES = [
   { axis: 0, label: 'joystick.visualizer.leftX' },
@@ -63,7 +67,7 @@ function ToggleSetting({ label, hint, checked, onChange }: {
     <label className="flex cursor-pointer items-center justify-between gap-4 rounded-lg border p-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
       <span>
         <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{t(label)}</span>
-        <span className="mt-0.5 block text-[10px] leading-4" style={{ color: 'var(--text-secondary)' }}>{t(hint)}</span>
+        <span className="mt-0.5 block text-[11px] leading-4" style={{ color: 'var(--text-secondary)' }}>{t(hint)}</span>
       </span>
       <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 shrink-0" style={{ accentColor: 'var(--accent)' }} />
     </label>
@@ -79,7 +83,7 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
     setEnabled, setDeadzone, setExpo,
     setMapping, setButtonAssignment, setAdvanced,
   } = gamepadState
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useQueryTab(JOYSTICK_TAB_IDS, 'overview')
   const flightControllerConnected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const activePresetId = useConnectionStore((state) => state.activePresetId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -106,14 +110,21 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
   }
 
   return (
-    <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in'}>
+    <div className={embedded ? 'mc-joystick-page mc-fade-in' : 'mc-workspace mc-joystick-page mc-fade-in'}>
 
-      <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+      <PageTabs
+        tabs={tabs}
+        active={activeTab}
+        onChange={setActiveTab}
+        ariaLabel={t('settings.section.joystick.label')}
+        idBase="joystick-settings"
+      />
+      <TabPanel idBase="joystick-settings" tabId={activeTab}>
 
       {activeTab === 'overview' && (
         <section className="mt-4 space-y-3">
           <div className="mc-card overflow-hidden p-4">
-            <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(360px,0.9fr)_minmax(360px,1.1fr)]">
+            <div className="mc-joystick-overview-grid">
               <GamepadVisualizer connected={connected} axes={axes} buttons={buttons} />
 
               <div className="grid content-start gap-3">
@@ -121,13 +132,13 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
                   <label className="flex cursor-pointer items-center justify-between gap-4">
                     <span>
                       <span className="block text-[12px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.enableControl')}</span>
-                      <span className="mt-0.5 block text-[10px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
+                      <span className="mt-0.5 block text-[11px]" style={{ color: 'var(--text-secondary)' }}>MANUAL_CONTROL · {advanced.axisFrequencyHz} Hz</span>
                     </span>
                     <input type="checkbox" checked={enabled} disabled={!manualControlAvailable} onChange={(event) => setEnabledForActivePreset(event.target.checked)} className="h-4 w-4 rounded" style={{ accentColor: 'var(--accent)' }} />
                   </label>
-                  {actionNotice && <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[10px]" style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}>{actionNotice}</p>}
-                  {!flightControllerConnected && <p className="mt-2 text-[10px]" style={{ color: 'var(--warning)' }}>{t('joystick.connectFirst')}</p>}
-                  {flightControllerConnected && !profileWritable && <p className="mt-2 text-[10px]" style={{ color: 'var(--warning)' }}>{t('joystick.readOnlyFc')}</p>}
+                  {actionNotice && <p className="mt-2 rounded-lg px-2.5 py-1.5 text-[11px]" style={{ background: 'var(--bg-secondary)', color: 'var(--accent)' }}>{actionNotice}</p>}
+                  {!flightControllerConnected && <p className="mt-2 text-[11px]" style={{ color: 'var(--warning)' }}>{t('joystick.connectFirst')}</p>}
+                  {flightControllerConnected && !profileWritable && <p className="mt-2 text-[11px]" style={{ color: 'var(--warning)' }}>{t('joystick.readOnlyFc')}</p>}
                 </section>
 
                 <section className="rounded-xl border p-4" style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}>
@@ -139,7 +150,7 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
                       return (
                         <label key={item.axis} className="grid grid-cols-[minmax(64px,0.55fr)_minmax(112px,1fr)] items-center gap-2 rounded-lg border p-2.5" style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}>
                           <span>
-                            <span className="block text-[9px]" style={{ color: 'var(--text-disabled)' }}>{t(item.label)}</span>
+                            <span className="block text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t(item.label)}</span>
                             <span className="mc-mono mt-0.5 block text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{value.toFixed(3)}</span>
                           </span>
                           <select
@@ -165,14 +176,14 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
                         <span style={{ color: 'var(--text-secondary)' }}>{t('joystick.deadzone')}</span>
                         <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{deadzone.toFixed(2)}</span>
                       </div>
-                      <input className="mt-2 w-full" type="range" min="0" max="0.3" step="0.01" value={deadzone} onChange={(event) => setDeadzone(Number(event.target.value))} />
+                      <input aria-label={t('joystick.deadzone')} className="mt-2 w-full" type="range" min="0" max="0.3" step="0.01" value={deadzone} onChange={(event) => setDeadzone(Number(event.target.value))} />
                     </div>
                     <div>
                       <div className="flex items-center justify-between text-[11px]">
                         <span style={{ color: 'var(--text-secondary)' }}>{t('joystick.expo')}</span>
                         <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{Math.round(expo * 100)}%</span>
                       </div>
-                      <input className="mt-2 w-full" type="range" min="0" max="1" step="0.05" value={expo} onChange={(event) => setExpo(Number(event.target.value))} />
+                      <input aria-label={t('joystick.expo')} className="mt-2 w-full" type="range" min="0" max="1" step="0.05" value={expo} onChange={(event) => setExpo(Number(event.target.value))} />
                     </div>
                   </div>
                 </section>
@@ -182,7 +193,7 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
 
           <section className="mc-card overflow-hidden">
             <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
-              <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.advancedSettings')}</h2>
+              <h3 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.advancedSettings')}</h3>
             </div>
             <div className="grid grid-cols-1 gap-3 p-4 lg:grid-cols-2">
               <ToggleSetting label="joystick.throttleCenterZero" hint="joystick.throttleCenterZeroHint" checked={advanced.throttleModeCenterZero} onChange={(value) => setAdvanced({ throttleModeCenterZero: value })} />
@@ -211,8 +222,8 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
       {activeTab === 'buttons' && (
         <section className="mc-card mt-4 overflow-hidden">
           <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.buttonAssignment')}</h2>
-            <p className="mt-0.5 text-[10px]" style={{ color: 'var(--text-secondary)' }}>{t('joystick.buttonHint')}</p>
+            <h3 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.buttonAssignment')}</h3>
+            <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('joystick.buttonHint')}</p>
           </div>
           <div className="grid grid-cols-1 gap-2 p-4 lg:grid-cols-2 xl:grid-cols-3">
             {Array.from({ length: buttonCount }, (_, index) => {
@@ -221,14 +232,14 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
               const selectedActionAvailable = actionOptions.some((action) => action.id === selectedAction)
               return (
                 <div key={index} className="grid grid-cols-[36px_1fr_auto] items-center gap-2 rounded-lg border p-2" style={{ borderColor: buttons[index] ? 'var(--accent)' : 'var(--border)', background: buttons[index] ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
-                  <span className="mc-mono grid h-8 place-items-center rounded-md text-[10px] font-bold" style={{ background: 'var(--bg-tertiary)', color: buttons[index] ? 'var(--accent)' : 'var(--text-secondary)' }}>B{index}</span>
+                  <span className="mc-mono grid h-8 place-items-center rounded-md text-[11px] font-bold" style={{ background: 'var(--bg-tertiary)', color: buttons[index] ? 'var(--accent)' : 'var(--text-secondary)' }}>B{index}</span>
                   <select className="mc-select" value={selectedAction} onChange={(event) => setButtonAssignment(index, { action: event.target.value as GamepadActionId })}>
                     {!selectedActionAvailable && (
                       <option value={selectedAction} disabled>{t('joystick.action.unavailableAssigned')}</option>
                     )}
                     {actionOptions.map((action) => <option key={action.id} value={action.id}>{action.label}</option>)}
                   </select>
-                  <label className="flex items-center gap-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                  <label className="flex items-center gap-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
                     <input type="checkbox" checked={assignment.repeat} disabled={!canRepeatGamepadAction(assignment.action)} onChange={(event) => setButtonAssignment(index, { repeat: event.target.checked })} style={{ accentColor: 'var(--accent)' }} />
                     {t('joystick.repeat')}
                   </label>
@@ -238,6 +249,8 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
           </div>
         </section>
       )}
+
+      </TabPanel>
 
     </div>
   )

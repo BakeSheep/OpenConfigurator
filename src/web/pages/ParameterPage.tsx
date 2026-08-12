@@ -2,7 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import Icon from '../components/ui/Icon'
-import { EmptyState } from '../components/ui/PageFrame'
+import { Button } from '../components/ui/Button'
+import Dialog from '../components/ui/Dialog'
+import { Notice } from '../components/ui/Feedback'
+import StatePanel from '../components/ui/StatePanel'
+import Toolbar from '../components/ui/Toolbar'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -74,6 +78,8 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const { params, loading, totalCount, receivedCount } = useParameterStore()
   const send = sendClientMessage
   const canAccess = useConnectionStore((state) => state.vehicleReady && state.canControl)
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -379,14 +385,14 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        <span className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
-          {loading ? t('parameter.receiving', { received: receivedCount, total: totalCount }) : t('parameter.paramCount', { count: params.size || totalCount })}
-        </span>
-        <span className="flex-1" />
-        <button type="button" className="mc-btn mc-btn-primary" onClick={requestParams} disabled={!canAccess || loading || importWriting}>
-          <Icon name="refresh" size={15} />{loading ? `${receivedCount}/${totalCount}` : t('parameter.resync')}
-        </button>
+      <Toolbar
+        summary={loading
+          ? t('parameter.receiving', { received: receivedCount, total: totalCount })
+          : t('parameter.paramCount', { count: params.size || totalCount })}
+      >
+        <Button tone="primary" leadingIcon={<Icon name="refresh" size={15} />} onClick={requestParams} disabled={!canAccess || loading || importWriting}>
+          {loading ? `${receivedCount}/${totalCount}` : t('parameter.resync')}
+        </Button>
         <input
           ref={importInput}
           type="file"
@@ -398,27 +404,27 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
             if (file) void selectImportFile(file)
           }}
         />
-        <button
-          type="button"
-          className="mc-btn mc-btn-ghost"
+        <Button
+          tone="secondary"
+          leadingIcon={<Icon name="upload" size={15} />}
           onClick={() => importInput.current?.click()}
           disabled={!canWrite || loading || pendingWrite !== null || params.size === 0 || targetSystemId === null || targetComponentId === null || importWriting}
         >
-          <Icon name="upload" size={15} />{t('parameter.importParams')}
-        </button>
-        <button
-          type="button"
-          className="mc-btn mc-btn-ghost"
+          {t('parameter.importParams')}
+        </Button>
+        <Button
+          tone="secondary"
+          leadingIcon={<Icon name="download" size={15} />}
           onClick={exportParams}
           disabled={loading || params.size === 0 || targetSystemId === null || targetComponentId === null || importWriting}
         >
-          <Icon name="download" size={15} />{t('parameter.exportParams')}
-        </button>
-      </div>
+          {t('parameter.exportParams')}
+        </Button>
+      </Toolbar>
 
-      {!canAccess && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>{t('parameter.connectToSync')}</span></div>}
-      {canAccess && !profileWritable && <div className="mc-capability-note" data-state="waiting"><Icon name="warning" size={15} /><span>{t('parameter.writeNotSupported')}</span></div>}
-      {writeError && <div className="mc-capability-note" data-state="error"><Icon name="warning" size={15} /><span>{writeError}</span></div>}
+      {!canAccess && params.size > 0 && <Notice tone="warning">{t('parameter.connectToSync')}</Notice>}
+      {canAccess && !profileWritable && <Notice tone="warning">{t('parameter.writeNotSupported')}</Notice>}
+      {writeError && <Notice tone="danger">{writeError}</Notice>}
 
       <div className="mc-param-search">
         <Icon name="search" size={17} aria-hidden="true" />
@@ -432,7 +438,21 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       )}
 
       {params.size === 0 && !loading ? (
-        <EmptyState icon="parameters" description={t('parameter.emptyDescription')} />
+        <StatePanel
+          kind={!vehicleReady ? 'disconnected' : canAccess ? 'empty' : 'read-only'}
+          icon="parameters"
+          title={t('parameter.emptyDescription')}
+          description={!vehicleReady
+            ? t('parameter.connectToSync')
+            : canAccess
+              ? t('parameter.connectToSync')
+              : t('parameter.readOnlyEmpty')}
+          action={canAccess
+            ? <Button tone="primary" onClick={requestParams}>{t('common.retry')}</Button>
+            : !vehicleReady
+              ? <Button tone="primary" onClick={() => setConnectDialogOpen(true)}>{t('common.connect')}</Button>
+              : undefined}
+        />
       ) : (
         <div className="space-y-3">
           {Object.entries(groups).map(([prefix, items]) => {
@@ -476,7 +496,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                               <select
                                 autoFocus
                                 aria-label={t('parameter.enumValueAria', { id: param.id })}
-                                className="mc-input mc-param-row__select h-8"
+                                className="mc-input mc-input--compact mc-param-row__select"
                                 value={editValue}
                                 onChange={(event) => setEditValue(event.target.value)}
                                 onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }}
@@ -486,14 +506,14 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                                 ))}
                               </select>
                             ) : (
-                              <input autoFocus className="mc-input h-8 w-28" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
+                              <input autoFocus className="mc-input mc-input--compact mc-param-row__value-input" value={editValue} onChange={(event) => setEditValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveParam(param.id); if (event.key === 'Escape') setEditId(null) }} />
                             )}
                             {editorOptions && (
-                              <button type="button" className="mc-btn mc-btn-ghost h-8 mc-param-row__raw-toggle" onClick={() => setEditRaw((current) => !current)}>
+                              <button type="button" className="mc-btn mc-btn-ghost mc-btn--compact mc-param-row__raw-toggle" onClick={() => setEditRaw((current) => !current)}>
                                 {editRaw ? t('parameter.options') : t('parameter.rawValue')}
                               </button>
                             )}
-                            <button type="button" className="mc-btn mc-btn-primary h-8" disabled={!canWrite || pendingWrite !== null || importWriting} onClick={() => saveParam(param.id)}>{t('parameter.save')}</button>
+                            <button type="button" className="mc-btn mc-btn-primary mc-btn--compact" disabled={!canWrite || pendingWrite !== null || importWriting} onClick={() => saveParam(param.id)}>{t('parameter.save')}</button>
                           </div>
                         ) : (
                           <button type="button" disabled={!canWrite || pendingWrite !== null || importWriting} className="mc-param-row__value mc-mono" onClick={() => { setEditId(param.id); setEditValue(String(param.value)); setEditRaw(false) }}>
@@ -517,13 +537,45 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       )}
 
       {importSelection && preview && (
-        <div className="mc-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="parameter-import-title">
-          <div className="mc-card mc-modal mc-param-import-modal">
-            <div>
-              <h3 id="parameter-import-title" className="mc-section-title">{t('parameter.importDialogTitle')}</h3>
-              <p className="mc-param-import-file mc-mono">{importSelection.fileName}</p>
-            </div>
-
+        <Dialog
+          open
+          title={t('parameter.importDialogTitle')}
+          closeLabel={t('common.close')}
+          closeDisabled={importWriting}
+          onClose={closeImportDialog}
+          className="mc-param-import-modal"
+          footer={!importJob ? (
+            <>
+              <Button data-autofocus tone="quiet" onClick={closeImportDialog}>
+                {t('parameter.importCancel')}
+              </Button>
+              <Button
+                tone="primary"
+                leadingIcon={<Icon name="upload" size={15} />}
+                onClick={startImport}
+                disabled={preview.writable.length === 0
+                  || !canWrite
+                  || loading
+                  || pendingWrite !== null
+                  || targetSystemId !== importSelection.systemId
+                  || targetComponentId !== importSelection.componentId
+                  || (preview.dangerousCount > 0 && !dangerousImportAcknowledged)}
+              >
+                {t('parameter.importStartWrite', { count: preview.writable.length })}
+              </Button>
+            </>
+          ) : (
+            <Button
+              data-autofocus
+              tone={importWriting ? 'danger' : 'primary'}
+              onClick={importWriting ? cancelImport : closeImportDialog}
+            >
+              {importWriting ? t('parameter.importCancel') : t('parameter.importClose')}
+            </Button>
+          )}
+        >
+          <div className="space-y-3">
+            <p className="mc-param-import-file mc-mono">{importSelection.fileName}</p>
             <div className="mc-param-import-summary">
               <span data-state="write">{t('parameter.importSummaryWrite', { count: preview.writable.length })}</span>
               <span data-state="same">{t('parameter.importSummaryUnchanged', { count: unchangedImportCount })}</span>
@@ -567,24 +619,6 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                     <span>{t('parameter.importDangerousConfirm', { count: preview.dangerousCount })}</span>
                   </label>
                 )}
-
-                <div className="flex justify-end gap-2 mt-4">
-                  <button type="button" className="mc-btn mc-btn-ghost" onClick={closeImportDialog}>{t('parameter.importCancel')}</button>
-                  <button
-                    type="button"
-                    className="mc-btn mc-btn-primary"
-                    onClick={startImport}
-                    disabled={preview.writable.length === 0
-                      || !canWrite
-                      || loading
-                      || pendingWrite !== null
-                      || targetSystemId !== importSelection.systemId
-                      || targetComponentId !== importSelection.componentId
-                      || (preview.dangerousCount > 0 && !dangerousImportAcknowledged)}
-                  >
-                    <Icon name="upload" size={15} />{t('parameter.importStartWrite', { count: preview.writable.length })}
-                  </button>
-                </div>
               </>
             ) : (
               <>
@@ -613,20 +647,10 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
                     ))}
                   </ul>
                 )}
-
-                <div className="flex justify-end gap-2 mt-4">
-                  <button
-                    type="button"
-                    className="mc-btn mc-btn-primary"
-                    onClick={importWriting ? cancelImport : closeImportDialog}
-                  >
-                    {importWriting ? t('parameter.importCancel') : t('parameter.importClose')}
-                  </button>
-                </div>
               </>
             )}
           </div>
-        </div>
+        </Dialog>
       )}
     </div>
   )

@@ -7,6 +7,7 @@ import { useShellStore } from '../../stores/shellStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { getArduPilotMavproxyCommands, getPx4NshCommands } from '../../utils/terminalCommandCatalog'
 import Icon from '../ui/Icon'
+import { TabPanel, Tabs } from '../ui/Tabs'
 
 const KEY_SEQUENCES: Record<string, string> = {
   Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b',
@@ -82,8 +83,6 @@ export default function FlightControllerTerminal() {
     sendClientMessage({ type: 'shell_write', data: { text } })
   }
 
-  const quickCategories = referenceFamily === 'px4' ? getPx4NshCommands(t) : getArduPilotMavproxyCommands(t)
-
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!active) return
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.length === 1) {
@@ -158,37 +157,55 @@ export default function FlightControllerTerminal() {
           <span>COMMAND INDEX</span>
           <strong>{t('terminal.reference.title')}</strong>
         </div>
-        <div className="mc-shell-reference__tabs" role="tablist" aria-label={t('terminal.aria.firmwareTabs')}>
-          <button type="button" role="tab" aria-selected={referenceFamily === 'px4'} onClick={() => setReferenceFamily('px4')}>PX4</button>
-          <button type="button" role="tab" aria-selected={referenceFamily === 'ardupilot'} onClick={() => setReferenceFamily('ardupilot')}>AP</button>
-        </div>
+        <Tabs
+          tabs={[{ id: 'px4', label: 'PX4' }, { id: 'ardupilot', label: 'AP' }]}
+          active={referenceFamily}
+          onChange={(id) => setReferenceFamily(id === 'ardupilot' ? 'ardupilot' : 'px4')}
+          ariaLabel={t('terminal.aria.firmwareTabs')}
+          idBase="terminal-reference"
+          className="mc-shell-reference__tabs"
+        />
       </header>
-      <p className="mc-shell-reference__note" data-external={referenceFamily === 'ardupilot' || undefined}>
-        {referenceFamily === 'px4'
-          ? t('terminal.reference.px4Note')
-          : t('terminal.reference.apNote')}
-      </p>
-      <div className="mc-shell-reference__scroll">
-        {quickCategories.map((category) => (
-          <section key={category.title}>
-            <h3>{category.title}</h3>
-            <div>
-              {category.commands.map((entry) => (
-                <button
-                  key={entry.command}
-                  type="button"
-                  disabled={referenceFamily !== 'px4' || !active}
-                  title={referenceFamily === 'px4' ? t('terminal.reference.writeToTerminal', { command: entry.command }) : t('terminal.reference.useExternalMavproxy')}
-                  onClick={() => sendText(entry.command)}
-                >
-                  <code>{entry.command}</code>
-                  <span>{entry.description}</span>
-                </button>
+      {(['px4', 'ardupilot'] as const).map((family) => {
+        const categories = family === 'px4' ? getPx4NshCommands(t) : getArduPilotMavproxyCommands(t)
+        return (
+          <TabPanel
+            key={family}
+            idBase="terminal-reference"
+            tabId={family}
+            hidden={referenceFamily !== family}
+            tabIndex={referenceFamily === family ? 0 : -1}
+            className="mc-shell-reference__panel"
+          >
+            <p className="mc-shell-reference__note" data-external={family === 'ardupilot' || undefined}>
+              {family === 'px4'
+                ? t('terminal.reference.px4Note')
+                : t('terminal.reference.apNote')}
+            </p>
+            <div className="mc-shell-reference__scroll">
+              {categories.map((category) => (
+                <section key={category.title}>
+                  <h3>{category.title}</h3>
+                  <div>
+                    {category.commands.map((entry) => (
+                      <button
+                        key={entry.command}
+                        type="button"
+                        disabled={family !== 'px4' || !active}
+                        title={family === 'px4' ? t('terminal.reference.writeToTerminal', { command: entry.command }) : t('terminal.reference.useExternalMavproxy')}
+                        onClick={() => sendText(entry.command)}
+                      >
+                        <code>{entry.command}</code>
+                        <span>{entry.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
               ))}
             </div>
-          </section>
-        ))}
-      </div>
+          </TabPanel>
+        )
+      })}
     </aside>
     </div>
   )

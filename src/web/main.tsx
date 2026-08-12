@@ -5,6 +5,10 @@ import { appRuntimeMode } from './runtime'
 import { initI18n } from './i18n/config'
 import { documentLanguage, getInitialLanguage } from './stores/languageStore'
 import './index.css'
+import './styles/tokens.css'
+import './styles/primitives.css'
+import './styles/workspace.css'
+import './styles/flight.css'
 
 // Demo mode fills the stores with synthetic telemetry (static GitHub Pages
 // preview, README screenshots). Seeding must finish before the first render so

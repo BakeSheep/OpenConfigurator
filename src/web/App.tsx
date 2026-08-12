@@ -1,7 +1,8 @@
-import { lazy, Suspense } from 'react'
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from 'react'
+import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import ConnectDialog from './components/ConnectDialog'
+import WorkspaceErrorBoundary from './components/ErrorBoundary'
 import DemoBanner from './components/layout/DemoBanner'
 import ParameterProgressBar from './components/layout/ParameterProgressBar'
 import Sidebar from './components/layout/Sidebar'
@@ -16,6 +17,26 @@ const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage'))
 const FlightControlPage = lazy(() => import('./pages/FlightControlPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
+function WorkspaceViewport({ children }: { children: ReactNode }) {
+  const location = useLocation()
+  const mainRef = useRef<HTMLElement>(null)
+  const previousPathRef = useRef(location.pathname)
+
+  useEffect(() => {
+    const pathChanged = previousPathRef.current !== location.pathname
+    previousPathRef.current = location.pathname
+    mainRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+    if (!pathChanged) return
+
+    const frame = window.requestAnimationFrame(() => {
+      mainRef.current?.querySelector<HTMLElement>('.mc-page-title')?.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [location.pathname])
+
+  return <main ref={mainRef} className="mc-app-shell__main">{children}</main>
+}
+
 export default function App() {
   const { t } = useTranslation()
   const { send } = useWebSocket(backendEnabled)
@@ -28,32 +49,35 @@ export default function App() {
         <DemoBanner />
         <ParameterProgressBar />
         <div className="mc-app-shell__body">
-          <Sidebar />
-          <main className="mc-app-shell__main">
-            <Suspense fallback={<div className="mc-route-loading" role="status">{t('app.loadingWorkspace')}</div>}>
-              <Routes>
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" element={<DashboardPage />} />
-                <Route path="/flight" element={<FlightControlPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
-                <Route path="/diagnostics" element={<DiagnosticsPage />} />
-                <Route path="/connect" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/sensors" element={<Navigate to="/settings?section=sensors" replace />} />
-                <Route path="/parameters" element={<Navigate to="/diagnostics" replace />} />
-                <Route path="/messages" element={<Navigate to="/diagnostics?section=messages" replace />} />
-                <Route path="/waveforms" element={<Navigate to="/diagnostics?section=waveforms" replace />} />
-                <Route path="/missions" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/logs" element={<Navigate to="/diagnostics?section=logs" replace />} />
-                <Route path="/log-analysis" element={<Navigate to="/diagnostics?section=log-analysis" replace />} />
-                <Route path="/hardware" element={<Navigate to="/settings" replace />} />
-                <Route path="/motors" element={<Navigate to="/settings?section=actuators" replace />} />
-                <Route path="/esc" element={<Navigate to="/settings?section=esc" replace />} />
-                <Route path="/receiver" element={<Navigate to="/settings?section=receiver" replace />} />
-                <Route path="/joystick" element={<Navigate to="/settings?section=joystick" replace />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </Routes>
-            </Suspense>
-          </main>
+          <Sidebar placement="desktop" />
+          <WorkspaceViewport>
+            <WorkspaceErrorBoundary>
+              <Suspense fallback={<div className="mc-route-loading" role="status">{t('app.loadingWorkspace')}</div>}>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="/dashboard" element={<DashboardPage />} />
+                  <Route path="/flight" element={<FlightControlPage />} />
+                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/diagnostics" element={<DiagnosticsPage />} />
+                  <Route path="/connect" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="/sensors" element={<Navigate to="/settings?section=sensors" replace />} />
+                  <Route path="/parameters" element={<Navigate to="/diagnostics" replace />} />
+                  <Route path="/messages" element={<Navigate to="/diagnostics?section=messages" replace />} />
+                  <Route path="/waveforms" element={<Navigate to="/diagnostics?section=waveforms" replace />} />
+                  <Route path="/missions" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="/logs" element={<Navigate to="/diagnostics?section=logs" replace />} />
+                  <Route path="/log-analysis" element={<Navigate to="/diagnostics?section=log-analysis" replace />} />
+                  <Route path="/hardware" element={<Navigate to="/settings" replace />} />
+                  <Route path="/motors" element={<Navigate to="/settings?section=actuators" replace />} />
+                  <Route path="/esc" element={<Navigate to="/settings?section=esc" replace />} />
+                  <Route path="/receiver" element={<Navigate to="/settings?section=receiver" replace />} />
+                  <Route path="/joystick" element={<Navigate to="/settings?section=joystick" replace />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </Routes>
+              </Suspense>
+            </WorkspaceErrorBoundary>
+          </WorkspaceViewport>
+          <Sidebar placement="mobile" />
         </div>
         <StatusBar />
         <ConnectDialog />

@@ -129,10 +129,15 @@ export function handleMessage(msg: ServerMessage) {
   switch (msg.type) {
     case 'hello':
       restControlToken = msg.data.restControlToken
-      connStore.setClientId(msg.data.clientId)
+      connStore.setClientId(msg.data.clientId, msg.data.safetyEpoch, msg.data.safetyAuthorityId)
       break
     case 'controller':
-      connStore.setController(msg.data.clientId, msg.data.expiresAt)
+      connStore.setController(
+        msg.data.clientId,
+        msg.data.expiresAt,
+        msg.data.safetyEpoch,
+        msg.data.safetyAuthorityId,
+      )
       break
     case 'connection': {
       const wasRawSessionActive = connStore.rawSessionActive
@@ -142,6 +147,8 @@ export function handleMessage(msg: ServerMessage) {
         transportOpen: transportOpenNow,
         vehicleReady: msg.data.vehicleReady ?? msg.data.connected,
         rawSessionActive: msg.data.rawSessionActive ?? false,
+        safetyEpoch: msg.data.safetyEpoch,
+        safetyAuthorityId: msg.data.safetyAuthorityId,
         port: msg.data.port,
         type: msg.data.type,
         baudRate: msg.data.baudRate,
@@ -458,7 +465,12 @@ export function handleMessage(msg: ServerMessage) {
     case 'target':
       // Identity always tracks the backend's target lifecycle: cleared on
       // reset/deselection so a new vehicle can never inherit a stale profile.
-      connStore.setTarget(msg.data.systemId, msg.data.componentId)
+      connStore.setTarget(
+        msg.data.systemId,
+        msg.data.componentId,
+        msg.data.safetyEpoch,
+        msg.data.safetyAuthorityId,
+      )
       telemetryStore.setVehicleIdentity(msg.data.systemId === null ? null : msg.data.identity)
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
         telemetryStore.addStatusLog(

@@ -14,6 +14,8 @@ test('an already-open transport snapshot does not close a user-opened connection
     transportOpen: true,
     vehicleReady: true,
     rawSessionActive: false,
+    safetyEpoch: 1,
+    safetyAuthorityId: '00000000-0000-4000-8000-000000000001',
   })
   assert.equal(useConnectionStore.getState().connectDialogOpen, true)
 
@@ -23,6 +25,8 @@ test('an already-open transport snapshot does not close a user-opened connection
     transportOpen: true,
     vehicleReady: false,
     rawSessionActive: false,
+    safetyEpoch: 2,
+    safetyAuthorityId: '00000000-0000-4000-8000-000000000001',
   })
   assert.equal(useConnectionStore.getState().connectDialogOpen, false)
 })

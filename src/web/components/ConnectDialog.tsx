@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useId, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
@@ -10,6 +10,9 @@ import {
   saveConnectionPresets,
   type ConnectionPreset,
 } from '../utils/connectionPresets'
+import { Button } from './ui/Button'
+import Dialog from './ui/Dialog'
+import Field from './ui/Field'
 
 // Convert decimal vendor/product id from Web Serial to the lowercase hex
 // string format used by serialport's PortInfo (e.g. 1A86, 7523).
@@ -27,6 +30,9 @@ const formatBluetoothServiceId = (value: number | string | undefined) => {
   return shortId ? `0x${shortId.toUpperCase()}` : text
 }
 
+const CONNECTION_TYPES = ['serial', 'bluetooth'] as const
+type ConnectionType = typeof CONNECTION_TYPES[number]
+
 interface PickedPort {
   label: string
   // Identifiers used to match the browser-side pick to a backend COM port
@@ -40,11 +46,15 @@ export default function ConnectDialog() {
   const { t } = useTranslation()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
-  const [connType, setConnType] = useState<'serial' | 'bluetooth'>('serial')
+  const [connType, setConnType] = useState<ConnectionType>('serial')
   const [pickedBt, setPickedBt] = useState<PickedPort | null>(null)
   const [selectedBtPort, setSelectedBtPort] = useState('')
   const [serialSupported, setSerialSupported] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const serialPortId = useId()
+  const serialBaudRateId = useId()
+  const bluetoothPortId = useId()
+  const bluetoothBaudRateId = useId()
   // Static demo preview: the dialog never renders and never touches /api or
   // navigator.serial - there is no backend and no real device to connect.
   const isDemo = appRuntimeMode === 'demo'
@@ -66,13 +76,38 @@ export default function ConnectDialog() {
     }
   }, [])
 
-  // Close on Escape
-  useEffect(() => {
-    if (!connectDialogOpen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setConnectDialogOpen(false) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [connectDialogOpen, setConnectDialogOpen])
+  const closeDialog = useCallback(() => {
+    setConnectDialogOpen(false)
+  }, [setConnectDialogOpen])
+
+  const selectConnectionType = (type: ConnectionType) => {
+    setConnType(type)
+    setError(null)
+  }
+
+  const handleConnectionTypeKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) => {
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      nextIndex = (currentIndex + 1) % CONNECTION_TYPES.length
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      nextIndex = (currentIndex - 1 + CONNECTION_TYPES.length) % CONNECTION_TYPES.length
+    } else if (event.key === 'Home') {
+      nextIndex = 0
+    } else if (event.key === 'End') {
+      nextIndex = CONNECTION_TYPES.length - 1
+    }
+    if (nextIndex === null) return
+
+    event.preventDefault()
+    selectConnectionType(CONNECTION_TYPES[nextIndex])
+    const radios = event.currentTarget
+      .closest('[role="radiogroup"]')
+      ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+    radios?.[nextIndex]?.focus()
+  }
 
   const scanPorts = async () => {
     setScanning(true)
@@ -258,215 +293,209 @@ export default function ConnectDialog() {
     setConnectDialogOpen(false)
   }
 
-  if (!connectDialogOpen || isDemo) return null
+  if (isDemo) return null
+
+  const connectionUnavailable = status === 'connecting'
+    || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)
+
+  const serialIcon = (
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12l-1.5 6.5a3 3 0 0 1-2.93 2.5h-3.14a3 3 0 0 1-2.93-2.5z" /><path d="M12 17v5" />
+    </svg>
+  )
+  const bluetoothIcon = (
+    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m7 7 10 10-5 5V2l5 5L7 17" />
+    </svg>
+  )
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 mc-animate-fade"
-      style={{ background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)' }}
-      onClick={() => setConnectDialogOpen(false)}
+    <Dialog
+      open={connectDialogOpen}
+      title={t('connect.title')}
+      description={t('connect.subtitle')}
+      closeLabel={t('common.close')}
+      onClose={closeDialog}
+      className="max-w-[440px]"
+      footer={(
+        <>
+          <Button onClick={closeDialog} tone="secondary" size="default" className="flex-1">
+            {t('connect.cancel')}
+          </Button>
+          {transportOpen ? (
+            <Button onClick={disconnect} tone="danger" size="default" className="flex-1">
+              {t('connect.disconnect')}
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={saveAsPreset}
+                disabled={connectionUnavailable}
+                tone="secondary"
+                size="default"
+                className="flex-1"
+              >
+                {t('connect.addToPreset')}
+              </Button>
+              <Button
+                onClick={connect}
+                disabled={connectionUnavailable}
+                loading={status === 'connecting'}
+                tone="primary"
+                size="default"
+                className="flex-1"
+              >
+                {status === 'connecting' ? t('connect.connecting') : t('connect.connect')}
+              </Button>
+            </>
+          )}
+        </>
+      )}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[400px] mc-animate-scale overflow-hidden flex flex-col"
-        style={{
-          background: 'var(--bg-secondary)',
-          border: '1px solid var(--border-hover)',
-          borderRadius: 'var(--radius-lg)',
-          boxShadow: '0 24px 64px rgba(0,0,0,.5)',
-        }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
-          <div className="flex items-center gap-3">
-            <div
-              className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background: 'var(--accent-dim)' }}
+      <div className="space-y-5">
+        <div
+          className="mc-tabbar"
+          role="radiogroup"
+          aria-label={t('connect.connectionType')}
+        >
+          {CONNECTION_TYPES.map((type, index) => (
+            <Button
+              key={type}
+              role="radio"
+              aria-checked={connType === type}
+              tabIndex={connType === type ? 0 : -1}
+              onClick={() => selectConnectionType(type)}
+              onKeyDown={(event) => handleConnectionTypeKeyDown(event, index)}
+              tone={connType === type ? 'secondary' : 'quiet'}
+              leadingIcon={type === 'serial' ? serialIcon : bluetoothIcon}
+              className="flex-1"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12l-1.5 6.5a3 3 0 0 1-2.93 2.5h-3.14a3 3 0 0 1-2.93-2.5z" /><path d="M12 17v5" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-[15px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('connect.title')}</h2>
-              <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('connect.subtitle')}</p>
-            </div>
-          </div>
-          <button
-            onClick={() => setConnectDialogOpen(false)}
-            aria-label={t('common.close')}
-            title={t('common.close')}
-            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-white/5"
-            style={{ color: 'var(--text-secondary)' }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-          </button>
+              {type === 'serial' ? t('connect.usbSerial') : t('connect.bluetooth')}
+            </Button>
+          ))}
         </div>
 
-        {/* Body */}
-        <div className="px-5 py-5 space-y-5">
-          {/* Type toggle */}
-          <div className="flex p-1 rounded-xl gap-1" style={{ background: 'var(--bg-tertiary)' }}>
-            {(['serial', 'bluetooth'] as const).map((type) => (
-              <button
-                key={type}
-                onClick={() => { setConnType(type); setError(null) }}
-                className="flex-1 py-2 rounded-lg text-[13px] font-medium transition-all flex items-center justify-center gap-1.5"
-                style={
-                  connType === type
-                    ? { background: 'var(--bg-secondary)', color: 'var(--accent)', boxShadow: 'var(--card-shadow)' }
-                    : { color: 'var(--text-secondary)' }
-                }
-              >
-                {type === 'serial' ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12l-1.5 6.5a3 3 0 0 1-2.93 2.5h-3.14a3 3 0 0 1-2.93-2.5z" /><path d="M12 17v5" /></svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 7 10 10-5 5V2l5 5L7 17" /></svg>
-                )}
-                {type === 'serial' ? t('connect.usbSerial') : t('connect.bluetooth')}
-              </button>
-            ))}
-          </div>
-
-          {/* Serial: port select */}
-          {connType === 'serial' && (
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="mc-section-title">{t('connect.port')}</label>
-                <button onClick={scanPorts} disabled={scanning} className="text-[12px] transition-colors disabled:opacity-50" style={{ color: 'var(--accent)' }}>
-                  {scanning ? t('connect.scanning') : t('connect.refresh')}
-                </button>
-              </div>
-              <select
-                value={selectedPort}
-                onChange={(e) => setSelectedPort(e.target.value)}
-                className="mc-select"
-              >
-                <option value="">{t('connect.selectPortPlaceholder')}</option>
-                {serialPorts.map((p) => (
-                  <option key={p.path} value={p.path}>
-                    {p.path}{p.manufacturer ? ` - ${p.manufacturer}` : ''}
-                  </option>
-                ))}
-              </select>
-              <div className="mt-4">
-                <label className="mc-section-title block mb-2">{t('connect.baudRate')}</label>
-                <select value={baudRate} onChange={(e) => setBaudRate(Number(e.target.value))} className="mc-select">
-                  {BAUD_RATES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-            </div>
-          )}
-
-          {/* Bluetooth: Web Serial device chooser */}
-          {connType === 'bluetooth' && (
-            <div className="space-y-3">
-              <label className="mc-section-title block">{t('connect.bluetoothDevice')}</label>
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('connect.pairedSppSerial')}</span>
-                  <button onClick={scanPorts} disabled={scanning} className="text-[12px] disabled:opacity-50" style={{ color: 'var(--accent)' }}>
-                    {scanning ? t('connect.scanning') : t('connect.refresh')}
-                  </button>
-                </div>
+        {connType === 'serial' && (
+          <div className="space-y-4">
+            <Field label={t('connect.port')} controlId={serialPortId}>
+              <div className="flex items-center gap-2">
                 <select
-                  value={selectedBtPort}
-                  onChange={(e) => { setSelectedBtPort(e.target.value); setPickedBt(null) }}
-                  className="mc-select"
+                  id={serialPortId}
+                  data-autofocus
+                  value={selectedPort}
+                  onChange={(event) => setSelectedPort(event.target.value)}
+                  className="mc-select min-w-0 flex-1"
                 >
-                  <option value="">{t('connect.noBtSppFound')}</option>
-                  {bluetoothPorts.map((p) => (
-                    <option key={p.path} value={p.path}>
-                      {p.path}{p.friendlyName ? ` · ${p.friendlyName}` : (p.manufacturer ? ` - ${p.manufacturer}` : '')}{p.recommended ? t('connect.recommended') : ''}
+                  <option value="">{t('connect.selectPortPlaceholder')}</option>
+                  {serialPorts.map((port) => (
+                    <option key={port.path} value={port.path}>
+                      {port.path}{port.manufacturer ? ` - ${port.manufacturer}` : ''}
                     </option>
                   ))}
                 </select>
+                <Button onClick={scanPorts} disabled={scanning} tone="quiet" aria-live="polite">
+                  {scanning ? t('connect.scanning') : t('connect.refresh')}
+                </Button>
               </div>
-              <div className="flex items-center gap-3 text-[10px]" style={{ color: 'var(--text-disabled)' }}>
-                <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
-                <span>{t('connect.compatModeHint')}</span>
-                <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
-              </div>
-              {serialSupported === false && (
-                <div className="p-3 rounded-xl text-[12px]" style={{ background: 'var(--warning-dim)', color: 'var(--warning)', border: '1px solid rgba(245,158,11,.25)' }}>
-                  {t('connect.webSerialUnsupportedLong')}
-                </div>
-              )}
-              <button
-                onClick={() => { setSelectedBtPort(''); void pickSerialPort() }}
-                className="mc-btn mc-btn-ghost w-full py-3 justify-center"
+            </Field>
+            <Field label={t('connect.baudRate')} controlId={serialBaudRateId}>
+              <select
+                id={serialBaudRateId}
+                value={baudRate}
+                onChange={(event) => setBaudRate(Number(event.target.value))}
+                className="mc-select"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="m7 7 10 10-5 5V2l5 5L7 17" />
-                </svg>
-                {pickedBt ? t('connect.reselectDevice') : t('connect.selectBluetoothDevice')}
-              </button>
-              {pickedBt && (
-                <div
-                  className="p-3 rounded-xl flex items-center gap-2"
-                  style={{ background: 'var(--accent-dim)', border: '1px solid rgba(59,130,246,.25)' }}
+                {BAUD_RATES.map((rate) => <option key={rate} value={rate}>{rate}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+
+        {connType === 'bluetooth' && (
+          <div className="space-y-4">
+            <Field
+              label={t('connect.bluetoothDevice')}
+              controlId={bluetoothPortId}
+              helper={t('connect.btPairHint')}
+            >
+              <div className="flex items-center gap-2">
+                <select
+                  id={bluetoothPortId}
+                  data-autofocus
+                  value={selectedBtPort}
+                  onChange={(event) => { setSelectedBtPort(event.target.value); setPickedBt(null) }}
+                  className="mc-select min-w-0 flex-1"
+                  aria-describedby={`${bluetoothPortId}-helper`}
                 >
-                  <span
-                    className="rounded-full shrink-0"
-                    style={{ width: 8, height: 8, background: 'var(--accent)', boxShadow: '0 0 6px var(--accent-glow)' }}
-                  />
-                  <span className="text-[13px] mc-mono truncate" style={{ color: 'var(--text-primary)' }}>{pickedBt.label}</span>
-                </div>
-              )}
-              <p className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>
-                {t('connect.btPairHint')}
-              </p>
-              <div>
-                <label className="mc-section-title block mb-2">{t('connect.baudRate')}</label>
-                <select value={baudRate} onChange={(e) => setBaudRate(Number(e.target.value))} className="mc-select">
-                  {BAUD_RATES.map((r) => <option key={r} value={r}>{r}</option>)}
+                  <option value="">{t('connect.noBtSppFound')}</option>
+                  {bluetoothPorts.map((port) => (
+                    <option key={port.path} value={port.path}>
+                      {port.path}{port.friendlyName ? ` · ${port.friendlyName}` : (port.manufacturer ? ` - ${port.manufacturer}` : '')}{port.recommended ? t('connect.recommended') : ''}
+                    </option>
+                  ))}
                 </select>
+                <Button onClick={scanPorts} disabled={scanning} tone="quiet" aria-live="polite">
+                  {scanning ? t('connect.scanning') : t('connect.refresh')}
+                </Button>
               </div>
+            </Field>
+
+            <div className="flex items-center gap-3 text-[11px]" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">
+              <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
+              <span>{t('connect.compatModeHint')}</span>
+              <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
             </div>
-          )}
 
-          {/* Error */}
-          {(error ?? connectionError) && (
-            <div className="p-3 rounded-xl text-[12px]" style={{ background: 'var(--danger-dim)', color: 'var(--danger)', border: '1px solid rgba(239,68,68,.25)' }}>
-              {error ?? connectionError}
-            </div>
-          )}
+            {serialSupported === false && (
+              <div className="mc-notice" data-tone="warning" role="status">
+                <div className="mc-notice__content">{t('connect.webSerialUnsupportedLong')}</div>
+              </div>
+            )}
 
-          {/* Status hint */}
-          <p className="text-[11px] text-center" style={{ color: 'var(--text-disabled)' }}>
-            {t('connect.supportedFcHint')}
-          </p>
-        </div>
+            <Button
+              onClick={() => { setSelectedBtPort(''); void pickSerialPort() }}
+              tone="secondary"
+              size="default"
+              leadingIcon={bluetoothIcon}
+              className="w-full"
+            >
+              {pickedBt ? t('connect.reselectDevice') : t('connect.selectBluetoothDevice')}
+            </Button>
 
-        {/* Footer */}
-        <div className="flex gap-3 px-5 py-4 border-t" style={{ borderColor: 'var(--border)' }}>
-          <button onClick={() => setConnectDialogOpen(false)} className="mc-btn mc-btn-ghost flex-1 py-2.5">
-            {t('connect.cancel')}
-          </button>
-          {transportOpen ? (
-            <button onClick={disconnect} className="mc-btn mc-btn-danger flex-1 py-2.5">
-              {t('connect.disconnect')}
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={saveAsPreset}
-                disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
-                className="mc-btn mc-btn-ghost flex-1 py-2.5"
+            {pickedBt && (
+              <div className="mc-notice" data-tone="info" role="status">
+                <span
+                  className="mt-1 h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: 'var(--accent)' }}
+                  aria-hidden="true"
+                />
+                <div className="mc-notice__content mc-mono truncate">{pickedBt.label}</div>
+              </div>
+            )}
+
+            <Field label={t('connect.baudRate')} controlId={bluetoothBaudRateId}>
+              <select
+                id={bluetoothBaudRateId}
+                value={baudRate}
+                onChange={(event) => setBaudRate(Number(event.target.value))}
+                className="mc-select"
               >
-                {t('connect.addToPreset')}
-              </button>
-              <button
-                onClick={connect}
-                disabled={status === 'connecting' || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)}
-                className="mc-btn mc-btn-primary flex-1 py-2.5"
-              >
-                {status === 'connecting' ? t('connect.connecting') : t('connect.connect')}
-              </button>
-            </>
-          )}
-        </div>
+                {BAUD_RATES.map((rate) => <option key={rate} value={rate}>{rate}</option>)}
+              </select>
+            </Field>
+          </div>
+        )}
+
+        {(error ?? connectionError) && (
+          <div className="mc-notice" data-tone="danger" role="alert" aria-live="assertive">
+            <div className="mc-notice__content">{error ?? connectionError}</div>
+          </div>
+        )}
+
+        <p className="m-0 text-center text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+          {t('connect.supportedFcHint')}
+        </p>
       </div>
-    </div>
+    </Dialog>
   )
 }

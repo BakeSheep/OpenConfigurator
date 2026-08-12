@@ -65,6 +65,7 @@ export default function EscSettingsWorkbench() {
     [activeSnapshot?.layoutRevision],
   )
   const busy = activeJob !== null
+  const safetyConfirmed = session?.safetyConfirmed === true
   const selectedWritable = [...targets].filter((index) => devices.find((device) => device.index === index)?.writable)
 
   const changeValue = (key: string, value: number) => {
@@ -82,7 +83,7 @@ export default function EscSettingsWorkbench() {
   }
 
   const save = () => {
-    if (!session?.sessionId || dirty.size === 0 || selectedWritable.length === 0) return
+    if (!session?.sessionId || !safetyConfirmed || dirty.size === 0 || selectedWritable.length === 0) return
     const values: EscSettingsValues = {}
     dirty.forEach((key) => {
       if (draft[key] !== undefined) values[key] = draft[key]
@@ -110,8 +111,7 @@ export default function EscSettingsWorkbench() {
     <section className="mc-esc-workbench">
       <header className="mc-esc-workbench__topbar">
         <div>
-          <span className="mc-eyebrow">AM32 PARAMETER WORKBENCH</span>
-          <h2>{t('escSettings.title')}</h2>
+          <h3>{t('escSettings.title')}</h3>
           <p>{t('escSettings.subtitle')}</p>
         </div>
         <button type="button" className="mc-btn mc-btn-ghost" onClick={reread} disabled={busy}>
@@ -181,7 +181,9 @@ export default function EscSettingsWorkbench() {
             <div>
               <strong>{dirty.size > 0 ? t('escSettings.changesUnsaved', { count: dirty.size }) : t('escSettings.paramsSynced')}</strong>
               <small>
-                {lastJobResult?.kind === 'settings_write'
+                {!safetyConfirmed
+                  ? t('escSettings.safetyExpired')
+                  : lastJobResult?.kind === 'settings_write'
                   ? lastJobResult.ok ? t('escSettings.lastWriteVerified') : t('escSettings.lastWriteFailed')
                   : t('escSettings.currentTargets', { count: selectedWritable.length })}
               </small>
@@ -195,7 +197,7 @@ export default function EscSettingsWorkbench() {
               type="button"
               className="mc-btn mc-btn-primary"
               onClick={save}
-              disabled={busy || dirty.size === 0 || selectedWritable.length === 0}
+              disabled={busy || !safetyConfirmed || dirty.size === 0 || selectedWritable.length === 0}
             >
               {busy ? t('escSettings.processing') : t('escSettings.saveToEscs', { count: selectedWritable.length })}
             </button>
@@ -278,6 +280,7 @@ function SettingControl({
             className="mc-switch"
             role="switch"
             aria-checked={value === 1}
+            aria-label={t(field.label)}
             disabled={disabled}
             onClick={() => onChange(value === 1 ? 0 : 1)}
           >
@@ -297,6 +300,7 @@ function SettingControl({
         </div>
         <select
           className="mc-select"
+          aria-label={t(field.label)}
           value={value}
           disabled={disabled}
           onChange={(event) => onChange(Number(event.target.value))}
@@ -346,6 +350,7 @@ function SettingControl({
           <input
             className="mc-input mc-mono"
             type="number"
+            aria-label={t(field.label)}
             min={field.min}
             max={field.max}
             step={field.step}

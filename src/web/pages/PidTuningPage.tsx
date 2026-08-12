@@ -7,7 +7,10 @@ import {
   type ParameterGroupDefinition,
 } from '../utils/parameterProfiles'
 import Icon from '../components/ui/Icon'
+import { Button } from '../components/ui/Button'
+import { Badge } from '../components/ui/Feedback'
 import { EmptyState } from '../components/ui/PageFrame'
+import Toolbar from '../components/ui/Toolbar'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
@@ -188,27 +191,25 @@ export default function PidTuningPage() {
 
   return (
     <div className="mc-pid-page mc-fade-in">
-      <section className="mc-card mc-pid-intro">
-        <div>
-          <span className="mc-pid-intro__eyebrow">{vehicleIdentity?.family === 'ardupilot' ? 'ARDUCOPTER CONTROL' : 'MULTICOPTER CONTROL'}</span>
-          <h2>
-            <i
-              className="mc-pid-write-dot"
-              data-ok={canWrite || undefined}
-              title={armed ? t('pidTuning.writeDisabledArmed') : canWrite ? t('pidTuning.writeEnabled') : t('pidTuning.connectToModify')}
-            />
-            {t('pidTuning.extendedTuning')}
-          </h2>
-          <p>{t('pidTuning.introDescription')}</p>
-        </div>
-        <div className="mc-pid-intro__status">
-          <strong>{totalCount}</strong>
-          <span>{t('pidTuning.tunableParamsLabel')}</span>
-          <button type="button" className="mc-btn mc-btn-ghost" onClick={requestParams} disabled={!connectedAndControllable || loading}>
-            <Icon name="refresh" size={14} />{loading ? t('pidTuning.syncing') : t('pidTuning.resync')}
-          </button>
-        </div>
-      </section>
+      <Toolbar
+        summary={
+          <>
+            <Badge tone={canWrite ? 'success' : 'warning'}>
+              {armed ? t('pidTuning.writeDisabledArmed') : canWrite ? t('pidTuning.writeEnabled') : t('pidTuning.connectToModify')}
+            </Badge>
+            <span>{totalCount}{t('pidTuning.tunableParamsLabel')}</span>
+          </>
+        }
+      >
+        <Button
+          tone="secondary"
+          leadingIcon={<Icon name="refresh" size={14} />}
+          onClick={requestParams}
+          disabled={!connectedAndControllable || loading}
+        >
+          {loading ? t('pidTuning.syncing') : t('pidTuning.resync')}
+        </Button>
+      </Toolbar>
 
       {params.size === 0 && !loading ? (
         <EmptyState icon="parameters" description={t('pidTuning.emptyConnect')} />
@@ -223,7 +224,7 @@ export default function PidTuningPage() {
             return (
               <section key={group.id} className="mc-card mc-pid-group">
                 <header>
-                  <h3>{group.title}</h3>
+                  <h3 id={`pid-group-${group.id}`}>{group.title}</h3>
                   {groupFeedback && (
                     <i
                       className="mc-pid-group__result"
@@ -236,7 +237,14 @@ export default function PidTuningPage() {
                   <span className="mc-mono">{group.present}</span>
                 </header>
                 <div className="mc-pid-viewport" data-fade-top="false" data-fade-bottom="false">
-                  <div className="mc-pid-scroll" ref={updateFades} onScroll={(event) => updateFades(event.currentTarget)}>
+                  <div
+                    className="mc-pid-scroll"
+                    ref={updateFades}
+                    role="region"
+                    aria-labelledby={`pid-group-${group.id}`}
+                    tabIndex={0}
+                    onScroll={(event) => updateFades(event.currentTarget)}
+                  >
                     {group.params.map((definition) => {
                       const param = params.get(definition.id)
                       if (!param) {
@@ -249,7 +257,7 @@ export default function PidTuningPage() {
                                 {definition.label}
                                 {definition.unit && <small>{definition.unit}</small>}
                               </label>
-                              <span className="mc-mono" style={{ color: 'var(--text-disabled)', fontSize: 11 }}>{t('pidTuning.notProvided')}</span>
+                              <span className="mc-mono" style={{ color: 'var(--text-secondary)', fontSize: 11 }}>{t('pidTuning.notProvided')}</span>
                             </div>
                           </div>
                         )

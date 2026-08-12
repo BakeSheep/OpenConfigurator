@@ -7,7 +7,7 @@ import {
   PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
   PX4_ESC_SERIAL_CONTROL_DEVICE_MIN,
 } from '../shared/constants'
-import { ESC_MAX_TARGETS } from '../shared/esc/types'
+import { ESC_MAX_TARGETS, ESC_SESSION_SAFETY_CONFIRMATION } from '../shared/esc/types'
 import type {
   AccelCalibrationPosition,
   CalibrationKind,
@@ -127,6 +127,14 @@ function finiteNumber(
     fail('out_of_range', `${path} 不得大于 ${options.max}`, path)
   }
   return value
+}
+
+function safetyAuthorityId(value: unknown): string {
+  return text(value, 'expectedSafetyAuthorityId', {
+    minBytes: 36,
+    maxBytes: 36,
+    pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  })
 }
 
 function requestId(value: unknown): string | undefined {
@@ -285,6 +293,16 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         maxBytes: 16,
         pattern: /^[a-z_]+$/,
       })
+      const expectedSafetyEpoch = input.expectedSafetyEpoch === undefined
+        ? undefined
+        : finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+            integer: true,
+          })
+      const expectedSafetyAuthorityId = input.expectedSafetyAuthorityId === undefined
+        ? undefined
+        : safetyAuthorityId(input.expectedSafetyAuthorityId)
       if (
         safetyConfirmation !== undefined
         && safetyConfirmation !== 'arm'
@@ -309,12 +327,25 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
             'safetyConfirmation',
           )
         }
+        if (
+          params[0] === 1
+          && (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined)
+        ) {
+          fail(
+            'safety_epoch_required',
+            '解锁必须绑定当前 safety authority/epoch',
+            'expectedSafetyEpoch',
+          )
+        }
       } else if (cmd === 'MAV_CMD_NAV_TAKEOFF') {
         if (safetyConfirmation !== 'takeoff') {
           fail('safety_confirmation_required', '起飞命令必须显式确认 takeoff', 'safetyConfirmation')
         }
         if (params.length < 7 || params[6] < 0.5 || params[6] > 500) {
           fail('unsafe_command_params', '起飞高度必须在 0.5..500 米之间', 'params[6]')
+        }
+        if (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined) {
+          fail('safety_epoch_required', '起飞必须绑定当前 safety authority/epoch', 'expectedSafetyEpoch')
         }
       } else if (safetyConfirmation !== undefined) {
         fail(
@@ -328,6 +359,8 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         cmd,
         params,
         ...(safetyConfirmation ? { safetyConfirmation } : {}),
+        ...(expectedSafetyEpoch === undefined ? {} : { expectedSafetyEpoch }),
+        ...(expectedSafetyAuthorityId === undefined ? {} : { expectedSafetyAuthorityId }),
       }, id) as BoundaryClientMessage
     }
 
@@ -387,15 +420,24 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
     case 'shell_close':
       return withRequestId({ type: 'shell_close' }, id) as BoundaryClientMessage
 
-    case 'reboot_vehicle':
+    case 'reboot_vehicle': {
       if (id === undefined) fail('missing_request_id', 'reboot_vehicle 必须携带 requestId', 'requestId')
       if (input.safetyConfirmation !== 'reboot_flight_controller') {
         fail('safety_confirmation_required', '重启飞控必须显式确认 reboot_flight_controller', 'safetyConfirmation')
       }
+      const expectedSafetyEpoch = finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
+      const expectedSafetyAuthorityId = safetyAuthorityId(input.expectedSafetyAuthorityId)
       return withRequestId({
         type: 'reboot_vehicle',
         safetyConfirmation: 'reboot_flight_controller' as const,
+        expectedSafetyEpoch,
+        expectedSafetyAuthorityId,
       }, id) as BoundaryClientMessage
+    }
 
     case 'set_flight_mode': {
       const data = record(input.data, 'data')
@@ -500,6 +542,16 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       const throttle = finiteNumber(data.throttle, 'data.throttle', { min: 0, max: 100 })
       const duration = finiteNumber(data.duration, 'data.duration', { min: 0, max: 30 })
       const propsRemoved = data.propsRemoved === true
+      const expectedSafetyEpoch = input.expectedSafetyEpoch === undefined
+        ? undefined
+        : finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+            integer: true,
+          })
+      const expectedSafetyAuthorityId = input.expectedSafetyAuthorityId === undefined
+        ? undefined
+        : safetyAuthorityId(input.expectedSafetyAuthorityId)
       if (throttle > 0 && (!propsRemoved || duration <= 0)) {
         fail(
           'motor_safety_confirmation_required',
@@ -510,6 +562,9 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       if (throttle === 0 && duration !== 0) {
         fail('unsafe_motor_test', '停止电机测试时 duration 必须为 0', 'data.duration')
       }
+      if (throttle > 0 && (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined)) {
+        fail('safety_epoch_required', '启动电机测试必须绑定当前 safety authority/epoch', 'expectedSafetyEpoch')
+      }
       return withRequestId({
         type: 'motor_test',
         data: {
@@ -518,6 +573,8 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           duration,
           ...(propsRemoved ? { propsRemoved: true } : {}),
         },
+        ...(expectedSafetyEpoch === undefined ? {} : { expectedSafetyEpoch }),
+        ...(expectedSafetyAuthorityId === undefined ? {} : { expectedSafetyAuthorityId }),
       }, id) as BoundaryClientMessage
     }
 
@@ -534,6 +591,16 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       const throttle = finiteNumber(data.throttle, 'data.throttle', { min: 0, max: 100 })
       const duration = finiteNumber(data.duration, 'data.duration', { min: 0, max: 30 })
       const propsRemoved = data.propsRemoved === true
+      const expectedSafetyEpoch = input.expectedSafetyEpoch === undefined
+        ? undefined
+        : finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+            integer: true,
+          })
+      const expectedSafetyAuthorityId = input.expectedSafetyAuthorityId === undefined
+        ? undefined
+        : safetyAuthorityId(input.expectedSafetyAuthorityId)
       if (throttle > 0 && (!propsRemoved || duration <= 0)) {
         fail(
           'motor_safety_confirmation_required',
@@ -544,6 +611,9 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       if (throttle === 0 && duration !== 0) {
         fail('unsafe_motor_test', '停止电机测试时 duration 必须为 0', 'data.duration')
       }
+      if (throttle > 0 && (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined)) {
+        fail('safety_epoch_required', '启动电机测试必须绑定当前 safety authority/epoch', 'expectedSafetyEpoch')
+      }
       return withRequestId({
         type: 'motor_test_batch',
         data: {
@@ -552,6 +622,8 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           duration,
           ...(propsRemoved ? { propsRemoved: true } : {}),
         },
+        ...(expectedSafetyEpoch === undefined ? {} : { expectedSafetyEpoch }),
+        ...(expectedSafetyAuthorityId === undefined ? {} : { expectedSafetyAuthorityId }),
       }, id) as BoundaryClientMessage
     }
 
@@ -610,19 +682,43 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           kind: entry.kind as 'file' | 'dir',
         }
       })
+      const expectedSafetyEpoch = finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
+      const expectedSafetyAuthorityId = safetyAuthorityId(input.expectedSafetyAuthorityId)
       return withRequestId({
         type: 'fs_delete',
         data: { entries },
         safetyConfirmation: 'delete_files' as const,
+        expectedSafetyEpoch,
+        expectedSafetyAuthorityId,
       }, id) as BoundaryClientMessage
     }
 
     case 'esc_session_start': {
+      if (input.safetyConfirmation !== ESC_SESSION_SAFETY_CONFIRMATION) {
+        fail(
+          'safety_confirmation_required',
+          `ESC 配置会话必须显式确认 ${ESC_SESSION_SAFETY_CONFIRMATION}`,
+          'safetyConfirmation',
+        )
+      }
       const data = record(input.data, 'data')
+      const expectedSafetyEpoch = finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
+      const expectedSafetyAuthorityId = safetyAuthorityId(input.expectedSafetyAuthorityId)
       const mode = text(data.mode, 'data.mode', { minBytes: 1, maxBytes: 32, pattern: /^[a-z0-9_]+$/ })
       if (mode === 'ardupilot_passthrough') {
         return withRequestId({
           type: 'esc_session_start',
+          safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+          expectedSafetyEpoch,
+          expectedSafetyAuthorityId,
           data: { mode: 'ardupilot_passthrough' },
         }, id) as BoundaryClientMessage
       }
@@ -630,12 +726,18 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
         const channels = escChannels(data.channels)
         return withRequestId({
           type: 'esc_session_start',
+          safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+          expectedSafetyEpoch,
+          expectedSafetyAuthorityId,
           data: { mode: 'px4_serial_control', channels },
         }, id) as BoundaryClientMessage
       }
       if (mode === 'direct') {
         return withRequestId({
           type: 'esc_session_start',
+          safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+          expectedSafetyEpoch,
+          expectedSafetyAuthorityId,
           data: { mode: 'direct' },
         }, id) as BoundaryClientMessage
       }
@@ -718,9 +820,17 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           'safetyConfirmation',
         )
       }
+      const expectedSafetyEpoch = finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+        min: 0,
+        max: Number.MAX_SAFE_INTEGER,
+        integer: true,
+      })
+      const expectedSafetyAuthorityId = safetyAuthorityId(input.expectedSafetyAuthorityId)
       return withRequestId({
         type: 'log_erase',
         safetyConfirmation: 'erase_all_logs' as const,
+        expectedSafetyEpoch,
+        expectedSafetyAuthorityId,
       }, id) as BoundaryClientMessage
     }
 

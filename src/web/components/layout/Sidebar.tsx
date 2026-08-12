@@ -15,10 +15,10 @@ const navigationItems: NavigationItem[] = [
   { to: '/diagnostics', labelKey: 'sidebar.diagnostics', icon: 'waveform' },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ placement = 'desktop' }: { placement?: 'desktop' | 'mobile' }) {
   const { t } = useTranslation()
   return (
-    <aside className="mc-sidebar">
+    <aside className={`mc-sidebar mc-sidebar--${placement}`}>
       <nav className="mc-sidebar__nav" aria-label={t('sidebar.ariaLabel')}>
         {navigationItems.map((item) => (
           <NavLink

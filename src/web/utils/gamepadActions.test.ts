@@ -5,6 +5,8 @@ import {
   createModeGamepadAction,
   isGamepadActionId,
   normalizeGamepadActionForIdentity,
+  requiresGamepadArmHold,
+  resolveGamepadArmHoldTransition,
   resolveGamepadModeAction,
 } from './gamepadActions'
 
@@ -45,5 +47,24 @@ for (const action of [
 assert.equal(canRepeatGamepadAction('arm'), false)
 assert.equal(canRepeatGamepadAction('mission'), false)
 assert.equal(canRepeatGamepadAction('mode:px4:4'), false)
+
+assert.equal(requiresGamepadArmHold('arm', false), true)
+assert.equal(requiresGamepadArmHold('toggle_arm', false), true)
+assert.equal(requiresGamepadArmHold('disarm', true), false)
+assert.equal(requiresGamepadArmHold('toggle_arm', true), false)
+assert.deepEqual(resolveGamepadArmHoldTransition(true, false, undefined, 1_000), {
+  kind: 'started',
+  startedAt: 1_000,
+})
+assert.deepEqual(resolveGamepadArmHoldTransition(true, true, 1_000, 2_999), {
+  kind: 'pending',
+  startedAt: 1_000,
+})
+assert.deepEqual(resolveGamepadArmHoldTransition(true, true, 1_000, 3_000), {
+  kind: 'confirmed',
+})
+assert.deepEqual(resolveGamepadArmHoldTransition(false, true, 1_000, 1_500), {
+  kind: 'cancelled',
+})
 
 console.log('gamepad action compatibility checks passed')

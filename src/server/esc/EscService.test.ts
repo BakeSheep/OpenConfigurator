@@ -3,7 +3,13 @@
 // scan path vs the not-yet-supported direct/PX4 detection.
 // Run directly: tsx src/server/esc/EscService.test.ts
 import assert from 'node:assert/strict'
-import { crc16Xmodem, EscError, type EscSessionSnapshot } from '../../shared/esc'
+import {
+  AM32_LAYOUT_SIZE,
+  crc16Xmodem,
+  EscError,
+  ESC_SESSION_SAFETY_CONFIRMATION,
+  type EscSessionSnapshot,
+} from '../../shared/esc'
 import type { ClientMessage, ServerMessage } from '../../shared/types'
 import { InputValidationError, parseClientMessage } from '../validation'
 import { buildVehicleIdentity } from '../../shared/vehicleProfiles'
@@ -15,6 +21,10 @@ import { FOUR_WAY_ACK, FOUR_WAY_COMMANDS, FOUR_WAY_RESPONSE_START } from './four
 import { mspChecksum, MSP_COMMANDS } from './msp'
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+const TEST_SAFETY_EXPECTATION = {
+  expectedSafetyEpoch: 1,
+  expectedSafetyAuthorityId: '00000000-0000-4000-8000-000000000001',
+} as const
 
 function expectValidationFail(input: unknown, label: string): void {
   assert.throws(
@@ -29,11 +39,26 @@ function expectValidationFail(input: unknown, label: string): void {
 // ---------------------------------------------------------------------------
 function validationTests(): void {
   // Valid messages parse.
-  const ardu = parseClientMessage({ type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } }) as ClientMessage
+  const ardu = parseClientMessage({
+    type: 'esc_session_start',
+    safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+    ...TEST_SAFETY_EXPECTATION,
+    data: { mode: 'ardupilot_passthrough' },
+  }) as ClientMessage
   assert.equal(ardu.type, 'esc_session_start')
-  const px4 = parseClientMessage({ type: 'esc_session_start', data: { mode: 'px4_serial_control', channels: [20, 21] } })
+  const px4 = parseClientMessage({
+    type: 'esc_session_start',
+    safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+    ...TEST_SAFETY_EXPECTATION,
+    data: { mode: 'px4_serial_control', channels: [20, 21] },
+  })
   assert.equal(px4.type, 'esc_session_start')
-  const direct = parseClientMessage({ type: 'esc_session_start', data: { mode: 'direct' } })
+  const direct = parseClientMessage({
+    type: 'esc_session_start',
+    safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+    ...TEST_SAFETY_EXPECTATION,
+    data: { mode: 'direct' },
+  })
   assert.deepEqual((direct as { data: unknown }).data, { mode: 'direct' })
 
   const sid = 'abcd1234-0000'
@@ -47,9 +72,29 @@ function validationTests(): void {
   })
 
   // Rejections.
-  expectValidationFail({ type: 'esc_session_start', data: { mode: 'nope' } }, 'bad mode')
-  expectValidationFail({ type: 'esc_session_start', data: { mode: 'px4_serial_control', channels: [19] } }, 'channel below range')
-  expectValidationFail({ type: 'esc_session_start', data: { mode: 'px4_serial_control', channels: [28] } }, 'channel above range')
+  expectValidationFail(
+    { type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } },
+    'missing ESC safety confirmation',
+  )
+  expectValidationFail(
+    {
+      type: 'esc_session_start',
+      safetyConfirmation: 'esc_props_removed',
+      data: { mode: 'ardupilot_passthrough' },
+    },
+    'incomplete ESC safety confirmation',
+  )
+  expectValidationFail(
+    {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      data: { mode: 'ardupilot_passthrough' },
+    },
+    'ESC safety confirmation without authority epoch',
+  )
+  expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'nope' } }, 'bad mode')
+  expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'px4_serial_control', channels: [19] } }, 'channel below range')
+  expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'px4_serial_control', channels: [28] } }, 'channel above range')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: sid, targets: [0, 0] } }, 'duplicate targets')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: sid, targets: [] } }, 'empty targets')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: 'short', targets: 'all' } }, 'short sessionId')
@@ -68,8 +113,21 @@ function validationTests(): void {
 // ---------------------------------------------------------------------------
 // Orchestration with a scripted transport.
 // ---------------------------------------------------------------------------
-function fourWayResponse(command: number, params: number[], ack: number = FOUR_WAY_ACK.OK): Uint8Array {
-  const head = Uint8Array.of(FOUR_WAY_RESPONSE_START, command, 0, 0, params.length, ...params, ack)
+function fourWayResponse(
+  command: number,
+  params: number[],
+  ack: number = FOUR_WAY_ACK.OK,
+  address = 0,
+): Uint8Array {
+  const head = Uint8Array.of(
+    FOUR_WAY_RESPONSE_START,
+    command,
+    (address >> 8) & 0xff,
+    address & 0xff,
+    params.length === 256 ? 0 : params.length,
+    ...params,
+    ack,
+  )
   const crc = crc16Xmodem(head)
   return Uint8Array.of(...head, (crc >> 8) & 0xff, crc & 0xff)
 }
@@ -82,7 +140,12 @@ function mspResponse(command: number, payload: number[]): Uint8Array {
 class ScriptedTransport implements EscByteTransport {
   readonly commands: number[] = []
   readonly mspCommands: number[] = []
-  readonly capabilities = { read: true, write: false }
+  readonly initChannels: number[] = []
+  readonly writeChannels: number[] = []
+  readonly capabilities = { read: true, write: true }
+  disconnectAfterFirstWrite: (() => void) | null = null
+  private selectedChannel = 0
+  private readonly eepromByChannel = new Map<number, Uint8Array>()
   constructor(readonly kind: EscByteTransport['kind']) {}
   async open(_t: EscTransportTarget, _s: AbortSignal): Promise<void> {}
   async transact(request: Uint8Array, options: EscTransactionOptions, _signal: AbortSignal): Promise<Uint8Array> {
@@ -94,10 +157,36 @@ class ScriptedTransport implements EscByteTransport {
       reply = command === MSP_COMMANDS.SET_PASSTHROUGH ? mspResponse(command, [2]) : mspResponse(command, [])
     } else {
       const command = request[1]
+      const address = (request[2] << 8) | request[3]
       this.commands.push(command)
-      reply = command === FOUR_WAY_COMMANDS.DeviceInitFlash
-        ? fourWayResponse(command, [0x00, 0x00, 0x00, 4]) // ARM/AM32
-        : fourWayResponse(command, [0])
+      if (command === FOUR_WAY_COMMANDS.DeviceInitFlash) {
+        this.selectedChannel = request[5]
+        this.initChannels.push(this.selectedChannel)
+        reply = fourWayResponse(command, [0x06, 0x1f, 0x00, 4], FOUR_WAY_ACK.OK, address)
+      } else if (command === FOUR_WAY_COMMANDS.DeviceRead) {
+        const length = request[5] === 0 ? 256 : request[5]
+        if (address === 0x7be0) {
+          const name = new Uint8Array(length)
+          name.set(new TextEncoder().encode('AM32'))
+          reply = fourWayResponse(command, [...name], FOUR_WAY_ACK.OK, address)
+        } else {
+          let raw = this.eepromByChannel.get(this.selectedChannel)
+          if (!raw) {
+            raw = new Uint8Array(AM32_LAYOUT_SIZE)
+            raw[0x01] = 3
+            this.eepromByChannel.set(this.selectedChannel, raw)
+          }
+          reply = fourWayResponse(command, [...raw.subarray(0, length)], FOUR_WAY_ACK.OK, address)
+        }
+      } else if (command === FOUR_WAY_COMMANDS.DeviceWrite) {
+        const length = request[4] === 0 ? 256 : request[4]
+        this.eepromByChannel.set(this.selectedChannel, request.slice(5, 5 + length))
+        this.writeChannels.push(this.selectedChannel)
+        if (this.writeChannels.length === 1) this.disconnectAfterFirstWrite?.()
+        reply = fourWayResponse(command, [0], FOUR_WAY_ACK.OK, address)
+      } else {
+        reply = fourWayResponse(command, [0], FOUR_WAY_ACK.OK, address)
+      }
     }
     const length = options.frameLength(reply)
     if (length === null) throw new EscError('timeout', 'partial frame')
@@ -161,6 +250,8 @@ async function orchestrationTests(): Promise<void> {
     const { service, emitted, targeted, pins, transport } = createService('ardupilot_raw')
     await service.handleClientMessage('client-a', {
       type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
       data: { mode: 'ardupilot_passthrough' },
     })
     await wait(10)
@@ -209,12 +300,77 @@ async function orchestrationTests(): Promise<void> {
   // A second start while one session lives is rejected.
   {
     const { service, emitted } = createService('ardupilot_raw')
-    await service.handleClientMessage('client-a', { type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
     await wait(10)
-    await service.handleClientMessage('client-b', { type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
+    await service.handleClientMessage('client-b', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
     const conflict = emitted.find((m) => m.type === 'esc_op_error'
       && (m as { data: { code: string } }).data.code === 'session_exists')
     assert.ok(conflict, 'second session rejected with session_exists')
+    await service.destroy()
+  }
+
+  // Losing the controller owner during target #1 may finish that target's
+  // atomic write/readback, but must never enter target #2 with the old
+  // props-removed / stable-power acknowledgement.
+  {
+    const { service, emitted, transport } = createService('ardupilot_raw')
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    const session = lastSession(emitted)
+    assert.ok(session?.sessionId)
+    const initBaseline = transport.initChannels.length
+    const emittedBaseline = emitted.length
+    transport.disconnectAfterFirstWrite = () => service.handleClientDisconnected('client-a')
+
+    await service.handleClientMessage('client-a', {
+      type: 'esc_settings_write',
+      requestId: 'disconnect-mid-batch',
+      data: {
+        sessionId: session.sessionId,
+        targets: [0, 1],
+        values: { motorDirection: 1 },
+      },
+    })
+
+    assert.deepEqual(
+      transport.writeChannels,
+      [0],
+      'disconnect after target #1 must prevent any write to target #2',
+    )
+    assert.deepEqual(
+      transport.initChannels.slice(initBaseline),
+      [0],
+      'target #2 must not even enter DeviceInitFlash after disconnect',
+    )
+    const writeMessages = emitted.slice(emittedBaseline)
+    assert.ok(writeMessages.some((message) =>
+      message.type === 'esc_settings' && message.data.escIndex === 0),
+    'target #1 completes its atomic write/readback')
+    assert.equal(writeMessages.some((message) =>
+      message.type === 'esc_job_progress'
+      && message.data.kind === 'settings_write'
+      && message.data.escIndex === 1), false)
+    const orphaned = service.snapshot()
+    assert.equal(orphaned.state, 'orphaned')
+    assert.equal(orphaned.safetyConfirmed, false)
+    assert.ok(writeMessages.some((message) =>
+      message.type === 'esc_op_error'
+      && message.data.requestId === 'disconnect-mid-batch'
+      && message.data.code === 'precondition_failed'))
     await service.destroy()
   }
 
@@ -233,6 +389,8 @@ async function orchestrationTests(): Promise<void> {
     })
     await service.handleClientMessage('client-a', {
       type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
       data: { mode: 'px4_serial_control', channels: [20] },
     })
     assert.ok(emitted.some((m) => m.type === 'esc_op_error'
@@ -246,6 +404,8 @@ async function orchestrationTests(): Promise<void> {
     const { service, emitted } = createService('ardupilot_raw', 'ardupilot', 0)
     await service.handleClientMessage('client-a', {
       type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
       data: { mode: 'ardupilot_passthrough' },
     })
     assert.ok(emitted.some((m) => m.type === 'esc_op_error'
@@ -257,7 +417,12 @@ async function orchestrationTests(): Promise<void> {
   // Stack-specific transports fail closed on a mismatched HEARTBEAT family.
   {
     const { service, emitted } = createService('ardupilot_raw', 'px4')
-    await service.handleClientMessage('client-a', { type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
     const mismatch = emitted.find((m) => m.type === 'esc_op_error'
       && (m as { data: { code: string } }).data.code === 'unsupported_vehicle_profile')
     assert.ok(mismatch, 'mismatched autopilot family is rejected before transport open')
@@ -271,6 +436,8 @@ async function orchestrationTests(): Promise<void> {
     const { service, emitted } = createService('ardupilot_raw', 'ardupilot', 5, 1)
     await service.handleClientMessage('client-a', {
       type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
       data: { mode: 'ardupilot_passthrough' },
     })
     const readOnly = emitted.find((m) => m.type === 'esc_op_error'
@@ -283,7 +450,12 @@ async function orchestrationTests(): Promise<void> {
   // Direct scan reports not_supported (AM32 bootloader detection pending).
   {
     const { service, emitted } = createService('direct')
-    await service.handleClientMessage('client-a', { type: 'esc_session_start', data: { mode: 'direct' } })
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'direct' },
+    })
     await wait(10)
     const notSupported = emitted.find((m) => m.type === 'esc_op_error'
       && (m as { data: { code: string } }).data.code === 'not_supported')

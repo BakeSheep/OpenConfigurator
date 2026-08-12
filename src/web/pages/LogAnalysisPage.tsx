@@ -18,7 +18,10 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import i18next from 'i18next'
 import Icon from '../components/ui/Icon'
+import { Button } from '../components/ui/Button'
+import Dialog from '../components/ui/Dialog'
 import { PageHeader } from '../components/ui/PageFrame'
+import Toolbar from '../components/ui/Toolbar'
 import UPlotChart, { seriesColor } from '../components/logs/UPlotChart'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -420,14 +423,13 @@ function FcImportDialog({
   }
 
   return (
-    <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
-      <div className="mc-card mc-modal">
-        <div className="flex items-center justify-between">
-          <h3 className="mc-section-title">{t('logAnalysis.importFromFcTitle')}</h3>
-          <button type="button" className="mc-icon-btn" aria-label={t('common.close')} onClick={onClose}>
-            <Icon name="close" size={15} />
-          </button>
-        </div>
+    <Dialog
+      open
+      title={t('logAnalysis.importFromFcTitle')}
+      closeLabel={t('common.close')}
+      onClose={onClose}
+    >
+      <div className="space-y-3">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -451,22 +453,21 @@ function FcImportDialog({
             <span className="mc-mono" style={{ fontSize: 12 }}>
               {formatBytes(download.receivedBytes)} / {formatBytes(download.totalBytes)}
             </span>
-            <button
-              type="button"
-              className="mc-btn mc-btn-ghost"
+            <Button
+              tone="quiet"
               onClick={() => sendClientMessage({ type: 'fs_download_cancel' })}
             >
               {t('common.cancel')}
-            </button>
+            </Button>
           </div>
         ) : (
           <ul className="mc-modal__list" style={{ maxHeight: 300 }}>
-            {loading && <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.readingDir')}</li>}
+            {loading && <li style={{ color: 'var(--text-secondary)' }}>{t('logAnalysis.readingDir')}</li>}
             {!loading && listError && (
               <li style={{ color: 'var(--danger)' }}>{listError}</li>
             )}
             {!loading && !listError && visible.length === 0 && (
-              <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.noUlgLogs')}</li>
+              <li style={{ color: 'var(--text-secondary)' }}>{t('logAnalysis.noUlgLogs')}</li>
             )}
             {!loading && visible.map((entry) => (
               <li key={entry.name}>
@@ -490,7 +491,7 @@ function FcImportDialog({
                   />
                   {entry.name}
                   {entry.kind === 'file' && (
-                    <span style={{ color: 'var(--text-disabled)' }}>
+                    <span style={{ color: 'var(--text-secondary)' }}>
                       {formatBytes(entry.sizeBytes)}
                     </span>
                   )}
@@ -505,7 +506,7 @@ function FcImportDialog({
           </p>
         )}
       </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -538,14 +539,13 @@ function FcDataflashImportDialog({
   }
 
   return (
-    <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
-      <div className="mc-card mc-modal">
-        <div className="flex items-center justify-between">
-          <h3 className="mc-section-title">{t('logAnalysis.importFromFcTitle')}</h3>
-          <button type="button" className="mc-icon-btn" aria-label={t('common.close')} onClick={onClose}>
-            <Icon name="close" size={15} />
-          </button>
-        </div>
+    <Dialog
+      open
+      title={t('logAnalysis.importFromFcTitle')}
+      closeLabel={t('common.close')}
+      onClose={onClose}
+    >
+      <div className="space-y-3">
         {download?.status === 'active' ? (
           <div className="mc-explorer__transfer" style={{ padding: '12px 0' }}>
             <progress
@@ -555,22 +555,21 @@ function FcDataflashImportDialog({
             <span className="mc-mono" style={{ fontSize: 12 }}>
               {formatBytes(download.receivedBytes)} / {formatBytes(download.totalBytes)}
             </span>
-            <button
-              type="button"
-              className="mc-btn mc-btn-ghost"
+            <Button
+              tone="quiet"
               onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
             >
               {t('common.cancel')}
-            </button>
+            </Button>
           </div>
         ) : (
           <ul className="mc-modal__list" style={{ maxHeight: 300 }}>
-            {loading && <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.readingLogList')}</li>}
+            {loading && <li style={{ color: 'var(--text-secondary)' }}>{t('logAnalysis.readingLogList')}</li>}
             {!loading && listError && (
               <li style={{ color: 'var(--danger)' }}>{listError}</li>
             )}
             {!loading && !listError && newestFirst.length === 0 && (
-              <li style={{ color: 'var(--text-disabled)' }}>{t('logAnalysis.noLogsOnFc')}</li>
+              <li style={{ color: 'var(--text-secondary)' }}>{t('logAnalysis.noLogsOnFc')}</li>
             )}
             {!loading && newestFirst.map((entry) => (
               <li key={entry.id}>
@@ -589,7 +588,7 @@ function FcDataflashImportDialog({
                 >
                   <Icon name="log" size={14} style={{ color: 'var(--accent)' }} />
                   {dataflashLogName(entry)}
-                  <span style={{ color: 'var(--text-disabled)' }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>
                     {formatBytes(entry.sizeBytes)}
                   </span>
                 </button>
@@ -603,7 +602,7 @@ function FcDataflashImportDialog({
           </p>
         )}
       </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -888,6 +887,39 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     [dataset, t],
   )
 
+  const logActions = (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".ulg,.bin"
+        hidden
+        onChange={(event) => {
+          handleFiles(event.target.files)
+          event.target.value = ''
+        }}
+      />
+      <button
+        type="button"
+        className="mc-btn mc-btn-ghost"
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
+      </button>
+      <button
+        type="button"
+        className="mc-btn mc-btn-primary"
+        disabled={!backendEnabled || !vehicleReady}
+        title={!backendEnabled
+          ? t('logAnalysis.demoModeHint')
+          : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
+        onClick={() => setImportOpen(true)}
+      >
+        <Icon name="download" size={15} /> {t('logAnalysis.importFromFc')}
+      </button>
+    </>
+  )
+
   return (
     <div
       className={`${embedded ? 'mc-embedded-page' : 'mc-workspace'} mc-fade-in`}
@@ -902,42 +934,15 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         handleFiles(event.dataTransfer.files)
       }}
     >
-      <PageHeader
-        title={t('logAnalysis.title')}
-        description={t('logAnalysis.description')}
-        actions={
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".ulg,.bin"
-              hidden
-              onChange={(event) => {
-                handleFiles(event.target.files)
-                event.target.value = ''
-              }}
-            />
-            <button
-              type="button"
-              className="mc-btn mc-btn-ghost"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
-            </button>
-            <button
-              type="button"
-              className="mc-btn mc-btn-primary"
-              disabled={!backendEnabled || !vehicleReady}
-              title={!backendEnabled
-                ? t('logAnalysis.demoModeHint')
-                : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
-              onClick={() => setImportOpen(true)}
-            >
-              <Icon name="download" size={15} /> {t('logAnalysis.importFromFc')}
-            </button>
-          </>
-        }
-      />
+      {embedded
+        ? <Toolbar actions={logActions} />
+        : (
+          <PageHeader
+            title={t('logAnalysis.title')}
+            description={t('logAnalysis.description')}
+            actions={logActions}
+          />
+        )}
 
       {parseError && (
         <div className="mc-card" style={{ borderColor: 'var(--danger)', marginBottom: 14 }}>

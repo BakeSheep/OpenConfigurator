@@ -53,7 +53,7 @@ const modulePath = fileURLToPath(import.meta.url)
 const moduleDir = path.dirname(modulePath)
 const distPath = path.resolve(moduleDir, '../../dist')
 
-const PROTOCOL_VERSION = 1
+const PROTOCOL_VERSION = 2
 const JSON_BODY_LIMIT = '16kb'
 const MAX_BUFFERED_AMOUNT = 512 * 1024
 const PARAM_BATCH_INTERVAL_MS = 120
@@ -291,6 +291,39 @@ function messageRequestId(message: BoundaryClientMessage): string | undefined {
   return 'requestId' in message ? message.requestId : undefined
 }
 
+type SafetyExpectation = { epoch: number; authorityId: string }
+
+function safetyExpectation(message: BoundaryClientMessage): SafetyExpectation | null {
+  if (
+    message.type === 'fs_delete'
+    || message.type === 'log_erase'
+    || message.type === 'esc_session_start'
+    || message.type === 'reboot_vehicle'
+  ) return {
+    epoch: message.expectedSafetyEpoch,
+    authorityId: message.expectedSafetyAuthorityId,
+  }
+  if (message.type === 'command') {
+    const isArm = message.cmd === 'MAV_CMD_COMPONENT_ARM_DISARM'
+      && (message.params[0] ?? 0) >= 0.5
+    const isTakeoff = message.cmd === 'MAV_CMD_NAV_TAKEOFF'
+    return isArm || isTakeoff
+      ? {
+          epoch: message.expectedSafetyEpoch ?? -1,
+          authorityId: message.expectedSafetyAuthorityId ?? '',
+        }
+      : null
+  }
+  if (
+    (message.type === 'motor_test' || message.type === 'motor_test_batch')
+    && message.data.throttle > 0
+  ) return {
+    epoch: message.expectedSafetyEpoch ?? -1,
+    authorityId: message.expectedSafetyAuthorityId ?? '',
+  }
+  return null
+}
+
 function isParameterOperationError(message: unknown): boolean {
   if (typeof message !== 'object' || message === null) return false
   const candidate = message as {
@@ -409,6 +442,16 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   const clientContexts = new Map<WebSocket, ClientContext>()
   const shutdownCleanups = new Set<() => void>()
   let controllerLease: ControllerLease | null = null
+  // Monotonic server authority boundary. Human safety acknowledgements are
+  // valid only for the exact epoch observed when they were completed.
+  let safetyEpoch = 1
+  const safetyAuthorityId = randomUUID()
+  let lastTargetSafetyFingerprint = JSON.stringify([null, null, false, null])
+  let lastConnectionSafetyFingerprint = JSON.stringify([
+    connManager.transportOpen ?? connManager.status === 'connected',
+    connManager.vehicleReady ?? false,
+    connManager.rawSessionActive === true,
+  ])
   // ESC session lease pin (ADR-004): while set, the lease belongs to the
   // session owner and cannot expire or be taken over.
   let escControllerPin: { clientId: string; sessionId: string } | null = null
@@ -468,6 +511,8 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         status,
         transportOpen,
         vehicleReady,
+        safetyEpoch,
+        safetyAuthorityId,
         rawSessionActive: manager.rawSessionActive === true,
         ...(manager.config?.port ? { port: manager.config.port } : {}),
         ...(manager.config?.type ? { type: manager.config.type } : {}),
@@ -562,9 +607,33 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       data: {
         clientId: controllerLease?.clientId ?? null,
         expiresAt: controllerLease?.expiresAt ?? null,
+        safetyEpoch,
+        safetyAuthorityId,
         reason,
       },
     }
+  }
+
+  function advanceSafetyEpoch(): void {
+    safetyEpoch += 1
+  }
+
+  function broadcastSafetyBoundary(
+    reason: Extract<LocalServerMessage, { type: 'controller' }>['data']['reason'] = 'safety_changed',
+  ): void {
+    advanceSafetyEpoch()
+    broadcast(controllerMessage(reason))
+  }
+
+  function syncConnectionSafetyBoundary(): void {
+    const fingerprint = JSON.stringify([
+      connManager.transportOpen ?? connManager.status === 'connected',
+      connManager.vehicleReady ?? false,
+      connManager.rawSessionActive === true,
+    ])
+    if (fingerprint === lastConnectionSafetyFingerprint) return
+    lastConnectionSafetyFingerprint = fingerprint
+    broadcastSafetyBoundary()
   }
 
   function expireController(now = Date.now()): void {
@@ -580,7 +649,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
     if (!controllerLease || controllerLease.expiresAt > now) return
     controllerLease = null
-    broadcast(controllerMessage('expired'))
+    broadcastSafetyBoundary('expired')
   }
 
   /**
@@ -593,7 +662,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     const now = Date.now()
     if (!controllerLease || controllerLease.clientId !== ownerClientId) {
       controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
-      broadcast(controllerMessage('claimed'))
+      broadcastSafetyBoundary('claimed')
     } else {
       controllerLease.expiresAt = now + controllerLeaseMs
     }
@@ -612,7 +681,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     const now = Date.now()
     if (!controllerLease || controllerLease.clientId !== ownerClientId) {
       controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
-      broadcast(controllerMessage('claimed'))
+      broadcastSafetyBoundary('claimed')
     } else {
       controllerLease.expiresAt = now + controllerLeaseMs
     }
@@ -652,7 +721,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
     if (!controllerLease) {
       controllerLease = { clientId: context.id, expiresAt: now + controllerLeaseMs }
-      broadcast(controllerMessage('claimed'))
+      broadcastSafetyBoundary('claimed')
       return true
     }
     if (controllerLease.clientId !== context.id) {
@@ -670,16 +739,81 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     return true
   }
 
+  /**
+   * Evaluate expiry before comparison so an acknowledgement from a lease that
+   * has just expired cannot be reused by the automatic claim path below.
+   */
+  function ensureCurrentSafetyEpoch(
+    ws: WebSocket,
+    context: ClientContext,
+    message: BoundaryClientMessage,
+    requestId?: string,
+  ): boolean {
+    const expected = safetyExpectation(message)
+    if (expected === null) return true
+    expireController()
+    if (expected.authorityId === safetyAuthorityId && expected.epoch === safetyEpoch) return true
+    sendClientError(
+      ws,
+      'stale_safety_epoch',
+      '安全确认已因目标、连接状态或控制权变化而失效，请重新确认',
+      requestId,
+      false,
+      {
+        expectedSafetyEpoch: expected.epoch,
+        currentSafetyEpoch: safetyEpoch,
+        expectedSafetyAuthorityId: expected.authorityId,
+        currentSafetyAuthorityId: safetyAuthorityId,
+        clientId: context.id,
+      },
+    )
+    return false
+  }
+
+  function ensureControllerForMessage(
+    ws: WebSocket,
+    context: ClientContext,
+    message: BoundaryClientMessage,
+    requestId?: string,
+  ): boolean {
+    if (!ensureCurrentSafetyEpoch(ws, context, message, requestId)) return false
+    const expected = safetyExpectation(message)
+    const beforeEpoch = safetyEpoch
+    const beforeOwner = controllerLease?.clientId ?? null
+    if (!ensureController(ws, context, requestId)) return false
+    if (expected === null) return true
+    const unchanged = safetyEpoch === beforeEpoch
+    const atomicInitialClaim = beforeOwner === null
+      && controllerLease?.clientId === context.id
+      && safetyEpoch === beforeEpoch + 1
+    if (
+      expected.authorityId === safetyAuthorityId
+      && expected.epoch === beforeEpoch
+      && (unchanged || atomicInitialClaim)
+    ) return true
+    sendClientError(
+      ws,
+      'stale_safety_epoch',
+      '安全确认在控制权检查期间失效，请重新确认',
+      requestId,
+      false,
+      { expectedSafetyEpoch: expected.epoch, currentSafetyEpoch: safetyEpoch },
+    )
+    return false
+  }
+
   function releaseController(context: ClientContext, reason: 'released' | 'disconnected'): boolean {
     expireController()
     if (controllerLease?.clientId !== context.id) return false
     // The lease of an ESC/calibration session owner survives WS disconnects
     // so an orphaned session can be reclaimed; the session lifecycle
     // releases it.
-    if (escControllerPin?.clientId === context.id) return false
-    if (calControllerPin?.clientId === context.id) return false
+    if (escControllerPin?.clientId === context.id || calControllerPin?.clientId === context.id) {
+      if (reason === 'disconnected') broadcastSafetyBoundary('disconnected')
+      return false
+    }
     controllerLease = null
-    broadcast(controllerMessage(reason))
+    broadcastSafetyBoundary(reason)
     return true
   }
 
@@ -864,6 +998,25 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
+    if (message.type === 'target') {
+      const targetMessage = message as Extract<ServerMessage, { type: 'target' }>
+      const fingerprint = JSON.stringify([
+        targetMessage.data.systemId,
+        targetMessage.data.componentId,
+        targetMessage.data.ready,
+        targetMessage.data.identity,
+      ])
+      if (fingerprint !== lastTargetSafetyFingerprint) {
+        lastTargetSafetyFingerprint = fingerprint
+        broadcastSafetyBoundary()
+      }
+      broadcast({
+        ...targetMessage,
+        data: { ...targetMessage.data, safetyEpoch, safetyAuthorityId },
+      })
+      return
+    }
+
     const runId = message.paramRunId
     const belongsToParameterRun = message.type === 'param'
       || message.type === 'param_complete'
@@ -940,7 +1093,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       calibrationManager.handleLinkDown()
       if (controllerLease) {
         controllerLease = null
-        broadcast(controllerMessage('connection_changed'))
+        broadcastSafetyBoundary('connection_changed')
       }
       if (parameterSync) {
         cancelBridgeParameterDownload(`connection_${status}`)
@@ -948,10 +1101,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       }
       clearParamBatch()
     }
+    syncConnectionSafetyBoundary()
     broadcast(connectionMessage())
   }
 
   const onConnectionStateDetail = (): void => {
+    syncConnectionSafetyBoundary()
     broadcast(connectionMessage())
   }
 
@@ -966,6 +1121,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       clearParamBatch()
       finishParameterSync('cancelled', 'vehicle_not_ready')
     }
+    syncConnectionSafetyBoundary()
     broadcast(connectionMessage())
   }
 
@@ -1350,6 +1506,15 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return
     }
 
+    // A persisted safety acknowledgement is checked before any readiness,
+    // capability, session, or automatic-claim gate. This makes an expired
+    // lease/target boundary observable and guarantees that a stale request
+    // cannot acquire or renew controller authority as a side effect.
+    if (
+      safetyExpectation(message) !== null
+      && !ensureCurrentSafetyEpoch(ws, context, message, requestId)
+    ) return
+
     // ESC messages are routed to the ESC service before the generic
     // ready-target gate: direct-mode sessions have no MAVLink target, and
     // subsequent commands are governed by the session's own ownership state.
@@ -1371,7 +1536,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       // Reclaim transfers ownership to a new client, so it cannot require the
       // lease (which is pinned to the disconnected owner). Every other ESC
       // command requires the caller to hold the controller lease.
-      if (message.type !== 'esc_session_reclaim' && !ensureController(ws, context, requestId)) {
+      if (message.type !== 'esc_session_reclaim' && !ensureControllerForMessage(ws, context, message, requestId)) {
         return
       }
       void escService.handleClientMessage(context.id, message)
@@ -1437,7 +1602,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       // observers need the more actionable generation conflict and must not be
       // able to extend or steal a lease while a download is active.
       if (!beginParameterSync(ws, context, requestId)) return
-    } else if (isMutatingMessage(message) && !ensureController(ws, context, requestId)) {
+    } else if (isMutatingMessage(message) && !ensureControllerForMessage(ws, context, message, requestId)) {
       return
     }
 
@@ -1525,6 +1690,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         capabilities: [
           'runtime-validation',
           'controller-lease',
+          'safety-epoch',
           'parameter-generation',
           'connection-readiness',
           'structured-errors',
@@ -1534,6 +1700,8 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         ],
         maxPayload: config.wsMaxPayload,
         controllerLeaseMs,
+        safetyEpoch,
+        safetyAuthorityId,
       },
     })
     safeSend(ws, connectionMessage())

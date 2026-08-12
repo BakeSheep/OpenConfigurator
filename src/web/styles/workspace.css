@@ -1,0 +1,235 @@
+/* Shared routed workspace and second-level section layout ----------------- */
+
+.mc-workspace-frame {
+  width: 100%;
+  max-width: 1440px;
+  min-width: 0;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 20px 24px 32px;
+}
+
+.mc-workspace-frame > .mc-page-header {
+  margin-bottom: 20px;
+}
+
+.mc-section-layout {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 176px minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.mc-section-nav {
+  position: sticky;
+  top: 14px;
+  width: 176px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  box-shadow: var(--card-shadow);
+}
+
+.mc-section-nav__items {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mc-section-nav__link {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.mc-section-nav__link:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.mc-section-nav__link[data-active="true"] {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.mc-section-nav__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mc-section-nav__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: currentColor;
+}
+
+.mc-section-nav__link[data-active="true"] .mc-section-nav__icon {
+  background: var(--bg-secondary);
+}
+
+.mc-section-nav__label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mc-section-frame {
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
+.mc-section-frame__header {
+  display: flex;
+  min-height: 46px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 2px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mc-section-frame__heading {
+  min-width: 0;
+}
+
+.mc-section-frame__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.mc-section-frame__title-row h2 {
+  margin: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.mc-section-frame__title-row h2:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+.mc-section-frame__heading > p {
+  max-width: 760px;
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mc-section-frame__status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.mc-section-frame__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mc-section-frame__tabs,
+.mc-section-frame__toolbar,
+.mc-section-frame__notices {
+  min-width: 0;
+  margin-top: 14px;
+}
+
+.mc-section-frame__content {
+  min-width: 0;
+  margin-top: 16px;
+}
+
+/* Temporary hierarchy adapters while embedded business pages migrate. */
+.mc-section-frame .mc-setup-identity h3,
+.mc-section-frame .mc-diagnostics-ekf > header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.mc-section-frame .mc-setup-identity h3 {
+  margin-top: 8px;
+  font-size: 21px;
+}
+
+.mc-section-frame .mc-diagnostics-ekf > header h3 {
+  font-size: 15px;
+}
+
+@media (max-width: 959px) {
+  .mc-workspace-frame {
+    padding: 18px 16px 28px;
+  }
+
+  .mc-section-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+
+  .mc-section-nav {
+    position: static;
+    width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .mc-section-nav__items {
+    width: max-content;
+    min-width: 100%;
+    flex-direction: row;
+  }
+
+  .mc-section-nav__link {
+    min-width: 128px;
+  }
+}
+
+@media (max-width: 600px) {
+  .mc-section-frame__header {
+    display: block;
+  }
+
+  .mc-section-frame__actions {
+    margin-top: 12px;
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-section-nav__link {
+    transition: none;
+  }
+}

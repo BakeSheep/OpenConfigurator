@@ -143,6 +143,7 @@ function seedEscConfigurator() {
     sessionId,
     mode: 'ardupilot_passthrough',
     ownerClientId: 'demo-readonly-owner',
+    safetyConfirmed: true,
     escCount: 4,
     activeJobId: null,
     recoverUntil: null,
@@ -307,11 +308,12 @@ function pushSlowTelemetry() {
   // deliberately synthetic markers, not a plausible real device.
   conn.setConnectionSnapshot({
     status: 'connected', transportOpen: true, vehicleReady: true, rawSessionActive: false,
+    safetyEpoch: 1, safetyAuthorityId: '00000000-0000-4000-8000-000000000001',
     port: 'DEMO', type: 'synthetic', baudRate: 57600,
   })
   // Keep the synthetic vehicle fully populated for preview while making every
   // normal control gate resolve to read-only.
-  conn.setController('demo-readonly-owner', null)
+  conn.setController('demo-readonly-owner', null, 1, '00000000-0000-4000-8000-000000000001')
   conn.setLinkStats({
     rxBps: Math.round(11840 + 900 * Math.sin(time * 0.5)),
     txBps: Math.round(486 + 60 * Math.sin(time * 0.8)),
@@ -428,7 +430,11 @@ export function startDemoMode(): () => void {
   console.log('[Demo] Synthetic telemetry enabled - no flight controller is connected')
   // Give the demo a stable client id so calibration ownership resolves; the
   // read-only controller lease (armed, phantom owner) is unchanged.
-  useConnectionStore.getState().setClientId('demo-client')
+  useConnectionStore.getState().setClientId(
+    'demo-client',
+    1,
+    '00000000-0000-4000-8000-000000000001',
+  )
   // Local calibration simulation: intercept calibration client messages so
   // they drive the calibrationStore without a socket. Registered ONLY here,
   // so live builds never gain a handler and keep the no-socket safety.

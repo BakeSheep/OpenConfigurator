@@ -44,6 +44,8 @@ interface InternalSession {
   ownerClientId: string
   target: EscTransportTarget
   recoveryToken: string
+  /** Bound to the current owner epoch; cleared on disconnect and every terminal path. */
+  safetyConfirmed: boolean
   transport: EscByteTransport
   abort: AbortController
   state: 'entering' | 'active' | 'orphaned' | 'exiting'
@@ -91,6 +93,7 @@ export class EscSessionManager extends EventEmitter {
         sessionId: null,
         mode: null,
         ownerClientId: null,
+        safetyConfirmed: false,
         escCount: 0,
         activeJobId: null,
         recoverUntil: null,
@@ -103,6 +106,7 @@ export class EscSessionManager extends EventEmitter {
       sessionId: session.sessionId,
       mode: session.target.mode,
       ownerClientId: session.ownerClientId,
+      safetyConfirmed: session.safetyConfirmed,
       escCount: 0,
       activeJobId: session.activeJob?.jobId ?? null,
       recoverUntil: session.recoverUntil,
@@ -159,6 +163,19 @@ export class EscSessionManager extends EventEmitter {
     return { sessionId: session.sessionId, mode: session.target.mode }
   }
 
+  /** Settings writes additionally require the session's physical-safety acknowledgement. */
+  assertSettingsWriteAllowed(clientId: string, sessionId: string): InternalSessionView {
+    const view = this.assertOwner(clientId, sessionId)
+    const session = this.session
+    if (!session?.safetyConfirmed) {
+      throw new EscError(
+        'precondition_failed',
+        'ESC 安全确认已失效；请退出会话并重新确认已拆桨且供电稳定',
+      )
+    }
+    return view
+  }
+
   /** Owner commands call this to reset the idle watchdog. */
   noteActivity(clientId: string): void {
     const session = this.session
@@ -171,6 +188,7 @@ export class EscSessionManager extends EventEmitter {
   async start(
     ownerClientId: string,
     target: EscTransportTarget,
+    safetyConfirmed: boolean,
   ): Promise<{ sessionId: string; recoveryToken: string }> {
     if (this.destroyed) throw new EscError('invalid_state', 'ESC 服务已关闭')
     if (this.session) throw new EscError('session_exists', '已存在活动的 ESC 会话')
@@ -185,6 +203,7 @@ export class EscSessionManager extends EventEmitter {
       ownerClientId,
       target,
       recoveryToken: randomBytes(24).toString('base64url'),
+      safetyConfirmed,
       transport,
       abort,
       state: 'entering',
@@ -267,6 +286,10 @@ export class EscSessionManager extends EventEmitter {
     }
     // A job is running: never interrupt the current safe atomic unit. Wait
     // for reclaim within the grace window; the job continues meanwhile.
+    // The physical acknowledgement belongs to the owner/control epoch. The
+    // in-flight atomic unit may finish, but a reclaimed session cannot start
+    // another settings write until the operator exits and confirms again.
+    session.safetyConfirmed = false
     session.state = 'orphaned'
     session.recoverUntil = Date.now() + this.options.orphanGraceMs
     this.clearIdleTimer(session)
@@ -341,6 +364,7 @@ export class EscSessionManager extends EventEmitter {
     if (session.finalizePromise) return session.finalizePromise
     session.finalizePromise = (async () => {
       session.state = 'exiting'
+      session.safetyConfirmed = false
       this.clearIdleTimer(session)
       if (session.orphanTimer) {
         clearTimeout(session.orphanTimer)

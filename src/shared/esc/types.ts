@@ -6,6 +6,10 @@ import type { EscOperationError } from './errors'
 /** How the byte channel to the ESCs is established. */
 export type EscSessionMode = 'ardupilot_passthrough' | 'px4_serial_control' | 'direct'
 
+/** Explicit physical-safety acknowledgement required to start an ESC session. */
+export const ESC_SESSION_SAFETY_CONFIRMATION = 'esc_props_removed_power_stable' as const
+export type EscSessionSafetyConfirmation = typeof ESC_SESSION_SAFETY_CONFIRMATION
+
 /** Physical transport implementation behind a session. */
 export type EscTransportKind = 'ardupilot_raw' | 'px4_serial_control' | 'direct'
 
@@ -48,6 +52,8 @@ export interface EscSessionSnapshot {
   sessionId: string | null
   mode: EscSessionMode | null
   ownerClientId: string | null
+  /** Server-authoritative acknowledgement state for settings writes. */
+  safetyConfirmed: boolean
   escCount: number
   activeJobId: string | null
   /** Epoch ms until which an orphaned session waits for reclaim. */

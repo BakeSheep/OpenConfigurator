@@ -151,7 +151,7 @@ export default function PortSettingsPage() {
     <section className="mc-port-settings mc-card">
       <header>
         <div>
-          <h2>{t('portSettings.mavlinkPortInstances')}</h2>
+          <h3>{t('portSettings.mavlinkPortInstances')}</h3>
           <p>{t('portSettings.mavlinkDescription')}</p>
         </div>
         <span>{params.size ? t('portSettings.paramsSynced') : t('portSettings.connectToRead')}</span>
@@ -227,7 +227,7 @@ function ArduPilotSerialPorts({ params, writable }: { params: Map<string, import
     <section className="mc-port-settings mc-card">
       <header>
         <div>
-          <h2>{t('portSettings.ardupilotSerial')}</h2>
+          <h3>{t('portSettings.ardupilotSerial')}</h3>
           <p>{t('portSettings.ardupilotSerialDesc')}</p>
         </div>
         <span>{ports.length ? t('portSettings.serialCount', { count: ports.length }) : t('portSettings.connectToRead')}</span>

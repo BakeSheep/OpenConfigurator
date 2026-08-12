@@ -27,6 +27,8 @@
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "test:dataflash": "tsx src/web/utils/dataflashAnalysis.test.ts",
     "test:qgc-params": "tsx --test src/web/utils/qgcParameterFile.test.ts",
+    "test:ui": "node scripts/run-ui-tests.mjs",
+    "test:ui:update": "node scripts/run-ui-tests.mjs --update-snapshots",
     "start": "tsx src/server/index.ts",
     "preview": "vite preview",
     "desktop": "npm run build:desktop && electron .",
@@ -34,6 +36,8 @@
     "dist:win": "npm run build:desktop && electron-builder --win --x64"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@tailwindcss/vite": "^4.3.3",

@@ -11,6 +11,7 @@ function session(overrides: Partial<EscSessionSnapshot> = {}): EscSessionSnapsho
     sessionId: 's1',
     mode: 'ardupilot_passthrough',
     ownerClientId: 'client-a',
+    safetyConfirmed: true,
     escCount: 0,
     activeJobId: null,
     recoverUntil: null,

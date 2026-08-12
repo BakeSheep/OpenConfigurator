@@ -1,0 +1,184 @@
+:root {
+  --mc-space-1: 4px;
+  --mc-space-2: 8px;
+  --mc-space-3: 12px;
+  --mc-space-4: 16px;
+  --mc-space-5: 20px;
+  --mc-space-6: 24px;
+  --mc-space-8: 32px;
+
+  --mc-type-caption: 11px;
+  --mc-type-supporting: 12px;
+  --mc-type-body: 13px;
+  --mc-type-card-title: 14px;
+  --mc-type-section-title: 18px;
+  --mc-type-page-title: 24px;
+
+  --mc-control-compact: 32px;
+  --mc-control-default: 36px;
+  --mc-control-prominent: 40px;
+  --mc-radius-control: 8px;
+  --mc-radius-card: 12px;
+  --mc-radius-dialog: 16px;
+
+  --mc-motion-fast: 100ms;
+  --mc-motion-default: 160ms;
+  --mc-motion-slow: 240ms;
+  --mc-ease-standard: cubic-bezier(.2, .8, .2, 1);
+  --mc-z-dropdown: 120;
+  --mc-z-overlay: 180;
+  --mc-z-modal: 200;
+  --mc-breakpoint-compact: 960px;
+  --mc-breakpoint-mobile: 640px;
+
+  --mc-color-canvas: #f6f7f9;
+  --mc-color-surface: #ffffff;
+  --mc-color-surface-muted: #f0f2f5;
+  --mc-color-surface-raised: #ffffff;
+  --mc-color-text-primary: #1a1d24;
+  --mc-color-text-secondary: #4b5563;
+  --mc-color-text-subtle: #667085;
+  --mc-color-text-disabled: #8a94a3;
+  --mc-color-border-subtle: #dfe3e8;
+  --mc-color-border-control: #87909d;
+  --mc-color-border-strong: #667085;
+  --mc-color-focus-ring: #0f766e;
+
+  --mc-color-accent-solid: #0f766e;
+  /* Text/icon accent is deliberately darker than the solid action color so
+     compact labels remain AA-safe when placed on the accent tint. */
+  --mc-color-accent-fg: #0b6b64;
+  --mc-color-accent-tint: #e5f5f2;
+  --mc-color-on-accent: #ffffff;
+  --mc-color-success-solid: #15803d;
+  --mc-color-success-fg: #166534;
+  --mc-color-success-tint: #eaf7ee;
+  --mc-color-on-success: #ffffff;
+  --mc-color-warning-solid: #a16207;
+  --mc-color-warning-fg: #92400e;
+  --mc-color-warning-tint: #fff7dd;
+  --mc-color-on-warning: #ffffff;
+  --mc-color-danger-solid: #b91c1c;
+  --mc-color-danger-fg: #b91c1c;
+  --mc-color-danger-tint: #fdf0f0;
+  --mc-color-on-danger: #ffffff;
+  --mc-color-info-solid: #0369a1;
+  --mc-color-info-fg: #075985;
+  --mc-color-info-tint: #eaf6fc;
+  --mc-color-on-info: #ffffff;
+
+  --mc-shadow-surface: 0 1px 2px rgba(20, 29, 44, .04), 0 2px 7px rgba(20, 29, 44, .045);
+  --mc-shadow-floating: 0 18px 48px rgba(20, 29, 44, .18);
+
+  /* Compatibility aliases for the existing application while pages migrate. */
+  --bg-primary: var(--mc-color-canvas);
+  --bg-secondary: var(--mc-color-surface);
+  --bg-tertiary: var(--mc-color-surface-muted);
+  --bg-hover: color-mix(in srgb, var(--mc-color-surface-muted) 72%, var(--mc-color-text-primary) 7%);
+  --bg-active: var(--mc-color-accent-tint);
+  --text-primary: var(--mc-color-text-primary);
+  --text-secondary: var(--mc-color-text-secondary);
+  --text-subtle: var(--mc-color-text-subtle);
+  --text-muted: var(--mc-color-text-secondary);
+  /* Legacy pages used this token for visible hints. Keep the compatibility
+     alias AA-safe; new primitive disabled states use --mc-color-text-disabled. */
+  --text-disabled: var(--mc-color-text-subtle);
+  --border: var(--mc-color-border-subtle);
+  --border-hover: var(--mc-color-border-control);
+  --border-strong: var(--mc-color-border-strong);
+  --accent: var(--mc-color-accent-fg);
+  --accent-hover: var(--mc-color-accent-solid);
+  --accent-active: var(--mc-color-accent-fg);
+  --accent-dim: var(--mc-color-accent-tint);
+  --accent-glow: color-mix(in srgb, var(--mc-color-accent-solid) 20%, transparent);
+  --success: var(--mc-color-success-fg);
+  --success-dim: var(--mc-color-success-tint);
+  --warning: var(--mc-color-warning-fg);
+  --warning-dim: var(--mc-color-warning-tint);
+  --danger: var(--mc-color-danger-fg);
+  --danger-dim: var(--mc-color-danger-tint);
+  --info: var(--mc-color-info-fg);
+  --info-dim: var(--mc-color-info-tint);
+  --radius-sm: 6px;
+  --radius-md: var(--mc-radius-control);
+  --radius-lg: var(--mc-radius-card);
+  --radius-xl: var(--mc-radius-dialog);
+  --radius-2xl: 20px;
+  --card-shadow: var(--mc-shadow-surface);
+  --shadow-sm: 0 1px 2px rgba(20, 29, 44, .08);
+  --shadow-md: var(--mc-shadow-surface);
+  --transition-fast: var(--mc-motion-fast);
+  --error: var(--mc-color-danger-fg);
+}
+
+:root[data-theme="dark"] {
+  --mc-color-canvas: #111318;
+  --mc-color-surface: #1a1d24;
+  --mc-color-surface-muted: #252a32;
+  --mc-color-surface-raised: #20242c;
+  --mc-color-text-primary: #f3f4f6;
+  --mc-color-text-secondary: #c0c5ce;
+  --mc-color-text-subtle: #9ca3af;
+  --mc-color-text-disabled: #737b89;
+  --mc-color-border-subtle: #343a45;
+  --mc-color-border-control: #6b7280;
+  --mc-color-border-strong: #858d9b;
+  --mc-color-focus-ring: #5eead4;
+
+  --mc-color-accent-solid: #2dd4bf;
+  --mc-color-accent-fg: #5eead4;
+  --mc-color-accent-tint: #173b38;
+  --mc-color-on-accent: #042f2e;
+  --mc-color-success-solid: #4ade80;
+  --mc-color-success-fg: #86efac;
+  --mc-color-success-tint: #163b25;
+  --mc-color-on-success: #052e16;
+  --mc-color-warning-solid: #fbbf24;
+  --mc-color-warning-fg: #fcd34d;
+  --mc-color-warning-tint: #413416;
+  --mc-color-on-warning: #451a03;
+  --mc-color-danger-solid: #f87171;
+  --mc-color-danger-fg: #fca5a5;
+  --mc-color-danger-tint: #451f24;
+  --mc-color-on-danger: #450a0a;
+  --mc-color-info-solid: #38bdf8;
+  --mc-color-info-fg: #7dd3fc;
+  --mc-color-info-tint: #173647;
+  --mc-color-on-info: #082f49;
+
+  --mc-shadow-surface: 0 1px 2px rgba(0, 0, 0, .22), 0 7px 22px rgba(0, 0, 0, .16);
+  --mc-shadow-floating: 0 20px 56px rgba(0, 0, 0, .46);
+
+  /* Match the specificity of the legacy dark-theme selector so every old
+     page consumes the same accessible semantic palette as new primitives. */
+  --bg-primary: var(--mc-color-canvas);
+  --bg-secondary: var(--mc-color-surface);
+  --bg-tertiary: var(--mc-color-surface-muted);
+  --bg-hover: color-mix(in srgb, var(--mc-color-surface-muted) 72%, var(--mc-color-text-primary) 7%);
+  --bg-active: var(--mc-color-accent-tint);
+  --border: var(--mc-color-border-subtle);
+  --border-hover: var(--mc-color-border-control);
+  --border-strong: var(--mc-color-border-strong);
+  --text-primary: var(--mc-color-text-primary);
+  --text-secondary: var(--mc-color-text-secondary);
+  --text-subtle: var(--mc-color-text-subtle);
+  --text-muted: var(--mc-color-text-secondary);
+  --text-disabled: var(--mc-color-text-subtle);
+  --accent: var(--mc-color-accent-fg);
+  --accent-hover: var(--mc-color-accent-solid);
+  --accent-active: var(--mc-color-accent-fg);
+  --accent-dim: var(--mc-color-accent-tint);
+  --accent-glow: color-mix(in srgb, var(--mc-color-accent-solid) 20%, transparent);
+  --success: var(--mc-color-success-fg);
+  --success-dim: var(--mc-color-success-tint);
+  --warning: var(--mc-color-warning-fg);
+  --warning-dim: var(--mc-color-warning-tint);
+  --danger: var(--mc-color-danger-fg);
+  --danger-dim: var(--mc-color-danger-tint);
+  --info: var(--mc-color-info-fg);
+  --info-dim: var(--mc-color-info-tint);
+  --card-shadow: var(--mc-shadow-surface);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .28);
+  --shadow-md: var(--mc-shadow-surface);
+  --error: var(--mc-color-danger-fg);
+}

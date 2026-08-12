@@ -3,6 +3,7 @@ import { EventEmitter, once } from 'node:events'
 import { createServer as createHttpServer } from 'node:http'
 import test from 'node:test'
 import { WebSocket } from 'ws'
+import { ESC_SESSION_SAFETY_CONFIRMATION } from '../shared/esc'
 import type {
   CalibrationSnapshot,
   ClientMessage,
@@ -32,6 +33,15 @@ const silentLogger = {
   log() {},
   warn() {},
   error() {},
+}
+
+const TEST_SAFETY_EXPECTATION = {
+  expectedSafetyEpoch: 1,
+  expectedSafetyAuthorityId: '00000000-0000-4000-8000-000000000001',
+} as const
+type TestSafetyExpectation = {
+  expectedSafetyEpoch: number
+  expectedSafetyAuthorityId: string
 }
 
 class FakeConnectionManager extends EventEmitter implements ConnectionManagerBoundary {
@@ -277,6 +287,26 @@ type JsonMessage = {
   generation?: number
 }
 
+function safetyExpectationFrom(message: JsonMessage): TestSafetyExpectation {
+  const expectedSafetyEpoch = message.data?.safetyEpoch
+  const expectedSafetyAuthorityId = message.data?.safetyAuthorityId
+  assert.equal(typeof expectedSafetyEpoch, 'number', 'server safety epoch is present')
+  assert.equal(typeof expectedSafetyAuthorityId, 'string', 'server safety authority is present')
+  return {
+    expectedSafetyEpoch: expectedSafetyEpoch as number,
+    expectedSafetyAuthorityId: expectedSafetyAuthorityId as string,
+  }
+}
+
+function latestSafetyExpectation(inbox: WsInbox): TestSafetyExpectation {
+  for (let index = inbox.messages.length - 1; index >= 0; index -= 1) {
+    if (typeof inbox.messages[index].data?.safetyEpoch === 'number') {
+      return safetyExpectationFrom(inbox.messages[index])
+    }
+  }
+  assert.fail('no server safety snapshot received')
+}
+
 class WsInbox {
   readonly messages: JsonMessage[] = []
   private waiters = new Set<{
@@ -360,8 +390,47 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
     params: [1, 0, 0, 0, 0, 0, 0],
     safetyConfirmation: 'arm',
+    ...TEST_SAFETY_EXPECTATION,
   })
   assert.equal(arm.type, 'command')
+  assert.throws(
+    () => parseClientMessage({
+      type: 'command',
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [1, 0, 0, 0, 0, 0, 0],
+      safetyConfirmation: 'arm',
+    }),
+    (error) => error instanceof InputValidationError && error.code === 'safety_epoch_required',
+  )
+  assert.equal(
+    parseClientMessage({
+      type: 'command',
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
+      params: [0, 0, 0, 0, 0, 0, 0],
+      safetyConfirmation: 'disarm',
+    }).type,
+    'command',
+    'emergency disarm remains independent of a persisted safety epoch',
+  )
+  assert.equal(
+    parseClientMessage({
+      type: 'command',
+      cmd: 'MAV_CMD_NAV_TAKEOFF',
+      params: [0, 0, 0, 0, 0, 0, 10],
+      safetyConfirmation: 'takeoff',
+      ...TEST_SAFETY_EXPECTATION,
+    }).type,
+    'command',
+  )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'command',
+      cmd: 'MAV_CMD_NAV_TAKEOFF',
+      params: [0, 0, 0, 0, 0, 0, 10],
+      safetyConfirmation: 'takeoff',
+    }),
+    (error) => error instanceof InputValidationError && error.code === 'safety_epoch_required',
+  )
 
   assert.throws(
     () => parseClientMessage({
@@ -369,6 +438,7 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
       cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
       params: [1, 21196],
       safetyConfirmation: 'arm',
+      ...TEST_SAFETY_EXPECTATION,
     }),
     (error) => error instanceof InputValidationError && error.code === 'unsafe_command_params',
   )
@@ -392,26 +462,52 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
       type: 'reboot_vehicle',
       requestId: 'reboot-1',
       safetyConfirmation: 'reboot_flight_controller',
+      ...TEST_SAFETY_EXPECTATION,
     }),
     {
       type: 'reboot_vehicle',
       requestId: 'reboot-1',
       safetyConfirmation: 'reboot_flight_controller',
+      ...TEST_SAFETY_EXPECTATION,
     },
   )
   assert.throws(
     () => parseClientMessage({ type: 'reboot_vehicle', requestId: 'reboot-2' }),
     (error) => error instanceof InputValidationError && error.code === 'safety_confirmation_required',
   )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'reboot_vehicle',
+      requestId: 'reboot-without-epoch',
+      safetyConfirmation: 'reboot_flight_controller',
+    }),
+    (error) => error instanceof InputValidationError && error.path === 'expectedSafetyEpoch',
+  )
 
   assert.throws(
     () => parseClientMessage({
       type: 'motor_test',
       data: { instance: 1, throttle: 10, duration: 2 },
+      ...TEST_SAFETY_EXPECTATION,
     }),
     (error) =>
       error instanceof InputValidationError
       && error.code === 'motor_safety_confirmation_required',
+  )
+  assert.equal(
+    parseClientMessage({
+      type: 'motor_test',
+      data: { instance: 1, throttle: 10, duration: 2, propsRemoved: true },
+      ...TEST_SAFETY_EXPECTATION,
+    }).type,
+    'motor_test',
+  )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'motor_test',
+      data: { instance: 1, throttle: 10, duration: 2, propsRemoved: true },
+    }),
+    (error) => error instanceof InputValidationError && error.code === 'safety_epoch_required',
   )
   assert.equal(
     parseClientMessage({
@@ -439,6 +535,7 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
         duration: 2,
         propsRemoved: true,
       },
+      ...TEST_SAFETY_EXPECTATION,
     }),
     {
       type: 'motor_test_batch',
@@ -449,7 +546,20 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
         duration: 2,
         propsRemoved: true,
       },
+      ...TEST_SAFETY_EXPECTATION,
     },
+  )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'motor_test_batch',
+      data: {
+        instances: [1, 2],
+        throttle: 10,
+        duration: 2,
+        propsRemoved: true,
+      },
+    }),
+    (error) => error instanceof InputValidationError && error.code === 'safety_epoch_required',
   )
   assert.deepEqual(
     parseClientMessage({
@@ -473,6 +583,21 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
       (error) => error instanceof InputValidationError,
     )
   }
+
+  const deleteRequest = {
+    type: 'fs_delete',
+    requestId: 'delete-1',
+    safetyConfirmation: 'delete_files',
+    data: { entries: [{ path: '/fs/microsd/log/a.ulg', kind: 'file' }] },
+  } as const
+  assert.equal(
+    parseClientMessage({ ...deleteRequest, ...TEST_SAFETY_EXPECTATION }).type,
+    'fs_delete',
+  )
+  assert.throws(
+    () => parseClientMessage(deleteRequest),
+    (error) => error instanceof InputValidationError && error.path === 'expectedSafetyEpoch',
+  )
 
   const bluetoothConfig = parseConnectionConfig({
     type: 'bluetooth',
@@ -549,10 +674,18 @@ test('runtime validation accepts DataFlash log requests and preserves erase safe
       error instanceof InputValidationError
       && error.code === 'safety_confirmation_required',
   )
+  assert.throws(
+    () => parseClientMessage({
+      type: 'log_erase',
+      safetyConfirmation: 'erase_all_logs',
+    }),
+    (error) => error instanceof InputValidationError && error.path === 'expectedSafetyEpoch',
+  )
   assert.equal(
     parseClientMessage({
       type: 'log_erase',
       safetyConfirmation: 'erase_all_logs',
+      ...TEST_SAFETY_EXPECTATION,
     }).type,
     'log_erase',
   )
@@ -681,7 +814,9 @@ test('WebSocket boundary sends hello/errors and enforces controller lease plus p
   const second = await connectWs(started.wsUrl)
   try {
     const hello = await first.waitFor('hello')
-    assert.equal(hello.data?.protocolVersion, 1)
+    assert.equal(hello.data?.protocolVersion, 2)
+    assert.equal(typeof hello.data?.safetyEpoch, 'number')
+    assert.equal(typeof hello.data?.safetyAuthorityId, 'string')
     assert.equal(typeof hello.data?.restControlToken, 'string')
     const secondHello = await second.waitFor('hello')
     assert.equal(typeof secondHello.data?.clientId, 'string')
@@ -1090,6 +1225,221 @@ test('expired controller leases allow a waiting observer to become controller', 
     await closeWs(second)
     await started.runtime.shutdown('test')
   }
+
+})
+
+test('stale safety confirmations expire before automatic claim and cannot dispatch', async () => {
+  const started = await startTestServer(testConfig(), {
+    heartbeatIntervalMs: 1_000,
+    controllerLeaseMs: 60,
+  })
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    await client.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    client.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'claim-before-stale',
+      data: { modeId: 1 },
+    }))
+    const claimed = await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'claimed',
+    )
+    const staleExpectation = safetyExpectationFrom(claimed)
+    const bridgeCount = started.bridge.messages.length
+
+    // Leave expiry to request admission (the heartbeat deliberately cannot
+    // run first). The old acknowledgement must be rejected before auto-claim.
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const staleIndex = client.messages.length
+    client.ws.send(JSON.stringify({
+      type: 'fs_delete',
+      requestId: 'delete-with-expired-lease',
+      safetyConfirmation: 'delete_files',
+      ...staleExpectation,
+      data: { entries: [{ path: '/fs/microsd/log/a.ulg', kind: 'file' }] },
+    }))
+    const expired = await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'expired',
+      1_000,
+      staleIndex,
+    )
+    const staleError = await client.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'delete-with-expired-lease',
+      1_000,
+      staleIndex,
+    )
+    assert.equal(staleError.data?.code, 'stale_safety_epoch')
+    assert.equal(staleError.data?.retryable, false)
+    assert.equal(started.bridge.messages.length, bridgeCount)
+    assert.equal(
+      client.messages.slice(staleIndex).some((message) =>
+        message.type === 'controller' && message.data?.reason === 'claimed'),
+      false,
+      'stale request must not claim the now-free lease',
+    )
+
+    // A fresh acknowledgement may atomically acquire a free lease and
+    // dispatch in the same synchronous admission turn.
+    const freshIndex = client.messages.length
+    client.ws.send(JSON.stringify({
+      type: 'log_erase',
+      requestId: 'erase-with-current-epoch',
+      safetyConfirmation: 'erase_all_logs',
+      ...safetyExpectationFrom(expired),
+    }))
+    await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'claimed',
+      1_000,
+      freshIndex,
+    )
+    for (let attempt = 0; attempt < 20 && started.bridge.messages.length === bridgeCount; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(started.bridge.messages.length, bridgeCount + 1)
+    assert.equal(started.bridge.messages[started.bridge.messages.length - 1]?.type, 'log_erase')
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('same-owner controller renewal does not advance the safety epoch', async () => {
+  const started = await startTestServer(testConfig(), {
+    heartbeatIntervalMs: 100,
+    controllerLeaseMs: 1_000,
+  })
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    await client.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    client.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'initial-owner-claim',
+      data: { modeId: 1 },
+    }))
+    const claimed = await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'claimed',
+    )
+    const expected = safetyExpectationFrom(claimed)
+    const renewalIndex = client.messages.length
+    const bridgeCount = started.bridge.messages.length
+
+    client.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'same-owner-renewal',
+      data: { modeId: 2 },
+    }))
+    for (let attempt = 0; attempt < 20 && started.bridge.messages.length === bridgeCount; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(started.bridge.messages.length, bridgeCount + 1)
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.equal(
+      client.messages.slice(renewalIndex).some((message) => message.type === 'controller'),
+      false,
+      'same-owner renewal must not emit a new safety boundary',
+    )
+    assert.deepEqual(latestSafetyExpectation(client), expected)
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('a stale safety request does not renew an existing controller lease', async () => {
+  const started = await startTestServer(testConfig(), {
+    heartbeatIntervalMs: 20,
+    controllerLeaseMs: 300,
+  })
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    await client.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    client.ws.send(JSON.stringify({
+      type: 'set_flight_mode',
+      requestId: 'claim-before-target-change',
+      data: { modeId: 1 },
+    }))
+    const claimed = await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'claimed',
+    )
+    const originalExpiresAt = claimed.data?.expiresAt
+    assert.equal(typeof originalExpiresAt, 'number')
+    const staleExpectation = safetyExpectationFrom(claimed)
+
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    const targetIndex = client.messages.length
+    started.bridge.emit('message', {
+      type: 'target',
+      data: {
+        systemId: 1,
+        componentId: 1,
+        ready: true,
+        reason: 'selected',
+        identity: null,
+      },
+    } satisfies ServerMessage)
+    await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'safety_changed',
+      1_000,
+      targetIndex,
+    )
+
+    const staleIndex = client.messages.length
+    client.ws.send(JSON.stringify({
+      type: 'log_erase',
+      requestId: 'stale-must-not-renew',
+      safetyConfirmation: 'erase_all_logs',
+      ...staleExpectation,
+    }))
+    const staleError = await client.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'stale-must-not-renew',
+      1_000,
+      staleIndex,
+    )
+    assert.equal(staleError.data?.code, 'stale_safety_epoch')
+    assert.equal(staleError.data?.retryable, false)
+
+    const deadlineSlackMs = Math.max(50, (originalExpiresAt as number) - Date.now() + 80)
+    const expired = await client.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'expired',
+      deadlineSlackMs,
+      staleIndex,
+    )
+    assert.equal(expired.data?.clientId, null)
+    assert.ok(
+      Date.now() <= (originalExpiresAt as number) + 100,
+      'stale request must not extend the original lease deadline',
+    )
+  } finally {
+    await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
 })
 
 test('calibration sessions pin the lease, isolate mutations and support reclaim', async () => {
@@ -1111,7 +1461,10 @@ test('calibration sessions pin the lease, isolate mutations and support reclaim'
       requestId: 'cal-own',
       data: { kind: 'accel' },
     }))
-    await owner.waitFor('controller', (message) => message.data?.reason === 'claimed')
+    const claimedController = await owner.waitFor(
+      'controller',
+      (message) => message.data?.reason === 'claimed',
+    )
     const sessionStarted = await owner.waitFor('calibration_session_started')
     const sessionId = sessionStarted.data?.sessionId as string
     const recoveryToken = sessionStarted.data?.recoveryToken as string
@@ -1147,6 +1500,7 @@ test('calibration sessions pin the lease, isolate mutations and support reclaim'
       type: 'reboot_vehicle',
       requestId: 'obs-reboot',
       safetyConfirmation: 'reboot_flight_controller',
+      ...safetyExpectationFrom(claimedController),
     }))
     const rebootConflict = await observer.waitFor(
       'client_error',
@@ -1189,6 +1543,8 @@ test('calibration sessions pin the lease, isolate mutations and support reclaim'
     owner.ws.send(JSON.stringify({
       type: 'esc_session_start',
       requestId: 'esc-1',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...safetyExpectationFrom(claimedController),
       data: { mode: 'direct' },
     }))
     const escRefused = await owner.waitFor(
@@ -1253,6 +1609,7 @@ test('calibration sessions pin the lease, isolate mutations and support reclaim'
       type: 'reboot_vehicle',
       requestId: 'reboot-during-cal',
       safetyConfirmation: 'reboot_flight_controller',
+      ...latestSafetyExpectation(owner),
     }))
     const rebootOffline = await owner.waitFor(
       'connection',
@@ -1582,7 +1939,7 @@ test('a bridge-rejected reboot does not lower vehicle readiness', async () => {
     started.connManager.transportOpen = true
     started.connManager.vehicleReady = true
     started.connManager.emit('statusChange', 'connected')
-    await client.waitFor(
+    const readyConnection = await client.waitFor(
       'connection',
       (message) => message.data?.vehicleReady === true,
     )
@@ -1593,6 +1950,7 @@ test('a bridge-rejected reboot does not lower vehicle readiness', async () => {
       type: 'reboot_vehicle',
       requestId: 'reboot-rejected-by-bridge',
       safetyConfirmation: 'reboot_flight_controller',
+      ...safetyExpectationFrom(readyConnection),
     }))
     const rejection = await client.waitFor(
       'operation_error',

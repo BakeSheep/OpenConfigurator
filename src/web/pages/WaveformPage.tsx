@@ -104,7 +104,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
                     <input type="checkbox" checked={selected.includes(channel.key)} onChange={() => toggleChannel(channel.key)} />
                     <i style={{ background: colors[channel.key] }} />
                     <span>{t(`waveform.channel.${channel.key}`)}</span>
-                    <strong className="mc-mono" style={{ color: colors[channel.key] }}>{latest?.[channel.key]?.toFixed(1) ?? '—'}</strong>
+                    <strong className="mc-mono">{latest?.[channel.key]?.toFixed(1) ?? '—'}</strong>
                   </label>
                 ))}
               </section>
@@ -118,7 +118,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
             <button type="button" className="mc-icon-btn" onClick={() => setPaused((value) => !value)} aria-label={paused ? t('waveform.resume') : t('waveform.pause')}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
             <button type="button" className="mc-icon-btn" onClick={() => setData([])} aria-label={t('waveform.clearData')}><Icon name="trash" size={15} /></button>
             <div><button type="button" data-active>{t('waveform.chartSampleRate', { rate: SAMPLE_RATE_HZ })}</button></div>
-            <span>{t('waveform.channelSampleSummary', { channels: selected.length, samples: visibleData.length })}</span>
+            <span>{t('waveform.channelSampleSummary', { count: selected.length, samples: visibleData.length })}</span>
             <span>{!vehicleReady ? t('waveform.offline') : paused ? t('waveform.paused') : t('waveform.live')}</span>
           </div>
           <div className="mc-card mc-wave-chart">
@@ -132,7 +132,7 @@ export default function WaveformPage({ embedded = false }: { embedded?: boolean 
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="mc-wave-legend">{selected.map((channel) => <span key={channel}><i style={{ background: colors[channel] }} />{t(`waveform.channel.${channel}`)} <strong className="mc-mono" style={{ color: colors[channel] }}>{latest?.[channel]?.toFixed(1) ?? '—'}</strong></span>)}</div>
+          <div className="mc-wave-legend">{selected.map((channel) => <span key={channel}><i style={{ background: colors[channel] }} />{t(`waveform.channel.${channel}`)} <strong className="mc-mono">{latest?.[channel]?.toFixed(1) ?? '—'}</strong></span>)}</div>
         </section>
       </div>
     </div>

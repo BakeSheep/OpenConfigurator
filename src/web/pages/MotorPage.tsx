@@ -3,6 +3,9 @@ import i18next from 'i18next'
 import { useTranslation } from 'react-i18next'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
+import { TabPanel } from '../components/ui/Tabs'
+import Toolbar from '../components/ui/Toolbar'
+import { useQueryTab } from '../hooks/useQueryTab'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
@@ -32,6 +35,8 @@ const fallbackQuad = [
   { px: 1, py: -1, ccw: false },
   { px: -1, py: 1, ccw: false },
 ]
+
+const MOTOR_TAB_IDS = ['mapping', 'test'] as const
 
 function protocolLabel(value: number) {
   const protocols: Record<number, string> = {
@@ -152,6 +157,8 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const rawSessionActive = useConnectionStore((state) => state.rawSessionActive)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const connected = vehicleReady && canControl
   const { params, loading, receivedCount, totalCount } = useParameterStore()
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
@@ -163,7 +170,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const motorTestSupported = caps.motorTest !== 'none'
   const actuatorWritesSupported = caps.actuatorConfig
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
-  const [activePanel, setActivePanel] = useState<'mapping' | 'test'>('mapping')
+  const [activePanel, setActivePanel] = useQueryTab(MOTOR_TAB_IDS, 'mapping')
   const [levels, setLevels] = useState<number[]>([])
   // Family-specific frame/actuator read model: SERVOx_FUNCTION for ArduPilot,
   // PWM_MAIN/AUX_FUNCx + CA_ROTOR* for PX4.
@@ -176,8 +183,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   // sent. Merely opening/leaving this page must emit no motor-test command.
   const testActivatedRef = useRef(false)
   const safetyEpochRef = useRef(
-    `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}:${vehicleReady}:${rawSessionActive}`,
+    `${safetyAuthorityId ?? '-'}:${safetyEpoch}`,
   )
+  const safetyConfirmationKeyRef = useRef<string | null>(null)
 
   const outputChannels = useMemo<FrameOutputChannel[]>(() => {
     const channels = frameView?.outputChannels ?? []
@@ -249,7 +257,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [motorCount, send])
 
   useEffect(() => {
-    const epoch = `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}:${vehicleReady}:${rawSessionActive}`
+    const epoch = `${safetyAuthorityId ?? '-'}:${safetyEpoch}`
     if (epoch === safetyEpochRef.current) return
     safetyEpochRef.current = epoch
 
@@ -257,9 +265,10 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
     // the physical props-removed confirmation. Never carry that acknowledgement
     // into a resumed MAVLink session, even when the motor count is unchanged.
     testActivatedRef.current = false
+    safetyConfirmationKeyRef.current = null
     setSafetyConfirmed(false)
     setLevels(Array.from({ length: motorCountRef.current }, () => 0))
-  }, [rawSessionActive, targetComponentId, targetSystemId, vehicleReady])
+  }, [safetyAuthorityId, safetyEpoch])
 
   useEffect(() => () => {
     // Stop frames are sent only after motor testing was actually activated;
@@ -273,13 +282,27 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   }, [send])
 
   const sendMotorLevel = (index: number, level: number) => {
+    const connection = useConnectionStore.getState()
+    const liveSafetyKey = `${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`
+    const liveMotorTestSupported = vehicleCapabilities(
+      useTelemetryStore.getState().vehicleIdentity,
+    ).motorTest !== 'none'
     if (
-      !connected
+      !connection.vehicleReady
+      || !connection.canControl
       || !safetyConfirmed
-      || !motorTestSupported
+      || !liveMotorTestSupported
+      || connection.targetSystemId === null
+      || connection.targetComponentId === null
       || motorCount === null
       || index < 0
       || index >= motorCount
+      || (level > 0 && (
+        connection.safetyAuthorityId === null
+        || connection.safetyEpoch !== safetyEpoch
+        || connection.safetyAuthorityId !== safetyAuthorityId
+        || safetyConfirmationKeyRef.current !== liveSafetyKey
+      ))
     ) return
     const throttle = Math.max(0, Math.min(100, level))
     if (throttle > 0) testActivatedRef.current = true
@@ -292,12 +315,35 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         duration: throttle > 0 ? 2 : 0,
         ...(throttle > 0 ? { propsRemoved: true } : {}),
       },
+      ...(throttle > 0 ? {
+        expectedSafetyEpoch: connection.safetyEpoch,
+        expectedSafetyAuthorityId: connection.safetyAuthorityId!,
+      } : {}),
     })
   }
 
   const sendAllLevel = (level: number) => {
-    if (!connected || !safetyConfirmed || !motorTestSupported || motorCount === null) return
+    const connection = useConnectionStore.getState()
+    const liveSafetyKey = `${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`
+    const liveMotorTestSupported = vehicleCapabilities(
+      useTelemetryStore.getState().vehicleIdentity,
+    ).motorTest !== 'none'
+    if (
+      !connection.vehicleReady
+      || !connection.canControl
+      || !safetyConfirmed
+      || !liveMotorTestSupported
+      || connection.targetSystemId === null
+      || connection.targetComponentId === null
+      || motorCount === null
+    ) return
     const throttle = Math.max(0, Math.min(100, level))
+    if (throttle > 0 && (
+      connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || safetyConfirmationKeyRef.current !== liveSafetyKey
+    )) return
     if (throttle > 0) testActivatedRef.current = true
     setLevels(Array.from({ length: motorCount }, () => throttle))
     send({
@@ -308,6 +354,10 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         duration: throttle > 0 ? 2 : 0,
         ...(throttle > 0 ? { propsRemoved: true } : {}),
       },
+      ...(throttle > 0 ? {
+        expectedSafetyEpoch: connection.safetyEpoch,
+        expectedSafetyAuthorityId: connection.safetyAuthorityId!,
+      } : {}),
     })
   }
 
@@ -315,6 +365,18 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const stopAll = () => sendAllLevel(0)
 
   const setSafety = (checked: boolean) => {
+    if (checked) {
+      const connection = useConnectionStore.getState()
+      if (
+        !connection.vehicleReady
+        || !connection.canControl
+        || connection.safetyAuthorityId === null
+        || connection.safetyEpoch !== safetyEpoch
+        || connection.safetyAuthorityId !== safetyAuthorityId
+      ) return
+      safetyConfirmationKeyRef.current = `${connection.safetyAuthorityId}:${connection.safetyEpoch}`
+    }
+    if (!checked) safetyConfirmationKeyRef.current = null
     if (checked) testActivatedRef.current = true
     if (!checked && safetyConfirmed) stopAll()
     setSafetyConfirmed(checked)
@@ -333,25 +395,38 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
   const changePanel = (panel: string) => {
     if (panel !== 'mapping' && panel !== 'test') return
-    if (panel === 'mapping' && safetyConfirmed) {
-      stopAll()
-      setSafetyConfirmed(false)
-    }
     setActivePanel(panel)
   }
 
+  // URL history navigation can also leave the test panel. Apply the same
+  // physical stop/confirmation reset as an explicit tab click.
+  useEffect(() => {
+    if (activePanel !== 'mapping' || !safetyConfirmed) return
+    stopAll()
+    setSafetyConfirmed(false)
+  }, [activePanel, safetyConfirmed])
+
   return (
     <div className={embedded ? 'mc-fade-in mc-motor-page' : 'mc-workspace mc-fade-in mc-motor-page'}>
-      <div className="mc-motor-toolbar">
-        <div className="mc-motor-toolbar__title">
-          <strong>{t('motor.title')}</strong>
+      <PageTabs
+        tabs={[{ id: 'mapping', label: t('motor.tabMapping') }, { id: 'test', label: t('motor.tabTest') }]}
+        active={activePanel}
+        onChange={changePanel}
+        ariaLabel={t('motor.title')}
+        idBase="motor-settings"
+      />
+
+      <Toolbar
+        summary={(
+          <>
           <span className="mc-motor-param-status" data-loading={loading}>
             <i />
             {loading ? t('motor.paramLoading', {received: receivedCount, total: totalCount}) : t('motor.paramsSynced', { count: params.size })}
           </span>
-        </div>
-        <p>{t('motor.outputHint')}</p>
-      </div>
+            <span>{t('motor.outputHint')}</span>
+          </>
+        )}
+      />
 
       {vehicleIdentity && !motorTestSupported && (
         <div className="mc-capability-note" data-state="waiting">
@@ -360,10 +435,9 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
         </div>
       )}
 
-      <PageTabs tabs={[{ id: 'mapping', label: t('motor.tabMapping') }, { id: 'test', label: t('motor.tabTest') }]} active={activePanel} onChange={changePanel} />
-
+      <TabPanel idBase="motor-settings" tabId={activePanel}>
       <section className="mc-motor-workspace">
-        {activePanel === 'mapping' && <div className="mc-motor-output-panel">
+        {activePanel === 'mapping' && <div className="mc-motor-output-panel" role="region" aria-label={t('motor.tabMapping')} tabIndex={0}>
           {vehicleIdentity?.family === 'ardupilot' && (
             <ArduPilotProtocolControl
               params={params}
@@ -488,6 +562,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
           </div>
         </aside>}
       </section>
+      </TabPanel>
     </div>
   )
 }

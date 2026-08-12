@@ -6,6 +6,7 @@ import {
   AM32_LAYOUT_SIZE,
   EscError,
   ESC_MAX_TARGETS,
+  ESC_SESSION_SAFETY_CONFIRMATION,
   toEscError,
   type EscDeviceInfo,
   type EscJobTargetResult,
@@ -173,7 +174,7 @@ export class EscService {
           await this.runSettingsRead(clientId, message.data.sessionId, message.data.targets)
           break
         case 'esc_settings_write':
-          this.manager.assertOwner(clientId, message.data.sessionId)
+          this.manager.assertSettingsWriteAllowed(clientId, message.data.sessionId)
           this.manager.noteActivity(clientId)
           await this.runSettingsWrite(clientId, message.data.sessionId, message.data.targets, message.data.values)
           break
@@ -188,6 +189,12 @@ export class EscService {
     clientId: string,
     message: Extract<EscClientMessage, { type: 'esc_session_start' }>,
   ): Promise<void> {
+    if (message.safetyConfirmation !== ESC_SESSION_SAFETY_CONFIRMATION) {
+      throw new EscError(
+        'precondition_failed',
+        '进入 ESC 配置前必须确认已拆除螺旋桨且供电持续稳定',
+      )
+    }
     const identity = this.options.getVehicleIdentity?.() ?? null
     const family = identity?.family ?? 'unknown'
     if (message.data.mode === 'direct') {
@@ -233,7 +240,7 @@ export class EscService {
           ? { mode: 'px4_serial_control', channels: message.data.channels }
           : { mode: 'direct', port: this.options.connManager.config!.port, baudRate: 19200 }
 
-    const { sessionId, recoveryToken } = await this.manager.start(clientId, target)
+    const { sessionId, recoveryToken } = await this.manager.start(clientId, target, true)
     this.currentSessionId = sessionId
     this.options.emitToClient?.(clientId, {
       type: 'esc_session_started',
@@ -377,6 +384,10 @@ export class EscService {
       const service = new Am32SettingsService(new FourWayClient(transport))
       const perTarget: EscJobTargetResult[] = []
       for (let ordinal = 0; ordinal < targets.length; ordinal++) {
+        // One EEPROM write/readback is the atomic safety unit. If the owner
+        // disconnects while it is in flight, let that target finish safely,
+        // but never enter the next target with an orphaned acknowledgement.
+        this.manager.assertSettingsWriteAllowed(clientId, sessionId)
         const escIndex = targets[ordinal]
         this.options.emit({
           type: 'esc_job_progress',

@@ -13,6 +13,8 @@ const connectionMessage = (vehicleReady: boolean): ServerMessage => ({
     transportOpen: true,
     vehicleReady,
     rawSessionActive: false,
+    safetyEpoch: 1,
+    safetyAuthorityId: '00000000-0000-4000-8000-000000000001',
     port: 'COM_TEST',
     type: 'serial',
     baudRate: 115200,

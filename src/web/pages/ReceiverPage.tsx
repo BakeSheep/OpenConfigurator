@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import ChannelBars from '../components/telemetry/ChannelBars'
-import Icon from '../components/ui/Icon'
+import { Notice } from '../components/ui/Feedback'
 import { PageHeader } from '../components/ui/PageFrame'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -25,16 +25,16 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in'}>
       {!embedded && <PageHeader title={t('common.receiver')} description={t('receiver.description')} />}
-      <div className="mc-capability-note" data-state={vehicleReady ? 'detected' : 'waiting'}>
-        <Icon name={vehicleReady ? 'check' : 'warning'} size={15} />
-        <span>{vehicleReady ? t('receiver.readyHint') : t('receiver.waitingHint')}</span>
-      </div>
+      <Notice tone={vehicleReady ? 'success' : 'warning'} icon={vehicleReady ? 'check' : 'warning'}>
+        {vehicleReady ? t('receiver.readyHint') : t('receiver.waitingHint')}
+      </Notice>
       <section className="mc-card overflow-hidden mt-4">
         <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-          <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('receiver.realtimeChannels')}</h2>
+          <h3 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('receiver.realtimeChannels')}</h3>
           <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{t('receiver.pwmRangeHint')}{rssi !== null ? t('receiver.rssi', { rssi }) : ''}</p>
         </div>
         <ChannelBars
+          ariaLabel={t('receiver.realtimeChannels')}
           labels={channelNames}
           secondaryLabels={channelNames.map((_, index) => `CH${index + 1}`)}
           values={channelNames.map((_, index) => getChannel(index))}

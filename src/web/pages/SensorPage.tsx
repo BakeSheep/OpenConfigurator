@@ -18,10 +18,12 @@ import { magFitnessRating, magOffsetMagnitude, magOffsetWarning } from '../utils
 import type { MagInterferenceReading } from '../utils/magInterference'
 import Icon, { type IconName } from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
+import { TabPanel } from '../components/ui/Tabs'
 import AccelOrientationVisual from '../components/sensors/AccelOrientationVisual'
 import GpsConfigurationPanel from '../components/sensors/GpsConfigurationPanel'
 import GpsTrackPlot from '../components/sensors/GpsTrackPlot'
 import { sendClientMessage } from '../hooks/useWebSocket'
+import { useQueryTab } from '../hooks/useQueryTab'
 import { useCalibrationStore } from '../stores/calibrationStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
@@ -37,6 +39,9 @@ const buildTabs = (t: TFunction) => [
   { id: 'optflow', label: t('sensor.label.opticalFlow') },
   { id: 'rangefinder', label: t('sensor.label.rangefinder') },
 ]
+
+const SENSOR_TAB_IDS = ['imu', 'mag', 'baro', 'gps', 'optflow', 'rangefinder'] as const
+const SENSOR_TASK_IDS = ['monitor', 'calibrate'] as const
 
 const STANDARD_GRAVITY = 9.80665
 const RADIANS_TO_DEGREES = 180 / Math.PI
@@ -302,7 +307,7 @@ function AxisValue({ axis, value, color }: { axis: string; value: number | null;
 }
 
 function SensorStatusCard({ title, values }: { title: string; values: Array<[string, string]> }) {
-  return <section className="mc-card mc-sensor-status-card"><header><span className="mc-eyebrow">LIVE TELEMETRY</span><h2>{title}</h2></header><div>{values.map(([label, value]) => <dl key={label}><dt>{label}</dt><dd className="mc-mono">{value}</dd></dl>)}</div></section>
+  return <section className="mc-card mc-sensor-status-card"><header><h3>{title}</h3></header><div>{values.map(([label, value]) => <dl key={label}><dt>{label}</dt><dd className="mc-mono">{value}</dd></dl>)}</div></section>
 }
 
 export const isCalibrationSessionActive = (snapshot: CalibrationSnapshot | null): boolean => Boolean(snapshot
@@ -684,7 +689,8 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
     { key: 'x', label: t('sensor.series.flowX'), color: 'var(--chart-4)' },
     { key: 'y', label: t('sensor.series.flowY'), color: 'var(--chart-2)' },
   ], [t])
-  const [activeTab, setActiveTab] = useState('imu')
+  const [activeTab, setActiveTab] = useQueryTab(SENSOR_TAB_IDS, 'imu')
+  const [taskMode, setTaskMode] = useQueryTab(SENSOR_TASK_IDS, 'monitor', 'mode')
   const [imuIndex, setImuIndex] = useState('imu1')
   // Terminal results may be dismissed locally. A live server session must
   // always remain visible so the page cannot enter a hidden-but-busy state.
@@ -695,6 +701,8 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const hasCalibrationControl = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const clientId = useConnectionStore((state) => state.clientId)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const snapshot = useCalibrationStore((state) => state.snapshot)
   const imus = useSensorStore((state) => state.imus)
   const baro = useSensorStore((state) => state.baro)
@@ -727,6 +735,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const wizardVisible = shouldShowCalibrationWizard(snapshot, dismissedSessionId)
   const isOwner = useMemo(() => Boolean(clientId && snapshot && snapshot.ownerClientId === clientId), [clientId, snapshot])
   useEffect(() => {
+    if (calibrationBusy && taskMode !== 'calibrate') {
+      setTaskMode('calibrate', { replace: true })
+    }
+  }, [calibrationBusy, setTaskMode, taskMode])
+  useEffect(() => {
     if (pendingStart && snapshot?.requestId === pendingStart.requestId) {
       setPendingStart(null)
       setStartFailure(null)
@@ -756,6 +769,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
 
   const startCalibration = (type: CalibrationKind) => {
     if (!canCalibrateKind(type) || calibrationBusy) return
+    setTaskMode('calibrate')
     const requestId = `cal-${type}-${Date.now().toString(36)}`
     // Hide the previous terminal result immediately so it cannot masquerade
     // as the newly requested calibration while the server creates a session.
@@ -772,10 +786,20 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
     if (!snapshot || !isOwner) return
     if (!snapshot.cancelSupported) {
       if (!window.confirm(t('sensor.cancelUnsupportedConfirm'))) return
+      const connection = useConnectionStore.getState()
+      if (
+        !connection.vehicleReady
+        || !connection.canControl
+        || connection.safetyAuthorityId === null
+        || connection.safetyEpoch !== safetyEpoch
+        || connection.safetyAuthorityId !== safetyAuthorityId
+      ) return
       send({
         type: 'reboot_vehicle',
         requestId: `cal-reboot-${Date.now().toString(36)}`,
         safetyConfirmation: 'reboot_flight_controller',
+        expectedSafetyEpoch: connection.safetyEpoch,
+        expectedSafetyAuthorityId: connection.safetyAuthorityId,
       })
       return
     }
@@ -822,40 +846,70 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       onClose={() => setDismissedSessionId(snapshot.sessionId)}
     />
   ) : null
+  const healthStrip = (
+    <div
+      className="mc-sensor-health-strip"
+      role="region"
+      aria-label={t('sensor.healthStrip.ariaLabel')}
+      tabIndex={0}
+    >
+      <HealthPill label="IMU" state={sensorHealth.imu ?? 'offline'} />
+      <HealthPill label={t('common.compass')} state={sensorHealth.mag ?? 'offline'} />
+      <HealthPill label={t('common.barometer')} state={sensorHealth.baro ?? 'offline'} />
+      <HealthPill label="GPS" state={sensorHealth.gps ?? 'offline'} />
+      <HealthPill label={t('sensor.label.opticalFlow')} state={sensorHealth.opticalFlow ?? 'offline'} />
+      <HealthPill label={t('sensor.label.ranging')} state={sensorHealth.rangefinder ?? 'offline'} />
+    </div>
+  )
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace mc-sensor-workbench' : 'mc-workspace mc-fade-in mc-data-workspace mc-sensor-workbench'}>
-      <div className="mc-sensor-health-strip" aria-label={t('sensor.healthStrip.ariaLabel')}>
-        <HealthPill label="IMU" state={sensorHealth.imu ?? 'offline'} />
-        <HealthPill label={t('common.compass')} state={sensorHealth.mag ?? 'offline'} />
-        <HealthPill label={t('common.barometer')} state={sensorHealth.baro ?? 'offline'} />
-        <HealthPill label="GPS" state={sensorHealth.gps ?? 'offline'} />
-        <HealthPill label={t('sensor.label.opticalFlow')} state={sensorHealth.opticalFlow ?? 'offline'} />
-        <HealthPill label={t('sensor.label.ranging')} state={sensorHealth.rangefinder ?? 'offline'} />
-      </div>
+      <PageTabs
+        tabs={[
+          { id: 'monitor', label: t('sensor.diagnostics.title'), disabled: calibrationBusy },
+          { id: 'calibrate', label: t('sensor.calibration.title') },
+        ]}
+        active={taskMode}
+        onChange={setTaskMode}
+        ariaLabel={t('settings.section.sensors.label')}
+        idBase="sensor-tasks"
+      />
 
+      <TabPanel idBase="sensor-tasks" tabId={taskMode}>
+      {taskMode === 'monitor' && (
       <section className="mc-sensor-diagnostics">
-        <header className="mc-sensor-section-heading"><div><span className="mc-eyebrow">DIAGNOSTICS</span><h2>{t('sensor.diagnostics.title')}</h2></div><p>{t('sensor.diagnostics.description')}</p></header>
-        <PageTabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
+        <PageTabs
+          tabs={tabs}
+          active={activeTab}
+        onChange={setActiveTab}
+        ariaLabel={t('sensor.diagnostics.title')}
+        idBase="sensor-diagnostics"
+      />
+        {healthStrip}
+        <TabPanel idBase="sensor-diagnostics" tabId={activeTab}>
 
       {activeTab === 'imu' && (
         <>
-          <div className="mc-sensor-subbar">
-            <button type="button" data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1 {imus[0] ? '●' : '○'}</button>
-            <button type="button" data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2 {imus[1] ? '●' : '○'}</button>
-            <span>{t('sensor.imuOrientation')}</span>
-            <select
-              className="mc-select"
-              aria-label={orientationField?.id ?? t('sensor.imuOrientation')}
-              value={orientationParam ? Math.round(orientationParam.value) : ''}
-              disabled={!orientationField || !orientationParam || !canCalibrate}
-              title={orientationField ? orientationField.hint : t('sensor.orientationNotAdapted')}
-              onChange={(event) => setBoardOrientation(Number(event.target.value))}
-            >
-              {!orientationParam && <option value="">{orientationField ? t('sensor.waitingForParam') : t('sensor.notApplicable')}</option>}
-              {orientationField?.options.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+          <div className="mc-sensor-controls">
+            <div className="mc-sensor-instance-toggle" role="group" aria-label={t('common.imu')}>
+              <button type="button" aria-pressed={imuIndex === 'imu1'} data-active={imuIndex === 'imu1'} onClick={() => setImuIndex('imu1')}>IMU 1 {imus[0] ? '●' : '○'}</button>
+              <button type="button" aria-pressed={imuIndex === 'imu2'} data-active={imuIndex === 'imu2'} onClick={() => setImuIndex('imu2')}>IMU 2 {imus[1] ? '●' : '○'}</button>
+            </div>
+            <label className="mc-sensor-orientation-control">
+              <span>{t('sensor.imuOrientation')}</span>
+              <select
+                className="mc-select"
+                aria-label={orientationField?.id ?? t('sensor.imuOrientation')}
+                value={orientationParam ? Math.round(orientationParam.value) : ''}
+                disabled={!orientationField || !orientationParam || !canCalibrate}
+                title={orientationField ? orientationField.hint : t('sensor.orientationNotAdapted')}
+                onChange={(event) => setBoardOrientation(Number(event.target.value))}
+              >
+                {!orientationParam && <option value="">{orientationField ? t('sensor.waitingForParam') : t('sensor.notApplicable')}</option>}
+                {orientationField?.options.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div className="mc-sensor-chart-grid">
@@ -945,7 +999,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
             <GpsTrackPlot />
 
             <section className="mc-card mc-gps-position">
-              <header><span className="mc-eyebrow">POSITION</span><strong>{t('sensor.gps.position')}</strong></header>
+              <header><strong>{t('sensor.gps.position')}</strong></header>
               <dl>
                 <div><dt>{t('sensor.gps.latitude')}</dt><dd className="mc-mono">{gps && gps.fix_type >= 2 ? gps.lat.toFixed(7) : '—'}</dd></div>
                 <div><dt>{t('sensor.gps.longitude')}</dt><dd className="mc-mono">{gps && gps.fix_type >= 2 ? gps.lon.toFixed(7) : '—'}</dd></div>
@@ -976,13 +1030,13 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
           </div>
         </>
       )}
+        </TabPanel>
       </section>
+      )}
 
+      {taskMode === 'calibrate' && (
       <section className="mc-calibration-catalog">
-        <header className="mc-calibration-header">
-          <div><span className="mc-eyebrow">CALIBRATION</span><h2>{t('sensor.calibration.title')}</h2></div>
-        </header>
-
+        {healthStrip}
         <div className="mc-calibration-task-grid">
           {calibrationCatalog.map((item) => (
             <CalibrationTaskCard
@@ -1012,7 +1066,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
           <section className="mc-calibration-session">
             <div className="mc-calibration-session__label">
               <div className="mc-calibration-session__title">
-                <span>ACTIVE SESSION</span>
+                <span>{t('sensor.activeSession')}</span>
                 <strong>{calibrationLabels[snapshot.kind]}</strong>
               </div>
               {sessionActive && (
@@ -1036,6 +1090,8 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
           </section>
         )}
       </section>
+      )}
+      </TabPanel>
     </div>
   )
 }

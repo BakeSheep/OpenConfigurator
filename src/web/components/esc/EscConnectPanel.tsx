@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { ESC_SESSION_SAFETY_CONFIRMATION } from '../../../shared/esc'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
@@ -46,6 +47,10 @@ export default function EscConnectPanel() {
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
   const clientId = useConnectionStore((state) => state.clientId)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const params = useParameterStore((state) => state.params)
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
   const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
@@ -53,12 +58,18 @@ export default function EscConnectPanel() {
   const [backup, setBackup] = useState<PassthroughBackup | null>(null)
   const [pendingWrite, setPendingWrite] = useState<{ requestId: string; restoring: boolean } | null>(null)
   const [writeMessage, setWriteMessage] = useState<string | null>(null)
+  const [propsRemovedConfirmed, setPropsRemovedConfirmed] = useState(false)
+  const [stablePowerConfirmed, setStablePowerConfirmed] = useState(false)
+  const propsConfirmationKeyRef = useRef<string | null>(null)
+  const powerConfirmationKeyRef = useRef<string | null>(null)
 
   const active = session !== null && session.state !== 'idle'
   const busy = session?.state === 'entering' || session?.state === 'exiting' || session?.activeJobId != null
   const ownsSession = session?.ownerClientId === clientId
   const isBluetooth = linkType === 'bluetooth'
   const effectiveMode = active && session?.mode ? session.mode : 'ardupilot_passthrough'
+  const effectiveModeLabel = t(`escConnect.sessionMode.${effectiveMode}`)
+  const sessionStateLabel = session ? t(`escConnect.sessionState.${session.state}`) : ''
 
   const blhAuto = params.get('SERVO_BLH_AUTO')
   const blhMask = params.get('SERVO_BLH_MASK')
@@ -75,6 +86,13 @@ export default function EscConnectPanel() {
     setWriteMessage(null)
     setPendingWrite(null)
   }, [setupParamId])
+
+  useEffect(() => {
+    setPropsRemovedConfirmed(false)
+    setStablePowerConfirmed(false)
+    propsConfirmationKeyRef.current = null
+    powerConfirmationKeyRef.current = null
+  }, [active, canControl, safetyAuthorityId, safetyEpoch, targetComponentId, targetSystemId, vehicleReady])
 
   useEffect(() => {
     if (!pendingWrite || lastWriteResult?.requestId !== pendingWrite.requestId) return
@@ -139,7 +157,34 @@ export default function EscConnectPanel() {
   }
 
   const startSession = () => {
-    sendClientMessage({ type: 'esc_session_start', data: { mode: 'ardupilot_passthrough' } })
+    const connection = useConnectionStore.getState()
+    const identity = useTelemetryStore.getState().vehicleIdentity
+    const liveSafetyKey = `${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`
+    if (
+      !propsRemovedConfirmed
+      || !stablePowerConfirmed
+      || propsConfirmationKeyRef.current !== liveSafetyKey
+      || powerConfirmationKeyRef.current !== liveSafetyKey
+      || !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || connection.targetSystemId !== targetSystemId
+      || connection.targetComponentId !== targetComponentId
+      || !escModeAllowedForProfile(identity, 'ardupilot_passthrough')
+    ) return
+    sendClientMessage({
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    setPropsRemovedConfirmed(false)
+    setStablePowerConfirmed(false)
+    propsConfirmationKeyRef.current = null
+    powerConfirmationKeyRef.current = null
   }
 
   const exitSession = () => {
@@ -159,6 +204,8 @@ export default function EscConnectPanel() {
     && vehicleReady
     && ardupilotReady
     && dshotReady
+    && propsRemovedConfirmed
+    && stablePowerConfirmed
 
   return (
     <section className="mc-card mc-esc-connect">
@@ -167,7 +214,7 @@ export default function EscConnectPanel() {
           <div className="mc-section-title">{t('escConnect.title')}</div>
           <p>{t('escConnect.subtitle')}</p>
         </div>
-        {active && <span className="mc-esc-session-badge">{session?.state}</span>}
+        {active && <span className="mc-esc-session-badge">{sessionStateLabel}</span>}
       </div>
 
       <div className="mc-esc-connect__body">
@@ -198,7 +245,7 @@ export default function EscConnectPanel() {
                 <Icon name="check" size={16} />
                 <div>
                   <strong>{t('escConnect.existingSessionTitle')}</strong>
-                  <span>{t('escConnect.existingSessionHint', { mode: effectiveMode })}</span>
+                  <span>{t('escConnect.existingSessionHint', { mode: effectiveModeLabel })}</span>
                 </div>
               </div>
             )}
@@ -251,7 +298,7 @@ export default function EscConnectPanel() {
               <div className="mc-esc-session-row">
                 <div>
                   <strong>{t('escConnect.sessionConnected')}</strong>
-                  <span className="mc-mono">{session?.mode} · {session?.sessionId?.slice(0, 8)}</span>
+                  <span>{effectiveModeLabel}</span>
                 </div>
                 <div className="mc-esc-actions">
                   <button type="button" className="mc-btn mc-btn-ghost" onClick={rescan} disabled={busy || !ownsSession}>
@@ -263,10 +310,55 @@ export default function EscConnectPanel() {
                 </div>
               </div>
             ) : (
-              <div className="mc-esc-connect__footer">
-                <button type="button" className="mc-btn mc-btn-primary" onClick={startSession} disabled={!canStart}>
-                  <Icon name="plug" size={16} /> {t('escConnect.enterEscConfig')}
-                </button>
+              <div>
+                <div role="group" aria-labelledby="esc-safety-confirmation-title">
+                  <p id="esc-safety-confirmation-title" className="mc-esc-warning">
+                    {t('escConnect.safetyConfirmationTitle')}
+                  </p>
+                  <ul className="mc-esc-preconditions">
+                    <li data-ok={propsRemovedConfirmed || undefined}>
+                      <input
+                        id="esc-props-removed-confirmation"
+                        type="checkbox"
+                        checked={propsRemovedConfirmed}
+                        onChange={(event) => {
+                          const connection = useConnectionStore.getState()
+                          const checked = event.target.checked && connection.safetyAuthorityId !== null
+                          propsConfirmationKeyRef.current = checked
+                            ? `${connection.safetyAuthorityId}:${connection.safetyEpoch}`
+                            : null
+                          setPropsRemovedConfirmed(checked)
+                        }}
+                      />
+                      <label htmlFor="esc-props-removed-confirmation">
+                        {t('escConnect.confirmPropsRemoved')}
+                      </label>
+                    </li>
+                    <li data-ok={stablePowerConfirmed || undefined}>
+                      <input
+                        id="esc-stable-power-confirmation"
+                        type="checkbox"
+                        checked={stablePowerConfirmed}
+                        onChange={(event) => {
+                          const connection = useConnectionStore.getState()
+                          const checked = event.target.checked && connection.safetyAuthorityId !== null
+                          powerConfirmationKeyRef.current = checked
+                            ? `${connection.safetyAuthorityId}:${connection.safetyEpoch}`
+                            : null
+                          setStablePowerConfirmed(checked)
+                        }}
+                      />
+                      <label htmlFor="esc-stable-power-confirmation">
+                        {t('escConnect.confirmStablePower')}
+                      </label>
+                    </li>
+                  </ul>
+                </div>
+                <div className="mc-esc-connect__footer">
+                  <button type="button" className="mc-btn mc-btn-primary" onClick={startSession} disabled={!canStart}>
+                    <Icon name="plug" size={16} /> {t('escConnect.enterEscConfig')}
+                  </button>
+                </div>
               </div>
             )}
           </section>

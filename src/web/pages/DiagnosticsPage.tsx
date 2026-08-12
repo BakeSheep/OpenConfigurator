@@ -1,9 +1,9 @@
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import CollapsibleSubnav from '../components/layout/CollapsibleSubnav'
+import SectionNav, { sectionLocation } from '../components/layout/SectionNav'
 import EkfFusionPanel from '../components/ekf/EkfFusionPanel'
-import Icon, { type IconName } from '../components/ui/Icon'
-import { PageHeader } from '../components/ui/PageFrame'
+import type { IconName } from '../components/ui/Icon'
+import { SectionFrame, WorkspaceFrame } from '../components/ui/PageFrame'
 import MessagesPage from './MessagesPage'
 import ParameterPage from './ParameterPage'
 import PidTuningPage from './PidTuningPage'
@@ -13,14 +13,16 @@ import LogAnalysisPage from './LogAnalysisPage'
 
 type DiagnosticSection = 'parameters' | 'pid' | 'ekf' | 'waveforms' | 'messages' | 'logs' | 'log-analysis'
 
-const sections: Array<{ id: DiagnosticSection; label: string; description: string; icon: IconName }> = [
-  { id: 'parameters', label: 'diagnostics.section.parameters.label', description: 'diagnostics.section.parameters.description', icon: 'parameters' },
-  { id: 'pid', label: 'diagnostics.section.pid.label', description: 'diagnostics.section.pid.description', icon: 'tune' },
-  { id: 'ekf', label: 'diagnostics.section.ekf.label', description: 'diagnostics.section.ekf.description', icon: 'settings' },
-  { id: 'waveforms', label: 'diagnostics.section.waveforms.label', description: 'diagnostics.section.waveforms.description', icon: 'waveform' },
-  { id: 'messages', label: 'diagnostics.section.messages.label', description: 'diagnostics.section.messages.description', icon: 'message' },
-  { id: 'logs', label: 'diagnostics.section.logs.label', description: 'diagnostics.section.logs.description', icon: 'folder' },
-  { id: 'log-analysis', label: 'diagnostics.section.log-analysis.label', description: 'diagnostics.section.log-analysis.description', icon: 'log' },
+const DEFAULT_SECTION: DiagnosticSection = 'parameters'
+
+const sections: Array<{ id: DiagnosticSection; label: string; icon: IconName }> = [
+  { id: 'parameters', label: 'diagnostics.section.parameters.label', icon: 'parameters' },
+  { id: 'pid', label: 'diagnostics.section.pid.label', icon: 'tune' },
+  { id: 'ekf', label: 'diagnostics.section.ekf.label', icon: 'settings' },
+  { id: 'waveforms', label: 'diagnostics.section.waveforms.label', icon: 'waveform' },
+  { id: 'messages', label: 'diagnostics.section.messages.label', icon: 'message' },
+  { id: 'logs', label: 'diagnostics.section.logs.label', icon: 'folder' },
+  { id: 'log-analysis', label: 'diagnostics.section.log-analysis.label', icon: 'log' },
 ]
 
 function isDiagnosticSection(value: string | null): value is DiagnosticSection {
@@ -29,32 +31,35 @@ function isDiagnosticSection(value: string | null): value is DiagnosticSection {
 
 export default function DiagnosticsPage() {
   const { t } = useTranslation()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
   const sectionParam = searchParams.get('section')
-  const activeSection: DiagnosticSection = isDiagnosticSection(sectionParam) ? sectionParam : 'parameters'
+  const activeSection: DiagnosticSection = isDiagnosticSection(sectionParam) ? sectionParam : DEFAULT_SECTION
+  const activeSectionConfig = sections.find((section) => section.id === activeSection) ?? sections[0]
 
   return (
-    <div className="mc-workspace mc-workspace--full mc-fade-in">
-      <PageHeader title={t('diagnostics.title')} description={t('diagnostics.description')} />
-      <div className="mc-subworkspace">
-        <CollapsibleSubnav ariaLabel={t('diagnostics.ariaLabel')} storageKey="oc-diagnostics-subnav-collapsed">
-          {sections.map((section) => (
-            <button key={section.id} type="button" data-active={section.id === activeSection} aria-label={t(section.label)} title={t(section.label)} aria-current={section.id === activeSection ? 'page' : undefined} onClick={() => setSearchParams(section.id === 'parameters' ? {} : { section: section.id }, { replace: true })}>
-              <span><Icon name={section.icon} size={18} /></span>
-              <span><strong>{t(section.label)}</strong><small>{t(section.description)}</small></span>
-            </button>
-          ))}
-        </CollapsibleSubnav>
-        <section className="mc-subworkspace__content">
+    <WorkspaceFrame title={t('diagnostics.title')}>
+      <div className="mc-section-layout">
+        <SectionNav
+          ariaLabel={t('diagnostics.ariaLabel')}
+          activeId={activeSection}
+          items={sections.map((section) => ({
+            id: section.id,
+            label: t(section.label),
+            icon: section.icon,
+            to: sectionLocation(location.pathname, searchParams, section.id, DEFAULT_SECTION),
+          }))}
+        />
+        <SectionFrame title={t(activeSectionConfig.label)} focusKey={activeSection}>
           {activeSection === 'parameters' && <ParameterPage embedded />}
           {activeSection === 'pid' && <PidTuningPage />}
-          {activeSection === 'ekf' && <section className="mc-card mc-diagnostics-ekf"><header><h2>{t('diagnostics.ekfSettingsTitle')}</h2><p>{t('diagnostics.ekfSettingsHint')}</p></header><EkfFusionPanel /></section>}
+          {activeSection === 'ekf' && <section className="mc-card mc-diagnostics-ekf"><header><h3>{t('diagnostics.ekfSettingsTitle')}</h3><p>{t('diagnostics.ekfSettingsHint')}</p></header><EkfFusionPanel /></section>}
           {activeSection === 'waveforms' && <WaveformPage embedded />}
           {activeSection === 'messages' && <MessagesPage embedded />}
           {activeSection === 'logs' && <FlightLogsPage embedded />}
           {activeSection === 'log-analysis' && <LogAnalysisPage embedded />}
-        </section>
+        </SectionFrame>
       </div>
-    </div>
+    </WorkspaceFrame>
   )
 }

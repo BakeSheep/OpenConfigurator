@@ -8,6 +8,7 @@ import type {
   EscJobProgressSnapshot,
   EscJobResult,
   EscLogEntry,
+  EscSessionSafetyConfirmation,
 } from './esc/types'
 import type { EscOperationError } from './esc/errors'
 
@@ -369,6 +370,10 @@ export type ServerMessage =
         capabilities: string[]
         maxPayload: number
         controllerLeaseMs: number
+        /** Server-authoritative boundary for safety confirmations. */
+        safetyEpoch: number
+        /** Unique per backend process; prevents epoch reuse after restart. */
+        safetyAuthorityId: string
       }
     }
   | {
@@ -386,6 +391,9 @@ export type ServerMessage =
       data: {
         clientId: string | null
         expiresAt: number | null
+        /** Advances on target/readiness/transport/controller authority changes. */
+        safetyEpoch: number
+        safetyAuthorityId: string
         reason:
           | 'claimed'
           | 'renewed'
@@ -393,6 +401,7 @@ export type ServerMessage =
           | 'expired'
           | 'disconnected'
           | 'connection_changed'
+          | 'safety_changed'
           | 'snapshot'
       }
     }
@@ -431,6 +440,9 @@ export type ServerMessage =
         status?: ConnectionStatus
         transportOpen?: boolean
         vehicleReady?: boolean
+        /** Same authoritative epoch carried by controller snapshots. */
+        safetyEpoch: number
+        safetyAuthorityId: string
         /** True while the serial link is exclusively borrowed by an ESC raw session. */
         rawSessionActive?: boolean
         port?: string
@@ -503,6 +515,9 @@ export type ServerMessage =
         systemId: number | null
         componentId: number | null
         ready: boolean
+        /** Added by the WS boundary; bridge-local target events may omit it. */
+        safetyEpoch?: number
+        safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
         /** Classified identity of the selected target; null until known. */
         identity: VehicleIdentity | null
@@ -637,6 +652,9 @@ export type ClientMessage =
       cmd: string
       params: number[]
       safetyConfirmation?: 'arm' | 'disarm' | 'takeoff'
+      /** Required for arming; disarming deliberately remains immediate. */
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
     }
   | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
   | { type: 'param_request_list'; requestId?: string }
@@ -644,7 +662,13 @@ export type ClientMessage =
   | { type: 'shell_open'; requestId?: string }
   | { type: 'shell_write'; requestId?: string; data: { text: string } }
   | { type: 'shell_close'; requestId?: string }
-  | { type: 'reboot_vehicle'; requestId: string; safetyConfirmation: 'reboot_flight_controller' }
+  | {
+      type: 'reboot_vehicle'
+      requestId: string
+      safetyConfirmation: 'reboot_flight_controller'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {
       // Semantic mode change: the browser sends only the profile mode id and
@@ -687,6 +711,8 @@ export type ClientMessage =
         duration: number
         propsRemoved?: boolean
       }
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
     }
   | {
       /** One WS operation that fans out to multiple 1-based motor instances. */
@@ -698,6 +724,8 @@ export type ClientMessage =
         duration: number
         propsRemoved?: boolean
       }
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
     }
   | {
       type: 'select_target'
@@ -713,6 +741,8 @@ export type ClientMessage =
       requestId?: string
       data: { entries: Array<{ path: string; kind: 'file' | 'dir' }> }
       safetyConfirmation: 'delete_files'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
     }
   | { type: 'log_list'; requestId?: string }
   | { type: 'log_download'; requestId?: string; data: { logId: number } }
@@ -723,11 +753,16 @@ export type ClientMessage =
       type: 'log_erase'
       requestId?: string
       safetyConfirmation: 'erase_all_logs'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
     }
   // -- ESC configuration -----------------------------------------------------
   | {
       type: 'esc_session_start'
       requestId?: string
+      safetyConfirmation: EscSessionSafetyConfirmation
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
       data:
         | { mode: 'ardupilot_passthrough' }
         | { mode: 'px4_serial_control'; channels: number[] }

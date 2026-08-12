@@ -1,8 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import Icon from '../components/ui/Icon'
-import { PageHeader } from '../components/ui/PageFrame'
+import { WorkspaceFrame } from '../components/ui/PageFrame'
+import { Button } from '../components/ui/Button'
+import { Card, CardBody, CardHeader } from '../components/ui/Card'
+import { Notice } from '../components/ui/Feedback'
+import StatePanel from '../components/ui/StatePanel'
+import ArmSafetyControl from '../components/safety/ArmSafetyControl'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
@@ -32,36 +37,38 @@ export default function FlightControlPage() {
   const isSensorStale = useSensorStore((state) => state.isStale)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
+  const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const connected = vehicleReady && canControl
   const [takeoffAltitude, setTakeoffAltitude] = useState(2.5)
-  const [armConfirmation, setArmConfirmation] = useState(false)
   const [, refreshPrearmExpiry] = useState(0)
-  const confirmationTimer = useRef<number | null>(null)
   const armed = vehicle?.armed ?? false
 
-  useEffect(() => () => {
-    if (confirmationTimer.current !== null) window.clearTimeout(confirmationTimer.current)
-  }, [])
-
   const arm = () => {
-    if (!armConfirmation) {
-      setArmConfirmation(true)
-      confirmationTimer.current = window.setTimeout(() => setArmConfirmation(false), 3000)
-      return
-    }
+    const connection = useConnectionStore.getState()
+    const telemetry = useTelemetryStore.getState()
+    const liveCaps = vehicleCapabilities(telemetry.vehicleIdentity)
+    if (
+      !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || !liveCaps.writeOperations
+      || !liveCaps.arm
+      || telemetry.status?.armed === true
+      || telemetry.preflightCheck === false
+      || telemetry.sensorsHealthy === false
+    ) return
     send({
       type: 'command',
       cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
       params: [1, 0, 0, 0, 0, 0, 0],
       safetyConfirmation: 'arm',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
-    // Clear the pending 3 s reset timer so it cannot fire after a successful
-    // confirmation and needlessly toggle state later.
-    if (confirmationTimer.current !== null) {
-      window.clearTimeout(confirmationTimer.current)
-      confirmationTimer.current = null
-    }
-    setArmConfirmation(false)
   }
 
   const disarm = () => send({
@@ -70,6 +77,28 @@ export default function FlightControlPage() {
     params: [0, 0, 0, 0, 0, 0, 0],
     safetyConfirmation: 'disarm',
   })
+  const takeoff = () => {
+    const connection = useConnectionStore.getState()
+    const telemetry = useTelemetryStore.getState()
+    const liveCaps = vehicleCapabilities(telemetry.vehicleIdentity)
+    if (
+      !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.safetyEpoch !== safetyEpoch
+      || connection.safetyAuthorityId !== safetyAuthorityId
+      || telemetry.status?.armed !== true
+      || !liveCaps.guidedTakeoff
+    ) return
+    send({
+      type: 'command',
+      cmd: 'MAV_CMD_NAV_TAKEOFF',
+      params: [0, 0, 0, 0, 0, 0, takeoffAltitude],
+      safetyConfirmation: 'takeoff',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
+    })
+  }
   const command = (cmd: string, params: number[]) => send({ type: 'command', cmd, params })
   const modeOptions = availableModes(vehicleIdentity)
   const caps = vehicleCapabilities(vehicleIdentity)
@@ -132,22 +161,33 @@ export default function FlightControlPage() {
     /arm|arming|解锁|preflight|pre-arm/i.test(entry.text)
   )
 
-  return (
-    <div className="mc-workspace mc-workspace--standard mc-fade-in">
-      <PageHeader title={t('flight.title')} description={t('flight.description')} />
+  if (!vehicleReady) {
+    return (
+      <WorkspaceFrame title={t('flight.title')}>
+        <StatePanel
+          kind="disconnected"
+          headingLevel={2}
+          title={t('flight.fcNotConnected')}
+          description={t('flight.connectPrompt')}
+          action={<Button tone="primary" size="default" onClick={() => setConnectDialogOpen(true)}>{t('common.connect')}</Button>}
+        />
+      </WorkspaceFrame>
+    )
+  }
 
-      {!connected && (
-        <div className="mc-capability-note" data-state="waiting">
-          <Icon name="warning" size={15} />
-          <span>{!vehicleReady ? t('flight.waitingHeartbeat') : t('flight.readOnlyControl')}</span>
-        </div>
+  return (
+    <WorkspaceFrame title={t('flight.title')} className="mc-workspace-frame--flight">
+
+      {!canControl && (
+        <Notice tone="warning" title={t('flight.readOnlyTitle')}>
+          {t('flight.readOnlyControl')}
+        </Notice>
       )}
 
       {connected && !caps.arm && (
-        <div className="mc-capability-note" data-state="waiting">
-          <Icon name="warning" size={15} />
-          <span>{t('flight.writeNotSupported', { type: vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : t('flight.unrecognized') })}</span>
-        </div>
+        <Notice tone="warning" title={t('flight.armNotSupported')}>
+          {t('flight.writeNotSupported', { type: vehicleIdentity ? `${vehicleIdentity.family}/${vehicleIdentity.vehicleClass}` : t('flight.unrecognized') })}
+        </Notice>
       )}
 
       <section className="mc-card overflow-hidden mt-4">
@@ -157,84 +197,39 @@ export default function FlightControlPage() {
           </span>
           <div className="flex-1">
             <p className="text-[18px] font-bold" style={{ color: armed ? 'var(--success)' : 'var(--text-primary)' }}>{armed ? t('flight.armed') : t('flight.disarmed')}</p>
-            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{connected ? t('flight.currentMode', { mode: vehicle?.mode ?? '-' }) : t('flight.fcNotConnected')}</p>
+            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.currentMode', { mode: vehicle?.mode ?? '-' })}</p>
           </div>
-          {!armed && (
-            <button type="button" disabled={!connected || !allChecksPassed || !caps.arm} className="mc-btn min-h-11 px-6 text-[14px]" style={{ background: armConfirmation ? 'var(--warning)' : 'var(--success)', color: '#fff', animation: armConfirmation ? 'mc-pulse 1s ease-in-out infinite' : undefined }} onClick={arm}>
-              {armConfirmation ? t('flight.confirmArm') : caps.arm ? t('flight.armVehicle') : t('flight.armNotSupported')}
-            </button>
-          )}
-          <button type="button" className="mc-btn mc-btn-danger min-h-11 px-6 text-[14px]" disabled={!connected || !armed || !caps.arm} onClick={disarm} title={t('flight.disarmTitle')}>{t('flight.disarmNow')}</button>
-        </div>
-      </section>
-
-      <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <div className="mc-card overflow-hidden">
-          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.commands')}</h2>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.commandsHint')}</p>
-          </div>
-          <div className="space-y-5 p-5">
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.takeoffAltitude')}</span>
-                <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{takeoffAltitude.toFixed(1)}m</span>
-              </div>
-              <input className="mt-4" type="range" min="1" max="10" step="0.5" value={takeoffAltitude} onChange={(event) => setTakeoffAltitude(Number(event.target.value))} />
+          <div className="mc-flight-arm-safety">
+            <div className="mc-arm-control">
+              <ArmSafetyControl
+                armed={armed}
+                canArm={connected && allChecksPassed && caps.arm}
+                canChangeArmState={connected && caps.arm}
+                onArm={arm}
+                onDisarm={disarm}
+                safetyKey={`${safetyAuthorityId ?? '-'}:${safetyEpoch}`}
+                describedBy="flight-arm-guidance"
+              />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <button
-                type="button"
-                className="mc-btn mc-btn-primary min-h-10"
-                disabled={!connected || !armed || !allChecksPassed || !caps.guidedTakeoff}
-                onClick={() => send({
-                  type: 'command',
-                  cmd: 'MAV_CMD_NAV_TAKEOFF',
-                  params: [0, 0, 0, 0, 0, 0, takeoffAltitude],
-                  safetyConfirmation: 'takeoff',
-                })}
-              >
-                {t('flight.takeoff')}
-              </button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.land')}</button>
-              <button type="button" className="mc-btn min-h-10" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.rtl')}</button>
-            </div>
-          </div>
-        </div>
-
-        <div className="mc-card overflow-hidden">
-          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.modeTitle')}</h2>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.modeHint')}</p>
-          </div>
-          <div className="grid grid-cols-2 gap-2 p-5 sm:grid-cols-3">
-            {modeOptions.length === 0 && (
-              <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
-                {connected ? t('flight.modeNotSupported') : t('flight.connectToShowModes')}
-              </p>
-            )}
-            {modeOptions.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                disabled={!connected}
-                className="mc-btn min-h-10"
-                style={vehicle?.modeId === mode.id ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-                onClick={() => setMode(mode.id)}
-              >
-                {mode.name}
-              </button>
-            ))}
+            <p id="flight-arm-guidance" role={!allChecksPassed ? 'status' : undefined}>
+              {!connected
+                ? (!vehicleReady ? t('flight.waitingHeartbeat') : t('flight.readOnlyControl'))
+                : armed
+                  ? t('flight.disarmNow')
+                  : !caps.arm
+                  ? t('flight.armNotSupported')
+                  : allChecksPassed
+                    ? t('topbar.arm.dragToConfirm')
+                    : t('flight.checksNotPassed')}
+            </p>
           </div>
         </div>
       </section>
 
       <section className="mt-4 grid grid-cols-1 gap-4">
-        <div className="mc-card overflow-hidden">
-          <div className="border-b px-5 py-4" style={{ borderColor: 'var(--border)' }}>
-            <h2 className="text-[14px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('flight.preflightCheck')}</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-x-6 gap-y-3 p-5 sm:grid-cols-2">
+        <Card>
+          <CardHeader headingLevel={2} title={t('flight.preflightCheck')} />
+          <CardBody className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
             {checks.map((check) => (
               <div key={check.label} className="flex items-center gap-3">
                 <span className="grid h-6 w-6 place-items-center rounded-lg" style={{ background: check.ok ? 'var(--success-dim)' : 'var(--danger-dim)', color: check.ok ? 'var(--success)' : 'var(--danger)' }}>
@@ -251,9 +246,62 @@ export default function FlightControlPage() {
                 {t('flight.latestFcFeedback', { text: latestArmMessage.text })}
               </div>
             )}
-          </div>
-        </div>
+          </CardBody>
+        </Card>
       </section>
-    </div>
+
+      <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader headingLevel={2} title={t('flight.commands')} description={t('flight.commandsHint')} />
+          <CardBody className="space-y-5">
+            <div>
+              <div className="flex items-center justify-between">
+                <label htmlFor="flight-takeoff-altitude" className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>{t('flight.takeoffAltitude')}</label>
+                <span className="mc-mono font-bold" style={{ color: 'var(--accent)' }}>{takeoffAltitude.toFixed(1)}m</span>
+              </div>
+              <input id="flight-takeoff-altitude" className="mt-4" type="range" min="1" max="10" step="0.5" value={takeoffAltitude} aria-valuetext={`${takeoffAltitude.toFixed(1)} m`} onChange={(event) => setTakeoffAltitude(Number(event.target.value))} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <button
+                type="button"
+                className="mc-btn mc-btn-primary mc-btn--prominent"
+                disabled={!connected || !armed || !allChecksPassed || !caps.guidedTakeoff}
+                onClick={takeoff}
+              >
+                {t('flight.takeoff')}
+              </button>
+              <button type="button" className="mc-btn mc-btn--prominent" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--warning-dim)', color: 'var(--warning)' }} onClick={() => command('MAV_CMD_NAV_LAND', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.land')}</button>
+              <button type="button" className="mc-btn mc-btn--prominent" disabled={!connected || !armed || !caps.setMode} style={{ background: 'var(--info-dim)', color: 'var(--info)' }} onClick={() => command('MAV_CMD_NAV_RETURN_TO_LAUNCH', [0, 0, 0, 0, 0, 0, 0])}>{t('flight.rtl')}</button>
+            </div>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader headingLevel={2} title={t('flight.modeTitle')} description={t('flight.modeHint')} />
+          <CardBody className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {modeOptions.length === 0 && (
+              <p className="col-span-full text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+                {vehicleReady ? t('flight.modeNotSupported') : t('flight.connectToShowModes')}
+              </p>
+            )}
+            {modeOptions.map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                disabled={!connected}
+                className="mc-btn mc-btn--prominent"
+                style={vehicle?.modeId === mode.id
+                  ? { background: 'var(--mc-color-accent-solid)', color: 'var(--mc-color-on-accent)' }
+                  : { background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                onClick={() => setMode(mode.id)}
+              >
+                {mode.name}
+              </button>
+            ))}
+          </CardBody>
+        </Card>
+      </section>
+
+    </WorkspaceFrame>
   )
 }

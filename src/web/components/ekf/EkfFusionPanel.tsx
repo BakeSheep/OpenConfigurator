@@ -28,6 +28,9 @@ function Toggle({
       <span className="text-[13px]" style={{ color: 'var(--text-primary)' }}>{label}</span>
       <button
         type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={label}
         onClick={onToggle}
         disabled={!param || !canWrite}
         title={param ? undefined : t('ekf.paramNotAvailable')}
@@ -48,7 +51,7 @@ function Toggle({
             top: 2,
             width: 16,
             height: 16,
-            background: '#fff',
+            background: enabled ? 'var(--mc-color-on-accent)' : 'var(--mc-color-surface)',
             left: enabled ? 21 : 3,
             boxShadow: '0 1px 3px rgba(0,0,0,.3)',
           }}
@@ -148,8 +151,9 @@ export default function EkfFusionPanel() {
             const known = field.options.some((option) => option.value === value)
             return (
               <div key={field.id}>
-                <label className="mc-section-title block mb-1.5">{field.label}<small className="mc-mono ml-2" style={{ color: 'var(--text-disabled)' }}>{field.id}</small></label>
+                <label htmlFor={`ekf-source-${field.id}`} className="mc-section-title block mb-1.5">{field.label}<small className="mc-mono ml-2" style={{ color: 'var(--text-secondary)' }}>{field.id}</small></label>
                 <select
+                  id={`ekf-source-${field.id}`}
                   className="mc-select"
                   value={value}
                   disabled={!param || !canWrite}
@@ -165,7 +169,7 @@ export default function EkfFusionPanel() {
             )
           })}
         </div>
-        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>{t('ekf.ekf3Footnote')}</p>
+        <p className="mt-3 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('ekf.ekf3Footnote')}</p>
       </div>
     )
   }
@@ -192,8 +196,9 @@ export default function EkfFusionPanel() {
         </div>
       </div>
       <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-        <label className="mc-section-title block mb-1.5">{t('ekf.heightRefSource')}</label>
+        <label htmlFor="ekf-height-reference" className="mc-section-title block mb-1.5">{t('ekf.heightRefSource')}</label>
         <select
+          id="ekf-height-reference"
           value={hgtRefParam?.value ?? ''}
           onChange={(e) => setHgtRefParam(Number(e.target.value))}
           className="mc-select"
@@ -204,7 +209,7 @@ export default function EkfFusionPanel() {
           {HGT_REF_OPTIONS.map((o) => <option key={o.value} value={o.value}>{t(o.label)}</option>)}
         </select>
       </div>
-      <p className="mt-3 text-[11px]" style={{ color: 'var(--text-disabled)' }}>{t('ekf.rebootRequired')}</p>
+      <p className="mt-3 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('ekf.rebootRequired')}</p>
     </div>
   )
 }

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
+import ConfirmDialog from '../ui/ConfirmDialog'
 import { sendClientMessage } from '../../hooks/useWebSocket'
 import { useLogTransferStore } from '../../stores/logTransferStore'
 import { useParameterStore } from '../../stores/parameterStore'
@@ -21,6 +22,7 @@ interface ContextMenuState {
   x: number
   y: number
   entry: DataflashLogEntry
+  targetKey: string
 }
 
 export function dataflashLogName(entry: DataflashLogEntry): string {
@@ -33,6 +35,13 @@ function formatEntryDate(timestamp: number | null): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} `
     + `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`
+}
+
+function eraseConfirmationKey(targetKey: string, entries: DataflashLogEntry[]): string {
+  const objects = entries
+    .map((entry) => [entry.id, entry.sizeBytes, entry.timeUtcMs] as const)
+    .sort((a, b) => a[0] - b[0])
+  return JSON.stringify([targetKey, 'erase-all', objects])
 }
 
 export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: boolean }) {
@@ -49,14 +58,56 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
   const parameterSyncActive = useParameterStore((state) => state.loading)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const canControl = useConnectionStore((state) => state.canControl)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
 
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortAsc, setSortAsc] = useState(false)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [eraseDialogOpen, setEraseDialogOpen] = useState(false)
-  const [eraseAcknowledged, setEraseAcknowledged] = useState(false)
+  const [focusedLogId, setFocusedLogId] = useState<number | null>(null)
   const handledDownloadRef = useRef<string | null>(null)
   const listedTargetRef = useRef<string | null>(null)
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const contextTriggerRef = useRef<HTMLDivElement | null>(null)
+  const targetKey = `${targetSystemId ?? '-'}:${targetComponentId ?? '-'}`
+  const previousTargetKeyRef = useRef<string | null>(null)
+  const previousVehicleReadyRef = useRef(vehicleReady)
+  const [boundTargetKey, setBoundTargetKey] = useState<string | null>(null)
+  const targetStateCurrent = vehicleReady && boundTargetKey === targetKey
+
+  const closeContextMenu = useCallback((restoreFocus = false) => {
+    const trigger = contextTriggerRef.current
+    setContextMenu(null)
+    if (restoreFocus) requestAnimationFrame(() => trigger?.focus())
+  }, [])
+
+  // Never carry a list, selection, task or destructive acknowledgement from
+  // one flight-controller target to another. Reset on mount as well, since the
+  // store can outlive this panel while the user navigates elsewhere.
+  useEffect(() => {
+    const initialBinding = previousTargetKeyRef.current === null
+    const targetChanged = previousTargetKeyRef.current !== targetKey
+    const readinessChanged = previousVehicleReadyRef.current !== vehicleReady
+    previousTargetKeyRef.current = targetKey
+    previousVehicleReadyRef.current = vehicleReady
+    setBoundTargetKey(vehicleReady ? targetKey : null)
+    if (!initialBinding && !targetChanged && !readinessChanged) return
+    listedTargetRef.current = null
+    handledDownloadRef.current = null
+    contextTriggerRef.current = null
+    setFocusedLogId(null)
+    setEraseDialogOpen(false)
+    closeContextMenu(false)
+    useLogTransferStore.getState().reset()
+  }, [closeContextMenu, targetKey, vehicleReady])
+
+  useEffect(() => {
+    setEraseDialogOpen(false)
+    closeContextMenu(false)
+    useLogTransferStore.getState().clearSelection()
+  }, [canControl, closeContextMenu, safetyAuthorityId, safetyEpoch])
 
   const requestList = useCallback(() => {
     useLogTransferStore.getState().setLoading(true)
@@ -124,20 +175,31 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     }
   }, [download, navigate])
 
-  // Close the context menu on any outside click / escape.
+  // Focus the menu on open and close it on any outside click / escape.
   useEffect(() => {
     if (!contextMenu) return
-    const close = () => setContextMenu(null)
+    const frame = requestAnimationFrame(() => {
+      const firstItem = contextMenuRef.current?.querySelector<HTMLButtonElement>(
+        '[role="menuitem"]:not(:disabled)',
+      )
+      if (firstItem) firstItem.focus()
+      else contextMenuRef.current?.focus()
+    })
+    const close = () => closeContextMenu(false)
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') close()
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeContextMenu(true)
+      }
     }
     window.addEventListener('click', close)
     window.addEventListener('keydown', onKey)
     return () => {
+      cancelAnimationFrame(frame)
       window.removeEventListener('click', close)
       window.removeEventListener('keydown', onKey)
     }
-  }, [contextMenu])
+  }, [closeContextMenu, contextMenu])
 
   const sortedEntries = useMemo(() => {
     const factor = sortAsc ? 1 : -1
@@ -158,7 +220,16 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     () => sortedEntries.filter((entry) => selection.has(entry.id)),
     [sortedEntries, selection],
   )
-  const busy = download?.status === 'active' || erase?.status === 'active'
+  const rovingLogId = sortedEntries.some((entry) => entry.id === focusedLogId)
+    ? focusedLogId
+    : (sortedEntries[0]?.id ?? null)
+  const currentEraseConfirmationKey = eraseConfirmationKey(
+    `${targetKey}@safety:${safetyAuthorityId ?? '-'}:${safetyEpoch}`,
+    entries,
+  )
+  const busy = !targetStateCurrent
+    || download?.status === 'active'
+    || erase?.status === 'active'
   const singleLog = selectedEntries.length === 1 ? selectedEntries[0] : null
 
   const toggleSort = (key: SortKey) => {
@@ -171,6 +242,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
 
   const handleRowClick = (event: React.MouseEvent, entry: DataflashLogEntry) => {
     event.stopPropagation()
+    setFocusedLogId(entry.id)
     const store = useLogTransferStore.getState()
     if (event.ctrlKey || event.metaKey) {
       const next = new Set(selection)
@@ -199,20 +271,152 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     sendClientMessage({ type: 'log_download', data: { logId: entry.id } })
   }, [busy])
 
-  const handleContextMenu = (event: React.MouseEvent, entry: DataflashLogEntry) => {
-    event.preventDefault()
-    event.stopPropagation()
+  const openContextMenu = (
+    entry: DataflashLogEntry,
+    x: number,
+    y: number,
+    trigger: HTMLDivElement,
+  ) => {
     if (!selection.has(entry.id)) {
       useLogTransferStore.getState().setSelection(new Set([entry.id]), entry.id)
     }
-    setContextMenu({ x: event.clientX, y: event.clientY, entry })
+    contextTriggerRef.current = trigger
+    setContextMenu({ x, y, entry, targetKey })
+  }
+
+  const handleContextMenu = (event: React.MouseEvent, entry: DataflashLogEntry) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const row = event.currentTarget as HTMLDivElement
+    const rect = row.getBoundingClientRect()
+    const keyboardInvocation = event.clientX === 0 && event.clientY === 0
+    openContextMenu(
+      entry,
+      keyboardInvocation ? rect.left + 24 : event.clientX,
+      keyboardInvocation ? rect.top + 24 : event.clientY,
+      row,
+    )
+  }
+
+  const handleRowKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    entry: DataflashLogEntry,
+  ) => {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      const rows = Array.from(
+        event.currentTarget.parentElement?.querySelectorAll<HTMLDivElement>('[data-dataflash-row]') ?? [],
+      )
+      if (rows.length === 0) return
+      event.preventDefault()
+      event.stopPropagation()
+      const currentIndex = rows.indexOf(event.currentTarget)
+      let nextIndex = currentIndex
+      if (event.key === 'Home') nextIndex = 0
+      else if (event.key === 'End') nextIndex = rows.length - 1
+      else if (event.key === 'ArrowUp') nextIndex = Math.max(0, currentIndex - 1)
+      else if (event.key === 'ArrowDown') nextIndex = Math.min(rows.length - 1, currentIndex + 1)
+      rows[nextIndex]?.focus()
+      return
+    }
+
+    if (event.key === ' ') {
+      event.preventDefault()
+      event.stopPropagation()
+      const store = useLogTransferStore.getState()
+      if (event.shiftKey && lastSelected !== null) {
+        const ids = sortedEntries.map((item) => item.id)
+        const from = ids.indexOf(lastSelected)
+        const to = ids.indexOf(entry.id)
+        if (from >= 0 && to >= 0) {
+          const [start, end] = from <= to ? [from, to] : [to, from]
+          store.setSelection(new Set(ids.slice(start, end + 1)))
+          return
+        }
+      }
+      if (event.ctrlKey || event.metaKey) {
+        const next = new Set(selection)
+        if (next.has(entry.id)) next.delete(entry.id)
+        else next.add(entry.id)
+        store.setSelection(next, entry.id)
+        return
+      }
+      store.setSelection(new Set([entry.id]), entry.id)
+      return
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      useLogTransferStore.getState().setSelection(new Set([entry.id]), entry.id)
+      startDownload(entry, 'analyze')
+      return
+    }
+
+    if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+      event.preventDefault()
+      event.stopPropagation()
+      const rect = event.currentTarget.getBoundingClientRect()
+      openContextMenu(entry, rect.left + 24, rect.top + 24, event.currentTarget)
+    }
+  }
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeContextMenu(true)
+      return
+    }
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeContextMenu(true)
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'),
+    )
+    if (items.length === 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement)
+    let nextIndex = 0
+    if (event.key === 'End') nextIndex = items.length - 1
+    else if (event.key === 'ArrowUp') nextIndex = currentIndex <= 0 ? items.length - 1 : currentIndex - 1
+    else if (event.key === 'ArrowDown') nextIndex = currentIndex >= items.length - 1 ? 0 : currentIndex + 1
+    items[nextIndex]?.focus()
   }
 
   const confirmErase = () => {
+    const connection = useConnectionStore.getState()
+    const liveTargetKey = `${connection.targetSystemId ?? '-'}:${connection.targetComponentId ?? '-'}`
+    const liveEntries = useLogTransferStore.getState().entries
+    if (
+      !targetStateCurrent
+      || !connection.vehicleReady
+      || !connection.canControl
+      || connection.safetyAuthorityId === null
+      || connection.targetSystemId === null
+      || connection.targetComponentId === null
+      || liveEntries.length === 0
+      || eraseConfirmationKey(
+        `${liveTargetKey}@safety:${connection.safetyAuthorityId ?? '-'}:${connection.safetyEpoch}`,
+        liveEntries,
+      ) !== currentEraseConfirmationKey
+    ) {
+      setEraseDialogOpen(false)
+      return
+    }
     setEraseDialogOpen(false)
-    setEraseAcknowledged(false)
     useLogTransferStore.getState().beginErase()
-    sendClientMessage({ type: 'log_erase', safetyConfirmation: 'erase_all_logs' })
+    sendClientMessage({
+      type: 'log_erase',
+      safetyConfirmation: 'erase_all_logs',
+      expectedSafetyEpoch: connection.safetyEpoch,
+      expectedSafetyAuthorityId: connection.safetyAuthorityId,
+    })
   }
 
   const totalSize = entries.reduce((sum, entry) => sum + entry.sizeBytes, 0)
@@ -245,12 +449,19 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           <button
             type="button"
             className="mc-btn mc-btn-danger"
-            disabled={entries.length === 0 || busy}
+            disabled={
+              entries.length === 0
+              || busy
+              || !vehicleReady
+              || !canControl
+              || targetSystemId === null
+              || targetComponentId === null
+            }
             onClick={() => setEraseDialogOpen(true)}
           >
             <Icon name="trash" size={14} /> {t('flightLogs.df.eraseAll')}
           </button>
-          <span style={{ flex: 1 }} />
+          <span className="mc-explorer__action-spacer" aria-hidden="true" />
           {listError && (
             <span className="mc-explorer__error" role="alert">
               <Icon name="warning" size={14} /> {listError}
@@ -268,11 +479,15 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
         </div>
 
         {/* Detail table */}
-        <div className="mc-explorer__table" role="grid">
+        <div
+          className="mc-explorer__table"
+          role="grid"
+          aria-colcount={3}
+          aria-rowcount={sortedEntries.length + 1}
+        >
           <div
-            className="mc-explorer__row mc-explorer__row--header"
+            className="mc-explorer__row mc-explorer__row--header mc-explorer__row--dataflash"
             role="row"
-            style={{ gridTemplateColumns: 'minmax(0, 1fr) 200px 110px' }}
           >
             {([
               ['name', t('flightLogs.colName')],
@@ -288,34 +503,41 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
               </button>
             ))}
           </div>
-          <div className="mc-explorer__body">
+          <div className="mc-explorer__body" role="rowgroup">
             {loading && !listed ? (
-              <p className="mc-explorer__notice">{t('flightLogs.readingLogList')}</p>
+              <div className="mc-explorer__notice" role="row">
+                <span role="gridcell" aria-colspan={3}>{t('flightLogs.readingLogList')}</span>
+              </div>
             ) : sortedEntries.length === 0 ? (
-              <p className="mc-explorer__notice">
-                {listError ? t('flightLogs.readFailed') : t('flightLogs.noLogsOnFc')}
-              </p>
+              <div className="mc-explorer__notice" role="row">
+                <span role="gridcell" aria-colspan={3}>
+                  {listError ? t('flightLogs.readFailed') : t('flightLogs.noLogsOnFc')}
+                </span>
+              </div>
             ) : (
               sortedEntries.map((entry) => (
                 <div
                   key={entry.id}
                   role="row"
+                  data-dataflash-row
+                  tabIndex={entry.id === rovingLogId ? 0 : -1}
                   aria-selected={selection.has(entry.id)}
                   className={
-                    'mc-explorer__row'
+                    'mc-explorer__row mc-explorer__row--dataflash'
                     + (selection.has(entry.id) ? ' is-selected' : '')
                   }
-                  style={{ gridTemplateColumns: 'minmax(0, 1fr) 200px 110px' }}
                   onClick={(event) => handleRowClick(event, entry)}
+                  onFocus={() => setFocusedLogId(entry.id)}
                   onDoubleClick={() => startDownload(entry, 'analyze')}
+                  onKeyDown={(event) => handleRowKeyDown(event, entry)}
                   onContextMenu={(event) => handleContextMenu(event, entry)}
                 >
-                  <span className="mc-explorer__name">
+                  <span className="mc-explorer__name" role="gridcell">
                     <Icon name="log" size={16} style={{ color: 'var(--accent)' }} />
                     <span className="mc-mono">{dataflashLogName(entry)}</span>
                   </span>
-                  <span className="mc-mono">{formatEntryDate(entry.timeUtcMs)}</span>
-                  <span className="mc-mono">{formatBytes(entry.sizeBytes)}</span>
+                  <span className="mc-mono" role="gridcell">{formatEntryDate(entry.timeUtcMs)}</span>
+                  <span className="mc-mono" role="gridcell">{formatBytes(entry.sizeBytes)}</span>
                 </div>
               ))
             )}
@@ -407,20 +629,27 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
       </section>
 
       {/* Context menu */}
-      {contextMenu && (
+      {contextMenu && contextMenu.targetKey === targetKey && (
         <div
+          ref={contextMenuRef}
           className="mc-context-menu"
+          role="menu"
+          aria-label={t('flightLogs.contextMenuLabel', { name: dataflashLogName(contextMenu.entry) })}
+          tabIndex={-1}
           style={{
-            left: Math.min(contextMenu.x, window.innerWidth - 200),
-            top: Math.min(contextMenu.y, window.innerHeight - 160),
+            left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 200)),
+            top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 160)),
           }}
           onClick={(event) => event.stopPropagation()}
+          onKeyDown={handleMenuKeyDown}
         >
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             disabled={busy}
             onClick={() => {
-              setContextMenu(null)
+              closeContextMenu(true)
               startDownload(contextMenu.entry, 'save')
             }}
           >
@@ -428,9 +657,11 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           </button>
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             disabled={busy}
             onClick={() => {
-              setContextMenu(null)
+              closeContextMenu(true)
               startDownload(contextMenu.entry, 'analyze')
             }}
           >
@@ -438,10 +669,20 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
           </button>
           <button
             type="button"
+            role="menuitem"
+            tabIndex={-1}
             className="is-danger"
-            disabled={busy || entries.length === 0}
+            disabled={
+              busy
+              || entries.length === 0
+              || !vehicleReady
+              || !canControl
+              || targetSystemId === null
+              || targetComponentId === null
+            }
             onClick={() => {
-              setContextMenu(null)
+              contextTriggerRef.current?.focus()
+              closeContextMenu(false)
               setEraseDialogOpen(true)
             }}
           >
@@ -450,48 +691,24 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
         </div>
       )}
 
-      {/* Erase-all confirmation dialog */}
-      {eraseDialogOpen && (
-        <div className="mc-modal-backdrop" role="dialog" aria-modal="true">
-          <div className="mc-card mc-modal">
-            <h3 className="mc-section-title" style={{ color: 'var(--danger)' }}>
-              {t('flightLogs.df.eraseTitle')}
-            </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              {t('flightLogs.df.eraseConfirm', { count: entries.length, size: formatBytes(totalSize) })}
-              {t('flightLogs.df.eraseConfirmText')}
-            </p>
-            <label className="flex items-center gap-2" style={{ fontSize: 13 }}>
-              <input
-                type="checkbox"
-                checked={eraseAcknowledged}
-                onChange={(event) => setEraseAcknowledged(event.target.checked)}
-              />
-              {t('flightLogs.df.eraseAcknowledge')}
-            </label>
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                type="button"
-                className="mc-btn mc-btn-ghost"
-                onClick={() => {
-                  setEraseDialogOpen(false)
-                  setEraseAcknowledged(false)
-                }}
-              >
-                {t('flightLogs.cancel')}
-              </button>
-              <button
-                type="button"
-                className="mc-btn mc-btn-danger"
-                disabled={!eraseAcknowledged}
-                onClick={confirmErase}
-              >
-                <Icon name="trash" size={14} /> {t('flightLogs.df.eraseAllLogs')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={eraseDialogOpen}
+        confirmationKey={currentEraseConfirmationKey}
+        title={t('flightLogs.df.eraseTitle')}
+        consequence={t('flightLogs.df.eraseConfirm', {
+          count: entries.length,
+          size: formatBytes(totalSize),
+        })}
+        commitmentLabel={t('flightLogs.df.eraseAcknowledge')}
+        confirmLabel={t('flightLogs.df.eraseAllLogs')}
+        cancelLabel={t('flightLogs.cancel')}
+        closeLabel={t('common.close')}
+        confirmIcon={<Icon name="trash" size={14} />}
+        busy={erase?.status === 'active'}
+        busyLabel={t('flightLogs.df.erasing')}
+        onCancel={() => setEraseDialogOpen(false)}
+        onConfirm={confirmErase}
+      />
     </>
   )
 }

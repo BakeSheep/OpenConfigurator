@@ -1,0 +1,25 @@
+.mc-flight-arm-safety {
+  width: min(100%, 360px);
+}
+
+.mc-flight-arm-safety .mc-arm-control {
+  padding: 0;
+}
+
+.mc-flight-arm-safety > p {
+  margin: 8px 4px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.mc-flight-arm-safety > p[role="status"] {
+  color: var(--warning);
+}
+
+@media (max-width: 767px) {
+  .mc-flight-arm-safety {
+    width: 100%;
+  }
+}

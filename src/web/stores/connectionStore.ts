@@ -36,6 +36,9 @@ interface ConnectionState {
   clientId: string | null
   controllerClientId: string | null
   controllerExpiresAt: number | null
+  /** Server-authoritative safety-confirmation boundary. */
+  safetyEpoch: number
+  safetyAuthorityId: string | null
   canControl: boolean
   // Bluetooth auto-reconnect progress; non-null only while status === 'reconnecting'.
   reconnect: ReconnectInfo | null
@@ -54,13 +57,15 @@ interface ConnectionState {
     transportOpen: boolean
     vehicleReady: boolean
     rawSessionActive: boolean
+    safetyEpoch: number
+    safetyAuthorityId: string
     port?: string
     type?: string
     baudRate?: number
   }) => void
-  setClientId: (clientId: string) => void
-  setController: (clientId: string | null, expiresAt: number | null) => void
-  setTarget: (systemId: number | null, componentId: number | null) => void
+  setClientId: (clientId: string, safetyEpoch: number, safetyAuthorityId: string) => void
+  setController: (clientId: string | null, expiresAt: number | null, safetyEpoch: number, safetyAuthorityId: string) => void
+  setTarget: (systemId: number | null, componentId: number | null, safetyEpoch?: number, safetyAuthorityId?: string) => void
   setReconnecting: (info: ReconnectInfo) => void
   setDisconnected: () => void
   setLinkStats: (stats: LinkStats) => void
@@ -83,6 +88,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   clientId: null,
   controllerClientId: null,
   controllerExpiresAt: null,
+  safetyEpoch: 0,
+  safetyAuthorityId: null,
   canControl: true,
   reconnect: null,
   linkStats: null,
@@ -107,22 +114,33 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
       ? false
       : state.connectDialogOpen,
     connectionError: snapshot.transportOpen ? null : state.connectionError,
+    safetyEpoch: snapshot.safetyEpoch,
+    safetyAuthorityId: snapshot.safetyAuthorityId,
   })),
-  setClientId: (clientId) => set((state) => ({
+  setClientId: (clientId, safetyEpoch, safetyAuthorityId) => set((state) => ({
     clientId,
+    safetyEpoch,
+    safetyAuthorityId,
     canControl: state.controllerClientId === null || state.controllerClientId === clientId,
   })),
-  setController: (controllerClientId, controllerExpiresAt) => set((state) => ({
+  setController: (controllerClientId, controllerExpiresAt, safetyEpoch, safetyAuthorityId) => set((state) => ({
     controllerClientId,
     controllerExpiresAt,
+    safetyEpoch,
+    safetyAuthorityId,
     canControl: controllerClientId === null || controllerClientId === state.clientId,
   })),
-  setTarget: (targetSystemId, targetComponentId) => set({
-    targetSystemId,
-    targetComponentId: targetSystemId === null ? null : targetComponentId,
+  setTarget: (targetSystemId, targetComponentId, safetyEpoch, safetyAuthorityId) => set((state) => {
+    const normalizedComponentId = targetSystemId === null ? null : targetComponentId
+    return {
+      targetSystemId,
+      targetComponentId: normalizedComponentId,
+      ...(safetyEpoch === undefined ? {} : { safetyEpoch }),
+      ...(safetyAuthorityId === undefined ? {} : { safetyAuthorityId }),
+    }
   }),
   // Keep port/type so the UI can show which device is being retried.
-  setReconnecting: (info) => set({
+  setReconnecting: (info) => set((state) => ({
     status: 'reconnecting',
     transportOpen: false,
     vehicleReady: false,
@@ -130,8 +148,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     targetSystemId: null,
     targetComponentId: null,
     reconnect: info,
-  }),
-  setDisconnected: () => set({
+  })),
+  setDisconnected: () => set((state) => ({
     status: 'disconnected',
     transportOpen: false,
     vehicleReady: false,
@@ -147,7 +165,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     controllerExpiresAt: null,
     canControl: true,
     activePresetId: null,
-  }),
+  })),
   setLinkStats: (stats) => set({ linkStats: stats }),
   setPorts: (serial, bluetooth) => set({ serialPorts: serial, bluetoothPorts: bluetooth }),
   setScanning: (scanning) => set({ scanning }),

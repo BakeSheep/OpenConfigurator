@@ -117,13 +117,14 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness()
-    const started = await h.manager.start('client-a', DIRECT_TARGET)
+    const started = await h.manager.start('client-a', DIRECT_TARGET, true)
     assert.ok(started.sessionId.length > 0)
     assert.ok(started.recoveryToken.length >= 16)
     const snapshot = h.manager.snapshot()
     assert.equal(snapshot.state, 'active')
     assert.equal(snapshot.ownerClientId, 'client-a')
     assert.equal(snapshot.mode, 'direct')
+    assert.equal(snapshot.safetyConfirmed, true)
     assert.deepEqual(snapshot.capabilities, { read: true, write: true })
     assert.equal(h.manager.blocksMavlinkMutations(), true, 'direct sessions also isolate flight mutations')
     assert.deepEqual(h.pins[h.pins.length - 1], { clientId: 'client-a', sessionId: started.sessionId })
@@ -132,7 +133,7 @@ async function run(): Promise<void> {
 
     // Only one session at a time.
     await expectEscError(
-      h.manager.start('client-b', DIRECT_TARGET),
+      h.manager.start('client-b', DIRECT_TARGET, true),
       'session_exists',
       'second start',
     )
@@ -157,10 +158,12 @@ async function run(): Promise<void> {
 
     // release_control is blocked while the session lives.
     assert.equal(h.manager.blocksControllerRelease(), true)
+    assert.doesNotThrow(() => h.manager.assertSettingsWriteAllowed('client-a', started.sessionId))
 
     // Owner exit closes the transport exactly once and releases the pin.
     await h.manager.exit('client-a', started.sessionId)
     assert.equal(h.manager.snapshot().state, 'idle')
+    assert.equal(h.manager.snapshot().safetyConfirmed, false)
     assert.equal(h.transports[0].closeCalls, 1)
     assert.deepEqual(h.releases, [started.sessionId])
     assert.equal(h.manager.blocksControllerRelease(), false)
@@ -175,12 +178,28 @@ async function run(): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
+  // A session without the physical-safety acknowledgement can never write.
+  // The WebSocket/service boundary rejects such starts; this exercises the
+  // manager's independent fail-closed guard.
+  // -------------------------------------------------------------------------
+  {
+    const h = createHarness()
+    const started = await h.manager.start('client-a', DIRECT_TARGET, false)
+    assert.equal(h.manager.snapshot().safetyConfirmed, false)
+    assert.throws(
+      () => h.manager.assertSettingsWriteAllowed('client-a', started.sessionId),
+      (error: unknown) => error instanceof EscError && error.code === 'precondition_failed',
+    )
+    await h.manager.exit('client-a', started.sessionId)
+  }
+
+  // -------------------------------------------------------------------------
   // Failed open finalizes the session and closes the transport exactly once.
   // -------------------------------------------------------------------------
   {
     const h = createHarness({ failOpen: true })
     await expectEscError(
-      h.manager.start('client-a', DIRECT_TARGET),
+      h.manager.start('client-a', DIRECT_TARGET, true),
       'link_unavailable',
       'failing open',
     )
@@ -194,7 +213,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness()
-    const started = await h.manager.start('client-a', DIRECT_TARGET)
+    const started = await h.manager.start('client-a', DIRECT_TARGET, true)
     h.manager.handleClientDisconnected('client-a')
     await waitFor(() => h.manager.snapshot().state === 'idle')
     assert.equal(h.transports[0].closeCalls, 1)
@@ -210,7 +229,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness({ orphanGraceMs: 60_000 })
-    const started = await h.manager.start('client-a', DIRECT_TARGET)
+    const started = await h.manager.start('client-a', DIRECT_TARGET, true)
     let releaseJob!: () => void
     const jobGate = new Promise<void>((resolve) => {
       releaseJob = resolve
@@ -224,6 +243,7 @@ async function run(): Promise<void> {
     h.manager.handleClientDisconnected('client-a')
     const orphanSnapshot = h.manager.snapshot()
     assert.equal(orphanSnapshot.state, 'orphaned')
+    assert.equal(orphanSnapshot.safetyConfirmed, false, 'owner loss expires physical-safety acknowledgement')
     assert.ok(orphanSnapshot.recoverUntil !== null && orphanSnapshot.recoverUntil > Date.now())
     // The job keeps running: transport untouched.
     assert.equal(h.transports[0].closeCalls, 0)
@@ -245,6 +265,11 @@ async function run(): Promise<void> {
     await h.manager.reclaim('client-a2', started.sessionId, started.recoveryToken)
     assert.equal(h.manager.snapshot().state, 'active')
     assert.equal(h.manager.snapshot().ownerClientId, 'client-a2')
+    assert.equal(h.manager.snapshot().safetyConfirmed, false, 'reclaim cannot revive an expired acknowledgement')
+    assert.throws(
+      () => h.manager.assertSettingsWriteAllowed('client-a2', started.sessionId),
+      (error: unknown) => error instanceof EscError && error.code === 'precondition_failed',
+    )
     assert.deepEqual(h.pins[h.pins.length - 1], { clientId: 'client-a2', sessionId: started.sessionId })
 
     releaseJob()
@@ -262,7 +287,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness({ orphanGraceMs: 40 })
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     let releaseJob!: () => void
     const jobGate = new Promise<void>((resolve) => {
       releaseJob = resolve
@@ -291,7 +316,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness()
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     let releaseJob!: () => void
     const jobGate = new Promise<void>((resolve) => {
       releaseJob = resolve
@@ -327,7 +352,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness({ idleTimeoutMs: 60 })
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     // Activity keeps it alive across two windows.
     await wait(40)
     h.manager.noteActivity('client-a')
@@ -339,7 +364,7 @@ async function run(): Promise<void> {
   }
   {
     const h = createHarness({ idleTimeoutMs: 50 })
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     let releaseJob!: () => void
     const jobGate = new Promise<void>((resolve) => {
       releaseJob = resolve
@@ -361,7 +386,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness()
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     h.transports[0].emitAborted(new EscError('link_lost', 'serial unplugged'))
     await waitFor(() => h.manager.snapshot().state === 'idle')
     assert.equal(h.transports[0].closeCalls, 1)
@@ -369,7 +394,7 @@ async function run(): Promise<void> {
     assert.ok(last && last.reason === 'link_lost')
     // A stale abort from the old, already-detached transport must not affect
     // a new session running on a fresh transport.
-    await h.manager.start('client-b', DIRECT_TARGET)
+    await h.manager.start('client-b', DIRECT_TARGET, true)
     h.transports[0].emitAborted(new EscError('link_lost', 'stale'))
     await wait(20)
     assert.equal(h.manager.snapshot().state, 'active')
@@ -382,7 +407,7 @@ async function run(): Promise<void> {
   // -------------------------------------------------------------------------
   {
     const h = createHarness()
-    await h.manager.start('client-a', DIRECT_TARGET)
+    await h.manager.start('client-a', DIRECT_TARGET, true)
     await h.manager.destroy()
     assert.equal(h.manager.snapshot().state, 'idle')
     assert.equal(h.transports[0].closeCalls, 1)

@@ -34,8 +34,7 @@ export default function GpsTrackPlot() {
     <section className="mc-card mc-gps-track">
       <header>
         <div>
-          <span className="mc-eyebrow">LOCAL POSITION</span>
-          <h2>{t('sensor.gps.track.title')}</h2>
+          <h3>{t('sensor.gps.track.title')}</h3>
         </div>
         <div className="mc-gps-track__actions">
           <label>

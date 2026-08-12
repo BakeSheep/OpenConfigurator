@@ -2,16 +2,22 @@ interface ChannelBarsProps {
   labels: string[]
   values: Array<number | null>
   connected: boolean
+  ariaLabel: string
   secondaryLabels?: string[]
   accent?: 'accent' | 'success'
   compact?: boolean
 }
 
-export default function ChannelBars({ labels, values, connected, secondaryLabels, accent = 'accent', compact = false }: ChannelBarsProps) {
+export default function ChannelBars({ labels, values, connected, ariaLabel, secondaryLabels, accent = 'accent', compact = false }: ChannelBarsProps) {
   const activeColor = accent === 'success' ? 'var(--success)' : 'var(--accent)'
 
   return (
-    <div className={`mc-channel-bars${compact ? ' mc-channel-bars--compact' : ''}`}>
+    <div
+      className={`mc-channel-bars${compact ? ' mc-channel-bars--compact' : ''}`}
+      role="region"
+      aria-label={ariaLabel}
+      tabIndex={0}
+    >
       <div className="mc-channel-bars__track" style={{ gridTemplateColumns: `repeat(${labels.length}, minmax(34px, 1fr))` }}>
         {labels.map((label, index) => {
           const raw = values[index] ?? 0
