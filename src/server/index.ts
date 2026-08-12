@@ -1679,7 +1679,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // ready-target gate: direct-mode sessions have no MAVLink target, and
     // subsequent commands are governed by the session's own ownership state.
     if (isEscClientMessage(message)) {
-      if (message.type === 'esc_session_start' && calibrationManager.blocksMavlinkMutations()) {
+      if (message.type === 'esc_session_start' && (calibrationManager.blocksMavlinkMutations() || radioManager.blocksMavlinkMutations())) {
         sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能启动 ESC 会话', requestId, true)
         return
       }

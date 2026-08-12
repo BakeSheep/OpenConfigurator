@@ -977,6 +977,7 @@ bridge.handleClientMessage({
   requestId: 'cfg-rcl',
   feature: 'safety',
   data: { id: 'NAV_RCL_ACT', value: 2 },
+  safetyConfirmation: 'reduce_failsafe_protection',
 })
 assert.equal(connection.frames.filter((frame) => frameMessageId(frame) === 23).length, configFramesBefore + 1)
 inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 2))

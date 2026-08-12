@@ -1943,6 +1943,7 @@ export const zh = {
     motorCountWaiting: '尚未从飞控参数取得权威电机数量。请完成参数同步并确认机架类型后再启用电机测试。',
     geometryArduPilot: '布局基于 FRAME_CLASS/FRAME_TYPE 推断',
     geometryPx4: '位置与方向来自 CA_ROTOR* 参数',
+    geometryFallback: '布局根据机架电机数量完整推导',
     enableMotorTest: '启用电机测试',
     removeProps: '请先拆除所有螺旋桨',
     testThrottle: '{{label}} 测试油门',

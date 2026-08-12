@@ -1923,6 +1923,7 @@ export const en = {
     motorCountWaiting: 'Authoritative motor count not yet available from FC parameters. Complete parameter sync and confirm frame type before enabling motor test.',
     geometryArduPilot: 'Layout inferred from FRAME_CLASS/FRAME_TYPE',
     geometryPx4: 'Position and direction from CA_ROTOR* parameters',
+    geometryFallback: 'Layout inferred consistently from the motor count',
     enableMotorTest: 'Enable Motor Test',
     removeProps: 'Remove all propellers first',
     testThrottle: '{{label}} test throttle',

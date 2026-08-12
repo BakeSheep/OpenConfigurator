@@ -595,6 +595,7 @@ export function handleMessage(msg: ServerMessage) {
     }
     case 'calibration_session_started':
       calibrationReclaimAttempt = null
+      radioReclaimAttempt = null
       useCalibrationStore.getState().setRecovery({
         sessionId: msg.data.sessionId,
         recoveryToken: msg.data.recoveryToken,

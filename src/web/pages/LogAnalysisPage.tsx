@@ -1229,6 +1229,11 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         <div
           className={`mc-analysis-dropzone${dragOver ? ' is-over' : ''}`}
           onClick={() => fileInputRef.current?.click()}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return
+            event.preventDefault()
+            fileInputRef.current?.click()
+          }}
           role="button"
           tabIndex={0}
         >

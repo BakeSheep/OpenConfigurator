@@ -224,6 +224,7 @@ export default function EscConnectPanel() {
               ? t('escConnect.existingSessionTitle')
               : t('escConnect.modeArduPilot')}
           </span>
+          {active && <span className="mc-esc-session-badge">{session?.state}</span>}
         </div>
 
         <div className="mc-esc-connect__cards">

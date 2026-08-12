@@ -22,6 +22,7 @@ Express + ws + runtime validation
 |---|---|
 | `src/shared/` | 纯 TypeScript 类型、WS union、vehicle profile、常量与 ESC layout |
 | `src/web/` | 四个工作区、组件、单一 WS dispatch、Zustand stores 与日志分析 worker |
+| `src/shared/logs/` | PX4 ULog / ArduPilot DataFlash 的语言无关结构化日志合同、流式 envelope 与安全 JSON 编码 |
 | `src/server/index.ts` | HTTP/WS、鉴权、Origin、限流、控制者租约与服务编排 |
 | `src/server/connection/` | 串口/蓝牙发现、生命周期、重连与背压 |
 | `src/server/mavlink/` | codec、MAVLink bridge、FTP 与 DataFlash 传输 |

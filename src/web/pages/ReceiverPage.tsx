@@ -132,7 +132,6 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
     requestId: setupRequestId('radio-cancel'),
     data: { sessionId: snapshot.sessionId },
   })
-
   return (
     <div className={embedded ? 'mc-setup-page mc-fade-in' : 'mc-workspace mc-setup-page mc-fade-in'}>
       {!embedded && <PageHeader title={t('common.receiver')} description={t('receiver.description')} />}
