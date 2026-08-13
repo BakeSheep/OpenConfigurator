@@ -29,7 +29,7 @@ import type {
   ServerMessage,
 } from '../shared/types'
 import type { VehicleIdentity } from '../shared/vehicleProfiles'
-import { isSafetyReduction } from '../shared/vehicleSetupProfiles'
+import { isAirframeOnlyParameter, isSafetyReduction } from '../shared/vehicleSetupProfiles'
 import { ConnectionManager } from './connection/ConnectionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
 import {
@@ -38,6 +38,7 @@ import {
   type CalibrationStartRequest,
 } from './mavlink/CalibrationSessionManager'
 import { RadioCalibrationSessionManager } from './mavlink/RadioCalibrationSessionManager'
+import type { RadioCalibrationWriteHandle } from './mavlink/RadioCalibrationSessionManager'
 import { EscService } from './esc/EscService'
 import {
   InputValidationError,
@@ -97,9 +98,11 @@ export interface ConnectionManagerBoundary extends EventEmitter {
   readonly transportOpen?: boolean
   readonly vehicleReady?: boolean
   readonly rawSessionActive?: boolean
+  readonly generation?: number
   expectVehicleReboot?(): boolean
   readonly lastError?: ConnectionErrorDetail | null
   scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }>
+  prepareConnectionConfig?(config: ConnectionConfig): ConnectionConfig
   connect(config: ConnectionConfig): Promise<void>
   disconnect(): Promise<void>
 }
@@ -112,7 +115,10 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   getAutopilotVersionMessage?(): ServerMessage | null
   getMessageRatesMessage?(): Extract<ServerMessage, { type: 'message_rates' }>
   readonly vehicleIdentity?: VehicleIdentity | null
+  readonly armedState?: boolean | null
   getParameterValue?(id: string): number | null
+  getParameterType?(id: string): number | null
+  getLinkMutationBlocker?(): string | null
   getVehicleMutationSafetyContext?(): {
     fingerprint: string
     ready: boolean
@@ -127,7 +133,7 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
     mapped: Partial<Record<'roll' | 'pitch' | 'throttle' | 'yaw', number>>,
     expectedVehicleFingerprint: string,
     completion: (accepted: boolean, reason?: string, rollbackFailures?: string[]) => void,
-  ): void
+  ): RadioCalibrationWriteHandle
   /**
    * Create (but not start) a calibration session after bridge-side gates
    * (identity, capability, armed). Returns null after emitting its own
@@ -182,6 +188,7 @@ type ClientContext = {
 type ControllerLease = {
   clientId: string
   expiresAt: number
+  revision: number
 }
 
 type ParamSyncState = {
@@ -323,7 +330,7 @@ function safetyExpectation(message: BoundaryClientMessage): SafetyExpectation | 
     }
   }
   if (
-    message.type === 'vehicle_config_set'
+    (message.type === 'vehicle_config_set' || message.type === 'param_set')
     && message.safetyConfirmation === 'reduce_failsafe_protection'
   ) return {
     epoch: message.expectedSafetyEpoch ?? -1,
@@ -477,6 +484,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   const clientContexts = new Map<WebSocket, ClientContext>()
   const shutdownCleanups = new Set<() => void>()
   let controllerLease: ControllerLease | null = null
+  let nextControllerLeaseRevision = 0
   // Monotonic server authority boundary. Human safety acknowledgements are
   // valid only for the exact epoch observed when they were completed.
   let safetyEpoch = 1
@@ -551,6 +559,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         safetyEpoch,
         safetyAuthorityId,
         rawSessionActive: manager.rawSessionActive === true,
+        generation: manager.generation ?? 0,
         ...(manager.config?.port ? { port: manager.config.port } : {}),
         ...(manager.config?.type ? { type: manager.config.type } : {}),
         ...(manager.config?.baudRate ? { baudRate: manager.config.baudRate } : {}),
@@ -682,6 +691,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     if (pin) {
       if (controllerLease?.clientId === pin.clientId) {
         controllerLease.expiresAt = now + controllerLeaseMs
+        controllerLease.revision = ++nextControllerLeaseRevision
       }
       return
     }
@@ -699,10 +709,11 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     escControllerPin = { clientId: ownerClientId, sessionId }
     const now = Date.now()
     if (!controllerLease || controllerLease.clientId !== ownerClientId) {
-      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs, revision: ++nextControllerLeaseRevision }
       broadcastSafetyBoundary('claimed')
     } else {
       controllerLease.expiresAt = now + controllerLeaseMs
+      controllerLease.revision = ++nextControllerLeaseRevision
     }
   }
 
@@ -718,10 +729,11 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     calControllerPin = { clientId: ownerClientId, sessionId }
     const now = Date.now()
     if (!controllerLease || controllerLease.clientId !== ownerClientId) {
-      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs, revision: ++nextControllerLeaseRevision }
       broadcastSafetyBoundary('claimed')
     } else {
       controllerLease.expiresAt = now + controllerLeaseMs
+      controllerLease.revision = ++nextControllerLeaseRevision
     }
   }
 
@@ -737,10 +749,11 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     radioControllerPin = { clientId: ownerClientId, sessionId }
     const now = Date.now()
     if (!controllerLease || controllerLease.clientId !== ownerClientId) {
-      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs }
+      controllerLease = { clientId: ownerClientId, expiresAt: now + controllerLeaseMs, revision: ++nextControllerLeaseRevision }
       broadcastSafetyBoundary('claimed')
     } else {
       controllerLease.expiresAt = now + controllerLeaseMs
+      controllerLease.revision = ++nextControllerLeaseRevision
     }
   }
 
@@ -787,7 +800,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return false
     }
     if (!controllerLease) {
-      controllerLease = { clientId: context.id, expiresAt: now + controllerLeaseMs }
+      controllerLease = { clientId: context.id, expiresAt: now + controllerLeaseMs, revision: ++nextControllerLeaseRevision }
       broadcastSafetyBoundary('claimed')
       return true
     }
@@ -803,6 +816,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       return false
     }
     controllerLease.expiresAt = now + controllerLeaseMs
+    controllerLease.revision = ++nextControllerLeaseRevision
     return true
   }
 
@@ -888,22 +902,37 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     return true
   }
 
-  function requireRestConnectionControl(request: Request): void {
+  function requireRestConnectionControl(request: Request): ClientContext {
     expireController()
-    if (!controllerLease) return
-
-    const owner = [...clientContexts.values()]
-      .find((context) => context.id === controllerLease?.clientId)
     const candidate = typeof request.headers['x-skylab-control-token'] === 'string'
       ? request.headers['x-skylab-control-token']
       : undefined
-    if (!owner || !tokenMatches(candidate, owner.restControlToken)) {
+    if (!candidate) {
+      throw new HttpBoundaryError(
+        401,
+        'unauthorized',
+        '连接操作需要客户端控制凭据',
+      )
+    }
+
+    const caller = [...clientContexts.values()]
+      .find((context) => tokenMatches(candidate, context.restControlToken))
+    if (!caller) {
+      throw new HttpBoundaryError(
+        401,
+        'unauthorized',
+        '无效的客户端控制凭据',
+      )
+    }
+
+    if (controllerLease && controllerLease.clientId !== caller.id) {
       throw new HttpBoundaryError(
         409,
         'controller_conflict',
-        '当前连接操作需要控制者授权',
+        '当前连接已被其他客户端控制',
       )
     }
+    return caller
   }
 
   function consumeRateLimit(context: ClientContext, cost: number): boolean {
@@ -1068,8 +1097,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
         (message as Extract<ServerMessage, { type: 'rc_channels' }>).data,
       )
     }
-    if (message.type === 'status' && message.data.armed) {
+    if (message.type === 'status' && (message.data as { armed?: boolean })?.armed) {
       radioManager?.handleVehicleSafetyBoundary('vehicle_armed')
+      escService?.handleVehicleSafetyBoundary('vehicle_armed')
     }
     if (
       message.type === 'airframe_apply_status'
@@ -1095,6 +1125,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       if (fingerprint !== lastTargetSafetyFingerprint) {
         lastTargetSafetyFingerprint = fingerprint
         radioManager?.handleVehicleSafetyBoundary('target_or_identity_changed')
+        escService?.handleVehicleSafetyBoundary('target_or_identity_changed')
         broadcastSafetyBoundary()
       }
       broadcast({
@@ -1206,6 +1237,7 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // vehicle session, so preserve its isolated state.
     if (!ready && connManager.rawSessionActive !== true) {
       radioManager.handleVehicleSafetyBoundary('vehicle_not_ready')
+      escService.handleVehicleSafetyBoundary('vehicle_not_ready')
     }
     if (!ready && connManager.rawSessionActive !== true && parameterSync) {
       cancelBridgeParameterDownload('vehicle_not_ready')
@@ -1234,16 +1266,18 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     emitToClient: (clientId, message) => sendToClientId(clientId, message),
     getVehicleIdentity: () => mavlinkBridge.vehicleIdentity ?? null,
     getParameterValue: (id) => mavlinkBridge.getParameterValue?.(id) ?? null,
+    getArmedState: () => mavlinkBridge.armedState ?? null,
     pinController: pinControllerToEscSession,
     releaseController: releaseEscSessionController,
     isLinkBusy: (): string | null => (
-      parameterSync
-        ? 'parameter_sync'
-        : calibrationManager?.blocksMavlinkMutations()
-          ? 'sensor_calibration'
-          : radioManager?.blocksMavlinkMutations()
-            ? 'radio_calibration'
-            : null
+      mavlinkBridge.getLinkMutationBlocker?.()
+        ?? (parameterSync
+          ? 'parameter_sync'
+          : calibrationManager?.blocksMavlinkMutations()
+            ? 'sensor_calibration'
+            : radioManager?.blocksMavlinkMutations()
+              ? 'radio_calibration'
+              : null)
     ),
     logger,
   })
@@ -1297,9 +1331,9 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       const apply = mavlinkBridge.applyRadioCalibration
       if (!apply) {
         completion(false, 'unsupported_operation')
-        return
+        return { cancel() {} }
       }
-      apply.call(
+      return apply.call(
         mavlinkBridge,
         requestId,
         channels,
@@ -1400,20 +1434,32 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
 
   app.use(express.json({ limit: JSON_BODY_LIMIT, strict: true }))
 
-  app.get('/api/connections/scan', limitConnectionInspection, async (_request, response, next) => {
+  app.get('/api/connections/scan', limitConnectionInspection, async (request, response, next) => {
     try {
-      const ports = await connManager.scanPorts()
+      const debug = request.query.debug === 'true' || request.query.debug === '1'
+      let isAuthorized = false
+      if (debug) {
+        const candidate = typeof request.headers['x-skylab-control-token'] === 'string'
+          ? request.headers['x-skylab-control-token']
+          : undefined
+        if (candidate) {
+          const caller = [...clientContexts.values()].find((c) => tokenMatches(candidate, c.restControlToken))
+          if (caller) isAuthorized = true
+        }
+      }
+      const ports = await connManager.scanPorts({ debug: debug && isAuthorized })
       response.json({ success: true, data: ports })
     } catch (error) {
       next(error)
     }
   })
 
-  app.get('/api/connections/debug-ports', limitConnectionInspection, async (_request, response, next) => {
+  app.get('/api/connections/debug-ports', limitConnectionInspection, async (request, response, next) => {
     try {
       if (!config.allowDevOrigin) {
         throw new HttpBoundaryError(404, 'debug_disabled', '调试端点未启用')
       }
+      requireRestConnectionControl(request)
       const { SerialPort } = await import('serialport')
       const ports = await SerialPort.list()
       response.json({
@@ -1434,15 +1480,37 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   app.post('/api/connections/connect', async (request, response, next) => {
     try {
       if (shuttingDown) throw new HttpBoundaryError(503, 'shutting_down', '服务正在关闭')
-      requireRestConnectionControl(request)
-      const connectionConfig = parseConnectionConfig(request.body)
-      logger.log('[API] connect request:', {
-        type: connectionConfig.type,
-        port: connectionConfig.port,
-        baudRate: connectionConfig.baudRate,
-      })
-      await connManager.connect(connectionConfig)
-      response.json({ success: true })
+      const caller = requireRestConnectionControl(request)
+      const parsedConnectionConfig = parseConnectionConfig(request.body)
+      const prepare = connManager.prepareConnectionConfig
+      if (!prepare) throw new HttpBoundaryError(503, 'port_ticket_unavailable', '连接管理器不支持端口票据验证')
+      let connectionConfig: ConnectionConfig
+      try {
+        connectionConfig = prepare.call(connManager, parsedConnectionConfig)
+      } catch (error) {
+        throw new HttpBoundaryError(409, 'connection_admission_rejected', errorMessage(error))
+      }
+      const hadLease = controllerLease !== null && controllerLease.clientId === caller.id
+      if (!hadLease) {
+        controllerLease = { clientId: caller.id, expiresAt: Date.now() + controllerLeaseMs, revision: ++nextControllerLeaseRevision }
+        broadcastSafetyBoundary('claimed')
+      }
+      const claimRevision = controllerLease?.revision
+      try {
+        logger.log('[API] connect request:', {
+          type: connectionConfig.type,
+          port: connectionConfig.port,
+          baudRate: connectionConfig.baudRate,
+        })
+        await connManager.connect(connectionConfig)
+        response.json({ success: true })
+      } catch (error) {
+        if (!hadLease && controllerLease?.clientId === caller.id && controllerLease.revision === claimRevision) {
+          controllerLease = null
+          broadcastSafetyBoundary('released')
+        }
+        throw error
+      }
     } catch (error) {
       next(error)
     }
@@ -1451,8 +1519,12 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   app.post('/api/connections/disconnect', async (request, response, next) => {
     try {
       if (shuttingDown) throw new HttpBoundaryError(503, 'shutting_down', '服务正在关闭')
-      requireRestConnectionControl(request)
+      const caller = requireRestConnectionControl(request)
       await connManager.disconnect()
+      if (controllerLease?.clientId === caller.id) {
+        controllerLease = null
+        broadcastSafetyBoundary('released')
+      }
       response.json({ success: true })
     } catch (error) {
       next(error)
@@ -1623,6 +1695,26 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     }
 
     const requestId = messageRequestId(message)
+    if (message.type === 'param_set') {
+      const currentValue = mavlinkBridge.getParameterValue?.(message.data.id) ?? null
+      const currentType = mavlinkBridge.getParameterType?.(message.data.id) ?? null
+      if (isAirframeOnlyParameter(message.data.id)) {
+        sendClientError(ws, 'airframe_parameter_blocked', '机架参数只能通过专用机架应用流程配置', requestId)
+        return
+      }
+      if (currentValue === null || currentType === null) {
+        sendClientError(ws, 'parameter_missing', '参数尚未从当前目标读取，拒绝盲写', requestId)
+        return
+      }
+      if (
+        isSafetyReduction(message.data.id, currentValue, message.data.value)
+        && message.safetyConfirmation !== 'reduce_failsafe_protection'
+      ) {
+        sendClientError(ws, 'safety_confirmation_required', '降低失效保护必须显式确认 reduce_failsafe_protection', requestId)
+        return
+      }
+    }
+
     // Determine safety reductions from the server's validated parameter cache
     // before any automatic controller claim/renewal. The bridge repeats this
     // check at commit time; this early gate prevents an omitted confirmation
@@ -1679,6 +1771,13 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     // ready-target gate: direct-mode sessions have no MAVLink target, and
     // subsequent commands are governed by the session's own ownership state.
     if (isEscClientMessage(message)) {
+      if (message.type === 'esc_session_start') {
+        const blocker = mavlinkBridge.getLinkMutationBlocker?.()
+        if (blocker) {
+          sendClientError(ws, 'link_busy', `链路正忙（${blocker}），暂不能启动 ESC 会话`, requestId, true)
+          return
+        }
+      }
       if (message.type === 'esc_session_start' && (calibrationManager.blocksMavlinkMutations() || radioManager.blocksMavlinkMutations())) {
         sendClientError(ws, 'calibration_session_active', '校准会话进行中，暂不能启动 ESC 会话', requestId, true)
         return
@@ -1697,13 +1796,34 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
           return
         }
       }
+      if (message.type === 'esc_session_start') {
+        const admissionError = escService.validateStart(message)
+        if (admissionError) {
+          sendClientError(ws, admissionError.code, admissionError.message, requestId, admissionError.retryable)
+          return
+        }
+      }
       // Reclaim transfers ownership to a new client, so it cannot require the
       // lease (which is pinned to the disconnected owner). Every other ESC
       // command requires the caller to hold the controller lease.
+      const alreadyOwnedLease = controllerLease?.clientId === context.id
       if (message.type !== 'esc_session_reclaim' && !ensureControllerForMessage(ws, context, message, requestId)) {
         return
       }
-      void escService.handleClientMessage(context.id, message)
+      const operation = escService.handleClientMessage(context.id, message)
+      const operationLeaseRevision = controllerLease?.revision
+      void operation.then((accepted) => {
+        if (
+          accepted
+          || message.type !== 'esc_session_start'
+          || alreadyOwnedLease
+          || controllerLease?.clientId !== context.id
+          || controllerLease.revision !== operationLeaseRevision
+          || escService.blocksControllerRelease()
+        ) return
+        controllerLease = null
+        broadcastSafetyBoundary('released')
+      })
       return
     }
 

@@ -938,6 +938,7 @@ assert.equal(
 
 // PARAM_SET validates inputs, waits through stale mismatched broadcasts for a
 // matching echo, and carries requestId through the final result.
+inject(bridge, 22, paramValuePayload('TEST_PARAM', 11.5))
 bridge.handleClientMessage({
   type: 'param_set',
   requestId: 'param-ok',
@@ -1043,6 +1044,26 @@ bridge.handleClientMessage({
   data: { systemId: 42, componentId: 1 },
 })
 inject(bridge, 0, heartbeatPayload(), 42, 1)
+for (const id of ['RC_MAP_ROLL', 'RC_MAP_PITCH', 'RC_MAP_THROTTLE', 'RC_MAP_YAW']) {
+  inject(bridge, 22, paramValuePayload(id, 0))
+}
+
+let cancelledRadioResult: { accepted: boolean; reason?: string } | null = null
+const cancelledRadioHandle = bridge.applyRadioCalibration(
+  'radio-cancel-write',
+  [
+    { channel: 1, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'roll' },
+    { channel: 2, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'pitch' },
+    { channel: 3, min: 1000, max: 2000, trim: 1000, reversed: false, function: 'throttle' },
+    { channel: 4, min: 1000, max: 2000, trim: 1500, reversed: false, function: 'yaw' },
+  ],
+  { roll: 1, pitch: 2, throttle: 3, yaw: 4 },
+  bridge.getVehicleMutationSafetyContext().fingerprint,
+  (accepted, reason) => { cancelledRadioResult = { accepted, reason } },
+)
+cancelledRadioHandle.cancel('write_timeout')
+assert.deepEqual(cancelledRadioResult, { accepted: false, reason: 'write_timeout' })
+assert.equal((bridge as unknown as PrivateBridge).pendingParamSets.size, 0)
 
 // PX4 airframe application is a verified two-parameter transaction. The
 // reboot command is not queued until both echoes match.
@@ -1140,6 +1161,7 @@ assert.ok(messages.some((message) =>
 ))
 ;(bridge as unknown as PrivateBridge).paramEncoding = 'bytewise'
 
+inject(bridge, 22, paramValuePayload('TIMEOUT_PARAM', 1))
 bridge.handleClientMessage({
   type: 'param_set',
   requestId: 'param-timeout',
@@ -1158,6 +1180,70 @@ assert.equal(timedOutParam.data.accepted, false)
 assert.equal(timedOutParam.data.attempt, 3)
 assert.equal(timedOutParam.data.acceptedValue, 3)
 assert.equal(timedOutParam.data.reason, 'value_mismatch')
+
+// Generic writes fail closed until both value and type came from this target.
+const framesBeforeBlindParam = connection.frames.length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-cache-missing',
+  data: { id: 'UNCACHED_PARAM', value: 1, paramType: 9 },
+})
+assert.equal(connection.frames.length, framesBeforeBlindParam)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'param-cache-missing'
+  && message.data.code === 'parameter_missing'
+))
+
+// H2: Generic param_set rejects airframe_only parameters
+const framesBeforeAirframeParam = connection.frames.length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-airframe-blocked',
+  data: { id: 'SYS_AUTOSTART', value: 4001, paramType: 6 },
+})
+assert.equal(connection.frames.length, framesBeforeAirframeParam)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'param-airframe-blocked'
+  && message.data.code === 'airframe_parameter_blocked'
+))
+
+// H2: Generic param_set rejects safety reduction without explicit confirmation
+inject(bridge, 22, paramValuePayload('ARMING_CHECK', 1))
+const framesBeforeSafetyBlocked = connection.frames.length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-safety-unconfirmed',
+  data: { id: 'ARMING_CHECK', value: 0, paramType: 6 },
+})
+assert.equal(connection.frames.length, framesBeforeSafetyBlocked)
+assert.ok(messages.some((message) =>
+  message.type === 'operation_error'
+  && message.data.requestId === 'param-safety-unconfirmed'
+  && message.data.code === 'safety_confirmation_required'
+))
+
+// H2: Generic param_set accepts safety reduction when confirmed
+const framesBeforeSafetyConfirmed = connection.frames.length
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-safety-confirmed',
+  safetyConfirmation: 'reduce_failsafe_protection',
+  ...TEST_SAFETY_EXPECTATION,
+  data: { id: 'ARMING_CHECK', value: 0, paramType: 6 },
+})
+assert.equal(connection.frames.length, framesBeforeSafetyConfirmed + 1)
+
+// H2: Generic param_set enforces cached parameter type
+inject(bridge, 22, paramValuePayload('KNOWN_INT_PARAM', 10, 6)) // type 6 = INT32
+bridge.handleClientMessage({
+  type: 'param_set',
+  requestId: 'param-type-enforced',
+  data: { id: 'KNOWN_INT_PARAM', value: 20, paramType: 9 }, // client supplies 9 (REAL32)
+})
+const setFrame = last(connection.frames.filter((frame) => frameMessageId(frame) === 23))!
+assert.equal(framePayload(setFrame)[22], 6) // wire payload uses cached type 6
 
 // MANUAL_CONTROL coalesces replaceable updates at the bridge boundary.
 const manualBefore = connection.frames.filter((frame) => frameMessageId(frame) === 69).length

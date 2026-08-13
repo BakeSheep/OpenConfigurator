@@ -619,4 +619,109 @@ await (async () => {
   await fsp.rm(dir, { recursive: true, force: true })
 })()
 
+// ---------------------------------------------------------------------------
+// M1: Recursive delete rejects invalid child names (path traversal, control characters, escaping root)
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp } = await makeFtp()
+  transport.responder = (request) => {
+    if (request.opcode === FTP_OPCODES.ListDirectory) {
+      // Malicious FC returns a child named '../escaped.ulg'
+      transport.reply(request, {
+        opcode: FTP_OPCODES.Ack,
+        data: Buffer.from('F../escaped.ulg\t100\0', 'utf8'),
+      })
+    }
+  }
+  ftp.startDelete([{ path: '/fs/microsd/log/2026-01-01', kind: 'dir' }], 'req-del-malicious')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  const err = transport.messagesOf('fs_op_error')[0]
+  assert.equal(err.data.operation, 'delete')
+  assert.equal(err.data.code, 'invalid_path')
+  assert.equal(err.data.requestId, 'req-del-malicious')
+  assert.ok(!ftp.busy)
+  ftp.destroy()
+})()
+
+// ---------------------------------------------------------------------------
+// M3: Burst download pass with non-progress chunks (e.g. duplicate chunks)
+// does not reset quiet timer and ends pass when non-progress limit is reached.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  const fileSize = 10_000
+  const session = 5
+  let burstAttempts = 0
+
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ResetSessions:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      case FTP_OPCODES.OpenFileRO: {
+        const sizeBuf = Buffer.alloc(4)
+        sizeBuf.writeUInt32LE(fileSize, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, session, data: sizeBuf })
+        break
+      }
+      case FTP_OPCODES.BurstReadFile: {
+        burstAttempts++
+        // Stream 60 duplicate 0-byte or identical chunks without progress
+        for (let i = 0; i < 60; i++) {
+          transport.reply(request, {
+            seq: (request.seq + 1 + i) & 0xffff,
+            opcode: FTP_OPCODES.Ack,
+            session,
+            offset: 0,
+            data: Buffer.alloc(200, 0x11),
+            reqOpcode: FTP_OPCODES.BurstReadFile,
+            burstComplete: false,
+          })
+        }
+        break
+      }
+      case FTP_OPCODES.ReadFile: {
+        // Fallback after burst fails
+        transport.reply(request, {
+          opcode: FTP_OPCODES.Ack,
+          session,
+          offset: request.offset,
+          data: Buffer.alloc(0),
+        })
+        break
+      }
+      case FTP_OPCODES.TerminateSession:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        break
+    }
+  }
+
+  ftp.startDownload('/fs/microsd/log/flooding.ulg', 'flood-req')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1, 15_000)
+  const err = transport.messagesOf('fs_op_error')[0]
+  assert.equal(err.data.code, 'download_stalled')
+  assert.ok(!ftp.busy)
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// L2: Internal errors sanitize host filesystem paths in emitted messages.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  // Trigger an error containing host absolute paths
+  ;(ftp as unknown as { reportFailure: (op: string, err: unknown, req?: string) => void })
+    .reportFailure('download', new Error(`Failed to write file at ${path.join(dir, 'secret.ulg')}: Access denied`), 'l2-req')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  const err = transport.messagesOf('fs_op_error')[0]
+  assert.equal(err.data.code, 'ftp_internal')
+  assert.ok(!err.data.message.includes(dir), 'host directory path must be sanitized')
+  assert.ok(err.data.message.includes('<download_dir>') || err.data.message.includes('<path>'))
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
 console.log('MavlinkFtp protocol tests passed')

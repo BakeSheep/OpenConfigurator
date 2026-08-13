@@ -15,6 +15,7 @@ import type {
 // after the link has been quiet for more than 4000 ms. Leave scheduling margin
 // so the first MSP probe cannot be consumed by the MAVLink parser.
 const ARDUPILOT_PROTOCOL_QUIET_MS = 4500
+export const MAX_RX_BUFFER_BYTES = 4096
 
 /** Minimal ConnectionManager surface this transport depends on. */
 export interface RawSessionProvider {
@@ -68,7 +69,9 @@ export class ArduPilotRawTransport implements EscByteTransport {
   private paused = false
   private readonly abortedListeners = new Set<(error: EscError) => void>()
   private inFlight = false
-  private rxChunks: Uint8Array[] = []
+  private readonly rxBuffer = new Uint8Array(MAX_RX_BUFFER_BYTES)
+  private rxOffset = 0
+  private failCurrent: ((error: EscError) => void) | null = null
 
   constructor(options: ArduPilotRawTransportOptions) {
     this.connManager = options.connManager
@@ -114,7 +117,12 @@ export class ArduPilotRawTransport implements EscByteTransport {
       this.handle = handle
       this.offData = handle.onData((data) => {
         if (!this.inFlight) return
-        this.rxChunks.push(Uint8Array.from(data))
+        if (this.rxOffset + data.length > MAX_RX_BUFFER_BYTES) {
+          this.failCurrent?.(new EscError('rx_overflow', '接收缓冲区溢出'))
+          return
+        }
+        this.rxBuffer.set(data, this.rxOffset)
+        this.rxOffset += data.length
         this.feed()
       })
       this.offAborted = handle.onAborted((reason) => {
@@ -150,7 +158,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
     if (signal.aborted) throw new EscError('cancelled', 'ESC 请求已取消')
 
     this.inFlight = true
-    this.rxChunks = []
+    this.rxOffset = 0
     const handle = this.handle
     try {
       return await new Promise<Uint8Array>((resolve, reject) => {
@@ -159,6 +167,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
           clearTimeout(timer)
           signal.removeEventListener('abort', onAbort)
           this.pump = null
+          this.failCurrent = null
         }
         const finish = (value: Uint8Array) => {
           if (settled) return
@@ -172,6 +181,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
           cleanup()
           reject(error)
         }
+        this.failCurrent = fail
         const onAbort = () => fail(new EscError('cancelled', 'ESC 请求已取消'))
         const timer = setTimeout(() => {
           fail(new EscError('timeout', `ESC 请求超时（${options.label ?? 'transact'}）`))
@@ -180,7 +190,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
         // Re-evaluate framing whenever new bytes arrive (and once for any
         // bytes buffered before the pump was installed).
         this.pump = () => {
-          const buffered = concatChunks(this.rxChunks)
+          const buffered = this.rxBuffer.subarray(0, this.rxOffset)
           let bodyStart = 0
           if (this.targetMode === 'direct') {
             if (buffered.length < request.length) return
@@ -202,7 +212,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
           }
           if (length === null) return
           if (body.length < length) return
-          finish(body.subarray(0, length))
+          finish(body.slice(0, length))
         }
         if (!handle.write(Buffer.from(request))) {
           fail(new EscError('link_lost', 'ESC 写入失败'))
@@ -213,11 +223,12 @@ export class ArduPilotRawTransport implements EscByteTransport {
     } finally {
       this.inFlight = false
       this.pump = null
-      this.rxChunks = []
+      this.failCurrent = null
+      this.rxOffset = 0
     }
   }
 
-  /** Invoked by the onData listener via rxChunks; re-frames on each chunk. */
+  /** Invoked by the onData listener via rxBuffer; re-frames on each chunk. */
   private pump: (() => void) | null = null
 
   private feed(): void {
@@ -258,19 +269,6 @@ export class ArduPilotRawTransport implements EscByteTransport {
       }
     }
   }
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  if (chunks.length === 1) return chunks[0]
-  let total = 0
-  for (const chunk of chunks) total += chunk.length
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.length
-  }
-  return out
 }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {

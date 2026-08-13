@@ -487,6 +487,8 @@ export type ServerMessage =
         safetyAuthorityId: string
         /** True while the serial link is exclusively borrowed by an ESC raw session. */
         rawSessionActive?: boolean
+        /** Monotonic identity of the current backend-owned connection. */
+        generation?: number
         port?: string
         type?: string
         baudRate?: number
@@ -726,7 +728,14 @@ export type ClientMessage =
       expectedSafetyEpoch?: number
       expectedSafetyAuthorityId?: string
     }
-  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | {
+      type: 'param_set'
+      requestId?: string
+      data: { id: string; value: number; paramType: number }
+      safetyConfirmation?: 'reduce_failsafe_protection'
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
+    }
   | {
       type: 'vehicle_config_set'
       requestId: string
@@ -887,6 +896,7 @@ export type ClientMessage =
 
 export interface PortInfo {
   path: string
+  portId?: string
   manufacturer?: string
   friendlyName?: string
   bluetoothAddress?: string
@@ -900,6 +910,8 @@ export interface ConnectionConfig {
   type: 'serial' | 'bluetooth'
   port: string
   baudRate: number
+  portId?: string
+  expectedGeneration?: number
   // Optional identifiers from the Web Serial chooser - used to match the
   // browser-selected device back to a Windows SPP COM port on the backend.
   vendorId?: string

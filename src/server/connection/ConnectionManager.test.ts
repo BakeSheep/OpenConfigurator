@@ -112,6 +112,52 @@ const serialConfig = (port: string) => ({
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+test('REST connection preparation requires a fresh scan ticket and current replacement generation', async () => {
+  let now = 1_000
+  const links = [new FakeSerialLink(), new FakeSerialLink()]
+  const manager = new ConnectionManager({
+    serialFactory: () => links.shift()!,
+    listSerialPorts: async () => [{ path: 'COM_ALLOWED' }],
+    listBluetoothPorts: async () => [],
+    wallClock: () => now,
+  })
+
+  assert.throws(
+    () => manager.prepareConnectionConfig(serialConfig('COM_FORGED')),
+    /票据缺失/,
+  )
+  const scan = await manager.scanPorts()
+  const portId = scan.serial[0].portId
+  assert.ok(portId)
+  assert.throws(
+    () => manager.prepareConnectionConfig({ ...serialConfig('COM_FORGED'), portId: 'port_forged' }),
+    /无效或已过期/,
+  )
+  const prepared = manager.prepareConnectionConfig({ ...serialConfig('COM_FORGED'), portId })
+  assert.equal(prepared.port, 'COM_ALLOWED')
+  await manager.connect(prepared)
+
+  assert.throws(
+    () => manager.prepareConnectionConfig({ ...serialConfig('COM_ALLOWED'), portId }),
+    /需要确认当前连接代次/,
+  )
+  assert.throws(
+    () => manager.prepareConnectionConfig({ ...serialConfig('COM_ALLOWED'), portId, expectedGeneration: 99 }),
+    /连接代次不匹配/,
+  )
+  assert.equal(
+    manager.prepareConnectionConfig({ ...serialConfig('COM_ALLOWED'), portId, expectedGeneration: manager.generation }).port,
+    'COM_ALLOWED',
+  )
+
+  now += 60_001
+  assert.throws(
+    () => manager.prepareConnectionConfig({ ...serialConfig('COM_ALLOWED'), portId, expectedGeneration: manager.generation }),
+    /无效或已过期/,
+  )
+  await manager.disconnect()
+})
+
 test('replacement connect waits for prior teardown and stale link callbacks are ignored', async () => {
   const first = new FakeSerialLink()
   first.pendingDisconnect = true

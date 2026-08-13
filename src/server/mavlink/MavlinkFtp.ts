@@ -18,6 +18,7 @@ import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
 import type { FsEntry, ServerMessage } from '../../shared/types'
 import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
+import { cleanupStaleTempFiles, sanitizeErrorMessage } from './transferSanitization'
 
 const FTP_HEADER_SIZE = 12
 const FTP_MAX_DATA = 239
@@ -43,6 +44,8 @@ const BLUETOOTH_READ_WINDOW = 1
 // A download pass (burst or gap fill) that recovers zero new bytes counts as
 // no progress; give up after this many consecutive futile passes.
 const MAX_NO_PROGRESS_PASSES = 5
+const MAX_NON_PROGRESS_CHUNKS = 50
+const MAX_PASS_DURATION_MS = 30_000
 // Small residual gaps are cheaper to fetch with targeted ReadFile requests
 // than by re-bursting the remainder of the file.
 const GAP_FILL_MAX_BYTES = 64 * 1024
@@ -92,6 +95,7 @@ async function crc32File(filePath: string): Promise<number> {
   }
   return crc >>> 0
 }
+
 const NAK_ERROR_NAMES: Record<number, string> = Object.fromEntries(
   Object.entries(FTP_NAK_ERRORS).map(([name, value]) => [value, name]),
 )
@@ -185,6 +189,25 @@ function remainingBytes(intervals: Array<[number, number]>): number {
 
 function joinDevicePath(dir: string, name: string): string {
   return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`
+}
+
+export function isValidFtpEntryName(name: string): boolean {
+  return (
+    name.length > 0
+    && name !== '.'
+    && name !== '..'
+    && !name.includes('/')
+    && !name.includes('\\')
+    && !/[\x00-\x1f\x7f]/.test(name)
+  )
+}
+
+export function isStrictPosixDescendant(childPath: string, parentPath: string): boolean {
+  const normChild = path.posix.normalize(childPath)
+  const normParent = path.posix.normalize(parentPath)
+  if (normChild === normParent) return false
+  const parentWithSlash = normParent.endsWith('/') ? normParent : `${normParent}/`
+  return normChild.startsWith(parentWithSlash)
 }
 
 function sanitizeFileName(devicePath: string): string {
@@ -341,7 +364,7 @@ export class MavlinkFtp {
         ...(requestId ? { requestId } : {}),
         operation,
         code,
-        message,
+        message: sanitizeErrorMessage(message, this.downloadDir),
         retryable,
       },
     })
@@ -352,7 +375,8 @@ export class MavlinkFtp {
       this.emitError(operation, error.code, error.message, requestId, error.retryable)
       return
     }
-    this.emitError(operation, 'ftp_internal', error instanceof Error ? error.message : String(error), requestId, false)
+    const rawMessage = error instanceof Error ? error.message : String(error)
+    this.emitError(operation, 'ftp_internal', rawMessage, requestId, false)
   }
 
   private requestTimeoutMs(): number {
@@ -503,20 +527,23 @@ export class MavlinkFtp {
       const kindChar = record[0]
       const rest = record.slice(1)
       if (kindChar === 'D') {
-        if (rest && rest !== '.' && rest !== '..') {
-          parsed.push({ name: rest, kind: 'dir', sizeBytes: null })
+        if (rest === '.' || rest === '..') continue
+        if (!isValidFtpEntryName(rest)) {
+          throw new FtpError('invalid_path', `飞控返回的目录名非法：${rest}`)
         }
+        parsed.push({ name: rest, kind: 'dir', sizeBytes: null })
       } else if (kindChar === 'F') {
         const tabIndex = rest.lastIndexOf('\t')
         const name = tabIndex >= 0 ? rest.slice(0, tabIndex) : rest
         const size = tabIndex >= 0 ? Number.parseInt(rest.slice(tabIndex + 1), 10) : Number.NaN
-        if (name) {
-          parsed.push({
-            name,
-            kind: 'file',
-            sizeBytes: Number.isFinite(size) && size >= 0 ? size : null,
-          })
+        if (!isValidFtpEntryName(name)) {
+          throw new FtpError('invalid_path', `飞控返回的文件名非法：${name}`)
         }
+        parsed.push({
+          name,
+          kind: 'file',
+          sizeBytes: Number.isFinite(size) && size >= 0 ? size : null,
+        })
       }
       // 'S' and unknown records only advance the offset.
     }
@@ -532,10 +559,16 @@ export class MavlinkFtp {
       this.downloadDirReady = (async () => {
         await fsp.mkdir(this.downloadDir, { recursive: true })
         // Stale files from a previous server run are unreachable (their ids
-        // died with the process), so clear them out.
+        // died with the process), so clear them out safely.
+        await cleanupStaleTempFiles(this.downloadDir, 3600_000)
         const names = await fsp.readdir(this.downloadDir).catch(() => [] as string[])
+        const resolvedDir = path.resolve(this.downloadDir)
         await Promise.allSettled(
-          names.map((name) => fsp.unlink(path.join(this.downloadDir, name))),
+          names.map((name) => {
+            const target = path.resolve(resolvedDir, name)
+            if (!target.startsWith(resolvedDir + path.sep)) return Promise.resolve()
+            return fsp.unlink(target)
+          }),
         )
       })()
     }
@@ -600,14 +633,20 @@ export class MavlinkFtp {
         })
       }
 
-      const writeChunk = (offset: number, data: Buffer) => {
+      const writeChunk = (offset: number, data: Buffer): boolean => {
         const end = Math.min(fileSize, offset + data.length)
-        if (end <= offset) return
+        if (end <= offset) return false
         const slice = data.subarray(0, end - offset)
+        const beforeRemaining = remainingBytes(missing)
         missing = subtractInterval(missing, offset, end)
-        const target = handle!
-        writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
-        emitProgress()
+        const afterRemaining = remainingBytes(missing)
+        const progressed = afterRemaining < beforeRemaining
+        if (progressed) {
+          const target = handle!
+          writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
+          emitProgress()
+        }
+        return progressed
       }
 
       emitProgress(true)
@@ -715,15 +754,19 @@ export class MavlinkFtp {
   private burstPass(
     session: number,
     startOffset: number,
-    writeChunk: (offset: number, data: Buffer) => void,
+    writeChunk: (offset: number, data: Buffer) => boolean,
   ): Promise<void> {
     return new Promise((resolve) => {
       let finished = false
       let quietTimer: ReturnType<typeof setTimeout> | null = null
+      let passTimer: ReturnType<typeof setTimeout> | null = null
+      let consecutiveNonProgressChunks = 0
+
       const finish = () => {
         if (finished) return
         finished = true
         if (quietTimer) clearTimeout(quietTimer)
+        if (passTimer) clearTimeout(passTimer)
         this.burstSink = null
         resolve()
       }
@@ -731,16 +774,36 @@ export class MavlinkFtp {
         if (quietTimer) clearTimeout(quietTimer)
         quietTimer = setTimeout(finish, this.burstQuietMs())
       }
+
+      passTimer = setTimeout(finish, MAX_PASS_DURATION_MS)
+      passTimer.unref?.()
+
       this.burstSink = (reply) => {
+        if (this.cancelRequested) {
+          finish()
+          return
+        }
         if (reply.session !== session) return
-        armQuietTimer()
         if (reply.opcode === FTP_OPCODES.Nak) {
           // EOF marks the natural end of the stream; any other NAK also ends
           // the pass and the outer loop decides whether to retry.
           finish()
           return
         }
-        if (reply.size > 0) writeChunk(reply.offset, reply.data)
+        let progressed = false
+        if (reply.size > 0) {
+          progressed = writeChunk(reply.offset, reply.data)
+        }
+        if (progressed) {
+          consecutiveNonProgressChunks = 0
+          armQuietTimer()
+        } else {
+          consecutiveNonProgressChunks++
+          if (consecutiveNonProgressChunks >= MAX_NON_PROGRESS_CHUNKS) {
+            finish()
+            return
+          }
+        }
         if (reply.burstComplete) finish()
       }
       armQuietTimer()
@@ -760,7 +823,7 @@ export class MavlinkFtp {
   private async gapFillPass(
     session: number,
     missingSnapshot: Array<[number, number]>,
-    writeChunk: (offset: number, data: Buffer) => void,
+    writeChunk: (offset: number, data: Buffer) => boolean,
     chunkSize: number,
     windowSize: number,
   ): Promise<void> {
@@ -838,7 +901,8 @@ export class MavlinkFtp {
       // parent directory (the firmware can only remove empty directories).
       const work: Array<{ path: string; kind: 'file' | 'dir' }> = []
       for (const entry of entries) {
-        await this.expandDeleteTarget(entry.path, entry.kind, 0, work)
+        const canonicalPath = path.posix.normalize(entry.path)
+        await this.expandDeleteTarget(canonicalPath, entry.kind, 0, work, canonicalPath)
       }
       let done = 0
       for (const item of work) {
@@ -871,6 +935,7 @@ export class MavlinkFtp {
     kind: 'file' | 'dir',
     depth: number,
     out: Array<{ path: string; kind: 'file' | 'dir' }>,
+    initialRoot: string,
   ): Promise<void> {
     if (out.length >= DELETE_MAX_ITEMS) {
       throw new FtpError('delete_too_many', `单次删除不能超过 ${DELETE_MAX_ITEMS} 项`)
@@ -884,11 +949,22 @@ export class MavlinkFtp {
     }
     const children = await this.collectDirectory(targetPath)
     for (const child of children) {
+      if (!isValidFtpEntryName(child.name)) {
+        throw new FtpError('invalid_path', '飞控返回的子项路径非法，删除事务已中止')
+      }
+      const childPath = path.posix.normalize(joinDevicePath(targetPath, child.name))
+      if (
+        !isStrictPosixDescendant(childPath, targetPath)
+        || !isStrictPosixDescendant(childPath, initialRoot)
+      ) {
+        throw new FtpError('invalid_path', '飞控返回的子项路径非法，删除事务已中止')
+      }
       await this.expandDeleteTarget(
-        joinDevicePath(targetPath, child.name),
+        childPath,
         child.kind,
         depth + 1,
         out,
+        initialRoot,
       )
     }
     out.push({ path: targetPath, kind: 'dir' })

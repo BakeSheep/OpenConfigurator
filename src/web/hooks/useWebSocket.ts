@@ -149,6 +149,7 @@ export function handleMessage(msg: ServerMessage) {
         transportOpen: transportOpenNow,
         vehicleReady: msg.data.vehicleReady ?? msg.data.connected,
         rawSessionActive: msg.data.rawSessionActive ?? false,
+        connectionGeneration: msg.data.generation ?? 0,
         safetyEpoch: msg.data.safetyEpoch,
         safetyAuthorityId: msg.data.safetyAuthorityId,
         port: msg.data.port,

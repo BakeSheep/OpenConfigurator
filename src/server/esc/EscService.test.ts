@@ -95,6 +95,7 @@ function validationTests(): void {
   expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'nope' } }, 'bad mode')
   expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'px4_serial_control', channels: [19] } }, 'channel below range')
   expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'px4_serial_control', channels: [28] } }, 'channel above range')
+  expectValidationFail({ type: 'esc_session_start', safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION, data: { mode: 'px4_serial_control', channels: [20, 20] } }, 'duplicate channels (L6)')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: sid, targets: [0, 0] } }, 'duplicate targets')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: sid, targets: [] } }, 'empty targets')
   expectValidationFail({ type: 'esc_settings_read', data: { sessionId: 'short', targets: 'all' } }, 'short sessionId')
@@ -144,6 +145,7 @@ class ScriptedTransport implements EscByteTransport {
   readonly writeChannels: number[] = []
   readonly capabilities = { read: true, write: true }
   disconnectAfterFirstWrite: (() => void) | null = null
+  failWriteChannel: number | null = null
   private selectedChannel = 0
   private readonly eepromByChannel = new Map<number, Uint8Array>()
   constructor(readonly kind: EscByteTransport['kind']) {}
@@ -179,6 +181,9 @@ class ScriptedTransport implements EscByteTransport {
           reply = fourWayResponse(command, [...raw.subarray(0, length)], FOUR_WAY_ACK.OK, address)
         }
       } else if (command === FOUR_WAY_COMMANDS.DeviceWrite) {
+        if (this.failWriteChannel !== null && this.selectedChannel === this.failWriteChannel) {
+          throw new EscError('timeout', '写入超时')
+        }
         const length = request[4] === 0 ? 256 : request[4]
         this.eepromByChannel.set(this.selectedChannel, request.slice(5, 5 + length))
         this.writeChannels.push(this.selectedChannel)
@@ -203,6 +208,8 @@ function createService(
   family: 'ardupilot' | 'px4' | 'unknown' = kind === 'ardupilot_raw' ? 'ardupilot' : kind === 'px4_serial_control' ? 'px4' : 'unknown',
   pwmType = 5,
   vehicleTypeId = 2,
+  armedState: boolean | null = false,
+  isLinkBusy?: () => string | null,
 ) {
   const emitted: ServerMessage[] = []
   const targeted: Array<{ clientId: string; message: ServerMessage }> = []
@@ -228,6 +235,8 @@ function createService(
       if (id === 'PASSTHRU_EN' && family === 'px4') return 1
       return null
     },
+    getArmedState: () => armedState,
+    ...(isLinkBusy ? { isLinkBusy } : {}),
     pinController: (clientId, sessionId) => pins.push({ clientId, sessionId }),
     releaseController: (sessionId) => releases.push(sessionId),
     transportFactory: () => transport,
@@ -319,6 +328,116 @@ async function orchestrationTests(): Promise<void> {
     await service.destroy()
   }
 
+  // H3: Armed preflight check blocks session start for ardupilot and px4
+  {
+    const { service, emitted } = createService('ardupilot_raw', 'ardupilot', 5, 2, true)
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    const armedErr = emitted.find((m) => m.type === 'esc_op_error'
+      && (m as { data: { code: string } }).data.code === 'precondition_failed')
+    assert.ok(armedErr, 'armed ardupilot rejects ESC session start')
+    assert.equal(service.snapshot().state, 'idle')
+    await service.destroy()
+  }
+
+  {
+    const { service, emitted } = createService('px4_serial_control', 'px4', 5, 2, true)
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'px4_serial_control', channels: [20] },
+    })
+    const armedErr = emitted.find((m) => m.type === 'esc_op_error'
+      && (m as { data: { code: string } }).data.code === 'precondition_failed')
+    assert.ok(armedErr, 'armed px4 rejects ESC session start')
+    assert.equal(service.snapshot().state, 'idle')
+    await service.destroy()
+  }
+
+  // H3: Live vehicle armed event terminates active ESC session
+  {
+    const { service, emitted } = createService('ardupilot_raw')
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    await wait(10)
+    assert.equal(service.snapshot().state, 'active')
+    service.handleVehicleSafetyBoundary('vehicle_armed')
+    await wait(10)
+    assert.equal(service.snapshot().state, 'idle', 'vehicle armed event terminates active session')
+    await service.destroy()
+  }
+
+  // M5: Link busy gate blocks start
+  {
+    const { service, emitted } = createService('ardupilot_raw', 'ardupilot', 5, 2, false, () => 'log_transfer')
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    const busyErr = emitted.find((m) => m.type === 'esc_op_error'
+      && (m as { data: { code: string } }).data.code === 'busy')
+    assert.ok(busyErr, 'link busy rejects ESC session start')
+    assert.equal(service.snapshot().state, 'idle')
+    await service.destroy()
+  }
+
+  // H4: ESC write timeout/failure stops batch immediately and marks write_state_unknown
+  {
+    const { service, emitted, transport } = createService('ardupilot_raw')
+    await service.handleClientMessage('client-a', {
+      type: 'esc_session_start',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...TEST_SAFETY_EXPECTATION,
+      data: { mode: 'ardupilot_passthrough' },
+    })
+    await wait(10)
+    const session = lastSession(emitted)
+    assert.ok(session?.sessionId)
+
+    // Make target #0 fail during write
+    transport.failWriteChannel = 0
+
+    await service.handleClientMessage('client-a', {
+      type: 'esc_settings_write',
+      requestId: 'write-failure-batch-stop',
+      data: {
+        sessionId: session.sessionId,
+        targets: [0, 1],
+        values: { motorDirection: 1 },
+      },
+    })
+
+    // Verify batch was stopped: target 1 must NEVER be written or initiated
+    assert.equal(transport.writeChannels.includes(1), false, 'target #1 must NOT be written after target #0 error')
+    const doneMsg = emitted.find((m) => m.type === 'esc_job_done' && m.data.kind === 'settings_write') as { data: { ok: boolean; perTarget: Array<{ escIndex: number; ok: boolean; error?: { code: string } }> } } | undefined
+    assert.ok(doneMsg)
+    assert.equal(doneMsg.data.ok, false)
+    assert.equal(doneMsg.data.perTarget.length, 1, 'only target #0 was processed')
+    assert.equal(doneMsg.data.perTarget[0].ok, false)
+    assert.equal(doneMsg.data.perTarget[0].error?.code, 'write_state_unknown')
+
+    // Verify device cache updated with write_state_unknown & writable=false
+    const devicesMsg = emitted.filter((m) => m.type === 'esc_devices').pop() as { data: { escs: Array<{ index: number; writable: boolean; reason?: string }> } } | undefined
+    assert.ok(devicesMsg)
+    const failedDevice = devicesMsg.data.escs.find((e) => e.index === 0)
+    assert.ok(failedDevice)
+    assert.equal(failedDevice.writable, false)
+    assert.equal(failedDevice.reason, 'write_state_unknown')
+
+    await service.destroy()
+  }
+
   // Losing the controller owner during target #1 may finish that target's
   // atomic write/readback, but must never enter target #2 with the old
   // props-removed / stable-power acknowledgement.
@@ -383,6 +502,7 @@ async function orchestrationTests(): Promise<void> {
       emit: (message) => emitted.push(message),
       getVehicleIdentity: () => buildVehicleIdentity(12, 2),
       getParameterValue: () => null,
+      getArmedState: () => false,
       pinController: () => undefined,
       releaseController: () => undefined,
       transportFactory: () => new ScriptedTransport('px4_serial_control'),

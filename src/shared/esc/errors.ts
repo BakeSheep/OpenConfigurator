@@ -20,6 +20,8 @@ export type EscErrorCode =
   | 'nack'
   | 'echo_mismatch'
   | 'verify_failed'
+  | 'write_state_unknown'
+  | 'rx_overflow'
   | 'unsupported_signature_or_layout'
   | 'address_guard'
   | 'target_mismatch'

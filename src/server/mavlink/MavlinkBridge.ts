@@ -53,6 +53,7 @@ import { getPx4AirframeInfo, isSupportedArduCopterFrame } from '../../shared/air
 import { parameterEnumOptions, parameterEnumValuesMatch } from '../../shared/parameterEnumMetadata'
 import { CalibrationSession } from './CalibrationSession'
 import type { CalibrationStartRequest } from './CalibrationSessionManager'
+import type { RadioCalibrationWriteHandle } from './RadioCalibrationSessionManager'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
 const BLUETOOTH_PARAM_STALL_TIMEOUT_MS = 3500
@@ -78,6 +79,16 @@ const MAV_RESULT_ACCEPTED = 0
 const MAV_RESULT_TEMPORARILY_REJECTED = 1
 const MAV_RESULT_UNSUPPORTED = 3
 const MAV_RESULT_IN_PROGRESS = 5
+
+const AIRFRAME_ONLY_PARAMS = new Set([
+  'SYS_AUTOSTART',
+  'SYS_AUTOCONFIG',
+  'CA_AIRFRAME',
+  'FRAME_CLASS',
+  'FRAME_TYPE',
+  'Q_FRAME_CLASS',
+  'Q_FRAME_TYPE',
+])
 const COMMAND_ACK_PROGRESS_UNKNOWN = 0xff
 const STATUSTEXT_TTL_MS = 10_000
 const STATUSTEXT_MAX_ASSEMBLIES = 64
@@ -379,6 +390,15 @@ export class MavlinkBridge extends EventEmitter {
       ready: this.hasReadyTarget(),
       armed: this.lastArmedState,
     }
+  }
+
+  /** Authoritative reason when the link is busy with an exclusive MAVLink transaction, else null. */
+  getLinkMutationBlocker(): string | null {
+    if (this.paramDownloadActive) return 'parameter_sync'
+    if (this.ftp.busy) return 'ftp_transfer'
+    if (this.logTransfer.busy) return 'log_transfer'
+    if (this.shellActive || this.shellPending) return 'shell_active'
+    return null
   }
 
   /** A controller/authority boundary invalidates an in-flight airframe apply. */
@@ -1643,7 +1663,7 @@ export class MavlinkBridge extends EventEmitter {
         message.targetComponent = targetComponent
         message.id = request.logId
         message.ofs = request.ofs
-        message.count = request.count
+        message.count = Math.min(Math.max(1, request.count), 0xffff)
         return this.writeMessage(message)
       }
       case 'erase': {
@@ -2053,7 +2073,7 @@ export class MavlinkBridge extends EventEmitter {
       || [...actualIdBytes].some((byte) => byte < 0x20 || byte > 0x7e)
     ) return
     const id = actualIdBytes.toString('ascii')
-    this.cacheParameterValue(id, value)
+    if (!this.cacheParameterValue(id, value)) return
     this.parameterTypes.set(id, paramType)
 
     this.emit('message', {
@@ -2285,14 +2305,55 @@ export class MavlinkBridge extends EventEmitter {
           msg.requestId,
         )
         break
-      case 'param_set':
+      case 'param_set': {
         if (
-          this.requireReadyTarget('param_set', msg.requestId)
-          && this.requireWritableVehicle('param_set', msg.requestId)
-        ) {
-          this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)
+          !this.requireReadyTarget('param_set', msg.requestId)
+          || !this.requireWritableVehicle('param_set', msg.requestId)
+        ) break
+
+        const paramId = msg.data.id
+        const requestValidation = this.validateParamSet(paramId, msg.data.value, msg.data.paramType)
+        if (requestValidation) {
+          this.emitOperationError('param_set', 'invalid_param', requestValidation, msg.requestId)
+          break
         }
+        if (AIRFRAME_ONLY_PARAMS.has(paramId)) {
+          this.emitOperationError(
+            'param_set',
+            'airframe_parameter_blocked',
+            `机架参数 ${paramId} 只能通过专用机架应用流程配置`,
+            msg.requestId,
+          )
+          break
+        }
+
+        const oldValue = this.parameterValues.get(paramId)
+        const cachedType = this.parameterTypes.get(paramId)
+        if (oldValue === undefined || cachedType === undefined) {
+          this.emitOperationError(
+            'param_set',
+            'parameter_missing',
+            `参数 ${paramId} 尚未从当前目标读取，拒绝盲写`,
+            msg.requestId,
+          )
+          break
+        }
+        if (
+          isSafetyReduction(paramId, oldValue, msg.data.value)
+          && msg.safetyConfirmation !== 'reduce_failsafe_protection'
+        ) {
+          this.emitOperationError(
+            'param_set',
+            'safety_confirmation_required',
+            `修改安全保护参数 ${paramId} 需要显式确认 reduce_failsafe_protection`,
+            msg.requestId,
+          )
+          break
+        }
+
+        this.sendParamSet(msg.data.id, msg.data.value, cachedType, msg.requestId)
         break
+      }
       case 'reboot_vehicle':
         if (!this.requireReadyTarget('reboot_vehicle', msg.requestId)) break
         if (!this.requireWritableVehicle('reboot_vehicle', msg.requestId)) break
@@ -2777,7 +2838,27 @@ export class MavlinkBridge extends EventEmitter {
     mapped: Partial<Record<'roll' | 'pitch' | 'throttle' | 'yaw', number>>,
     expectedVehicleFingerprint: string,
     completion: (accepted: boolean, reason?: string, rollbackFailures?: string[]) => void,
-  ): void {
+  ): RadioCalibrationWriteHandle {
+    let cancelled = false
+    let cancelReason = 'cancelled'
+    let settled = false
+    let activeParamId: string | null = null
+    let cancelImpl: (() => void) | null = null
+    const finish = (accepted: boolean, reason?: string, rollbackFailures?: string[]) => {
+      if (settled) return
+      settled = true
+      activeParamId = null
+      completion(accepted, reason, rollbackFailures)
+    }
+    const handle: RadioCalibrationWriteHandle = {
+      cancel: (reason = 'cancelled') => {
+        if (settled || cancelled) return
+        cancelled = true
+        cancelReason = reason
+        if (activeParamId && this.cancelPendingParamSet(activeParamId, reason)) return
+        cancelImpl?.()
+      },
+    }
     const contextIsSafe = (): boolean => {
       const context = this.getVehicleMutationSafetyContext()
       return context.fingerprint === expectedVehicleFingerprint
@@ -2786,18 +2867,18 @@ export class MavlinkBridge extends EventEmitter {
         && vehicleCapabilities(this.selectedIdentity).radioCalibration
     }
     if (!contextIsSafe()) {
-      completion(false, 'unsupported_vehicle_profile')
-      return
+      finish(false, 'unsupported_vehicle_profile')
+      return handle
     }
     if (!mapped.roll || !mapped.pitch || !mapped.throttle || !mapped.yaw) {
-      completion(false, 'primary_mapping_incomplete')
-      return
+      finish(false, 'primary_mapping_incomplete')
+      return handle
     }
     if (this.selectedIdentity?.family === 'ardupilot') {
       const throttle = channels.find((channel) => channel.function === 'throttle')
       if (throttle?.reversed) {
-        completion(false, 'arducopter_reversed_throttle')
-        return
+        finish(false, 'arducopter_reversed_throttle')
+        return handle
       }
     }
 
@@ -2824,8 +2905,8 @@ export class MavlinkBridge extends EventEmitter {
     for (const key of ['roll', 'pitch', 'throttle', 'yaw'] as const) {
       const id = mappingNames[key]
       if (!this.parameterValues.has(id)) {
-        completion(false, `parameter_missing:${id}`)
-        return
+        finish(false, `parameter_missing:${id}`)
+        return handle
       }
       entries.push({ id, value: mapped[key]! })
     }
@@ -2833,8 +2914,8 @@ export class MavlinkBridge extends EventEmitter {
       entries.push({ id: 'RC_CHAN_CNT', value: Math.max(...channels.map((channel) => channel.channel)) })
     }
     if (entries.length === 0 || entries.some(({ id }) => !this.parameterTypes.has(id))) {
-      completion(false, 'parameter_missing')
-      return
+      finish(false, 'parameter_missing')
+      return handle
     }
 
     const previous = new Map(entries.map(({ id }) => [id, this.parameterValues.get(id)!]))
@@ -2842,32 +2923,40 @@ export class MavlinkBridge extends EventEmitter {
     const rollbackFailures: string[] = []
     const rollback = (index: number, reason: string): void => {
       if (!contextIsSafe()) {
-        completion(false, `safety_context_changed_no_rollback:${reason}`, rollbackFailures)
+        finish(false, `safety_context_changed_no_rollback:${reason}`, rollbackFailures)
         return
       }
       if (index < 0) {
-        completion(false, reason, rollbackFailures)
+        finish(false, reason, rollbackFailures)
         return
       }
       const id = confirmed[index]
+      activeParamId = id
       this.sendParamSet(id, previous.get(id)!, this.parameterTypes.get(id)!, `${requestId}-rc-rollback-${index}`, (accepted) => {
+        activeParamId = null
         if (!accepted) rollbackFailures.push(id)
         rollback(index - 1, reason)
       })
     }
     const writeNext = (index: number): void => {
+      if (cancelled) {
+        rollback(confirmed.length - 1, cancelReason)
+        return
+      }
       if (!contextIsSafe()) {
-        completion(false, 'safety_context_changed_no_rollback')
+        finish(false, 'safety_context_changed_no_rollback')
         return
       }
       if (index >= entries.length) {
-        completion(true)
+        finish(true)
         return
       }
       const entry = entries[index]
+      activeParamId = entry.id
       this.sendParamSet(entry.id, entry.value, this.parameterTypes.get(entry.id)!, `${requestId}-rc-${index}`, (accepted, _value, reason) => {
+        activeParamId = null
         if (!contextIsSafe()) {
-          completion(false, 'safety_context_changed_no_rollback')
+          finish(false, 'safety_context_changed_no_rollback')
           return
         }
         if (!accepted) {
@@ -2878,7 +2967,9 @@ export class MavlinkBridge extends EventEmitter {
         writeNext(index + 1)
       })
     }
+    cancelImpl = () => rollback(confirmed.length - 1, cancelReason)
     writeNext(0)
+    return handle
   }
 
   private setVehicleConfiguration(msg: Extract<ClientMessage, { type: 'vehicle_config_set' }>): void {
@@ -3120,7 +3211,9 @@ export class MavlinkBridge extends EventEmitter {
     requestId?: string,
     completion?: (accepted: boolean, acceptedValue?: number, reason?: string) => void,
   ): boolean {
-    const validationError = this.validateParamSet(id, value, paramType)
+    const cachedType = this.parameterTypes.get(id)
+    const effectiveType = cachedType !== undefined ? cachedType : paramType
+    const validationError = this.validateParamSet(id, value, effectiveType)
     if (validationError) {
       this.emitOperationError('param_set', 'invalid_param', validationError, requestId)
       completion?.(false, undefined, validationError)
@@ -3152,7 +3245,7 @@ export class MavlinkBridge extends EventEmitter {
       requestId,
       id,
       value,
-      paramType,
+      paramType: effectiveType,
       attempt: 0,
       timeout: null,
       completion,
@@ -3224,6 +3317,16 @@ export class MavlinkBridge extends EventEmitter {
       pending.lastAcceptedValue,
       pending.lastMismatch ?? 'timeout',
     )
+  }
+
+  private cancelPendingParamSet(id: string, reason: string): boolean {
+    const pending = this.pendingParamSets.get(id)
+    if (!pending) return false
+    if (pending.timeout) clearTimeout(pending.timeout)
+    pending.timeout = null
+    this.pendingParamSets.delete(id)
+    this.emitParamSetResult(pending, false, pending.lastAcceptedValue, reason)
+    return true
   }
 
   private emitParamSetResult(

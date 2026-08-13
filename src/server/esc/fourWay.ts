@@ -92,49 +92,65 @@ export interface FourWayResponse {
   ack: number
 }
 
+export const MAX_FOUR_WAY_SEARCH_BYTES = 256
+
 /**
  * Frame-length probe for a 4-way response buffer. Response layout mirrors the
  * request but with an ACK byte inserted before the CRC:
  *   0x2E cmd addr_hi addr_lo param_len param[...] ack crc_hi crc_lo
+ *
+ * When framing fails on a candidate 0x2E (e.g. noise), slides forward to test
+ * subsequent 0x2E occurrences up to MAX_FOUR_WAY_SEARCH_BYTES.
  */
 export function fourWayFrameLength(buffered: Uint8Array): number | null {
-  const start = findFourWayResponseStart(buffered)
-  if (start === null || buffered.length < start + 5) return null
-  const paramLen = buffered[start + 4] === 0 ? 256 : buffered[start + 4]
-  const length = start + 5 + paramLen + 1 /* ack */ + 2 /* crc */
-  return buffered.length >= length ? length : null
-}
+  const maxSearch = Math.min(buffered.length, MAX_FOUR_WAY_SEARCH_BYTES)
+  let foundIncompleteCandidate = false
 
-/** Decode and CRC-check a complete 4-way response frame. */
-export function decodeFourWay(frame: Uint8Array): FourWayResponse {
-  const start = findFourWayResponseStart(frame)
-  if (start === null) throw new EscError('crc_mismatch', '未找到 4-way 响应帧')
-  frame = frame.subarray(start)
-  if (frame.length < 8) throw new EscError('crc_mismatch', '4-way 帧过短')
-  if (frame[0] !== FOUR_WAY_RESPONSE_START) {
-    throw new EscError('crc_mismatch', '4-way 帧起始字节错误')
+  for (let start = 0; start < maxSearch; start++) {
+    if (buffered[start] !== FOUR_WAY_RESPONSE_START) continue
+    if (buffered.length < start + 5) {
+      foundIncompleteCandidate = true
+      break
+    }
+    const paramLen = buffered[start + 4] === 0 ? 256 : buffered[start + 4]
+    const frameLen = 5 + paramLen + 1 /* ack */ + 2 /* crc */
+    const totalLen = start + frameLen
+    if (buffered.length < totalLen) {
+      foundIncompleteCandidate = true
+      continue
+    }
+    // Check if this candidate frame has a valid CRC
+    const receivedCrc = (buffered[totalLen - 2] << 8) | buffered[totalLen - 1]
+    const computedCrc = crc16Xmodem(buffered.subarray(start, totalLen - 2))
+    if (computedCrc === receivedCrc) {
+      return totalLen
+    }
+    // CRC mismatch on candidate 0x2E -> slide forward and check next 0x2E
   }
-  const command = frame[1]
-  const address = (frame[2] << 8) | frame[3]
-  const paramLen = frame[4] === 0 ? 256 : frame[4]
-  const expectedLength = 5 + paramLen + 1 + 2
-  if (frame.length < expectedLength) throw new EscError('crc_mismatch', '4-way 帧长度不足')
-  const params = frame.subarray(5, 5 + paramLen)
-  const ack = frame[5 + paramLen]
-  const crcHi = frame[6 + paramLen]
-  const crcLo = frame[7 + paramLen]
-  const receivedCrc = (crcHi << 8) | crcLo
-  // CRC covers everything up to and including the ACK byte.
-  const computed = crc16Xmodem(frame.subarray(0, 5 + paramLen + 1))
-  if (computed !== receivedCrc) {
-    throw new EscError('crc_mismatch', `4-way CRC 错误：期望 ${computed}，实际 ${receivedCrc}`)
-  }
-  return { command, address, params: Uint8Array.from(params), ack }
-}
 
-function findFourWayResponseStart(bytes: Uint8Array): number | null {
-  for (let index = 0; index < bytes.length; index++) {
-    if (bytes[index] === FOUR_WAY_RESPONSE_START) return index
-  }
+  if (foundIncompleteCandidate) return null
   return null
+}
+
+/** Decode and CRC-check a complete 4-way response frame, resynchronizing past noise. */
+export function decodeFourWay(frame: Uint8Array): FourWayResponse {
+  const maxSearch = Math.min(frame.length, MAX_FOUR_WAY_SEARCH_BYTES)
+  for (let start = 0; start < maxSearch; start++) {
+    if (frame[start] !== FOUR_WAY_RESPONSE_START) continue
+    if (frame.length < start + 8) continue
+    const candidate = frame.subarray(start)
+    const command = candidate[1]
+    const address = (candidate[2] << 8) | candidate[3]
+    const paramLen = candidate[4] === 0 ? 256 : candidate[4]
+    const expectedLength = 5 + paramLen + 1 + 2
+    if (candidate.length < expectedLength) continue
+    const receivedCrc = (candidate[expectedLength - 2] << 8) | candidate[expectedLength - 1]
+    const computed = crc16Xmodem(candidate.subarray(0, expectedLength - 2))
+    if (computed === receivedCrc) {
+      const params = candidate.subarray(5, 5 + paramLen)
+      const ack = candidate[5 + paramLen]
+      return { command, address, params: Uint8Array.from(params), ack }
+    }
+  }
+  throw new EscError('crc_mismatch', '4-way CRC 错误或未找到有效响应帧')
 }

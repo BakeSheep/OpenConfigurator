@@ -3,6 +3,7 @@ import {
   decodeAm32Eeprom,
   encodeAm32Eeprom,
   EscError,
+  toEscError,
   isSupportedAm32Layout,
   type EscDeviceInfo,
   type EscSettingsSnapshot,
@@ -177,32 +178,55 @@ export class Am32SettingsService {
     }
 
     const encoded = encodeAm32Eeprom(fresh, values)
-    await this.fourWay.write(profile.eepromAddress, encoded, signal)
-    const verified = (await this.fourWay.read(
-      profile.eepromAddress,
-      AM32_LAYOUT_SIZE,
-      signal,
-    )).params
-    if (!bytesEqual(encoded, verified)) {
-      throw new EscError(
-        'verify_failed',
-        `ESC #${device.index + 1} 写入后的读回校验失败`,
-        { escIndex: device.index },
-      )
-    }
-    const decoded = decodeAm32Eeprom(verified)
-    return {
-      device: { ...device, layoutRevision: decoded.layoutRevision, writable: true },
-      raw: verified.slice(),
-      snapshot: {
-        sessionId,
-        escIndex: device.index,
-        firmwareKind: 'am32',
-        layoutRevision: decoded.layoutRevision,
-        writable: true,
-        values: decoded.values,
-        rawBase64: Buffer.from(verified).toString('base64'),
-      },
+    try {
+      await this.fourWay.write(profile.eepromAddress, encoded, signal)
+      const verified = (await this.fourWay.read(
+        profile.eepromAddress,
+        AM32_LAYOUT_SIZE,
+        signal,
+      )).params
+      if (!bytesEqual(encoded, verified)) {
+        throw new EscError(
+          'write_state_unknown',
+          `ESC #${device.index + 1} 写入后的读回校验失败，设备状态未知`,
+          { escIndex: device.index, retryable: false },
+        )
+      }
+      const decoded = decodeAm32Eeprom(verified)
+      return {
+        device: { ...device, layoutRevision: decoded.layoutRevision, writable: true },
+        raw: verified.slice(),
+        snapshot: {
+          sessionId,
+          escIndex: device.index,
+          firmwareKind: 'am32',
+          layoutRevision: decoded.layoutRevision,
+          writable: true,
+          values: decoded.values,
+          rawBase64: Buffer.from(verified).toString('base64'),
+        },
+      }
+    } catch (error) {
+      const escError = toEscError(error)
+      if (escError.code === 'cancelled') throw escError
+      if (
+        escError.code === 'timeout'
+        || escError.code === 'crc_mismatch'
+        || escError.code === 'echo_mismatch'
+        || escError.code === 'verify_failed'
+        || escError.code === 'link_lost'
+        || escError.code === 'link_unavailable'
+        || escError.code === 'write_state_unknown'
+        || escError.code === 'nack'
+        || escError.code === 'rx_overflow'
+      ) {
+        throw new EscError(
+          'write_state_unknown',
+          `ESC #${device.index + 1} 写入失败（${escError.message}），设备状态未知`,
+          { escIndex: device.index, retryable: false, cause: error },
+        )
+      }
+      throw escError
     }
   }
 }

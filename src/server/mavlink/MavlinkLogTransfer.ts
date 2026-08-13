@@ -12,6 +12,7 @@ import path from 'node:path'
 import { subtractInterval } from './MavlinkFtp'
 import type { DataflashLogEntry, ServerMessage } from '../../shared/types'
 import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
+import { cleanupStaleTempFiles, sanitizeErrorMessage } from './transferSanitization'
 
 // LOG_DATA carries at most 90 payload bytes; a shorter chunk marks the end of
 // the log (count === 0 is an explicit end-of-log marker).
@@ -25,6 +26,8 @@ const BLUETOOTH_STREAM_QUIET_MS = 3200
 // A download pass that recovers zero new bytes counts as no progress; give up
 // after this many consecutive futile passes.
 const MAX_NO_PROGRESS_PASSES = 5
+const MAX_NON_PROGRESS_CHUNKS = 50
+const MAX_PASS_DURATION_MS = 30_000
 const MAX_LIST_ENTRIES = 2000
 const MAX_RETAINED_DOWNLOADS = 5
 const PROGRESS_INTERVAL_MS = 500
@@ -250,7 +253,7 @@ export class MavlinkLogTransfer {
         ...(requestId ? { requestId } : {}),
         operation,
         code,
-        message,
+        message: sanitizeErrorMessage(message, this.downloadDir),
         retryable,
       },
     })
@@ -261,10 +264,11 @@ export class MavlinkLogTransfer {
       this.emitError(operation, error.code, error.message, requestId, error.retryable)
       return
     }
+    const rawMessage = error instanceof Error ? error.message : String(error)
     this.emitError(
       operation,
       'log_transfer_internal',
-      error instanceof Error ? error.message : String(error),
+      rawMessage,
       requestId,
       false,
     )
@@ -283,6 +287,11 @@ export class MavlinkLogTransfer {
   }
 
   private sendRequest(request: LogTransferRequest): void {
+    if (request.kind === 'data') {
+      if (!Number.isInteger(request.count) || request.count < 1 || request.count > 0xffff) {
+        throw new LogTransferError('invalid_request', `日志请求长度非法 (${request.count})`, false)
+      }
+    }
     if (!this.transport.sendLogRequest(request)) {
       throw new LogTransferError('write_rejected', '连接发送队列拒绝日志请求', true)
     }
@@ -409,10 +418,16 @@ export class MavlinkLogTransfer {
       this.downloadDirReady = (async () => {
         await fsp.mkdir(this.downloadDir, { recursive: true })
         // Stale files from a previous server run are unreachable (their ids
-        // died with the process), so clear them out.
+        // died with the process), so clear them out safely.
+        await cleanupStaleTempFiles(this.downloadDir, 3600_000)
         const names = await fsp.readdir(this.downloadDir).catch(() => [] as string[])
+        const resolvedDir = path.resolve(this.downloadDir)
         await Promise.allSettled(
-          names.map((name) => fsp.unlink(path.join(this.downloadDir, name))),
+          names.map((name) => {
+            const target = path.resolve(resolvedDir, name)
+            if (!target.startsWith(resolvedDir + path.sep)) return Promise.resolve()
+            return fsp.unlink(target)
+          }),
         )
       })()
     }
@@ -476,14 +491,20 @@ export class MavlinkLogTransfer {
         })
       }
 
-      const writeChunk = (offset: number, data: Buffer) => {
+      const writeChunk = (offset: number, data: Buffer): boolean => {
         const end = Math.min(totalSize, offset + data.length)
-        if (end <= offset) return
+        if (end <= offset) return false
         const slice = data.subarray(0, end - offset)
+        const beforeRemaining = remainingBytes(missing)
         missing = subtractInterval(missing, offset, end)
-        const target = handle!
-        writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
-        emitProgress()
+        const afterRemaining = remainingBytes(missing)
+        const progressed = afterRemaining < beforeRemaining
+        if (progressed) {
+          const target = handle!
+          writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
+          emitProgress()
+        }
+        return progressed
       }
 
       // The FC reported the true end of the log below the advertised size:
@@ -547,7 +568,7 @@ export class MavlinkLogTransfer {
   private dataPass(
     logId: number,
     getMissing: () => Array<[number, number]>,
-    writeChunk: (offset: number, data: Buffer) => void,
+    writeChunk: (offset: number, data: Buffer) => boolean,
     truncateTo: (endOffset: number) => void,
   ): Promise<void> {
     return new Promise((resolve) => {
@@ -557,12 +578,18 @@ export class MavlinkLogTransfer {
         return
       }
       const [reqStart, reqEnd] = missing[0]
+      const count = Math.min(reqEnd - reqStart, 0xffff)
+      const requestEnd = reqStart + count
       let finished = false
       let quietTimer: ReturnType<typeof setTimeout> | null = null
+      let passTimer: ReturnType<typeof setTimeout> | null = null
+      let consecutiveNonProgressChunks = 0
+
       const finish = () => {
         if (finished) return
         finished = true
         if (quietTimer) clearTimeout(quietTimer)
+        if (passTimer) clearTimeout(passTimer)
         this.dataSink = null
         resolve()
       }
@@ -570,21 +597,41 @@ export class MavlinkLogTransfer {
         if (quietTimer) clearTimeout(quietTimer)
         quietTimer = setTimeout(finish, this.streamQuietMs())
       }
+
+      passTimer = setTimeout(finish, MAX_PASS_DURATION_MS)
+      passTimer.unref?.()
+
       const requestedIntervalDone = () =>
-        !getMissing().some(([a, b]) => a < reqEnd && b > reqStart)
+        !getMissing().some(([a, b]) => a < requestEnd && b > reqStart)
+
       this.dataSink = {
         onChunk: (chunk) => {
-          if (chunk.id !== logId) return
-          armQuietTimer()
-          if (chunk.count > 0) {
-            writeChunk(chunk.ofs, chunk.data.subarray(0, chunk.count))
+          if (this.cancelRequested) {
+            finish()
+            return
           }
+          if (chunk.id !== logId) return
+          let progressed = false
+          if (chunk.count > 0) {
+            progressed = writeChunk(chunk.ofs, chunk.data.subarray(0, chunk.count))
+          }
+          if (progressed) {
+            consecutiveNonProgressChunks = 0
+            armQuietTimer()
+          } else {
+            consecutiveNonProgressChunks++
+            if (consecutiveNonProgressChunks >= MAX_NON_PROGRESS_CHUNKS) {
+              finish()
+              return
+            }
+          }
+
           // A short/zero chunk BELOW the requested end is the end-of-log
           // marker (LOG_ENTRY sizes are approximate for the newest log):
           // shrink the tracked size. A short chunk AT the requested end is
           // just the bounded tail of this gap request.
           const chunkEnd = chunk.ofs + chunk.count
-          if (chunk.count < LOG_DATA_CHUNK_SIZE && chunkEnd < reqEnd) {
+          if (chunk.count < LOG_DATA_CHUNK_SIZE && chunkEnd < requestEnd) {
             truncateTo(chunkEnd)
             finish()
             return
@@ -598,7 +645,7 @@ export class MavlinkLogTransfer {
           kind: 'data',
           logId,
           ofs: reqStart,
-          count: reqEnd - reqStart,
+          count,
         })
       } catch {
         finish()

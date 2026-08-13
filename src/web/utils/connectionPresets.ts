@@ -8,6 +8,8 @@ export interface ConnectionPreset {
   baudRate: number
   vendorId?: string
   productId?: string
+  /** Ephemeral server scan ticket; refreshed immediately before use. */
+  portId?: string
   enableGamepad?: boolean
 }
 
@@ -53,6 +55,7 @@ function enrichSerialPreset(preset: ConnectionPreset, port: PortInfo): Connectio
     name: port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path,
     ...(port.vendorId ? { vendorId: canonicalUsbId(port.vendorId) ?? port.vendorId } : {}),
     ...(port.productId ? { productId: canonicalUsbId(port.productId) ?? port.productId } : {}),
+    ...(port.portId ? { portId: port.portId } : {}),
   }
 }
 

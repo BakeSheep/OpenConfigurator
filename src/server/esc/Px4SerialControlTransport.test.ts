@@ -97,8 +97,31 @@ async function run(): Promise<void> {
       'validation_failed',
       'no channels',
     )
+    // Duplicate channels rejected (L6)
+    await expectEscError(
+      t.open({ mode: 'px4_serial_control', channels: [20, 20] }, new AbortController().signal),
+      'validation_failed',
+      'duplicate channels',
+    )
     assert.equal(bridge.sent.length, 0, 'invalid open must not touch the link')
   }
+
+  // RX buffer overflow test (M4).
+  {
+    const bridge = new FakeSerialControlBridge()
+    const t = new Px4SerialControlTransport({ bridge, waitFn: noWait, initSettleMs: 0 })
+    await t.open({ mode: 'px4_serial_control', channels: [20] }, new AbortController().signal)
+    const pending = t.transact(Uint8Array.of(0x2f), { timeoutMs: 500, frameLength: fixedFrame(5000) }, new AbortController().signal)
+    await wait(5)
+    // Deliver multiple 70-byte chunks to exceed 4096 bytes
+    for (let i = 0; i < 60; i++) {
+      bridge.reply(20, new Array(70).fill(0x01))
+    }
+    await expectEscError(pending, 'rx_overflow', 'rx buffer overflow')
+    await t.close('done')
+  }
+
+  console.log('Px4SerialControlTransport tests passed')
 
   // Preflight failure is surfaced verbatim and blocks init.
   {

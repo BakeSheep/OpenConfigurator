@@ -194,6 +194,16 @@ export function isSafetyReduction(id: string, oldValue: number, newValue: number
   return false
 }
 
+const AIRFRAME_ONLY_PARAMETER_IDS = new Set([
+  'SYS_AUTOSTART', 'SYS_AUTOCONFIG', 'CA_AIRFRAME', 'FRAME_CLASS',
+  'FRAME_TYPE', 'Q_FRAME_CLASS', 'Q_FRAME_TYPE',
+])
+
+/** Generic PARAM_SET must never bypass the target-bound airframe workflow. */
+export function isAirframeOnlyParameter(id: string): boolean {
+  return AIRFRAME_ONLY_PARAMETER_IDS.has(id)
+}
+
 export function validateVehicleConfigValue(
   identity: VehicleIdentity | null,
   feature: VehicleConfigFeature,

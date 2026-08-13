@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import {
   SerialConnection,
@@ -154,6 +155,7 @@ export class ConnectionManager extends EventEmitter {
   private _reconnect: ReconnectProgress | null = null
   private _reconnectTerminalReason: ReconnectTerminalReason | null = null
   private rawSession: RawSessionState | null = null
+  private scannedPortsCache = new Map<string, { portId: string; path: string; type: 'serial' | 'bluetooth'; expiresAt: number }>()
   private expectedRebootUntil = 0
   private expectedRebootStartedAt = 0
   private rebootInterruptionObserved = false
@@ -244,16 +246,67 @@ export class ConnectionManager extends EventEmitter {
     return this._reconnectTerminalReason
   }
 
-  async scanPorts(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }> {
-    const [serial, bluetooth] = await Promise.all([
+  get generation() {
+    return this.connectionGeneration
+  }
+
+  async scanPorts(options?: { debug?: boolean }): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[] }> {
+    const [rawSerial, rawBluetooth] = await Promise.all([
       this.listSerialPorts(),
       this.listBluetoothPorts(),
     ])
+    const now = this.wallClock()
+    const expiresAt = now + 60_000
+
+    for (const [key, entry] of this.scannedPortsCache.entries()) {
+      if (entry.expiresAt <= now) this.scannedPortsCache.delete(key)
+    }
+
+    const processPort = (port: PortInfo, type: 'serial' | 'bluetooth'): PortInfo => {
+      const existing = [...this.scannedPortsCache.values()].find((e) => e.path === port.path && e.type === type)
+      const portId = existing?.portId ?? `port_${randomUUID()}`
+      this.scannedPortsCache.set(portId, { portId, path: port.path, type, expiresAt })
+
+      if (options?.debug) {
+        return { ...port, portId }
+      }
+      return {
+        path: port.path,
+        portId,
+        friendlyName: port.friendlyName,
+        manufacturer: port.manufacturer,
+        recommended: port.recommended,
+        vendorId: port.vendorId,
+        productId: port.productId,
+      }
+    }
+
+    const serial = rawSerial.map((p) => processPort(p, 'serial'))
+    const bluetooth = rawBluetooth.map((p) => processPort(p, 'bluetooth'))
     return { serial, bluetooth }
+  }
+
+  /** Resolve an untrusted REST request through a fresh server-issued scan ticket. */
+  prepareConnectionConfig(config: ConnectionConfig): ConnectionConfig {
+    if (!config.portId) throw new Error('连接端口票据缺失，请重新扫描端口')
+    const entry = this.scannedPortsCache.get(config.portId)
+    if (!entry || entry.expiresAt <= this.wallClock()) {
+      if (entry) this.scannedPortsCache.delete(config.portId)
+      throw new Error('连接端口票据无效或已过期，请重新扫描端口')
+    }
+    if (entry.type !== config.type) throw new Error('连接端口票据与连接类型不匹配')
+    if (this.link && this._status !== 'disconnected') {
+      if (config.expectedGeneration === undefined) throw new Error('替换现有连接需要确认当前连接代次')
+      if (config.expectedGeneration !== this.connectionGeneration) {
+        throw new Error(`连接代次不匹配（预期 ${config.expectedGeneration}，当前 ${this.connectionGeneration}），替换连接已被拒绝`)
+      }
+    }
+    return { ...config, port: entry.path }
   }
 
   async connect(config: ConnectionConfig, preserveExpectedReboot = false): Promise<void> {
     if (!preserveExpectedReboot) this.cancelExpectedVehicleReboot()
+    const resolvedConfig: ConnectionConfig = { ...config }
     const requestId = ++this.nextConnectRequestId
     return this.enqueueOperation(async () => {
       if (this.isConnectRequestCancelled(requestId)) {
@@ -277,8 +330,8 @@ export class ConnectionManager extends EventEmitter {
       }
 
       const generation = ++this.connectionGeneration
-      this._config = { ...config }
-      this.linkKind = config.type
+      this._config = { ...resolvedConfig }
+      this.linkKind = resolvedConfig.type
       this._bytesReceived = 0
       this._bytesSent = 0
       this._reconnect = null
@@ -290,8 +343,8 @@ export class ConnectionManager extends EventEmitter {
       this.setStatus('connecting')
 
       try {
-        if (config.type === 'bluetooth') {
-          const worker = this.bluetoothFactory(config)
+        if (resolvedConfig.type === 'bluetooth') {
+          const worker = this.bluetoothFactory(resolvedConfig)
           this.link = worker
           this.wireLink(worker, generation, 'bluetooth')
           await worker.connect()
@@ -305,7 +358,7 @@ export class ConnectionManager extends EventEmitter {
           const connection = this.serialFactory()
           this.link = connection
           this.wireLink(connection, generation, 'serial')
-          await connection.connect(config.port, config.baudRate, 5000)
+          await connection.connect(resolvedConfig.port, resolvedConfig.baudRate, 5000)
           if (this.isConnectRequestCancelled(requestId)) {
             throw this.connectionCancelledError()
           }
@@ -326,7 +379,7 @@ export class ConnectionManager extends EventEmitter {
           this.setStatus('disconnected')
           throw this.connectionCancelledError()
         }
-        const surfaced = this.translateBluetoothOpenError(connectError, config)
+        const surfaced = this.translateBluetoothOpenError(connectError, resolvedConfig)
         const detailMessage = cleanupError
           ? `${surfaced.message}；同时清理失败：${cleanupError.message}`
           : surfaced.message

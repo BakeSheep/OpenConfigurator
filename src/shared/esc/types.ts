@@ -41,7 +41,7 @@ export interface EscDeviceInfo {
   /** False for unknown signature/layout: read-only, never written to. */
   writable: boolean
   /** Machine-readable reason when writable is false. */
-  reason?: 'unsupported_signature_or_layout' | 'not_validated' | 'detect_failed'
+  reason?: 'unsupported_signature_or_layout' | 'not_validated' | 'detect_failed' | 'write_state_unknown'
 }
 
 export type EscSessionStateName = 'idle' | 'entering' | 'active' | 'orphaned' | 'exiting'

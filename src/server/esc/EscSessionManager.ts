@@ -404,6 +404,18 @@ export class EscSessionManager extends EventEmitter {
     if (session) void this.finalizeSession(session, 'link_lost')
   }
 
+  /** Terminate session when safety boundaries change (armed true, target change, link drop). */
+  handleVehicleSafetyBoundary(reason: string): void {
+    const session = this.session
+    if (session) void this.finalizeSession(session, reason)
+  }
+
+  /** End a poisoned session after a job has unwound and released activeJob. */
+  async terminate(reason: string): Promise<void> {
+    const session = this.session
+    if (session) await this.finalizeSession(session, reason)
+  }
+
   async destroy(): Promise<void> {
     this.destroyed = true
     const session = this.session

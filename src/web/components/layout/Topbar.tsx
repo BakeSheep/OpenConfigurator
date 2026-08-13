@@ -32,7 +32,7 @@ const statusMenuTriggerIds: Record<StatusMenu, string> = {
 
 export default function Topbar() {
   const { t } = useTranslation()
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
+  const { status, transportOpen, connectionGeneration, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const { theme, toggleTheme } = useThemeStore()
@@ -66,10 +66,10 @@ export default function Topbar() {
     setStatus('connecting')
     try {
       let resolved = preset
+      const scanResponse = await fetch('/api/connections/scan')
+      const scan = await scanResponse.json()
+      if (!scanResponse.ok || !scan.success) throw new Error('port scan failed')
       if (preset.type === 'serial') {
-        const scanResponse = await fetch('/api/connections/scan')
-        const scan = await scanResponse.json()
-        if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
         const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
         if (!matched) {
           setConnectionError(t('topbar.connection.presetNotFound'))
@@ -89,6 +89,16 @@ export default function Topbar() {
           setPresets(updated)
           saveConnectionPresets(updated)
         }
+      } else {
+        const matched = (scan.data.bluetooth ?? []).find((candidate: { path: string }) =>
+          candidate.path.toUpperCase() === preset.port.toUpperCase())
+        if (!matched?.portId) {
+          setConnectionError(t('topbar.connection.presetNotFound'))
+          setStatus('error')
+          setConnectDialogOpen(true)
+          return
+        }
+        resolved = { ...preset, port: matched.path, portId: matched.portId }
       }
       const res = await fetch('/api/connections/connect', {
         method: 'POST',
@@ -96,9 +106,11 @@ export default function Topbar() {
         body: JSON.stringify({
           type: resolved.type,
           port: resolved.port,
+          portId: resolved.portId,
           baudRate: resolved.baudRate,
           vendorId: resolved.vendorId,
           productId: resolved.productId,
+          ...(transportOpen ? { expectedGeneration: connectionGeneration } : {}),
         }),
       })
       const text = await res.text()

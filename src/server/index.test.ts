@@ -70,6 +70,10 @@ class FakeConnectionManager extends EventEmitter implements ConnectionManagerBou
     }
   }
 
+  prepareConnectionConfig(config: ConnectionConfig): ConnectionConfig {
+    return config
+  }
+
   async connect(config: ConnectionConfig): Promise<void> {
     if (this.connectError) throw this.connectError
     this.config = config
@@ -723,12 +727,27 @@ test('WebSocket boundary forwards a validated DataFlash log-list request', async
 })
 test('REST boundary returns stable JSON errors and accepts only validated connection configs', async () => {
   const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  const hello = await client.waitFor('hello')
+  const token = hello.data?.restControlToken
   try {
+    const unauth = await fetch(`${started.httpUrl}/api/connections/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://localhost:5173',
+      },
+      body: JSON.stringify({ type: 'serial', port: 'COM1', baudRate: 57600 }),
+    })
+    assert.equal(unauth.status, 401)
+    assert.equal((await unauth.json() as any).error.code, 'unauthorized')
+
     const invalid = await fetch(`${started.httpUrl}/api/connections/connect`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Origin: 'http://localhost:5173',
+        'X-SkyLab-Control-Token': String(token),
       },
       body: JSON.stringify({ type: 'udp', port: 'COM1', baudRate: 57600 }),
     })
@@ -779,12 +798,14 @@ test('REST boundary returns stable JSON errors and accepts only validated connec
       headers: {
         'Content-Type': 'application/json',
         Origin: 'http://127.0.0.1:5173',
+        'X-SkyLab-Control-Token': String(token),
       },
       body: JSON.stringify({ type: 'serial', port: 'COM_TEST', baudRate: 57600 }),
     })
     assert.equal(valid.status, 200)
     assert.equal(started.connManager.config?.port, 'COM_TEST')
   } finally {
+    await closeWs(client)
     await started.runtime.shutdown('test')
   }
 })
@@ -1073,8 +1094,8 @@ test('REST connection mutations respect the active WebSocket controller lease', 
       },
       body: JSON.stringify({ type: 'serial', port: 'COM_OWNER', baudRate: 57600 }),
     })
-    assert.equal(noToken.status, 409)
-    assert.equal((await noToken.json() as any).error.code, 'controller_conflict')
+    assert.equal(noToken.status, 401)
+    assert.equal((await noToken.json() as any).error.code, 'unauthorized')
 
     const observerAttempt = await fetch(`${started.httpUrl}/api/connections/disconnect`, {
       method: 'POST',
@@ -1173,12 +1194,17 @@ test('WebSocket rejects binary frames and remote mode requires a token', async (
     })
     assert.equal(withToken.status, 200)
 
+    const remoteWs = await connectWs(`${started.wsUrl}?token=${token}`)
+    const remoteHello = await remoteWs.waitFor('hello')
+    const controlToken = remoteHello.data?.restControlToken
+
     started.connManager.connectError = new Error('private path C:\\Users\\secret\\COM9 failed')
     const internalFailure = await fetch(`${started.httpUrl}/api/connections/connect`, {
       method: 'POST',
       headers: {
         Origin: 'http://localhost:5173',
         Authorization: `Bearer ${token}`,
+        'X-SkyLab-Control-Token': String(controlToken),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ type: 'serial', port: 'COM9', baudRate: 57600 }),

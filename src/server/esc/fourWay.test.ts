@@ -104,4 +104,14 @@ function buildResponse(command: number, address: number, params: number[], ack: 
   assert.ok(invalidCmd instanceof EscError && !invalidCmd.retryable)
 }
 
+// Re-synchronization past false 0x2E noise byte.
+{
+  const valid = buildResponse(FOUR_WAY_COMMANDS.DeviceRead, 0, [4, 5, 6], FOUR_WAY_ACK.OK)
+  // Insert a spurious 0x2e with corrupt data before the valid frame
+  const noiseWithFalse2e = Uint8Array.of(0x2e, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00, ...valid)
+  assert.equal(fourWayFrameLength(noiseWithFalse2e), noiseWithFalse2e.length)
+  const decoded = decodeFourWay(noiseWithFalse2e)
+  assert.deepEqual([...decoded.params], [4, 5, 6])
+}
+
 console.log('4-way interface codec golden vectors passed')

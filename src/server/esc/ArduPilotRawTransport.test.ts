@@ -270,6 +270,20 @@ async function run(): Promise<void> {
     assert.equal(bridge.resumeCalls, 1)
   }
 
+  // RX buffer overflow test (M4).
+  {
+    const conn = new FakeRawSession()
+    const bridge = new FakeBridge()
+    const t = new ArduPilotRawTransport({ connManager: conn, bridge, settleMs: 0 })
+    await t.open(AP_TARGET, new AbortController().signal)
+    const pending = t.transact(Uint8Array.of(0x2f), { timeoutMs: 500, frameLength: fixedFrame(5000) }, new AbortController().signal)
+    await wait(5)
+    // Deliver 4097 bytes of data to trigger overflow
+    conn.deliver(new Array(4097).fill(0x01))
+    await expectEscError(pending, 'rx_overflow', 'rx buffer overflow')
+    await t.close('done')
+  }
+
   console.log('ArduPilotRawTransport tests passed')
 }
 

@@ -42,7 +42,7 @@ interface PickedPort {
 }
 
 export default function ConnectDialog() {
-  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen, setActivePresetId } = useConnectionStore()
+  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionGeneration, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen, setActivePresetId } = useConnectionStore()
   const { t } = useTranslation()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
@@ -176,7 +176,10 @@ export default function ConnectDialog() {
           'Content-Type': 'application/json',
           ...getRestControlHeaders(),
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          ...(transportOpen ? { expectedGeneration: connectionGeneration } : {}),
+        }),
       })
       // Robust JSON parse - backend may return empty body on crash/hang
       const text = await res.text()
@@ -208,6 +211,7 @@ export default function ConnectDialog() {
         await postConnect({
           type: 'bluetooth',
           port: selectedBtPort,
+          portId: selected?.portId,
           baudRate,
           vendorId: selected?.vendorId,
           productId: selected?.productId,
@@ -216,9 +220,15 @@ export default function ConnectDialog() {
         return
       }
       if (!pickedBt) { setError(t('connect.selectPairedBtOrBrowser')); return }
+      const matches = bluetoothPorts.filter((port) =>
+        (!pickedBt.vendorId || port.vendorId?.toUpperCase() === pickedBt.vendorId.toUpperCase())
+        && (!pickedBt.productId || port.productId?.toUpperCase() === pickedBt.productId.toUpperCase()))
+      const matched = matches.length === 1 ? matches[0] : undefined
+      if (!matched?.portId) { setError(t('connect.scanFailed')); return }
       await postConnect({
         type: 'bluetooth',
-        port: pickedBt.label,
+        port: matched.path,
+        portId: matched.portId,
         baudRate,
         vendorId: pickedBt.vendorId,
         productId: pickedBt.productId,
@@ -231,6 +241,7 @@ export default function ConnectDialog() {
     await postConnect({
       type: 'serial',
       port: selectedPort,
+      portId: selected?.portId,
       baudRate,
       vendorId: selected?.vendorId,
       productId: selected?.productId,

@@ -78,6 +78,8 @@ function defaultWait(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
+export const MAX_RX_BUFFER_BYTES = 4096
+
 export class Px4SerialControlTransport implements EscByteTransport {
   readonly kind = 'px4_serial_control' as const
   readonly capabilities: EscTransportCapabilities
@@ -91,7 +93,9 @@ export class Px4SerialControlTransport implements EscByteTransport {
   private offReply: (() => void) | null = null
   private closed = false
   private inFlight = false
-  private rxChunks: Uint8Array[] = []
+  private readonly rxBuffer = new Uint8Array(MAX_RX_BUFFER_BYTES)
+  private rxOffset = 0
+  private failCurrent: ((error: EscError) => void) | null = null
   private pump: (() => void) | null = null
   private readonly abortedListeners = new Set<(error: EscError) => void>()
 
@@ -123,6 +127,9 @@ export class Px4SerialControlTransport implements EscByteTransport {
     if (target.channels.length === 0) {
       throw new EscError('validation_failed', '未指定 ESC 通道')
     }
+    if (new Set(target.channels).size !== target.channels.length) {
+      throw new EscError('validation_failed', 'ESC 通道包含重复项')
+    }
     for (const device of target.channels) {
       if (
         !Number.isInteger(device)
@@ -147,7 +154,15 @@ export class Px4SerialControlTransport implements EscByteTransport {
       // Only accept vehicle-originated data (REPLY flag set).
       if ((reply.flags & SERIAL_CONTROL_FLAGS.Reply) === 0) return
       const count = Math.min(reply.count, SERIAL_CONTROL_MAX_DATA)
-      this.rxChunks.push(Uint8Array.from(Array.from(reply.data).slice(0, count)))
+      if (this.rxOffset + count > MAX_RX_BUFFER_BYTES) {
+        this.failCurrent?.(new EscError('rx_overflow', '接收缓冲区溢出'))
+        return
+      }
+      const data = reply.data
+      for (let i = 0; i < count; i++) {
+        this.rxBuffer[this.rxOffset + i] = data[i]
+      }
+      this.rxOffset += count
       this.pump?.()
     })
 
@@ -180,7 +195,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
     if (signal.aborted) throw new EscError('cancelled', 'ESC 请求已取消')
 
     this.inFlight = true
-    this.rxChunks = []
+    this.rxOffset = 0
     const device = this.activeDevice
     try {
       return await new Promise<Uint8Array>((resolve, reject) => {
@@ -189,6 +204,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
           clearTimeout(timer)
           signal.removeEventListener('abort', onAbort)
           this.pump = null
+          this.failCurrent = null
         }
         const finish = (value: Uint8Array) => {
           if (settled) return
@@ -202,13 +218,14 @@ export class Px4SerialControlTransport implements EscByteTransport {
           cleanup()
           reject(error)
         }
+        this.failCurrent = fail
         const onAbort = () => fail(new EscError('cancelled', 'ESC 请求已取消'))
         const timer = setTimeout(() => {
           fail(new EscError('timeout', `ESC 请求超时（${options.label ?? 'transact'}）`))
         }, options.timeoutMs)
         signal.addEventListener('abort', onAbort, { once: true })
         this.pump = () => {
-          const buffered = concatChunks(this.rxChunks)
+          const buffered = this.rxBuffer.subarray(0, this.rxOffset)
           let length: number | null
           try {
             length = options.frameLength(buffered)
@@ -218,7 +235,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
           }
           if (length === null) return
           if (buffered.length < length) return
-          finish(buffered.subarray(0, length))
+          finish(buffered.slice(0, length))
         }
         // Send the request in <=70-byte chunks; each asks for a response.
         for (let offset = 0; offset < request.length; offset += SERIAL_CONTROL_MAX_DATA) {
@@ -252,7 +269,8 @@ export class Px4SerialControlTransport implements EscByteTransport {
     } finally {
       this.inFlight = false
       this.pump = null
-      this.rxChunks = []
+      this.failCurrent = null
+      this.rxOffset = 0
     }
   }
 
@@ -293,17 +311,4 @@ export class Px4SerialControlTransport implements EscByteTransport {
       }
     }
   }
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  if (chunks.length === 1) return chunks[0]
-  let total = 0
-  for (const chunk of chunks) total += chunk.length
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    out.set(chunk, offset)
-    offset += chunk.length
-  }
-  return out
 }

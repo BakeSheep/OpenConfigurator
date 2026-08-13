@@ -12,12 +12,17 @@ const STEPS: readonly RadioCalibrationStep[] = [
   'roll_right', 'roll_left', 'pitch_up', 'pitch_down', 'aux_sweep', 'review',
 ]
 const ORPHAN_GRACE_MS = 30_000
+const WRITE_TIMEOUT_MS = 10_000
 const TERMINAL_RETENTION_MS = 5 * 60_000
 const ACTION_THRESHOLD = 300
 const SETTLE_THRESHOLD = 20
 const ENDPOINT_LOW = 1300
 const ENDPOINT_HIGH = 1700
 const RC_SAMPLE_MAX_AGE_MS = 1_500
+
+export interface RadioCalibrationWriteHandle {
+  cancel(reason?: string): void
+}
 
 type PrimaryFunction = 'roll' | 'pitch' | 'throttle' | 'yaw'
 
@@ -28,6 +33,8 @@ interface ActiveSession {
   ownerClientId: string
   recoverUntil: number | null
   orphanTimer: ReturnType<typeof setTimeout> | null
+  writeTimer: ReturnType<typeof setTimeout> | null
+  writeHandle: RadioCalibrationWriteHandle | null
   seq: number
   phase: RadioCalibrationSnapshot['phase']
   stepIndex: number
@@ -61,7 +68,7 @@ export interface RadioCalibrationManagerOptions {
     mapped: Partial<Record<PrimaryFunction, number>>,
     expectedVehicleFingerprint: string,
     completion: (accepted: boolean, reason?: string, rollbackFailures?: string[]) => void,
-  ) => void
+  ) => RadioCalibrationWriteHandle | void
   notifyCalibration: (active: boolean) => void
   getVehicleContext: () => VehicleContext | null
   isLinkBusy?: () => string | null
@@ -145,6 +152,8 @@ export class RadioCalibrationSessionManager {
       ownerClientId: clientId,
       recoverUntil: null,
       orphanTimer: null,
+      writeTimer: null,
+      writeHandle: null,
       seq: 0,
       phase: 'sampling',
       stepIndex: 0,
@@ -176,20 +185,32 @@ export class RadioCalibrationSessionManager {
       active.phase = 'writing'
       this.publish(active)
       this.options.notifyCalibration(false)
-      this.options.applyCalibration(
+      let writeCompleted = false
+      active.writeTimer = setTimeout(() => {
+        if (writeCompleted || !this.active || this.active.sessionId !== active.sessionId) return
+        active.writeTimer = null
+        active.writeHandle?.cancel('write_timeout')
+      }, WRITE_TIMEOUT_MS)
+      active.writeTimer.unref?.()
+      active.writeHandle = this.options.applyCalibration(
         message.requestId,
         this.channels(active),
         active.mapped,
         active.vehicleFingerprint,
         (accepted, reason, rollbackFailures) => {
-        if (!this.active || this.active.sessionId !== active.sessionId) return
-        active.phase = accepted ? 'done' : 'failed'
-        active.failureCode = accepted ? undefined : 'write_failed'
-        active.failureReason = accepted ? undefined : `${reason ?? '参数写入失败'}${rollbackFailures?.length ? `；回滚失败：${rollbackFailures.join(', ')}` : ''}`
-        this.publish(active)
-        this.finish(active)
+          if (writeCompleted) return
+          writeCompleted = true
+          if (active.writeTimer) clearTimeout(active.writeTimer)
+          active.writeTimer = null
+          active.writeHandle = null
+          if (!this.active || this.active.sessionId !== active.sessionId) return
+          active.phase = accepted ? 'done' : 'failed'
+          active.failureCode = accepted ? undefined : (reason === 'write_timeout' ? 'write_timeout' : 'write_failed')
+          active.failureReason = accepted ? undefined : `${reason ?? '参数写入失败'}${rollbackFailures?.length ? `；回滚失败：${rollbackFailures.join(', ')}` : ''}`
+          this.publish(active)
+          this.finish(active)
         },
-      )
+      ) ?? { cancel() {} }
       return
     }
     if (active.phase !== 'sampling') return
@@ -222,6 +243,7 @@ export class RadioCalibrationSessionManager {
     active.recoverUntil = this.now() + ORPHAN_GRACE_MS
     active.orphanTimer = setTimeout(() => {
       if (!this.active || this.active.sessionId !== active.sessionId || active.ownerClientId) return
+      if (active.phase === 'writing') return
       active.phase = 'cancelled'
       active.failureCode = 'owner_lost'
       active.failureReason = '会话所有者未在宽限期内重连'
@@ -261,6 +283,10 @@ export class RadioCalibrationSessionManager {
     this.clearRcSamples()
     const active = this.active
     if (!active || !this.sessionActive) return
+    if (active.phase === 'writing') {
+      active.writeHandle?.cancel(reason)
+      return
+    }
     active.phase = 'failed'
     active.failureCode = reason
     active.failureReason = reason === 'vehicle_armed'
@@ -379,6 +405,10 @@ export class RadioCalibrationSessionManager {
   private finish(active: ActiveSession): void {
     if (!this.active || this.active.sessionId !== active.sessionId) return
     if (active.orphanTimer) clearTimeout(active.orphanTimer)
+    if (active.writeTimer) clearTimeout(active.writeTimer)
+    active.orphanTimer = null
+    active.writeTimer = null
+    active.writeHandle = null
     this.retained = this.snapshot(active)
     this.active = null
     this.options.releaseController(active.sessionId)

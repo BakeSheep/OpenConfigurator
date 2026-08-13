@@ -35,6 +35,8 @@ export interface EscServiceOptions {
   getVehicleIdentity?: () => VehicleIdentity | null
   /** Latest server-validated vehicle parameter, or null when not synchronized. */
   getParameterValue?: (id: string) => number | null
+  /** Latest server-authoritative armed state, or null when unknown. */
+  getArmedState?: () => boolean | null
   pinController: (ownerClientId: string, sessionId: string) => void
   releaseController: (sessionId: string) => void
   /** Reason string when the MAVLink link is busy (param sync/FTP/log), else null. */
@@ -105,6 +107,11 @@ export class EscService {
     return this.options.logger ?? console
   }
 
+  private getArmedState(): boolean | null {
+    if (this.options.getArmedState) return this.options.getArmedState()
+    return (this.options.bridge as unknown as { armedState?: boolean | null })?.armedState ?? null
+  }
+
   private createTransport(target: EscTransportTarget): EscByteTransport {
     if (this.options.transportFactory) {
       const transport = this.options.transportFactory(target)
@@ -121,7 +128,23 @@ export class EscService {
         })
         break
       case 'px4_serial_control':
-        transport = new Px4SerialControlTransport({ bridge: this.options.bridge })
+        transport = new Px4SerialControlTransport({
+          bridge: this.options.bridge,
+          preflight: () => {
+            const armed = this.getArmedState()
+            if (armed === null) {
+              return new EscError('precondition_failed', '飞控解锁状态未知，拒绝进入 ESC 会话')
+            }
+            if (armed === true) {
+              return new EscError('precondition_failed', '飞控已解锁，拒绝进入 ESC 会话')
+            }
+            const busy = this.options.isLinkBusy?.()
+            if (busy) {
+              return new EscError('busy', `链路正忙（${busy}），无法进入 ESC 直通`)
+            }
+            return null
+          },
+        })
         break
       case 'direct':
         transport = new ArduPilotRawTransport({
@@ -151,7 +174,7 @@ export class EscService {
   }
 
   /** Route an already-validated esc_* client message. */
-  async handleClientMessage(clientId: string, message: EscClientMessage): Promise<void> {
+  async handleClientMessage(clientId: string, message: EscClientMessage): Promise<boolean> {
     try {
       switch (message.type) {
         case 'esc_session_start':
@@ -179,9 +202,21 @@ export class EscService {
           await this.runSettingsWrite(clientId, message.data.sessionId, message.data.targets, message.data.values)
           break
       }
+      return true
     } catch (error) {
       const escError = toEscError(error)
       this.emitOpError(message.type, escError, message.requestId)
+      return false
+    }
+  }
+
+  /** Side-effect-free admission check used before the controller lease gate. */
+  validateStart(message: Extract<EscClientMessage, { type: 'esc_session_start' }>): EscError | null {
+    try {
+      this.assertStartPreconditions(message)
+      return null
+    } catch (error) {
+      return toEscError(error)
     }
   }
 
@@ -189,11 +224,47 @@ export class EscService {
     clientId: string,
     message: Extract<EscClientMessage, { type: 'esc_session_start' }>,
   ): Promise<void> {
+    this.assertStartPreconditions(message)
+
+    const target: EscTransportTarget =
+      message.data.mode === 'ardupilot_passthrough'
+        ? { mode: 'ardupilot_passthrough' }
+        : message.data.mode === 'px4_serial_control'
+          ? { mode: 'px4_serial_control', channels: message.data.channels }
+          : { mode: 'direct', port: this.options.connManager.config!.port, baudRate: 19200 }
+
+    const { sessionId, recoveryToken } = await this.manager.start(clientId, target, true)
+    this.currentSessionId = sessionId
+    this.options.emitToClient?.(clientId, {
+      type: 'esc_session_started',
+      data: { sessionId, recoveryToken },
+    })
+    this.log(sessionId, 'info', `ESC 会话已建立（${message.data.mode}）`)
+    await this.runScan(clientId, sessionId, message.requestId)
+  }
+
+  private assertStartPreconditions(
+    message: Extract<EscClientMessage, { type: 'esc_session_start' }>,
+  ): void {
     if (message.safetyConfirmation !== ESC_SESSION_SAFETY_CONFIRMATION) {
       throw new EscError(
         'precondition_failed',
         '进入 ESC 配置前必须确认已拆除螺旋桨且供电持续稳定',
       )
+    }
+    const busy = this.options.isLinkBusy?.()
+    if (busy) {
+      throw new EscError('busy', `链路正忙（${busy}），无法进入 ESC 会话`)
+    }
+    if (this.manager.hasSession) throw new EscError('session_exists', '已有 ESC 会话进行中')
+    if (message.data.mode === 'ardupilot_passthrough' || message.data.mode === 'px4_serial_control') {
+      const armed = this.getArmedState()
+      if (armed === null) {
+        throw new EscError('precondition_failed', '飞控解锁状态未知，拒绝进入 ESC 直通')
+      }
+      if (armed === true) {
+        throw new EscError('precondition_failed', '飞控已解锁，拒绝进入 ESC 直通')
+      }
     }
     const identity = this.options.getVehicleIdentity?.() ?? null
     const family = identity?.family ?? 'unknown'
@@ -233,22 +304,6 @@ export class EscService {
       throw new EscError('precondition_failed', '必须先设置 PASSTHRU_EN=1 并重启 PX4')
     }
 
-    const target: EscTransportTarget =
-      message.data.mode === 'ardupilot_passthrough'
-        ? { mode: 'ardupilot_passthrough' }
-        : message.data.mode === 'px4_serial_control'
-          ? { mode: 'px4_serial_control', channels: message.data.channels }
-          : { mode: 'direct', port: this.options.connManager.config!.port, baudRate: 19200 }
-
-    const { sessionId, recoveryToken } = await this.manager.start(clientId, target, true)
-    this.currentSessionId = sessionId
-    this.options.emitToClient?.(clientId, {
-      type: 'esc_session_started',
-      data: { sessionId, recoveryToken },
-    })
-    this.log(sessionId, 'info', `ESC 会话已建立（${message.data.mode}）`)
-    // Auto-scan immediately after entering the session.
-    await this.runScan(clientId, sessionId, message.requestId)
   }
 
   private async runScan(clientId: string, sessionId: string, requestId?: string): Promise<void> {
@@ -380,6 +435,7 @@ export class EscService {
     values: EscSettingsValues,
   ): Promise<void> {
     const transport = this.requireSettingsTransport(sessionId)
+    let terminateReason: string | null = null
     const completed = await this.manager.runExclusiveJob(clientId, 'settings_write', async ({ jobId, signal }) => {
       const service = new Am32SettingsService(new FourWayClient(transport))
       const perTarget: EscJobTargetResult[] = []
@@ -404,6 +460,7 @@ export class EscService {
             message: `正在写入 ESC #${escIndex + 1}`,
           },
         })
+        let targetOk = false
         try {
           const device = this.devices.get(escIndex)
           const raw = this.rawSettings.get(escIndex)
@@ -415,28 +472,51 @@ export class EscService {
           this.rawSettings.set(escIndex, result.raw)
           this.options.emit({ type: 'esc_settings', data: result.snapshot })
           perTarget.push({ escIndex, ok: true })
+          targetOk = true
         } catch (error) {
           const escError = toEscError(error)
+          const writeStateUnknown = escError.code === 'write_state_unknown'
+          if (writeStateUnknown) {
+            this.rawSettings.delete(escIndex)
+            const existingDevice = this.devices.get(escIndex)
+            if (existingDevice) this.devices.set(escIndex, { ...existingDevice, writable: false, reason: 'write_state_unknown' })
+          }
           perTarget.push({ escIndex, ok: false, error: escError.toOperationError('esc_settings_write') })
+
+          // Only a post-write unknown state warrants device reset. Pure
+          // precondition failures must not mutate or exit the live session.
+          if (writeStateUnknown) try {
+            const recoveryClient = new FourWayClient(transport)
+            await recoveryClient.reset(escIndex, signal).catch(() => {})
+          } catch {
+            // best-effort
+          }
+          if (writeStateUnknown || ['link_lost', 'link_unavailable', 'rx_overflow'].includes(escError.code)) {
+            terminateReason = escError.code
+          }
+          break
         }
-        this.options.emit({
-          type: 'esc_job_progress',
-          data: {
-            sessionId,
-            jobId,
-            kind: 'settings_write',
-            escIndex,
-            phase: 'verify',
-            bytesDone: AM32_LAYOUT_SIZE,
-            bytesTotal: AM32_LAYOUT_SIZE,
-            currentTargetOrdinal: ordinal + 1,
-            targetCount: targets.length,
-          },
-        })
+        if (targetOk) {
+          this.options.emit({
+            type: 'esc_job_progress',
+            data: {
+              sessionId,
+              jobId,
+              kind: 'settings_write',
+              escIndex,
+              phase: 'verify',
+              bytesDone: AM32_LAYOUT_SIZE,
+              bytesTotal: AM32_LAYOUT_SIZE,
+              currentTargetOrdinal: ordinal + 1,
+              targetCount: targets.length,
+            },
+          })
+        }
       }
       return { jobId, perTarget }
     })
     this.emitDevices(sessionId)
+    if (terminateReason) await this.manager.terminate(terminateReason)
     this.options.emit({
       type: 'esc_job_done',
       data: {
@@ -501,8 +581,15 @@ export class EscService {
   }
 
   handleMavlinkStatus(status: string): void {
-    if (status !== 'connected' && this.manager.snapshot().mode === 'px4_serial_control') {
+    if (status !== 'connected') {
       this.manager.handleExternalLinkLost()
+    }
+  }
+
+  handleVehicleSafetyBoundary(reason: string): void {
+    const mode = this.manager.snapshot().mode
+    if (mode === 'ardupilot_passthrough' || mode === 'px4_serial_control') {
+      this.manager.handleVehicleSafetyBoundary(reason)
     }
   }
 

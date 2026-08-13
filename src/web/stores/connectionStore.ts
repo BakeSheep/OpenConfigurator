@@ -28,6 +28,7 @@ interface ConnectionState {
   transportOpen: boolean
   vehicleReady: boolean
   rawSessionActive: boolean
+  connectionGeneration: number
   port: string | null
   type: string | null
   baudRate: number | null
@@ -57,6 +58,7 @@ interface ConnectionState {
     transportOpen: boolean
     vehicleReady: boolean
     rawSessionActive: boolean
+    connectionGeneration?: number
     safetyEpoch: number
     safetyAuthorityId: string
     port?: string
@@ -80,6 +82,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   transportOpen: false,
   vehicleReady: false,
   rawSessionActive: false,
+  connectionGeneration: 0,
   port: null,
   type: null,
   baudRate: null,
@@ -106,6 +109,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     transportOpen: snapshot.transportOpen,
     vehicleReady: snapshot.vehicleReady,
     rawSessionActive: snapshot.rawSessionActive,
+    connectionGeneration: snapshot.connectionGeneration ?? state.connectionGeneration,
     port: snapshot.port ?? (snapshot.transportOpen ? state.port : null),
     type: snapshot.type ?? (snapshot.transportOpen ? state.type : null),
     baudRate: snapshot.baudRate ?? (snapshot.transportOpen ? state.baudRate : null),

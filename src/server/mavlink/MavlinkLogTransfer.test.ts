@@ -441,6 +441,21 @@ async function testWriteRejected(): Promise<void> {
   assert.equal(service.busy, false)
 }
 
+async function testDownloadLargerThanUint16Request(): Promise<void> {
+  const { transport, service } = await makeService()
+  const content = Buffer.alloc(70_000)
+  for (let index = 0; index < content.length; index++) content[index] = index % 251
+  serveLog(transport, 8, content)
+  service.startDownload(8)
+  await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
+  const dataRequests = transport.requests.filter((request): request is Extract<LogTransferRequest, { kind: 'data' }> => request.kind === 'data')
+  assert.ok(dataRequests.length >= 2)
+  assert.ok(dataRequests.every((request) => request.count > 0 && request.count <= 0xffff))
+  const record = service.getDownload(transport.messagesOfType('log_download_complete')[0].data.downloadId)
+  assert.ok(record)
+  assert.deepEqual(await fsp.readFile(record.filePath), content)
+}
+
 async function testOversizedDownloadRejectedBeforeTempFile(): Promise<void> {
   const { transport, service, dir } = await makeService()
   transport.responder = (request) => {
@@ -468,6 +483,7 @@ async function main(): Promise<void> {
   await testListRetryMissingRange()
   await testListTimeout()
   await testDownloadSequential()
+  await testDownloadLargerThanUint16Request()
   await testDownloadGapRecovery()
   await testDownloadOutOfOrderChunks()
   await testDownloadTruncatedByEndMarker()

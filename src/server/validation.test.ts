@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { InputValidationError, parseClientMessage } from './validation'
+import { InputValidationError, parseClientMessage, parseConnectionConfig } from './validation'
 
 // ---------------------------------------------------------------------------
 // Boundary validation for calibration session messages. The parser must be a
@@ -355,5 +355,38 @@ assert.equal(parseClientMessage({
   type: 'radio_calibration_reclaim', requestId: 'radio-r',
   data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
 }).type, 'radio_calibration_reclaim')
+
+// param_set safety confirmation validation
+const paramSetConfirmed = parseClientMessage({
+  type: 'param_set',
+  requestId: 'param-1',
+  safetyConfirmation: 'reduce_failsafe_protection',
+  expectedSafetyEpoch: 7,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  data: { id: 'ARMING_CHECK', value: 0, paramType: 6 },
+})
+assert.equal(paramSetConfirmed.type, 'param_set')
+
+expectFail(
+  {
+    type: 'param_set',
+    requestId: 'param-bad',
+    safetyConfirmation: 'invalid_confirmation',
+    data: { id: 'ARMING_CHECK', value: 0, paramType: 6 },
+  },
+  'invalid_safety_confirmation',
+  'param_set with invalid safety confirmation',
+)
+
+// parseConnectionConfig portId and expectedGeneration
+const parsedConfig = parseConnectionConfig({
+  type: 'serial',
+  port: 'COM1',
+  baudRate: 57600,
+  portId: 'port_1',
+  expectedGeneration: 3,
+})
+assert.equal(parsedConfig.portId, 'port_1')
+assert.equal(parsedConfig.expectedGeneration, 3)
 
 console.log('calibration boundary validation checks passed')

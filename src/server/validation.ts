@@ -261,13 +261,17 @@ function escChannels(value: unknown): number[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > ESC_MAX_TARGETS) {
     fail('invalid_params', `data.channels 必须是 1..${ESC_MAX_TARGETS} 项的数组`, 'data.channels')
   }
-  return value.map((item, index) =>
+  const channels = value.map((item, index) =>
     finiteNumber(item, `data.channels[${index}]`, {
       min: PX4_ESC_SERIAL_CONTROL_DEVICE_MIN,
       max: PX4_ESC_SERIAL_CONTROL_DEVICE_MAX,
       integer: true,
     })
   )
+  if (new Set(channels).size !== channels.length) {
+    fail('invalid_params', 'data.channels 包含重复通道', 'data.channels')
+  }
+  return channels
 }
 
 /** Validate a settings write map: bounded key count, finite numeric values. */
@@ -406,9 +410,17 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       if (!PARAM_TYPES.has(paramType)) {
         fail('unsupported_param_type', `不支持的 MAV_PARAM_TYPE：${paramType}`, 'data.paramType')
       }
+      const confirmation = input.safetyConfirmation
+      if (confirmation !== undefined && confirmation !== 'reduce_failsafe_protection') {
+        fail('invalid_safety_confirmation', '配置安全确认值无效', 'safetyConfirmation')
+      }
+      const safety = confirmation === 'reduce_failsafe_protection'
+        ? requiredSafetyContext(input, '降低失效保护')
+        : { expectedSafetyEpoch: undefined, expectedSafetyAuthorityId: undefined }
       return withRequestId({
         type: 'param_set',
         data: { id: paramId, value: paramValue, paramType },
+        ...(confirmation ? { safetyConfirmation: confirmation, ...safety } : {}),
       }, id) as BoundaryClientMessage
     }
 
@@ -1049,10 +1061,21 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
     },
   )
 
+  const portId = optionalText(input.portId, 'portId', {
+    minBytes: 1,
+    maxBytes: 64,
+    pattern: /^[\x20-\x7e]+$/,
+  })
+  const expectedGeneration = input.expectedGeneration !== undefined
+    ? finiteNumber(input.expectedGeneration, 'expectedGeneration', { min: 1, integer: true })
+    : undefined
+
   return {
     type: input.type,
     port,
     baudRate,
+    ...(portId === undefined ? {} : { portId }),
+    ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
     ...(vendorId === undefined ? {} : { vendorId }),
     ...(productId === undefined ? {} : { productId }),
     ...(bluetoothServiceClassId === undefined ? {} : { bluetoothServiceClassId }),

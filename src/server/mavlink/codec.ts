@@ -92,6 +92,7 @@ const SUPPORTED_INCOMPATIBILITY_FLAGS = MavLinkProtocolV2.IFLAG_SIGNED
 const DEFAULT_MAX_BUFFERED_BYTES = 4096
 const MAX_TRACKED_SOURCES = 256
 const SIGNATURE_MAX_AGE_TICKS = 6_000_000
+export const SIGNATURE_MAX_FUTURE_TICKS = 500_000
 
 const decodeProtocol = new MavLinkProtocolV2()
 
@@ -494,6 +495,14 @@ export class MavlinkCodecSession extends EventEmitter {
         // explicitly opt into monotonic-only first-contact compatibility via
         // MAVLINK_SIGNING_ALLOW_STALE_FIRST=1; that trade-off is never implicit.
         const localTimestamp = (Date.now() - MavLinkProtocolV2.SIGNATURE_START_TIME) * 100
+        if (
+          !signing.allowStaleFirstPacket
+          && timestamp > localTimestamp + SIGNATURE_MAX_FUTURE_TICKS
+        ) {
+          this.counters.rejectedPackets++
+          this.emit('packetRejected', 'signature_future')
+          return
+        }
         if (
           previous === undefined
           && !signing.allowStaleFirstPacket

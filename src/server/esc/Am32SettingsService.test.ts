@@ -187,3 +187,62 @@ test('AM32 write patches fresh EEPROM and preserves its unknown bytes', async ()
   assert.equal(result.raw[unknownOffset], 0x77)
   assert.equal(stale[unknownOffset], 0x11, 'caller snapshot is not mutated')
 })
+
+test('AM32 write classifies readback verify mismatch as write_state_unknown (H4)', async () => {
+  const fresh = eeprom(3)
+  // Create a fourWay where read returns different content after write
+  let readCount = 0
+  const badFourWay = {
+    async initFlash() { return initIdentity() },
+    async read() {
+      readCount++
+      if (readCount === 1) return response(fresh.slice())
+      // Return corrupted verify data
+      const corrupt = fresh.slice()
+      corrupt[0x11] = 0x99
+      return response(corrupt)
+    },
+    async write() { return response(Uint8Array.of(0)) },
+  }
+  const service = new Am32SettingsService(badFourWay as any)
+
+  await assert.rejects(
+    service.write(
+      'session-verify-fail',
+      device({ layoutRevision: 3 }),
+      fresh,
+      { motorDirection: 1 },
+      new AbortController().signal,
+    ),
+    (error: unknown) =>
+      error instanceof EscError
+      && error.code === 'write_state_unknown'
+      && error.escIndex === 2
+      && error.retryable === false,
+  )
+})
+
+test('AM32 write classifies timeout / link failure as write_state_unknown (H4)', async () => {
+  const fresh = eeprom(3)
+  const failFourWay = {
+    async initFlash() { return initIdentity() },
+    async read() { return response(fresh.slice()) },
+    async write() { throw new EscError('timeout', '超时') },
+  }
+  const service = new Am32SettingsService(failFourWay as any)
+
+  await assert.rejects(
+    service.write(
+      'session-write-timeout',
+      device({ layoutRevision: 3 }),
+      fresh,
+      { motorDirection: 1 },
+      new AbortController().signal,
+    ),
+    (error: unknown) =>
+      error instanceof EscError
+      && error.code === 'write_state_unknown'
+      && error.escIndex === 2
+      && error.retryable === false,
+  )
+}) // End of AM32 settings safety regression tests.
