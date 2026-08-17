@@ -13,12 +13,7 @@
   <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest"><b>Latest Release</b></a> ·
   <a href="README.md">中文说明</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
-  <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
-
-> [!TIP]
-> The [live demo](https://bakesheep.github.io/OpenConfigurator/) is a static, read-only preview with synthetic data. It has no backend and cannot connect to devices or perform writes. To connect a flight controller, run the local web service or download the desktop build from the [latest Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest).
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="Flight overview with demo data" width="860" />
@@ -97,14 +92,6 @@ Common commands:
 | `npm start` | Start the local production service |
 | `npm run dist:win` | Build a portable Windows x64 EXE |
 
-## Desktop build
-
-The Electron package bundles its runtime, so end users do not need Node.js or npm. The desktop shell starts the local service on a random `127.0.0.1` port and reuses the same React frontend. Build artifacts are written to `release/`:
-
-```bash
-npm run dist:win
-```
-
 ## Architecture
 
 ```text
@@ -123,14 +110,6 @@ Express / ws ── validation / controller lease
 
 See the [architecture document](docs/ARCHITECTURE.md) for detailed design and constraints.
 
-## Safety limitations
-
-- Remove all propellers before motor tests or ESC reads/writes. Do not interrupt power or the connection during an ESC write.
-- Arming requires explicit confirmation; gamepad RC override must be enabled manually by the operator.
-- An open serial transport does not mean the vehicle is ready. Writes require a valid heartbeat from the selected target and the controller lease.
-- Remote deployments require HTTPS/WSS, a strong random token, an exact Origin allowlist, and network isolation.
-- Unlisted or unvalidated combinations are not compatibility, airworthiness, or flight-safety guarantees.
-
 ## Documentation and license
 
 - [Architecture](docs/ARCHITECTURE.md)
@@ -140,7 +119,6 @@ See the [architecture document](docs/ARCHITECTURE.md) for detailed design and co
 - [Structured flight logs](docs/STRUCTURED-FLIGHT-LOG.md)
 - [ESC compatibility](docs/ESC-COMPATIBILITY.md)
 - [ESC protocol sources](docs/ESC-PROTOCOL-SOURCES.md)
-- [Contributing](CONTRIBUTING.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 OpenConfigurator is licensed under the [MIT License](LICENSE). The project is not affiliated with PX4, ArduPilot, MAVLink, MicoAir, or QGroundControl.
