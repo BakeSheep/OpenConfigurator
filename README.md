@@ -10,15 +10,9 @@
 
 <p align="center">
   <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线预览</b></a> ·
-  <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest"><b>最新 Release</b></a> ·
   <a href="README.en.md">English</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
-  <a href="CHANGELOG.md">变更记录</a> ·
-  <a href="CONTRIBUTING.md">参与贡献</a>
 </p>
-
-> [!TIP]
-> [在线预览](https://bakesheep.github.io/OpenConfigurator/) 是使用合成数据的静态只读演示，没有后端服务，不能连接真实设备或执行写操作。连接飞控请使用本地 Web 服务或从 [最新 Release](https://github.com/BakeSheep/OpenConfigurator/releases/latest) 下载桌面版。
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="使用演示数据的飞行总览" width="860" />
@@ -97,14 +91,6 @@ npm start
 | `npm start` | 启动本地生产服务 |
 | `npm run dist:win` | 构建 Windows x64 portable EXE |
 
-## 桌面版
-
-Electron 包内置运行时，最终用户无需安装 Node.js 或 npm。桌面壳会在随机分配的 `127.0.0.1` 端口启动本机服务，并复用同一套 React 前端。构建产物位于 `release/`：
-
-```bash
-npm run dist:win
-```
-
 ## 架构
 
 ```text
@@ -123,14 +109,6 @@ Express / ws ── validation / controller lease
 
 详细设计与约束见 [架构文档](docs/ARCHITECTURE.md)。
 
-## 安全限制
-
-- 电机测试或 ESC 读写前必须拆除全部螺旋桨；ESC 写入期间不得断电或断开连接。
-- 解锁需要明确确认；手柄 RC override 必须由操作者手动启用。
-- 串口打开不等于飞控已就绪；必须收到所选目标的有效心跳并取得控制权后才能写入。
-- 远程部署必须使用 HTTPS/WSS、强随机 token、精确 Origin 白名单和网络隔离。
-- 未列明或未经实机验证的组合不构成兼容性、适航性或飞行安全承诺。
-
 ## 文档与许可
 
 - [架构](docs/ARCHITECTURE.md)
@@ -140,7 +118,6 @@ Express / ws ── validation / controller lease
 - [结构化飞行日志](docs/STRUCTURED-FLIGHT-LOG.md)
 - [ESC 兼容性](docs/ESC-COMPATIBILITY.md)
 - [ESC 协议来源](docs/ESC-PROTOCOL-SOURCES.md)
-- [贡献指南](CONTRIBUTING.md)
 - [第三方说明](THIRD_PARTY_NOTICES.md)
 
 OpenConfigurator 采用 [MIT License](LICENSE)。项目与 PX4、ArduPilot、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系。
