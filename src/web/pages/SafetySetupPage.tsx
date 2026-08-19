@@ -54,15 +54,6 @@ export default function SafetySetupPage() {
 
   return (
     <div className="mc-setup-page mc-fade-in">
-      <section className="mc-card mc-safety-hero" data-state={status?.failsafe ?? 'unknown'}>
-        <div>
-          <span className="mc-eyebrow">{t('vehicleSetup.safetyOverview')}</span>
-          <h3>{t(`vehicleSetup.failsafeState.${status?.failsafe ?? 'unknown'}`)}</h3>
-          <p>{t('vehicleSetup.safetyHint')}</p>
-        </div>
-        <span className="mc-safety-status" aria-hidden="true" />
-      </section>
-      <SetupNotice state="warning">{t('vehicleSetup.safetyBenchWarning')}</SetupNotice>
       {!vehicleReady && <SetupNotice state="waiting">{t('receiver.waitingHint')}</SetupNotice>}
       {status?.armed !== false && vehicleReady && (
         <SetupNotice state="warning">

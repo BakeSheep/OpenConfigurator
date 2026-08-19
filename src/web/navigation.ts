@@ -18,8 +18,8 @@ export interface NavigationDomain {
 export const navigationDomains: NavigationDomain[] = [
   { id: 'overview', labelKey: 'sidebar.overview', icon: 'dashboard', defaultPath: '/dashboard', items: [{ id: 'dashboard', labelKey: 'domain.overview.dashboard', icon: 'dashboard', path: '/dashboard' }] },
   { id: 'flight', labelKey: 'sidebar.flight', icon: 'flight', defaultPath: '/flight', items: [{ id: 'flight', labelKey: 'domain.flight.flight', icon: 'flight', path: '/flight' }] },
-  { id: 'airframe', labelKey: 'sidebar.airframe', icon: 'flight', defaultPath: '/airframe', items: [
-    { id: 'airframe', labelKey: 'settings.section.airframe.label', icon: 'flight', path: '/airframe' },
+  { id: 'airframe', labelKey: 'sidebar.airframe', icon: 'airframe', defaultPath: '/airframe', items: [
+    { id: 'airframe', labelKey: 'settings.section.airframe.label', icon: 'airframe', path: '/airframe' },
     { id: 'sensors', labelKey: 'settings.section.sensors.label', icon: 'sensor', path: '/airframe/sensors' },
     { id: 'power', labelKey: 'domain.airframe.power', icon: 'battery', path: '/airframe/power' },
     { id: 'safety', labelKey: 'domain.airframe.safety', icon: 'hardware', path: '/airframe/safety' },

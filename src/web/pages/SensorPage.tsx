@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18next, { type TFunction } from 'i18next'
+import { useSearchParams } from 'react-router-dom'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import {
   supportsCalibrationKind,
@@ -41,7 +42,6 @@ const buildTabs = (t: TFunction) => [
 ]
 
 const SENSOR_TAB_IDS = ['imu', 'mag', 'baro', 'gps', 'optflow', 'rangefinder'] as const
-const SENSOR_TASK_IDS = ['monitor', 'calibrate'] as const
 
 const STANDARD_GRAVITY = 9.80665
 const RADIANS_TO_DEGREES = 180 / Math.PI
@@ -690,7 +690,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
     { key: 'y', label: t('sensor.series.flowY'), color: 'var(--chart-2)' },
   ], [t])
   const [activeTab, setActiveTab] = useQueryTab(SENSOR_TAB_IDS, 'imu')
-  const [taskMode, setTaskMode] = useQueryTab(SENSOR_TASK_IDS, 'monitor', 'mode')
+  const [searchParams, setSearchParams] = useSearchParams()
   const [imuIndex, setImuIndex] = useState('imu1')
   // Terminal results may be dismissed locally. A live server session must
   // always remain visible so the page cannot enter a hidden-but-busy state.
@@ -735,10 +735,13 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   const wizardVisible = shouldShowCalibrationWizard(snapshot, dismissedSessionId)
   const isOwner = useMemo(() => Boolean(clientId && snapshot && snapshot.ownerClientId === clientId), [clientId, snapshot])
   useEffect(() => {
-    if (calibrationBusy && taskMode !== 'calibrate') {
-      setTaskMode('calibrate', { replace: true })
-    }
-  }, [calibrationBusy, setTaskMode, taskMode])
+    if (!searchParams.has('mode')) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.delete('mode')
+      return next
+    }, { replace: true })
+  }, [searchParams, setSearchParams])
   useEffect(() => {
     if (pendingStart && snapshot?.requestId === pendingStart.requestId) {
       setPendingStart(null)
@@ -769,7 +772,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
 
   const startCalibration = (type: CalibrationKind) => {
     if (!canCalibrateKind(type) || calibrationBusy) return
-    setTaskMode('calibrate')
     const requestId = `cal-${type}-${Date.now().toString(36)}`
     // Hide the previous terminal result immediately so it cannot masquerade
     // as the newly requested calibration while the server creates a session.
@@ -863,19 +865,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   )
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace mc-sensor-workbench' : 'mc-workspace mc-fade-in mc-data-workspace mc-sensor-workbench'}>
-      <PageTabs
-        tabs={[
-          { id: 'monitor', label: t('sensor.diagnostics.title'), disabled: calibrationBusy },
-          { id: 'calibrate', label: t('sensor.calibration.title') },
-        ]}
-        active={taskMode}
-        onChange={setTaskMode}
-        ariaLabel={t('settings.section.sensors.label')}
-        idBase="sensor-tasks"
-      />
-
-      <TabPanel idBase="sensor-tasks" tabId={taskMode}>
-      {taskMode === 'monitor' && (
       <section className="mc-sensor-diagnostics">
         <PageTabs
           tabs={tabs}
@@ -1032,11 +1021,11 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
       )}
         </TabPanel>
       </section>
-      )}
 
-      {taskMode === 'calibrate' && (
       <section className="mc-calibration-catalog">
-        {healthStrip}
+        <header className="mc-calibration-catalog__header">
+          <h3>{t('sensor.calibration.title')}</h3>
+        </header>
         <div className="mc-calibration-task-grid">
           {calibrationCatalog.map((item) => (
             <CalibrationTaskCard
@@ -1090,8 +1079,6 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
           </section>
         )}
       </section>
-      )}
-      </TabPanel>
     </div>
   )
 }

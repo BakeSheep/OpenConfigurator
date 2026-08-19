@@ -51,7 +51,7 @@ export interface UlogOverview {
   durationSec: number
   /** UTC epoch ms of log start, when the log carries a UTC reference. */
   startTimeUtcMs: number | null
-  startTimeSource: 'gps' | 'filename' | 'file-modified' | null
+  startTimeSource: 'gps' | null
   firmware: string | null
   firmwareBranch: string | null
   hardware: string | null
@@ -139,6 +139,19 @@ export const NAV_STATE_NAMES: Record<number, string> = {
 
 export const RAD_TO_DEG = 180 / Math.PI
 export const MAX_STATE_TRANSITIONS = 4096
+
+export function formatAbsoluteLogTime(
+  startTimeUtcMs: number | null,
+  language: 'zh' | 'en',
+): string {
+  if (startTimeUtcMs === null || !Number.isFinite(startTimeUtcMs)) return '—'
+  const displayTimeMs = language === 'zh'
+    ? startTimeUtcMs + 8 * 60 * 60 * 1000
+    : startTimeUtcMs
+  const displayTime = new Date(displayTimeMs)
+  if (!Number.isFinite(displayTime.getTime())) return '—'
+  return displayTime.toISOString().replace('T', ' ').slice(0, 19)
+}
 
 export function appendBoundedTransition<T>(
   samples: T[],

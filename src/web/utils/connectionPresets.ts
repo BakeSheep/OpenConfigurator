@@ -1,4 +1,4 @@
-import type { PortInfo } from '../../shared/types'
+import type { ConnectionConfig, PortInfo } from '../../shared/types'
 
 export interface ConnectionPreset {
   id: string
@@ -8,6 +8,9 @@ export interface ConnectionPreset {
   baudRate: number
   vendorId?: string
   productId?: string
+  bluetoothAddress?: string
+  bluetoothChannel?: number
+  bluetoothServiceClassId?: string
   enableGamepad?: boolean
 }
 
@@ -16,7 +19,15 @@ export const CONNECTION_PRESETS_KEY = 'oc-connection-presets'
 export function loadConnectionPresets(): ConnectionPreset[] {
   try {
     const raw = localStorage.getItem(CONNECTION_PRESETS_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return parsed.map((preset: ConnectionPreset) => {
+        if (preset.type !== 'bluetooth' || preset.bluetoothServiceClassId) return preset
+        const legacyService = preset.port.match(/Bluetooth SPP\s+(0x[0-9a-f]{4})/i)?.[1]
+        return legacyService ? { ...preset, bluetoothServiceClassId: legacyService } : preset
+      })
+    }
   } catch { /* ignore unavailable or malformed browser storage */ }
   return []
 }
@@ -27,6 +38,21 @@ export function saveConnectionPresets(presets: ConnectionPreset[]): void {
 
 export function connectionPresetEnablesGamepad(preset: ConnectionPreset): boolean {
   return preset.enableGamepad === true
+}
+
+export function connectionConfigFromPreset(preset: ConnectionPreset): ConnectionConfig {
+  return {
+    type: preset.type,
+    port: preset.port,
+    baudRate: preset.baudRate,
+    ...(preset.vendorId ? { vendorId: preset.vendorId } : {}),
+    ...(preset.productId ? { productId: preset.productId } : {}),
+    ...(preset.bluetoothAddress ? { bluetoothAddress: preset.bluetoothAddress } : {}),
+    ...(preset.bluetoothChannel ? { bluetoothChannel: preset.bluetoothChannel } : {}),
+    ...(preset.bluetoothServiceClassId
+      ? { bluetoothServiceClassId: preset.bluetoothServiceClassId }
+      : {}),
+  }
 }
 
 export function updateConnectionPresetGamepadPreference(
@@ -51,6 +77,34 @@ function enrichSerialPreset(preset: ConnectionPreset, port: PortInfo): Connectio
     ...preset,
     port: port.path,
     name: port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path,
+    ...(port.vendorId ? { vendorId: canonicalUsbId(port.vendorId) ?? port.vendorId } : {}),
+    ...(port.productId ? { productId: canonicalUsbId(port.productId) ?? port.productId } : {}),
+  }
+}
+
+function normalizeBluetoothAddress(value: string | undefined): string | null {
+  if (!value) return null
+  const compact = value.replace(/[^0-9a-f]/gi, '').toUpperCase()
+  return compact.length === 12 ? compact : null
+}
+
+function normalizeBluetoothService(value: string | undefined): string | null {
+  if (!value) return null
+  const short = value.match(/^(?:0x)?([0-9a-f]{4})$/i)?.[1]
+    ?? value.match(/^0000([0-9a-f]{4})-/i)?.[1]
+  return short?.toUpperCase() ?? null
+}
+
+function enrichBluetoothPreset(preset: ConnectionPreset, port: PortInfo): ConnectionPreset {
+  return {
+    ...preset,
+    port: port.path,
+    name: port.friendlyName || port.manufacturer || preset.name || port.path,
+    ...(port.bluetoothAddress ? { bluetoothAddress: port.bluetoothAddress } : {}),
+    ...(port.bluetoothChannel ? { bluetoothChannel: port.bluetoothChannel } : {}),
+    ...(port.bluetoothServiceClassId
+      ? { bluetoothServiceClassId: port.bluetoothServiceClassId }
+      : {}),
     ...(port.vendorId ? { vendorId: canonicalUsbId(port.vendorId) ?? port.vendorId } : {}),
     ...(port.productId ? { productId: canonicalUsbId(port.productId) ?? port.productId } : {}),
   }
@@ -91,9 +145,40 @@ export function resolveSerialPreset(
     : null
 }
 
+/** Resolve a saved Bluetooth device to the current SPP endpoint without guessing. */
+export function resolveBluetoothPreset(
+  preset: ConnectionPreset,
+  ports: PortInfo[],
+): ConnectionPreset | null {
+  if (preset.type !== 'bluetooth') return preset
+
+  const requestedAddress = normalizeBluetoothAddress(preset.bluetoothAddress)
+  if (requestedAddress) {
+    const matches = ports.filter((port) =>
+      normalizeBluetoothAddress(port.bluetoothAddress) === requestedAddress)
+    return matches.length === 1 ? enrichBluetoothPreset(preset, matches[0]) : null
+  }
+
+  const samePath = ports.filter((port) => port.path.toUpperCase() === preset.port.toUpperCase())
+  if (samePath.length === 1) return enrichBluetoothPreset(preset, samePath[0])
+
+  const requestedService = normalizeBluetoothService(preset.bluetoothServiceClassId)
+  if (requestedService) {
+    const matches = ports.filter((port) =>
+      normalizeBluetoothService(port.bluetoothServiceClassId) === requestedService)
+    return matches.length === 1 ? enrichBluetoothPreset(preset, matches[0]) : null
+  }
+  return null
+}
+
 export function samePresetDevice(a: ConnectionPreset, b: ConnectionPreset): boolean {
   if (a.type !== b.type) return false
-  if (a.type === 'bluetooth') return a.port.toUpperCase() === b.port.toUpperCase()
+  if (a.type === 'bluetooth') {
+    const aAddress = normalizeBluetoothAddress(a.bluetoothAddress)
+    const bAddress = normalizeBluetoothAddress(b.bluetoothAddress)
+    if (aAddress && bAddress) return aAddress === bAddress
+    return a.port.toUpperCase() === b.port.toUpperCase()
+  }
   const aVendor = canonicalUsbId(a.vendorId)
   const aProduct = canonicalUsbId(a.productId)
   const bVendor = canonicalUsbId(b.vendorId)

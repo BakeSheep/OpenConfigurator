@@ -15,34 +15,25 @@ import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
+import {
+  formatParameterValue,
+  parameterValuesEqual,
+  roundParameterValue,
+  sanitizeParameterFloat,
+  shouldReleaseParameterDraft,
+} from '../utils/parameterDisplay'
 
 type PidDefinition = ParameterFieldDefinition
 type PidGroup = ParameterGroupDefinition
 
 const pidLikePattern = /(?:RATE_[PID]$|_(?:P|I|D)$|ATC_RAT_)/
 
-function decimalPlaces(step: number) {
-  const fraction = String(step).split('.')[1]
-  return fraction?.length ?? 0
-}
-
-function roundToStep(value: number, step: number) {
-  return Number(value.toFixed(Math.max(decimalPlaces(step), 4)))
-}
-
-// MAVLink params travel as float32 (~7 significant digits), so the FC echoes
-// 0.35 back as 0.3499999940395355. Strip that noise before displaying or
-// stepping, otherwise +/- produces micro-increments off the ugly raw value.
-function sanitizeFloat(value: number) {
-  return Number.parseFloat(value.toPrecision(7))
-}
-
 function formatValue(value: number, step: number) {
-  return String(roundToStep(sanitizeFloat(value), step))
+  return formatParameterValue(value, step)
 }
 
 function valuesEqual(left: number, right: number, step: number) {
-  return Math.abs(left - right) <= Math.max(step / 10, 1e-7)
+  return parameterValuesEqual(left, right, step)
 }
 
 // Toggle the scroll-fade hints of a card viewport straight on the DOM: this
@@ -56,20 +47,34 @@ function updateFades(element: HTMLDivElement | null) {
 
 export default function PidTuningPage() {
   const { t, i18n } = useTranslation()
-  const { params, loading, lastWriteResult } = useParameterStore()
-  const connectedAndControllable = useConnectionStore((state) => state.vehicleReady && state.canControl)
-  const armed = useTelemetryStore((state) => state.status?.armed ?? false)
+  const params = useParameterStore((state) => state.params)
+  const loading = useParameterStore((state) => state.loading)
+  const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
+  const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const hasControl = useConnectionStore((state) => state.canControl)
+  const connectedAndControllable = vehicleReady && hasControl
+  const armed = useTelemetryStore((state) => state.status?.armed)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const pidWritable = vehicleCapabilities(vehicleIdentity).pidConfig
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
-  const [pending, setPending] = useState<{ requestId: string; id: string; value: number } | null>(null)
+  const [pending, setPending] = useState<{
+    requestId: string
+    id: string
+    value: number
+    step: number
+  } | null>(null)
+  const [awaitingEcho, setAwaitingEcho] = useState<{
+    id: string
+    value: number
+    step: number
+  } | null>(null)
   const [feedback, setFeedback] = useState<{ id: string; kind: 'success' | 'error' } | null>(null)
   const timeoutRef = useRef<number | null>(null)
   const feedbackTimerRef = useRef<number | null>(null)
   // PID writes are capability-gated: an unadapted profile keeps the page
   // read-only instead of writing PX4 gains to a different stack.
-  const canWrite = connectedAndControllable && !armed && pidWritable
+  const canWrite = connectedAndControllable && armed === false && pidWritable
 
   // Card-corner result badge: success/error only, auto-dismissed shortly after.
   const flashFeedback = (id: string, kind: 'success' | 'error') => {
@@ -84,14 +89,35 @@ export default function PidTuningPage() {
     timeoutRef.current = null
     flashFeedback(pending.id, lastWriteResult.accepted ? 'success' : 'error')
     if (lastWriteResult.accepted) {
-      setDrafts((current) => {
-        const next = { ...current }
-        delete next[pending.id]
-        return next
+      setAwaitingEcho({
+        id: pending.id,
+        value: lastWriteResult.acceptedValue ?? pending.value,
+        step: pending.step,
       })
+    } else {
+      setAwaitingEcho(null)
+      setPending(null)
     }
-    setPending(null)
   }, [lastWriteResult, pending])
+
+  useEffect(() => {
+    if (!awaitingEcho) return
+    const echoed = params.get(awaitingEcho.id)
+    if (!echoed || !parameterValuesEqual(echoed.value, awaitingEcho.value, awaitingEcho.step)) return
+    setDrafts((current) => {
+      if (!shouldReleaseParameterDraft(
+        current[awaitingEcho.id],
+        echoed.value,
+        awaitingEcho.value,
+        awaitingEcho.step,
+      )) return current
+      const next = { ...current }
+      delete next[awaitingEcho.id]
+      return next
+    })
+    setPending((current) => current?.id === awaitingEcho.id ? null : current)
+    setAwaitingEcho(null)
+  }, [awaitingEcho, params])
 
   useEffect(() => () => {
     if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current)
@@ -138,7 +164,7 @@ export default function PidTuningPage() {
       delete next[definition.id]
       return next
     })
-    const boundedValue = roundToStep(Math.min(definition.max, Math.max(definition.min, value)), definition.step)
+    const boundedValue = roundParameterValue(Math.min(definition.max, Math.max(definition.min, value)), definition.step)
     if (valuesEqual(boundedValue, param.value, definition.step)) {
       setDrafts((current) => {
         const next = { ...current }
@@ -149,7 +175,8 @@ export default function PidTuningPage() {
     }
     const requestId = `pid-${definition.id}-${Date.now().toString(36)}`
     setFeedback(null)
-    setPending({ requestId, id: definition.id, value: boundedValue })
+    setAwaitingEcho(null)
+    setPending({ requestId, id: definition.id, value: boundedValue, step: definition.step })
     setDrafts((current) => ({ ...current, [definition.id]: formatValue(boundedValue, definition.step) }))
     useParameterStore.getState().setWriteResult(null)
     const sent = sendClientMessage({
@@ -183,11 +210,22 @@ export default function PidTuningPage() {
     const param = params.get(definition.id)
     if (!param) return
     const draft = drafts[definition.id]
-    const base = draft !== undefined && Number.isFinite(Number(draft)) ? Number(draft) : sanitizeFloat(param.value)
-    commit(definition, roundToStep(base + direction * definition.step, definition.step))
+    const base = draft !== undefined && Number.isFinite(Number(draft)) ? Number(draft) : sanitizeParameterFloat(param.value)
+    commit(definition, roundParameterValue(base + direction * definition.step, definition.step))
   }
 
   const totalCount = availableGroups.reduce((count, group) => count + group.present, 0)
+  const writeStatus = !vehicleReady
+    ? t('pidTuning.writeUnavailableNotReady')
+    : !hasControl
+      ? t('pidTuning.writeUnavailableNoControl')
+      : !pidWritable
+        ? t('pidTuning.writeUnavailableUnsupported')
+        : armed === true
+          ? t('pidTuning.writeDisabledArmed')
+          : armed !== false
+            ? t('pidTuning.writeDisabledArmUnknown')
+            : t('pidTuning.writeEnabled')
 
   return (
     <div className="mc-pid-page mc-fade-in">
@@ -195,7 +233,7 @@ export default function PidTuningPage() {
         summary={
           <>
             <Badge tone={canWrite ? 'success' : 'warning'}>
-              {armed ? t('pidTuning.writeDisabledArmed') : canWrite ? t('pidTuning.writeEnabled') : t('pidTuning.connectToModify')}
+              {writeStatus}
             </Badge>
             <span>{totalCount}{t('pidTuning.tunableParamsLabel')}</span>
           </>
@@ -265,12 +303,19 @@ export default function PidTuningPage() {
                       const draft = drafts[definition.id]
                       const displayValue = draft ?? formatValue(param.value, definition.step)
                       const numericDraft = Number(displayValue)
-                      const sliderValue = Number.isFinite(numericDraft) ? numericDraft : sanitizeFloat(param.value)
+                      const sliderValue = Number.isFinite(numericDraft) ? numericDraft : sanitizeParameterFloat(param.value)
                       const progress = Math.min(100, Math.max(0, (sliderValue - definition.min) / (definition.max - definition.min) * 100))
                       const isPending = pending?.id === definition.id
+                      const writeLocked = pending !== null && !isPending
                       const isDirty = draft !== undefined && !isPending
                       return (
-                        <div key={definition.id} className="mc-pid-item" data-pending={isPending || undefined} data-error={validationErrors[definition.id] ? true : undefined}>
+                        <div
+                          key={definition.id}
+                          className="mc-pid-item"
+                          data-pending={isPending || undefined}
+                          data-write-locked={writeLocked || undefined}
+                          data-error={validationErrors[definition.id] ? true : undefined}
+                        >
                           <div className="mc-pid-item__top">
                             <label htmlFor={`pid-${definition.id}`} title={`${definition.id} — ${definition.hint}`}>
                               {definition.label}
@@ -344,7 +389,7 @@ export default function PidTuningPage() {
       {otherPidParams.length > 0 && (
         <details className="mc-card mc-pid-other">
           <summary>{t('pidTuning.otherPidParams', { count: otherPidParams.length })} <span>{t('pidTuning.otherPidParamsHint')}</span></summary>
-          <div>{otherPidParams.map((param) => <span key={param.id}><code>{param.id}</code><b>{param.value}</b></span>)}</div>
+          <div>{otherPidParams.map((param) => <span key={param.id}><code>{param.id}</code><b>{formatParameterValue(param.value)}</b></span>)}</div>
         </details>
       )}
     </div>

@@ -1048,6 +1048,13 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
       pattern: /^(?:[0-9a-fA-F]{12}|(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2})$/,
     },
   )
+  const bluetoothChannel = input.bluetoothChannel === undefined
+    ? undefined
+    : finiteNumber(input.bluetoothChannel, 'bluetoothChannel', {
+      min: 1,
+      max: 30,
+      integer: true,
+    })
 
   return {
     type: input.type,
@@ -1057,6 +1064,7 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
     ...(productId === undefined ? {} : { productId }),
     ...(bluetoothServiceClassId === undefined ? {} : { bluetoothServiceClassId }),
     ...(bluetoothAddress === undefined ? {} : { bluetoothAddress }),
+    ...(bluetoothChannel === undefined ? {} : { bluetoothChannel }),
   }
 }
 

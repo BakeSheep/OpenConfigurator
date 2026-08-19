@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
@@ -38,6 +38,8 @@ function getLinkQuality(stats: { rxBps: number; crcErrorsPerSec: number } | null
 export default function StatusBar() {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
+  const [showParameterCompletion, setShowParameterCompletion] = useState(false)
+  const wasParameterLoading = useRef(false)
   const transportOpen = useConnectionStore((state) => state.transportOpen)
   const linkStats = useConnectionStore((state) => state.linkStats)
   const escSession = useEscStore((state) => state.session)
@@ -58,6 +60,8 @@ export default function StatusBar() {
   const parameterPercent = parameterTotal > 0
     ? Math.min(99, Math.max(1, Math.round(parameterReceived / parameterTotal * 100)))
     : 0
+  const showParameterProgress = parameterLoading || showParameterCompletion
+  const displayedParameterPercent = showParameterCompletion ? 100 : parameterPercent
 
   const imuFresh = !sensorStale('imu')
   const tempSources = [
@@ -100,6 +104,25 @@ export default function StatusBar() {
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [expanded])
 
+  useEffect(() => {
+    let completionTimer: ReturnType<typeof setTimeout> | undefined
+    if (parameterLoading) {
+      setShowParameterCompletion(false)
+    } else if (
+      wasParameterLoading.current
+      && !parameterError
+      && parameterTotal > 0
+      && parameterReceived >= parameterTotal
+    ) {
+      setShowParameterCompletion(true)
+      completionTimer = setTimeout(() => setShowParameterCompletion(false), 700)
+    }
+    wasParameterLoading.current = parameterLoading
+    return () => {
+      if (completionTimer) clearTimeout(completionTimer)
+    }
+  }, [parameterLoading])
+
   return (
     <footer className="mc-statusbar">
       <button
@@ -109,7 +132,23 @@ export default function StatusBar() {
         aria-expanded={expanded}
         aria-controls="mc-statusbar-details"
         onClick={() => setExpanded((current) => !current)}
+        data-param-progress={showParameterProgress || undefined}
       >
+        {showParameterProgress && (
+          <span
+            className="mc-statusbar__param-progress"
+            role="progressbar"
+            aria-label={t('parameter.progress.ariaLabel')}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={parameterTotal > 0 ? displayedParameterPercent : undefined}
+          >
+            <i
+              style={{ width: `${displayedParameterPercent}%` }}
+              data-indeterminate={parameterLoading && parameterTotal === 0 || undefined}
+            />
+          </span>
+        )}
         <span className="mc-statusbar__left">
           <span className="mc-statusbar__link-quality" title={t('statusbar.linkQuality')}>
             <span className="mc-status-dot" style={{ background: linkQuality.color }} aria-hidden="true" />
@@ -127,8 +166,8 @@ export default function StatusBar() {
           </span>
         </span>
         <span className="mc-statusbar__brand" aria-live="polite">
-          {parameterError ?? (parameterLoading
-            ? `${t('parameter.progress.syncing')} ${parameterTotal > 0 ? `${parameterReceived}/${parameterTotal} · ${parameterPercent}%` : t('parameter.progress.waitingResponse')}`
+          {parameterError ?? (showParameterProgress
+            ? `${t(showParameterCompletion ? 'parameter.progress.completed' : 'parameter.progress.syncing')} ${parameterTotal > 0 ? `${parameterReceived}/${parameterTotal} · ${displayedParameterPercent}%` : t('parameter.progress.waitingResponse')}`
             : 'OpenConfigurator')}
         </span>
         <span className="mc-statusbar__activity">
@@ -172,7 +211,7 @@ export default function StatusBar() {
           </dl>
 
           <div className="mc-statusbar__drawer-columns">
-            <section aria-labelledby="mc-statusbar-temperature-title">
+            <section className="mc-statusbar__temperature-panel" aria-labelledby="mc-statusbar-temperature-title">
               <header>
                 <strong id="mc-statusbar-temperature-title">{t('statusbar.sensorTemp')}</strong>
                 <span>{avgTemp !== null ? t('statusbar.avgTempSummary', { value: avgTemp.toFixed(1), count: validTemps.length }) : t('statusbar.noValidTempSource')}</span>

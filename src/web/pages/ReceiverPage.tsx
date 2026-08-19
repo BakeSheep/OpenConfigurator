@@ -8,16 +8,12 @@ import { Button } from '../components/ui/Button'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Field from '../components/ui/Field'
 import { Notice } from '../components/ui/Feedback'
-import { PageHeader, PageTabs } from '../components/ui/PageFrame'
-import { TabPanel } from '../components/ui/Tabs'
+import { PageHeader } from '../components/ui/PageFrame'
 import { sendClientMessage } from '../hooks/useWebSocket'
-import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useVehicleSetupStore } from '../stores/vehicleSetupStore'
-
-const RECEIVER_TABS = ['calibration'] as const
 
 interface RadioCommitment {
   epoch: number
@@ -32,7 +28,6 @@ function rcValue(data: RcChannelsData | null, channel: number): number | null {
 
 export default function ReceiverPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useQueryTab(RECEIVER_TABS, 'calibration')
   const rcChannels = useTelemetryStore((state) => state.rcChannels)
   const identity = useTelemetryStore((state) => state.vehicleIdentity)
   const armed = useTelemetryStore((state) => state.status?.armed)
@@ -134,19 +129,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
   return (
     <div className={embedded ? 'mc-setup-page mc-fade-in' : 'mc-workspace mc-setup-page mc-fade-in'}>
       {!embedded && <PageHeader title={t('common.receiver')} description={t('receiver.description')} />}
-      <PageTabs
-        tabs={[
-          { id: 'calibration', label: t('receiver.calibration') },
-        ]}
-        active={activeTab}
-        onChange={setActiveTab}
-        ariaLabel={t('receiver.views')}
-        idBase="receiver-tasks"
-      />
-
-      <TabPanel idBase="receiver-tasks" tabId={activeTab}>
-        {activeTab === 'calibration' && (
-          <div className="mc-setup-page mc-receiver-calibration">
+      <div className="mc-setup-page mc-receiver-calibration">
             {!caps.radioCalibration && <SetupNotice state="warning">{t('vehicleSetup.readOnlyProfile')}</SetupNotice>}
             {!vehicleReady && <SetupNotice state="waiting">{t('receiver.waitingHint')}</SetupNotice>}
             {armed !== false && vehicleReady && (
@@ -251,10 +234,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
                 </ul>
               </section>
             </div>
-          </div>
-        )}
-
-      </TabPanel>
+      </div>
 
       <ConfirmDialog
         open={commitment !== null}

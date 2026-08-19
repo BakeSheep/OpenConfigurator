@@ -23,13 +23,13 @@
 
 ## 项目概览
 
-OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Electron 桌面壳组成。前端通过 REST 与单一 WebSocket 访问服务；服务负责串口、Windows Bluetooth SPP、MAVLink、日志传输和 ESC 会话。默认服务仅监听 `127.0.0.1`，设备数据无需经过云端。
+OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Electron 桌面壳组成。前端通过 REST 与单一 WebSocket 访问服务；服务负责串口、Windows Bluetooth SPP、Linux BlueZ SPP、MAVLink、日志传输和 ESC 会话。默认服务仅监听 `127.0.0.1`，设备数据无需经过云端。
 
 飞控类型只根据 HEARTBEAT 识别。PX4 与 ArduPilot 使用各自的 vehicle profile、参数和指令路径；未识别或尚未适配的机型保持只读。
 
 ## 主要功能
 
-- USB 串口与 Windows Bluetooth SPP 连接，支持 MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
+- USB 串口、Windows Bluetooth SPP 与 Linux BlueZ SPP 连接，支持 MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
 - 姿态、定位、电池、传感器、RC、执行器、EKF 和 MAVLink 消息实时监控
 - 参数同步、搜索、QGC 参数文件导入/导出、机架选择、遥控器校准、飞行模式、电源/电池、安全保护、PID/EKF 调整、传感器校准与串口配置
 - 带安全门控的解锁/上锁、模式切换、起飞、降落、返航、电机测试和手柄 RC override
@@ -60,6 +60,8 @@ ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会�
 ## 快速开始
 
 要求 Node.js `>=22.12.0` 与 npm。Web Serial 设备选择器需要 Chrome / Edge 89+，且页面通过 HTTPS 或 localhost 访问。
+
+Linux 蓝牙直连使用 BlueZ Profile API，不需要创建 `/dev/rfcomm*` 或执行 `sudo rfcomm`；系统需安装 `bluez`、Python 3、`dbus-python` 与 PyGObject，并先在系统蓝牙设置中完成 SPP 设备配对。
 
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git

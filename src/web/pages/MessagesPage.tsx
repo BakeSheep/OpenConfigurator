@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
-import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { TabPanel } from '../components/ui/Tabs'
-import Toolbar from '../components/ui/Toolbar'
 import StatusVariableBrowser from '../components/telemetry/StatusVariableBrowser'
 import FlightControllerTerminal from '../components/telemetry/FlightControllerTerminal'
 import { DEFAULT_MESSAGE_RATES, MESSAGE_RATE_OPTIONS } from '../../shared/constants'
@@ -115,15 +113,12 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
   const [queryTab, setQueryTab] = useQueryTab(MESSAGE_TAB_IDS, 'messages')
   const activeTab = tab ?? queryTab
   const setActiveTab = (next: string) => { if (!tab) setQueryTab(next) }
-  const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const rates = useMessageRateStore((state) => state.rates)
   const messageSamples = useMavlinkMessageStore((state) => state.messages)
-  const resetMessageSamples = useMavlinkMessageStore((state) => state.reset)
   const statusLogs = useTelemetryStore((state) => state.statusLogs)
-  const clearStatusLogs = useTelemetryStore((state) => state.clearStatusLogs)
   const canSetRates = connected
     && canControl
     && vehicleCapabilities(vehicleIdentity).writeOperations
@@ -147,34 +142,10 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
     }
   }), [connected, messageSamples, nowTick, t])
 
-  const [pausedRows, setPausedRows] = useState<typeof rows | null>(null)
-  const [pausedLogs, setPausedLogs] = useState<typeof statusLogs | null>(null)
   const [expandedRows, setExpandedRows] = useState<Set<number>>(() => new Set())
-  const displayRows = paused ? pausedRows ?? rows : rows
-  const displayLogs = paused ? pausedLogs ?? statusLogs : statusLogs
+  const displayRows = rows
+  const displayLogs = statusLogs
   const liveCount = displayRows.filter((row) => row.live).length
-
-  const togglePaused = () => {
-    if (paused) {
-      setPaused(false)
-      setPausedRows(null)
-      setPausedLogs(null)
-      return
-    }
-    setPausedRows(rows)
-    setPausedLogs(statusLogs)
-    setPaused(true)
-  }
-
-  const clearDiagnostics = () => {
-    resetMessageSamples()
-    clearStatusLogs()
-    if (paused) {
-      setPaused(false)
-      setPausedRows(null)
-      setPausedLogs(null)
-    }
-  }
 
   const toggleExpanded = (id: number) => setExpandedRows((current) => {
     const next = new Set(current)
@@ -201,17 +172,6 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
         ariaLabel={t('diagnostics.section.messages.label')}
         idBase="message-diagnostics"
       />}
-      {activeTab !== 'terminal' && (
-        <Toolbar
-          summary={t('messages.activeSummary', { live: liveCount, logs: displayLogs.length })}
-          actions={(
-            <>
-              <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={paused ? t('messages.resume') : t('messages.pause')} onClick={togglePaused}><Icon name={paused ? 'refresh' : 'pause'} size={15} /></button>
-              <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('messages.clear')} onClick={clearDiagnostics}><Icon name="trash" size={15} /></button>
-            </>
-          )}
-        />
-      )}
       <TabPanel idBase="message-diagnostics" tabId={activeTab}>
 
       {activeTab === 'messages' && (
@@ -233,7 +193,7 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
                   >{expanded ? '−' : '+'}&nbsp; #{row.id}</button>
                   <strong className="mc-mono">{row.name}</strong>
                   <span>{row.live ? t('messages.receiving') : t('messages.waiting')}</span>
-                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-secondary)' }}>{paused ? t('messages.paused') : row.rate}</span>
+                  <span className="mc-mono" style={{ color: row.live ? 'var(--success)' : 'var(--text-secondary)' }}>{row.rate}</span>
                 </div>
                 {expanded && (
                   <div className="mc-message-details">
@@ -294,7 +254,7 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
         </div>
       )}
 
-      {activeTab === 'status' && <StatusVariableBrowser paused={paused} />}
+      {activeTab === 'status' && <StatusVariableBrowser paused={false} />}
 
       {activeTab === 'terminal' && (
         <FlightControllerTerminal />

@@ -67,11 +67,15 @@ test('legacy EKF diagnostics deep link redirects to Other Settings EKF task', as
   await expectQuery(page, { section: 'other', tab: 'ekf', probe: 'keep' })
 })
 
-test('Sensor busy calibration switches tasks without trapping browser history', async ({ page }) => {
+test('Sensor diagnostics and calibration stay on one page during a busy session', async ({ page }) => {
   await openDemo(page, '/dashboard')
   await page.evaluate(() => { window.location.hash = '/settings?section=sensors' })
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('传感器')
   const historyAtSensor = await page.evaluate(() => window.history.length)
+
+  await expect(page.getByRole('tablist', { name: '实时诊断' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '传感器校准', level: 3 })).toBeVisible()
+  await expect(page.locator('#sensor-tasks-tab-monitor')).toHaveCount(0)
 
   await page.evaluate(async () => {
     const { useCalibrationStore } = await import('/src/web/stores/calibrationStore.ts')
@@ -92,12 +96,27 @@ test('Sensor busy calibration switches tasks without trapping browser history', 
     })
   })
 
-  await expectQuery(page, { section: 'sensors', mode: 'calibrate' })
-  await expect(page.getByRole('tab', { name: '校准', selected: true })).toBeVisible()
+  await expectQuery(page, { section: 'sensors', mode: null })
+  await expect(page.getByText('当前校准')).toBeVisible()
   expect(await page.evaluate(() => window.history.length)).toBe(historyAtSensor)
 
   await page.goBack()
   await expect(page.locator('main h1')).toHaveText('总览')
+})
+
+test('Terminal quick commands return keyboard focus to the terminal', async ({ page }) => {
+  await openDemo(page, '/diagnostics?section=messages&tab=terminal')
+  await page.evaluate(async () => {
+    const { useShellStore } = await import('/src/web/stores/shellStore.ts')
+    useShellStore.getState().setStatus(true)
+  })
+
+  const terminal = page.getByRole('textbox', { name: '飞控终端输入' })
+  const help = page.getByRole('button', { name: /help.*列出当前固件可用命令/ })
+  await help.click()
+
+  await expect(terminal).toBeFocused()
+  await expect(page.getByText('点击只写入当前 NSH 命令行，不会自动回车执行。')).toHaveCount(0)
 })
 
 const tabCases = [

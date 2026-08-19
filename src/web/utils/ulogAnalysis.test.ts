@@ -13,9 +13,17 @@ import {
   parsePx4DirectoryDate,
   parsePx4FileDate,
   parsePx4LogPathDate,
+  formatAbsoluteLogTime,
   quaternionToEuler,
   normalizeUlogTimestamp,
 } from './ulogAnalysis'
+
+{
+  const utc = Date.UTC(2026, 6, 25, 10, 30, 0)
+  assert.equal(formatAbsoluteLogTime(utc, 'en'), '2026-07-25 10:30:00')
+  assert.equal(formatAbsoluteLogTime(utc, 'zh'), '2026-07-25 18:30:00')
+  assert.equal(formatAbsoluteLogTime(null, 'zh'), '—')
+}
 
 assert.equal(normalizeUlogTimestamp(Number.NaN), null)
 assert.equal(normalizeUlogTimestamp(undefined), null)

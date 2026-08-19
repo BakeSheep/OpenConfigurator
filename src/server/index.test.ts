@@ -609,8 +609,10 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
     port: 'COM8',
     baudRate: 57600,
     bluetoothAddress: 'AA:BB:CC:DD:EE:FF',
+    bluetoothChannel: 1,
   })
   assert.equal(bluetoothConfig.bluetoothAddress, 'AA:BB:CC:DD:EE:FF')
+  assert.equal(bluetoothConfig.bluetoothChannel, 1)
   assert.throws(
     () => parseConnectionConfig({
       type: 'bluetooth',
@@ -619,6 +621,15 @@ test('runtime validation enforces command, motor, connection, and IPv6 loopback 
       bluetoothAddress: 'not-an-address',
     }),
     (error) => error instanceof InputValidationError && error.path === 'bluetoothAddress',
+  )
+  assert.throws(
+    () => parseConnectionConfig({
+      type: 'bluetooth',
+      port: 'bt-rfcomm://aabbccddeeff/31',
+      baudRate: 57600,
+      bluetoothChannel: 31,
+    }),
+    (error) => error instanceof InputValidationError && error.path === 'bluetoothChannel',
   )
 
   const ipv6Config = testConfig({ host: '::1', port: 3000 })

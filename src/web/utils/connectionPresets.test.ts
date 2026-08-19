@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import {
   connectionPresetEnablesGamepad,
+  connectionConfigFromPreset,
+  resolveBluetoothPreset,
   resolveSerialPreset,
   samePresetDevice,
   updateConnectionPresetGamepadPreference,
@@ -61,5 +63,49 @@ assert.deepEqual(updateConnectionPresetGamepadPreference([legacy, anotherPreset]
   anotherPreset,
 ])
 assert.deepEqual(updateConnectionPresetGamepadPreference([legacy], 'missing', true), [legacy])
+
+const bluetoothPreset: ConnectionPreset = {
+  id: 'bluetooth',
+  name: 'MicoAir',
+  type: 'bluetooth',
+  port: 'Bluetooth SPP 0x1101',
+  baudRate: 57600,
+  bluetoothServiceClassId: '0x1101',
+}
+const pairedBluetooth = {
+  path: 'bt-rfcomm://08fad1176949/1',
+  friendlyName: 'MicoAir743v2-94296',
+  bluetoothAddress: '08:FA:D1:17:69:49',
+  bluetoothChannel: 1,
+  bluetoothServiceClassId: '0x1101',
+}
+assert.deepEqual(resolveBluetoothPreset(bluetoothPreset, [pairedBluetooth]), {
+  ...bluetoothPreset,
+  name: 'MicoAir743v2-94296',
+  port: pairedBluetooth.path,
+  bluetoothAddress: pairedBluetooth.bluetoothAddress,
+  bluetoothChannel: 1,
+})
+assert.equal(resolveBluetoothPreset(bluetoothPreset, [
+  pairedBluetooth,
+  { ...pairedBluetooth, path: 'bt-rfcomm://001122334455/1', bluetoothAddress: '00:11:22:33:44:55' },
+]), null, 'a service-only preset must not guess between multiple paired devices')
+assert.ok(samePresetDevice(
+  { ...bluetoothPreset, bluetoothAddress: '08:fa:d1:17:69:49' },
+  { ...bluetoothPreset, port: pairedBluetooth.path, bluetoothAddress: '08FAD1176949' },
+))
+assert.deepEqual(connectionConfigFromPreset({
+  ...bluetoothPreset,
+  port: pairedBluetooth.path,
+  bluetoothAddress: pairedBluetooth.bluetoothAddress,
+  bluetoothChannel: pairedBluetooth.bluetoothChannel,
+}), {
+  type: 'bluetooth',
+  port: pairedBluetooth.path,
+  baudRate: 57600,
+  bluetoothAddress: pairedBluetooth.bluetoothAddress,
+  bluetoothChannel: 1,
+  bluetoothServiceClassId: '0x1101',
+})
 
 console.log('connectionPresets unit tests passed')

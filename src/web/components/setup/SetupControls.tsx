@@ -14,6 +14,7 @@ import { useVehicleSetupStore } from '../../stores/vehicleSetupStore'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import Field from '../ui/Field'
 import { Notice } from '../ui/Feedback'
+import { formatParameterValue, parameterValuesEqual } from '../../utils/parameterDisplay'
 
 export function setupRequestId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
@@ -62,12 +63,15 @@ export function ConfigFieldControl({
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const armed = useTelemetryStore((state) => state.status?.armed)
-  const [draft, setDraft] = useState(param?.value?.toString() ?? '')
+  const displayParamValue = (value: number | undefined) => value === undefined
+    ? ''
+    : formatParameterValue(value, field.step)
+  const [draft, setDraft] = useState(displayParamValue(param?.value))
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<SafetyCommitment | null>(null)
 
-  useEffect(() => setDraft(param?.value?.toString() ?? ''), [param?.value])
+  useEffect(() => setDraft(displayParamValue(param?.value)), [param?.value, field.step])
   const result = pending ? configResults.get(pending) : undefined
   useEffect(() => {
     if (!pending || !result) return
@@ -79,20 +83,20 @@ export function ConfigFieldControl({
     if (!options?.length || !param) return options ?? []
     return options.some((option) => option.value === param.value)
       ? options
-      : [{ value: param.value, label: `${t('vehicleSetup.unknownValue')} (${param.value})` }, ...options]
-  }, [options, param, t])
+      : [{ value: param.value, label: `${t('vehicleSetup.unknownValue')} (${formatParameterValue(param.value, field.step)})` }, ...options]
+  }, [field.step, options, param, t])
 
   const send = (value: number, commitment?: SafetyCommitment) => {
     const liveParam = useParameterStore.getState().params.get(field.id)
     const connection = useConnectionStore.getState()
     const liveArmed = useTelemetryStore.getState().status?.armed
-    if (!liveParam || value === liveParam.value || !Number.isFinite(value)) {
-      setDraft(liveParam?.value?.toString() ?? '')
+    if (!liveParam || parameterValuesEqual(value, liveParam.value, field.step) || !Number.isFinite(value)) {
+      setDraft(displayParamValue(liveParam?.value))
       return
     }
     if (!connection.vehicleReady || !connection.canControl || liveArmed !== false) {
       setError(t('vehicleSetup.writeContextChanged'))
-      setDraft(liveParam.value.toString())
+      setDraft(displayParamValue(liveParam.value))
       return
     }
 
@@ -107,7 +111,7 @@ export function ConfigFieldControl({
         epoch: connection.safetyEpoch,
         authorityId: connection.safetyAuthorityId,
       })
-      setDraft(liveParam.value.toString())
+      setDraft(displayParamValue(liveParam.value))
       return
     }
     if (
@@ -119,7 +123,7 @@ export function ConfigFieldControl({
     ) {
       setConfirmation(null)
       setError(t('vehicleSetup.safetyContextChanged'))
-      setDraft(liveParam.value.toString())
+      setDraft(displayParamValue(liveParam.value))
       return
     }
 
@@ -142,7 +146,7 @@ export function ConfigFieldControl({
       setError(null)
     } else {
       setError(t('vehicleSetup.connectionUnavailable'))
-      setDraft(liveParam.value.toString())
+      setDraft(displayParamValue(liveParam.value))
     }
   }
 
@@ -189,7 +193,7 @@ export function ConfigFieldControl({
           onKeyDown={(event) => {
             if (event.key === 'Enter') event.currentTarget.blur()
             if (event.key === 'Escape') {
-              setDraft(param.value.toString())
+              setDraft(displayParamValue(param.value))
               event.currentTarget.blur()
             }
           }}
@@ -228,7 +232,7 @@ export function ConfigFieldControl({
         confirmationKey={confirmationKey}
         onCancel={() => {
           setConfirmation(null)
-          setDraft(param.value.toString())
+          setDraft(displayParamValue(param.value))
         }}
         onConfirm={() => {
           const committed = confirmation

@@ -175,6 +175,7 @@ test('Linux rfcomm and macOS SPP paths are recognized without arbitrary fallback
   const linux = await BluetoothConnection.scanDevices({
     platform: 'linux',
     listPorts: async () => [{ path: '/dev/rfcomm0' }, { path: '/dev/ttyUSB0' }],
+    linuxPairedDevices: async () => [],
   })
   assert.deepEqual(linux.map((port) => port.path), ['/dev/rfcomm0'])
 
@@ -187,6 +188,40 @@ test('Linux rfcomm and macOS SPP paths are recognized without arbitrary fallback
     ],
   })
   assert.deepEqual(mac.map((port) => port.path), ['/dev/cu.MicoAir-SPP'])
+})
+
+test('Linux paired BlueZ SPP devices are exposed and service-only selection stays unique', async () => {
+  const paired = {
+    path: 'bt-rfcomm://08fad1176949/1',
+    manufacturer: 'BlueZ',
+    friendlyName: 'MicoAir743v2-94296',
+    bluetoothAddress: '08:FA:D1:17:69:49',
+    bluetoothChannel: 1,
+    bluetoothServiceClassId: '0x1101',
+  }
+  const dependencies = {
+    platform: 'linux' as const,
+    listPorts: async () => [],
+    linuxPairedDevices: async () => [paired],
+  }
+  const scanned = await BluetoothConnection.scanDevices(dependencies)
+  assert.equal(scanned.length, 1)
+  assert.deepEqual(scanned[0], {
+    ...paired,
+    bluetoothAddress: '08fad1176949',
+    recommended: true,
+    productId: undefined,
+    vendorId: undefined,
+    pnpId: undefined,
+  })
+  assert.equal(await BluetoothConnection.findPortByIds(
+    { bluetoothServiceClassId: '0x1101', label: 'Bluetooth SPP 0x1101' },
+    dependencies,
+  ), paired.path)
+  assert.equal(await BluetoothConnection.findPortByIds(
+    { bluetoothAddress: '08:FA:D1:17:69:49' },
+    dependencies,
+  ), paired.path)
 })
 
 test('disconnect reaches and waits for a provisional in-flight serial connection', async () => {

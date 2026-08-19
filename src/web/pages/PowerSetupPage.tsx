@@ -17,6 +17,7 @@ import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useVehicleSetupStore } from '../stores/vehicleSetupStore'
 import { parameterEnumOptions } from '../utils/parameterEnumMetadata'
+import { formatParameterValue } from '../utils/parameterDisplay'
 
 const SUFFIX_META: Record<string, Omit<VehicleConfigField, 'id' | 'group'>> = {
   SOURCE: { label: 'Power source', kind: 'enum' },
@@ -115,19 +116,6 @@ export default function PowerSetupPage() {
 
   return (
     <div className="mc-setup-page mc-fade-in">
-      <section className="mc-card mc-power-hero">
-        <div>
-          <span className="mc-eyebrow">{t('vehicleSetup.powerOverview')}</span>
-          <h3>{selected?.label ?? t('vehicleSetup.noBatteryConfig')}</h3>
-          <p>{t('vehicleSetup.powerHint')}</p>
-        </div>
-        <div className="mc-power-live" data-stale={stale}>
-          <span>{t('vehicleSetup.liveTelemetry')}</span>
-          <strong>{telemetry?.voltage?.toFixed(2) ?? '—'} V</strong>
-          <small>{telemetry?.current?.toFixed(2) ?? '—'} A · {telemetry?.remaining ?? '—'}%</small>
-        </div>
-      </section>
-
       {!vehicleReady && <SetupNotice state="waiting">{t('receiver.waitingHint')}</SetupNotice>}
       {armed !== false && vehicleReady && (
         <SetupNotice state="warning">
@@ -150,11 +138,16 @@ export default function PowerSetupPage() {
               idBase="battery-instances"
             />
           )}
-          <section className="mc-card mc-setup-panel">
+          <section className="mc-card mc-setup-panel mc-power-panel">
             <header>
               <div>
                 <h3>{selected.label}</h3>
                 <p>{t('vehicleSetup.immediateWriteHint')}</p>
+              </div>
+              <div className="mc-power-live mc-power-live--inline" data-stale={stale}>
+                <span>{t('vehicleSetup.liveTelemetry')}</span>
+                <strong>{telemetry?.voltage?.toFixed(2) ?? '—'} V</strong>
+                <small>{telemetry?.current?.toFixed(2) ?? '—'} A · {telemetry?.remaining ?? '—'}%</small>
               </div>
             </header>
             <div className="mc-setup-fields">
@@ -215,7 +208,7 @@ export default function PowerSetupPage() {
       >
         <dl className="mc-calibration-math">
           <div><dt>{t('vehicleSetup.fcTelemetry')}</dt><dd>{telemetryValue?.toFixed(3) ?? '—'} {isVoltageCalibration ? 'V' : 'A'}</dd></div>
-          <div><dt>{t('vehicleSetup.currentMultiplier')}</dt><dd>{currentParam?.value ?? '—'}</dd></div>
+          <div><dt>{t('vehicleSetup.currentMultiplier')}</dt><dd>{currentParam ? formatParameterValue(currentParam.value) : '—'}</dd></div>
           <div><dt>{t('vehicleSetup.newMultiplier')}</dt><dd>{nextMultiplier?.toFixed(6) ?? '—'}</dd></div>
         </dl>
         <Field

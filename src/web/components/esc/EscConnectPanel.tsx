@@ -290,9 +290,14 @@ export default function EscConnectPanel() {
               </div>
             )}
 
-            {!canControl && !active && <p className="mc-esc-warning">{t('escConnect.needControlWarning')}</p>}
-            {!profileAllowsMode && !active && (
-              <p className="mc-esc-warning">{t('escConnect.profileNotSupportedWarning')}</p>
+            {(!canControl || !profileAllowsMode) && !active && (
+              <div className="mc-esc-action-status" role="status">
+                <Icon name="warning" size={15} />
+                <div>
+                  {!canControl && <p>{t('escConnect.needControlWarning')}</p>}
+                  {!profileAllowsMode && <p>{t('escConnect.profileNotSupportedWarning')}</p>}
+                </div>
+              </div>
             )}
 
             {active ? (
@@ -311,11 +316,14 @@ export default function EscConnectPanel() {
                 </div>
               </div>
             ) : (
-              <div>
-                <div role="group" aria-labelledby="esc-safety-confirmation-title">
-                  <p id="esc-safety-confirmation-title" className="mc-esc-warning">
-                    {t('escConnect.safetyConfirmationTitle')}
-                  </p>
+              <div className="mc-esc-session-setup">
+                <div className="mc-esc-safety-confirmation" role="group" aria-labelledby="esc-safety-confirmation-title">
+                  <div className="mc-esc-safety-confirmation__title">
+                    <Icon name="warning" size={15} />
+                    <strong id="esc-safety-confirmation-title">
+                      {t('escConnect.safetyConfirmationTitle')}
+                    </strong>
+                  </div>
                   <ul className="mc-esc-preconditions">
                     <li data-ok={propsRemovedConfirmed || undefined}>
                       <input

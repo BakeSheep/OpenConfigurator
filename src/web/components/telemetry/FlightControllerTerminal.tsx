@@ -83,6 +83,11 @@ export default function FlightControllerTerminal() {
     sendClientMessage({ type: 'shell_write', data: { text } })
   }
 
+  const writeReferenceCommand = (command: string) => {
+    sendText(command)
+    terminalRef.current?.focus()
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!active) return
     if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.length === 1) {
@@ -177,11 +182,11 @@ export default function FlightControllerTerminal() {
             tabIndex={referenceFamily === family ? 0 : -1}
             className="mc-shell-reference__panel"
           >
-            <p className="mc-shell-reference__note" data-external={family === 'ardupilot' || undefined}>
-              {family === 'px4'
-                ? t('terminal.reference.px4Note')
-                : t('terminal.reference.apNote')}
-            </p>
+            {family === 'ardupilot' && (
+              <p className="mc-shell-reference__note" data-external>
+                {t('terminal.reference.apNote')}
+              </p>
+            )}
             <div className="mc-shell-reference__scroll">
               {categories.map((category) => (
                 <section key={category.title}>
@@ -193,7 +198,7 @@ export default function FlightControllerTerminal() {
                         type="button"
                         disabled={family !== 'px4' || !active}
                         title={family === 'px4' ? t('terminal.reference.writeToTerminal', { command: entry.command }) : t('terminal.reference.useExternalMavproxy')}
-                        onClick={() => sendText(entry.command)}
+                        onClick={() => writeReferenceCommand(entry.command)}
                       >
                         <code>{entry.command}</code>
                         <span>{entry.description}</span>

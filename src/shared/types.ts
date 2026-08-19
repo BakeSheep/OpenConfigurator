@@ -890,6 +890,8 @@ export interface PortInfo {
   manufacturer?: string
   friendlyName?: string
   bluetoothAddress?: string
+  bluetoothChannel?: number
+  bluetoothServiceClassId?: string
   recommended?: boolean
   productId?: string
   vendorId?: string
@@ -906,6 +908,7 @@ export interface ConnectionConfig {
   productId?: string
   bluetoothAddress?: string
   bluetoothServiceClassId?: string
+  bluetoothChannel?: number
 }
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'

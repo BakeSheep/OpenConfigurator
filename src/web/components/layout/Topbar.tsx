@@ -10,7 +10,9 @@ import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSock
 import { appRuntimeMode } from '../../runtime'
 import {
   connectionPresetEnablesGamepad,
+  connectionConfigFromPreset,
   loadConnectionPresets,
+  resolveBluetoothPreset,
   resolveSerialPreset,
   saveConnectionPresets,
   type ConnectionPreset,
@@ -30,9 +32,23 @@ const statusMenuTriggerIds: Record<StatusMenu, string> = {
   tools: 'mc-topbar-tools-trigger',
 }
 
+function bluetoothEndpointLabel(port: string | null, ports: Array<{ path: string; friendlyName?: string; bluetoothAddress?: string }>): string {
+  const matched = ports.find((candidate) => candidate.path === port)
+  const friendlyName = matched?.friendlyName?.trim()
+  if (friendlyName) return `BT · ${friendlyName}`
+
+  const compactAddress = matched?.bluetoothAddress?.replace(/[^0-9a-f]/gi, '')
+    ?? port?.match(/^bt-rfcomm:\/\/([0-9a-f]{12})\//i)?.[1]
+  if (compactAddress?.length === 12) {
+    const suffix = compactAddress.slice(-6).toUpperCase().match(/.{2}/g)?.join(':')
+    return `BT · ${suffix}`
+  }
+  return 'BT · SPP'
+}
+
 export default function Topbar() {
   const { t } = useTranslation()
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
+  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, bluetoothPorts, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const { theme, toggleTheme } = useThemeStore()
@@ -41,7 +57,9 @@ export default function Topbar() {
   const setGamepadEnabled = useGamepadStore((state) => state.setEnabled)
   const reconnecting = status === 'reconnecting'
   const connectionLabel = vehicleReady
-    ? (type === 'bluetooth' ? 'BT' : 'USB') + ' · ' + (port ?? t('topbar.connection.ready'))
+    ? type === 'bluetooth'
+      ? bluetoothEndpointLabel(port, bluetoothPorts)
+      : `USB · ${port ?? t('topbar.connection.ready')}`
     : transportOpen
       ? t('topbar.connection.notConnected')
     : reconnecting
@@ -66,11 +84,14 @@ export default function Topbar() {
     setStatus('connecting')
     try {
       let resolved = preset
-      if (preset.type === 'serial') {
+      if (preset.type === 'serial' || preset.type === 'bluetooth') {
         const scanResponse = await fetch('/api/connections/scan')
         const scan = await scanResponse.json()
-        if (!scanResponse.ok || !scan.success) throw new Error('serial scan failed')
-        const matched = resolveSerialPreset(preset, scan.data.serial ?? [])
+        if (!scanResponse.ok || !scan.success) throw new Error('connection scan failed')
+        useConnectionStore.getState().setPorts(scan.data.serial ?? [], scan.data.bluetooth ?? [])
+        const matched = preset.type === 'serial'
+          ? resolveSerialPreset(preset, scan.data.serial ?? [])
+          : resolveBluetoothPreset(preset, scan.data.bluetooth ?? [])
         if (!matched) {
           setConnectionError(t('topbar.connection.presetNotFound'))
           setStatus('error')
@@ -82,6 +103,9 @@ export default function Topbar() {
           resolved.port !== preset.port
           || resolved.vendorId !== preset.vendorId
           || resolved.productId !== preset.productId
+          || resolved.bluetoothAddress !== preset.bluetoothAddress
+          || resolved.bluetoothChannel !== preset.bluetoothChannel
+          || resolved.bluetoothServiceClassId !== preset.bluetoothServiceClassId
         ) {
           const updated = presets.map((candidate) =>
             candidate.id === preset.id ? resolved : candidate,
@@ -93,13 +117,7 @@ export default function Topbar() {
       const res = await fetch('/api/connections/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getRestControlHeaders() },
-        body: JSON.stringify({
-          type: resolved.type,
-          port: resolved.port,
-          baudRate: resolved.baudRate,
-          vendorId: resolved.vendorId,
-          productId: resolved.productId,
-        }),
+        body: JSON.stringify(connectionConfigFromPreset(resolved)),
       })
       const text = await res.text()
       let json: { success?: boolean; error?: { code?: string; message?: string } } | null = null

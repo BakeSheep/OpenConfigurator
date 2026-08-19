@@ -24,13 +24,13 @@
 
 ## Overview
 
-OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The frontend reaches the service through REST plus one WebSocket; the service owns serial, Windows Bluetooth SPP, MAVLink, log transfer, and ESC sessions. It listens on `127.0.0.1` by default, so device data does not need to pass through a cloud service.
+OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The frontend reaches the service through REST plus one WebSocket; the service owns serial, Windows Bluetooth SPP, Linux BlueZ SPP, MAVLink, log transfer, and ESC sessions. It listens on `127.0.0.1` by default, so device data does not need to pass through a cloud service.
 
 The flight controller stack is identified only from HEARTBEAT. PX4 and ArduPilot use separate vehicle profiles, parameters, and command paths; unknown or unadapted vehicle types remain read-only.
 
 ## Highlights
 
-- USB serial and Windows Bluetooth SPP connections with MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
+- USB serial, Windows Bluetooth SPP, and Linux BlueZ SPP connections with MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
 - Realtime attitude, position, battery, sensor, RC, actuator, EKF, and MAVLink message monitoring
 - Parameter sync and search, QGC parameter-file import/export, airframe selection, radio calibration, flight modes, power/battery and safety setup, PID/EKF tuning, sensor calibration, and serial-port configuration
 - Safety-gated arming, mode changes, takeoff, landing, RTL, motor tests, and gamepad RC override
@@ -61,6 +61,8 @@ See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md
 ## Quick start
 
 Node.js `>=22.12.0` and npm are required. The Web Serial picker needs Chrome or Edge 89+ and an HTTPS or localhost page.
+
+Linux Bluetooth uses the BlueZ Profile API and does not require `/dev/rfcomm*` or `sudo rfcomm`. Install `bluez`, Python 3, `dbus-python`, and PyGObject, then pair the SPP device in system Bluetooth settings before connecting.
 
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git

@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { TabPanel } from '../components/ui/Tabs'
-import Toolbar from '../components/ui/Toolbar'
 import { useQueryTab } from '../hooks/useQueryTab'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -161,7 +160,7 @@ export default function MotorPage({ embedded = false, panel }: { embedded?: bool
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const connected = vehicleReady && canControl
-  const { params, loading, receivedCount, totalCount } = useParameterStore()
+  const params = useParameterStore((state) => state.params)
   const motorOutputs = useTelemetryStore((state) => state.motorOutputs)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const caps = vehicleCapabilities(vehicleIdentity)
@@ -425,18 +424,6 @@ export default function MotorPage({ embedded = false, panel }: { embedded?: bool
         idBase="motor-settings"
       />}
 
-      <Toolbar
-        summary={(
-          <>
-          <span className="mc-motor-param-status" data-loading={loading}>
-            <i />
-            {loading ? t('motor.paramLoading', {received: receivedCount, total: totalCount}) : t('motor.paramsSynced', { count: params.size })}
-          </span>
-            <span>{t('motor.outputHint')}</span>
-          </>
-        )}
-      />
-
       {vehicleIdentity && !motorTestSupported && (
         <div className="mc-capability-note" data-state="waiting">
           <Icon name="warning" size={15} />
@@ -517,7 +504,6 @@ export default function MotorPage({ embedded = false, panel }: { embedded?: bool
         </div>}
 
         {activePanel === 'test' && <aside className="mc-motor-test-panel mc-motor-test-panel--standalone">
-          <p className="mc-motor-test-intro">{t('motor.testIntro')}</p>
           {motorCount === null ? (
             <div className="mc-capability-note" data-state="waiting">
               <Icon name="warning" size={15} />

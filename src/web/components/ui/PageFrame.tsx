@@ -54,6 +54,7 @@ export function WorkspaceFrame({
 interface SectionFrameProps {
   title: string
   children: ReactNode
+  visuallyHideHeader?: boolean
   description?: string
   status?: ReactNode
   actions?: ReactNode
@@ -71,6 +72,7 @@ interface SectionFrameProps {
 export function SectionFrame({
   title,
   children,
+  visuallyHideHeader = false,
   description,
   status,
   actions,
@@ -100,7 +102,7 @@ export function SectionFrame({
   return (
     <section
       ref={frameRef}
-      className={classes('mc-section-frame', className)}
+      className={classes('mc-section-frame', visuallyHideHeader && 'mc-section-frame--header-hidden', className)}
       aria-labelledby={headingId}
     >
       <header className="mc-section-frame__header">

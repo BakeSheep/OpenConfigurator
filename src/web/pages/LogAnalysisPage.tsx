@@ -59,7 +59,7 @@ import type {
   UlogWorkerRequest,
   UlogWorkerResult,
 } from '../utils/ulogAnalysis'
-import { parsePx4LogPathDate } from '../utils/ulogAnalysis'
+import { formatAbsoluteLogTime } from '../utils/ulogAnalysis'
 import type { DataflashLogEntry, FsEntry } from '../../shared/types'
 
 // Leaflet is only pulled in when the log actually contains a GPS track.
@@ -829,11 +829,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     setEventsOpen(false)
   }, [dataset])
 
-  const analyzeBlob = useCallback((
-    name: string,
-    blob: Blob,
-    options?: { sourcePath?: string; fileModifiedMs?: number },
-  ) => {
+  const analyzeBlob = useCallback((name: string, blob: Blob) => {
     analysisAbortRef.current?.abort()
     const controller = new AbortController()
     analysisAbortRef.current = controller
@@ -846,23 +842,6 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
     analyzeInWorker(blob, controller.signal, format, language)
       .then((result) => {
         if (controller.signal.aborted) return
-        if (result.overview.startTimeUtcMs === null) {
-          // DataFlash file names carry no PX4-style timestamp; fall straight
-          // through to the file-modified estimate for .bin logs.
-          const pathTime = format === 'ulog'
-            ? parsePx4LogPathDate(options?.sourcePath ?? name)
-            : null
-          if (pathTime !== null) {
-            result.overview.startTimeUtcMs = pathTime
-            result.overview.startTimeSource = 'filename'
-          } else if (options?.fileModifiedMs && options.fileModifiedMs > 0) {
-            result.overview.startTimeUtcMs = Math.max(
-              0,
-              options.fileModifiedMs - result.overview.durationSec * 1000,
-            )
-            result.overview.startTimeSource = 'file-modified'
-          }
-        }
         setDataset(result)
       })
       .catch((error: Error) => {
@@ -900,7 +879,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   // Hand-off from the flight-log explorer ("download & analyze").
   useEffect(() => {
     const stashed = takeStashedLog()
-    if (stashed) analyzeBlob(stashed.name, stashed.blob, { sourcePath: stashed.sourcePath })
+    if (stashed) analyzeBlob(stashed.name, stashed.blob)
   }, [analyzeBlob])
 
   // FC import completed while this page is open: fetch and analyze in place.
@@ -919,7 +898,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         handledDownloadRef.current = downloadId
         useFileExplorerStore.getState().clearDownload()
         setImportOpen(false)
-        analyzeBlob(download.fileName ?? 'log.ulg', blob, { sourcePath: download.path })
+        analyzeBlob(download.fileName ?? 'log.ulg', blob)
       } catch (error) {
         if (!cancelled) {
           useFileExplorerStore.getState().failDownload(t('logAnalysis.readFileFailed'))
@@ -969,10 +948,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       setParseError(t('logAnalysis.selectFileError'))
       return
     }
-    analyzeBlob(file.name, file, {
-      sourcePath: file.name,
-      fileModifiedMs: file.lastModified,
-    })
+    analyzeBlob(file.name, file)
   }, [analyzeBlob, t])
 
   const startExport = useCallback(async () => {
@@ -1161,7 +1137,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
         <Icon name="upload" size={15} /> {t('logAnalysis.openLocalLog')}
       </button>
       <Button
-        tone="quiet"
+        tone="secondary"
         disabled={!dataset || !logSource || parsing}
         leadingIcon={<Icon name="download" size={15} />}
         onClick={() => {
@@ -1270,13 +1246,12 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
               <div>
                 <span>
                   {t('logAnalysis.takeoffTime')}
-                  {dataset.overview.startTimeSource === 'filename' && t('logAnalysis.startTimeFromFilename')}
-                  {dataset.overview.startTimeSource === 'file-modified' && t('logAnalysis.startTimeFromFileModified')}
                 </span>
                 <strong>
-                  {dataset.overview.startTimeUtcMs
-                    ? new Date(dataset.overview.startTimeUtcMs).toISOString().replace('T', ' ').slice(0, 19)
-                    : '—'}
+                  {formatAbsoluteLogTime(
+                    dataset.overview.startTimeUtcMs,
+                    i18n.resolvedLanguage === 'en' ? 'en' : 'zh',
+                  )}
                 </strong>
               </div>
               <div>

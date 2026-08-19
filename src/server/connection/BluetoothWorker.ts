@@ -10,6 +10,7 @@ import {
   type BluetoothPortSelector,
 } from './BluetoothConnection'
 import type { ConnectionConfig } from '../../shared/types'
+import { LinuxRfcommConnection } from './LinuxRfcommConnection'
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 const DEFAULT_RECONNECT_BASE_INTERVAL_MS = 5000
@@ -46,6 +47,7 @@ export interface BluetoothSerialLink extends EventEmitter {
 
 export interface BluetoothWorkerOptions {
   serialFactory?: () => BluetoothSerialLink
+  linkFactory?: (path: string) => BluetoothSerialLink
   resolvePort?: (selector: BluetoothPortSelector) => Promise<string | null>
   maxReconnectAttempts?: number
   reconnectBaseIntervalMs?: number
@@ -90,6 +92,7 @@ export class BluetoothWorker extends EventEmitter {
   private _terminalReason: ReconnectTerminalReason | null = null
 
   private readonly serialFactory: NonNullable<BluetoothWorkerOptions['serialFactory']>
+  private readonly linkFactory: NonNullable<BluetoothWorkerOptions['linkFactory']>
   private readonly resolvePort: NonNullable<BluetoothWorkerOptions['resolvePort']>
   private readonly maxReconnectAttempts: number
   private readonly reconnectBaseIntervalMs: number
@@ -104,6 +107,9 @@ export class BluetoothWorker extends EventEmitter {
     this.selectorConfig = { ...config }
     this.currentPort = config.port
     this.serialFactory = options.serialFactory ?? (() => new SerialConnection())
+    this.linkFactory = options.linkFactory ?? ((path) => LinuxRfcommConnection.supports(path)
+      ? new LinuxRfcommConnection()
+      : this.serialFactory())
     this.resolvePort = options.resolvePort ?? ((selector) => BluetoothConnection.findPortByIds(selector))
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS
     this.reconnectBaseIntervalMs = options.reconnectBaseIntervalMs ?? DEFAULT_RECONNECT_BASE_INTERVAL_MS
@@ -272,7 +278,7 @@ export class BluetoothWorker extends EventEmitter {
     }
     this.currentPort = resolved
 
-    const conn = this.serialFactory()
+    const conn = this.linkFactory(resolved)
     this.conn = conn
     this.attachLink(conn, generation)
     try {

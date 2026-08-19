@@ -58,6 +58,6 @@ export default function DomainPage({ domainId }: { domainId: string }) {
     <DomainNav items={domain.items} ariaLabel={t('navigation.domainPages')} />
     {/* WorkspaceViewport owns route scroll restoration; avoid a second
         section scrollIntoView that can jump the main pane on sub-page changes. */}
-    <SectionFrame title={t(item.labelKey)}>{content}</SectionFrame>
+    <SectionFrame title={t(item.labelKey)} visuallyHideHeader>{content}</SectionFrame>
   </WorkspaceFrame>
 }

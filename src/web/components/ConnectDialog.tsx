@@ -186,7 +186,9 @@ export default function ConnectDialog() {
       }
       if (!res.ok || !json || !json.success) {
         setStatus('error')
-        const reason = json?.error || (text ? `HTTP ${res.status}: ${text.slice(0, 200)}` : t('connect.httpNoResponse', { status: res.status }))
+        const reason = json?.error?.message
+          ?? json?.error
+          ?? (text ? `HTTP ${res.status}: ${text.slice(0, 200)}` : t('connect.httpNoResponse', { status: res.status }))
         const reasonText = typeof reason === 'string' ? reason : JSON.stringify(reason)
         setError(t('connect.connectFailed', { reason: reasonText }))
         setConnectionError(t('connect.connectFailed', { reason: reasonText }))
@@ -212,6 +214,8 @@ export default function ConnectDialog() {
           vendorId: selected?.vendorId,
           productId: selected?.productId,
           bluetoothAddress: selected?.bluetoothAddress,
+          bluetoothChannel: selected?.bluetoothChannel,
+          bluetoothServiceClassId: selected?.bluetoothServiceClassId,
         })
         return
       }
@@ -273,6 +277,9 @@ export default function ConnectDialog() {
     const selectedSerial = connType === 'serial'
       ? serialPorts.find((port) => port.path === selectedPort)
       : undefined
+    const selectedBluetooth = connType === 'bluetooth' && selectedBtPort
+      ? bluetoothPorts.find((port) => port.path === selectedBtPort)
+      : undefined
     const preset: ConnectionPreset = {
       id: Date.now().toString(36),
       name: presetName,
@@ -281,6 +288,19 @@ export default function ConnectDialog() {
       baudRate,
       ...(selectedSerial?.vendorId ? { vendorId: selectedSerial.vendorId } : {}),
       ...(selectedSerial?.productId ? { productId: selectedSerial.productId } : {}),
+      ...(selectedBluetooth?.vendorId ? { vendorId: selectedBluetooth.vendorId } : {}),
+      ...(selectedBluetooth?.productId ? { productId: selectedBluetooth.productId } : {}),
+      ...(selectedBluetooth?.bluetoothAddress
+        ? { bluetoothAddress: selectedBluetooth.bluetoothAddress }
+        : {}),
+      ...(selectedBluetooth?.bluetoothChannel
+        ? { bluetoothChannel: selectedBluetooth.bluetoothChannel }
+        : {}),
+      ...(selectedBluetooth?.bluetoothServiceClassId
+        ? { bluetoothServiceClassId: selectedBluetooth.bluetoothServiceClassId }
+        : pickedBt?.bluetoothServiceClassId
+          ? { bluetoothServiceClassId: pickedBt.bluetoothServiceClassId }
+          : {}),
     }
     const existing = loadConnectionPresets()
     const duplicate = existing.find((candidate) => samePresetDevice(candidate, preset))
@@ -430,7 +450,10 @@ export default function ConnectDialog() {
                   <option value="">{t('connect.noBtSppFound')}</option>
                   {bluetoothPorts.map((port) => (
                     <option key={port.path} value={port.path}>
-                      {port.path}{port.friendlyName ? ` · ${port.friendlyName}` : (port.manufacturer ? ` - ${port.manufacturer}` : '')}{port.recommended ? t('connect.recommended') : ''}
+                      {port.friendlyName
+                        ? `${port.friendlyName} · ${port.bluetoothAddress ?? port.path}`
+                        : `${port.path}${port.manufacturer ? ` - ${port.manufacturer}` : ''}`}
+                      {port.recommended ? t('connect.recommended') : ''}
                     </option>
                   ))}
                 </select>

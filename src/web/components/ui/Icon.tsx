@@ -2,7 +2,7 @@ import type { SVGProps } from 'react'
 
 export type IconName =
   | 'dashboard' | 'settings' | 'sensor' | 'parameters' | 'message' | 'route'
-  | 'log' | 'waveform' | 'firmware' | 'hardware' | 'rtk' | 'flight'
+  | 'log' | 'waveform' | 'firmware' | 'hardware' | 'rtk' | 'flight' | 'airframe'
   | 'gamepad' | 'motor' | 'receiver' | 'plug' | 'home' | 'community'
   | 'shop' | 'sun' | 'moon' | 'external' | 'chevronDown' | 'refresh'
   | 'search' | 'battery' | 'satellite' | 'altitude' | 'check' | 'warning'
@@ -53,6 +53,8 @@ export default function Icon({ name, size = 20, strokeWidth = 1.8, ...props }: I
       return <svg {...shared}><path d="M12 21V10M8 21h8M10 10h4l1-5h-6zM4 8a8 8 0 0 1 16 0M7 8a5 5 0 0 1 10 0" /></svg>
     case 'flight':
       return <svg {...shared}><path d="m21 3-7.7 18-3-8.3L2 10.3z" /><path d="m10.3 12.7 4.2-4.2" /></svg>
+    case 'airframe':
+      return <svg {...shared}><path d="M8.5 8.5 5 5M15.5 8.5 19 5M8.5 15.5 5 19M15.5 15.5 19 19" /><circle cx="5" cy="5" r="2.5" /><circle cx="19" cy="5" r="2.5" /><circle cx="5" cy="19" r="2.5" /><circle cx="19" cy="19" r="2.5" /><rect x="8.5" y="8.5" width="7" height="7" rx="2" /><path d="m10 8.5 2-2.5 2 2.5" /></svg>
     case 'gamepad':
       return <svg {...shared}><path d="M7 8h10a4 4 0 0 1 3.8 3l1 3.5A3.3 3.3 0 0 1 18.6 19a3.3 3.3 0 0 1-2.4-1l-1.5-1.7h-5.4L7.8 18A3.3 3.3 0 0 1 5.4 19a3.3 3.3 0 0 1-3.2-4.5l1-3.5A4 4 0 0 1 7 8Z" /><path d="M7 12v4M5 14h4M16 13h.01M18.5 15.5h.01" /></svg>
     case 'motor':
