@@ -128,6 +128,49 @@ export interface CalibrationSnapshot {
   cancelSupported: boolean
 }
 
+// -- In-flight controller autotune sessions ----------------------------------
+
+export type AutotunePhase =
+  | 'starting'
+  | 'tuning'
+  | 'paused'
+  | 'verifying'
+  | 'applying'
+  | 'awaiting_disarm'
+  | 'completed'
+  | 'testing'
+  | 'save_pending'
+  | 'saved'
+  | 'discarded'
+  | 'failed'
+  | 'interrupted'
+
+export type AutotuneVerification =
+  | 'not_applicable'
+  | 'firmware_completed'
+  | 'parameters_saved'
+
+export interface AutotuneSnapshot {
+  sessionId: string
+  seq: number
+  requestId: string
+  ownerClientId: string | null
+  recoverUntil: number | null
+  family: 'px4' | 'ardupilot'
+  phase: AutotunePhase
+  verification: AutotuneVerification
+  /** PX4 firmware progress. ArduPilot deliberately reports null. */
+  progress: number | null
+  axis: 'roll' | 'pitch' | 'yaw' | null
+  initialModeId: number
+  updatedAt: number
+  cancelSupported: boolean
+  /** Parameter values captured before the in-flight run. */
+  baselineParameters: Record<string, number>
+  failureCode?: string
+  failureReason?: string
+}
+
 export interface AttitudeData {
   roll: number
   pitch: number
@@ -708,6 +751,11 @@ export type ServerMessage =
       type: 'calibration_session_started'
       data: { sessionId: string; requestId: string; recoveryToken: string }
     }
+  | { type: 'autotune_update'; data: AutotuneSnapshot }
+  | {
+      type: 'autotune_session_started'
+      data: { sessionId: string; requestId: string; recoveryToken: string }
+    }
   | { type: 'radio_calibration_snapshot'; data: RadioCalibrationSnapshot }
   | {
       type: 'radio_calibration_started'
@@ -802,6 +850,26 @@ export type ClientMessage =
   | {
       // Reattach a disconnected owner to its running calibration session.
       type: 'calibration_reclaim'
+      requestId: string
+      data: { sessionId: string; recoveryToken: string }
+    }
+  | {
+      type: 'autotune_start'
+      requestId: string
+      safetyConfirmation: 'autotune_in_flight'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
+  | {
+      type: 'autotune_action'
+      requestId: string
+      data: {
+        sessionId: string
+        action: 'abort' | 'test_gains' | 'restore_gains'
+      }
+    }
+  | {
+      type: 'autotune_reclaim'
       requestId: string
       data: { sessionId: string; recoveryToken: string }
     }

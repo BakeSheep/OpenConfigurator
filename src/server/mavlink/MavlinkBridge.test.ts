@@ -2404,6 +2404,76 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 }
 
 // ---------------------------------------------------------------------------
+// In-flight autotune wiring: stack/capability/armed/parameter-baseline gates,
+// PX4 ACK progress and ArduCopter mode + STATUSTEXT evidence.
+// ---------------------------------------------------------------------------
+{
+  const textPayload = (text: string): Buffer => {
+    const payload = Buffer.alloc(54)
+    payload[0] = 6
+    Buffer.from(text, 'ascii').copy(payload, 1, 0, 50)
+    return payload
+  }
+
+  const px4Connection = new FakeConnection()
+  const px4Bridge = new MavlinkBridge(px4Connection as never, { codec: { protocol: 'v2' } })
+  const px4Heartbeat = heartbeatPayload(12, 2, 0x03040000)
+  px4Heartbeat[6] = 0x80
+  inject(px4Bridge, 0, px4Heartbeat, 61, 1)
+  inject(px4Bridge, 22, paramValuePayload('MC_ROLLRATE_P', 0.12), 61, 1)
+  const px4Snapshots: any[] = []
+  const px4Session = (px4Bridge as any).createAutotuneSession({
+    sessionId: 'autotune-px4', requestId: 'autotune-px4', ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => px4Snapshots.push(snapshot),
+  })
+  assert.notEqual(px4Session, null)
+  px4Session.start()
+  const command212 = () => px4Connection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 212)
+  assert.equal(command212().length, 1)
+  assert.equal(framePayload(command212()[0]).readFloatLE(0), 1)
+  inject(px4Bridge, 77, commandAckPayload(212, 5, 255, 190, 40), 61, 1)
+  assert.equal(last(px4Snapshots)?.phase, 'tuning')
+  assert.equal(last(px4Snapshots)?.axis, 'pitch')
+  inject(px4Bridge, 77, commandAckPayload(212, 0, 255, 190, 100), 61, 1)
+  assert.equal(last(px4Snapshots)?.phase, 'completed')
+  assert.ok(Math.abs(last(px4Snapshots)?.baselineParameters.MC_ROLLRATE_P - 0.12) < 1e-6)
+  px4Bridge.destroy()
+
+  const apConnection = new FakeConnection()
+  const apBridge = new MavlinkBridge(apConnection as never, { codec: { protocol: 'v2' } })
+  const apHeartbeat = heartbeatPayload(3, 2, 5)
+  apHeartbeat[6] = 0x80
+  inject(apBridge, 0, apHeartbeat, 62, 1)
+  inject(apBridge, 22, paramValuePayload('ATC_RAT_RLL_P', 0.14), 62, 1)
+  const apSnapshots: any[] = []
+  const apSession = (apBridge as any).createAutotuneSession({
+    sessionId: 'autotune-ap', requestId: 'autotune-ap', ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => apSnapshots.push(snapshot),
+  })
+  assert.notEqual(apSession, null)
+  apSession.start()
+  const setMode = findLast(apConnection.frames, (frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176)
+  assert.ok(setMode)
+  assert.equal(framePayload(setMode!).readFloatLE(4), 15)
+  const apAutotuneHeartbeat = heartbeatPayload(3, 2, 15)
+  apAutotuneHeartbeat[6] = 0x80
+  inject(apBridge, 0, apAutotuneHeartbeat, 62, 1)
+  inject(apBridge, 253, textPayload('AutoTune: Success'), 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'completed')
+  const apDisarmed = heartbeatPayload(3, 2, 15)
+  inject(apBridge, 0, apDisarmed, 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'save_pending')
+  inject(apBridge, 253, textPayload('AutoTune: Saved gains'), 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'saved')
+  assert.equal(last(apSnapshots)?.verification, 'parameters_saved')
+  apBridge.destroy()
+
+  console.log('MAVLink autotune session wiring checks passed')
+}
+
+// ---------------------------------------------------------------------------
 // PX4 calibration session wiring: STATUSTEXT [cal] reassembly feeds the
 // session, the start command is sent exactly once (no pendingCommands
 // retransmit), CAL_MAG_SIDES gates mag sides, and cancel emits an all-zero 241.

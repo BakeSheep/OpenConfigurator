@@ -29,6 +29,7 @@ for (const cmd of [
   'MAV_CMD_DO_ACCEPT_MAG_CAL',
   'MAV_CMD_DO_CANCEL_MAG_CAL',
   'MAV_CMD_ACCELCAL_VEHICLE_POS',
+  'MAV_CMD_DO_AUTOTUNE_ENABLE',
 ]) {
   expectFail(
     { type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] },
@@ -355,5 +356,41 @@ assert.equal(parseClientMessage({
   type: 'radio_calibration_reclaim', requestId: 'radio-r',
   data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
 }).type, 'radio_calibration_reclaim')
+
+const autotuneStart = parseClientMessage({
+  type: 'autotune_start',
+  requestId: 'autotune-1',
+  safetyConfirmation: 'autotune_in_flight',
+  expectedSafetyEpoch: 7,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+})
+assert.equal(autotuneStart.type, 'autotune_start')
+expectFail(
+  {
+    type: 'autotune_start', requestId: 'autotune-x',
+    expectedSafetyEpoch: 7, expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  },
+  'safety_confirmation_required',
+  'autotune without explicit in-flight confirmation',
+)
+for (const action of ['abort', 'test_gains', 'restore_gains']) {
+  const parsed = parseClientMessage({
+    type: 'autotune_action', requestId: `autotune-${action}`,
+    data: { sessionId: SESSION_ID, action },
+  })
+  assert.equal(parsed.type, 'autotune_action')
+}
+expectFail(
+  {
+    type: 'autotune_action', requestId: 'autotune-x',
+    data: { sessionId: SESSION_ID, action: 'save' },
+  },
+  'invalid_autotune_action',
+  'unknown autotune action',
+)
+assert.equal(parseClientMessage({
+  type: 'autotune_reclaim', requestId: 'autotune-reclaim',
+  data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
+}).type, 'autotune_reclaim')
 
 console.log('calibration boundary validation checks passed')

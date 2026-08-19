@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ServerMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useAutotuneStore } from '../stores/autotuneStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { connectSocket, handleMessage, processServerMessage } from './useWebSocket'
 
@@ -59,6 +60,21 @@ test('parse and handler failures are isolated from later WebSocket messages', ()
   assert.match(String(errors[0][0]), /Parse error/)
   assert.match(String(errors[1][0]), /Message handler error/)
   assert.equal(useConnectionStore.getState().vehicleReady, true)
+})
+
+test('autotune snapshots dispatch to the persistent session store', () => {
+  useAutotuneStore.getState().reset()
+  handleMessage({
+    type: 'autotune_update',
+    data: {
+      sessionId: 'autotune-ws', seq: 1, requestId: 'autotune-request',
+      ownerClientId: 'client-a', recoverUntil: null, family: 'px4', phase: 'tuning',
+      verification: 'not_applicable', progress: 40, axis: 'pitch', initialModeId: 3,
+      updatedAt: 1, cancelSupported: false, baselineParameters: { MC_ROLLRATE_P: 0.1 },
+    },
+  })
+  assert.equal(useAutotuneStore.getState().snapshot?.sessionId, 'autotune-ws')
+  assert.equal(useAutotuneStore.getState().snapshot?.progress, 40)
 })
 
 test('a retryable rejection restarts the automatic parameter request', async () => {

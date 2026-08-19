@@ -6,6 +6,7 @@ import { WebSocket } from 'ws'
 import { ESC_SESSION_SAFETY_CONFIRMATION } from '../shared/esc'
 import type {
   CalibrationSnapshot,
+  AutotuneSnapshot,
   ClientMessage,
   ConnectionConfig,
   ConnectionStatus,
@@ -20,6 +21,7 @@ import {
   type MavlinkBridgeBoundary,
 } from './index'
 import type { CalibrationStartRequest } from './mavlink/CalibrationSessionManager'
+import type { AutotuneStartRequest } from './mavlink/AutotuneSessionManager'
 import {
   InputValidationError,
   isAllowedOrigin,
@@ -179,10 +181,71 @@ class FakeCalibrationSession {
   }
 }
 
+class FakeAutotuneSession {
+  terminal = false
+  owner: string | null
+  recoverUntil: number | null = null
+  actions: string[] = []
+  terminateCodes: string[] = []
+  private seq = 0
+  private phase: AutotuneSnapshot['phase'] = 'starting'
+  private failureCode: string | undefined
+
+  constructor(readonly request: AutotuneStartRequest) {
+    this.owner = request.ownerClientId
+  }
+  get sessionId(): string { return this.request.sessionId }
+  start(): void { this.emit() }
+  action(action: 'abort' | 'test_gains' | 'restore_gains') {
+    this.actions.push(action)
+    return { ok: true as const }
+  }
+  terminate(code: string): void {
+    if (this.terminal) return
+    this.terminal = true
+    this.terminateCodes.push(code)
+    this.failureCode = code
+    this.phase = 'interrupted'
+    this.emit()
+  }
+  setOwner(ownerClientId: string | null, recoverUntil: number | null): void {
+    this.owner = ownerClientId
+    this.recoverUntil = recoverUntil
+    this.emit()
+  }
+  finish(phase: AutotuneSnapshot['phase']): void {
+    this.terminal = true
+    this.phase = phase
+    this.emit()
+  }
+  snapshot(): AutotuneSnapshot { return this.build() }
+  private emit(): void { this.seq += 1; this.request.emitSnapshot(this.build()) }
+  private build(): AutotuneSnapshot {
+    return {
+      sessionId: this.sessionId,
+      seq: this.seq,
+      requestId: this.request.requestId,
+      ownerClientId: this.owner,
+      recoverUntil: this.recoverUntil,
+      family: 'px4',
+      phase: this.phase,
+      verification: 'not_applicable',
+      progress: null,
+      axis: null,
+      initialModeId: 4,
+      updatedAt: Date.now(),
+      cancelSupported: false,
+      baselineParameters: { MC_ROLLRATE_P: 0.1 },
+      ...(this.failureCode ? { failureCode: this.failureCode } : {}),
+    }
+  }
+}
+
 class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   readonly messages: ClientMessage[] = []
   readonly parameterValues = new Map<string, number>()
   readonly calibrationSessions: FakeCalibrationSession[] = []
+  readonly autotuneSessions: FakeAutotuneSession[] = []
   currentParamRunId = 0
   destroyed = false
   parameterCancellationCalls = 0
@@ -216,6 +279,12 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   createCalibrationSession(request: CalibrationStartRequest): FakeCalibrationSession {
     const session = new FakeCalibrationSession(request)
     this.calibrationSessions.push(session)
+    return session
+  }
+
+  createAutotuneSession(request: AutotuneStartRequest): FakeAutotuneSession {
+    const session = new FakeAutotuneSession(request)
+    this.autotuneSessions.push(session)
     return session
   }
 
@@ -1494,6 +1563,90 @@ test('a stale safety request does not renew an existing controller lease', async
     )
   } finally {
     await closeWs(client)
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('autotune pins control, isolates mutations and preserves flight exits', async () => {
+  const started = await startTestServer(testConfig(), { controllerLeaseMs: 300 })
+  const owner = await connectWs(started.wsUrl)
+  const observer = await connectWs(started.wsUrl)
+  try {
+    await owner.waitFor('hello')
+    await observer.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    await owner.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    owner.ws.send(JSON.stringify({
+      type: 'autotune_start',
+      requestId: 'autotune-own',
+      safetyConfirmation: 'autotune_in_flight',
+      ...latestSafetyExpectation(owner),
+    }))
+    const claimed = await owner.waitFor('controller', (message) => message.data?.reason === 'claimed')
+    const startedMessage = await owner.waitFor('autotune_session_started')
+    const sessionId = startedMessage.data?.sessionId as string
+    const recoveryToken = startedMessage.data?.recoveryToken as string
+    assert.ok(sessionId && recoveryToken)
+    const session = started.bridge.autotuneSessions[0]
+    assert.ok(session)
+    await observer.waitFor('autotune_update', (message) => message.data?.phase === 'starting')
+    assert.equal(observer.messages.some((message) => JSON.stringify(message).includes(recoveryToken)), false)
+
+    owner.ws.send(JSON.stringify({
+      type: 'param_set', requestId: 'param-during-autotune',
+      data: { id: 'MC_ROLLRATE_P', value: 0.2, paramType: 9 },
+    }))
+    const blocked = await owner.waitFor('client_error',
+      (message) => message.data?.requestId === 'param-during-autotune')
+    assert.equal(blocked.data?.code, 'autotune_session_active')
+
+    owner.ws.send(JSON.stringify({
+      type: 'set_flight_mode', requestId: 'mode-exit-autotune', data: { modeId: 4 },
+    }))
+    for (let i = 0; i < 20 && started.bridge.messages.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    assert.equal(started.bridge.messages[0]?.type, 'set_flight_mode')
+
+    observer.ws.send(JSON.stringify({
+      type: 'autotune_action', requestId: 'observer-abort',
+      data: { sessionId, action: 'abort' },
+    }))
+    const conflict = await observer.waitFor('client_error',
+      (message) => message.data?.requestId === 'observer-abort')
+    assert.equal(conflict.data?.code, 'controller_conflict')
+    assert.deepEqual(session.actions, [])
+
+    owner.ws.send(JSON.stringify({ type: 'release_control', requestId: 'release-autotune' }))
+    const releaseBlocked = await owner.waitFor('client_error',
+      (message) => message.data?.requestId === 'release-autotune')
+    assert.equal(releaseBlocked.data?.code, 'autotune_session_active')
+
+    owner.ws.send(JSON.stringify({
+      type: 'esc_session_start', requestId: 'esc-during-autotune',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...safetyExpectationFrom(claimed),
+      data: { mode: 'direct' },
+    }))
+    const escBlocked = await owner.waitFor('client_error',
+      (message) => message.data?.requestId === 'esc-during-autotune')
+    assert.equal(escBlocked.data?.code, 'autotune_session_active')
+
+    owner.ws.send(JSON.stringify({
+      type: 'command', requestId: 'autotune-emergency-disarm',
+      cmd: 'MAV_CMD_COMPONENT_ARM_DISARM', params: [0, 0], safetyConfirmation: 'disarm',
+    }))
+    await owner.waitFor('autotune_update',
+      (message) => message.data?.failureCode === 'interrupted_by_disarm')
+    assert.deepEqual(session.terminateCodes, ['interrupted_by_disarm'])
+    assert.equal(started.bridge.messages[started.bridge.messages.length - 1]?.type, 'command')
+  } finally {
+    await closeWs(observer)
+    await closeWs(owner)
     await started.runtime.shutdown('test')
   }
 })

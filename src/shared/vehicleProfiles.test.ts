@@ -221,6 +221,7 @@ assert.equal(px4Caps.motorTest, 'actuator-test')
 assert.equal(px4Caps.frameConfig, true)
 assert.equal(px4Caps.actuatorConfig, true)
 assert.equal(px4Caps.pidConfig, true)
+assert.equal(px4Caps.autotune, 'px4-multicopter')
 assert.equal(px4Caps.ekfConfig, true)
 assert.equal(px4Caps.serialConfig, true)
 assert.equal(px4Caps.gpsConfig, true)
@@ -237,6 +238,7 @@ assert.equal(apCopterCaps.motorTest, 'motor-test')
 assert.equal(apCopterCaps.frameConfig, true)
 assert.equal(apCopterCaps.actuatorConfig, true)
 assert.equal(apCopterCaps.pidConfig, true)
+assert.equal(apCopterCaps.autotune, 'arducopter-multicopter')
 assert.equal(apCopterCaps.ekfConfig, true)
 assert.equal(apCopterCaps.serialConfig, true)
 assert.equal(apCopterCaps.gpsConfig, true)
@@ -255,6 +257,7 @@ for (const typeId of [1, 10, 12, 5]) {
   assert.equal(caps.frameConfig, false)
   assert.equal(caps.actuatorConfig, false)
   assert.equal(caps.pidConfig, false)
+  assert.equal(caps.autotune, 'none')
   assert.equal(caps.ekfConfig, false)
   assert.equal(caps.serialConfig, false)
   assert.equal(caps.gpsConfig, false)
@@ -274,12 +277,17 @@ for (const identity of [unknownIdentity, null]) {
   assert.equal(caps.frameConfig, false)
   assert.equal(caps.actuatorConfig, false)
   assert.equal(caps.pidConfig, false)
+  assert.equal(caps.autotune, 'none')
   assert.equal(caps.ekfConfig, false)
   assert.equal(caps.serialConfig, false)
   assert.equal(caps.gpsConfig, false)
   assert.equal(caps.logFormat, 'unknown')
   assert.equal(caps.mavlinkShell, 'none')
 }
+
+// Traditional helicopters are intentionally excluded from the first release.
+assert.equal(vehicleCapabilities(buildVehicleIdentity(12, 4)).autotune, 'none')
+assert.equal(vehicleCapabilities(buildVehicleIdentity(3, 4)).autotune, 'none')
 
 // Per-kind calibration matrix: explicit family × vehicleClass × kind. PX4
 // keeps its firmware-driven flows (no simple accel); ArduCopter gains the

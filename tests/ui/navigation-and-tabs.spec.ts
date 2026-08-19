@@ -122,6 +122,63 @@ test('Sensor calibration navigation and cards fit supported viewport widths', as
   }
 })
 
+test('PID autotune stays compact and exposes only the active flight task', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 768 })
+  await openDemo(page, '/tuning/pid?tab=auto')
+  await expect(page.getByRole('tab', { name: '自动', selected: true })).toBeVisible()
+
+  await page.evaluate(async () => {
+    const [{ useConnectionStore }, { useTelemetryStore }, { useParameterStore }, profiles] = await Promise.all([
+      import('/src/web/stores/connectionStore.ts'),
+      import('/src/web/stores/telemetryStore.ts'),
+      import('/src/web/stores/parameterStore.ts'),
+      import('/src/shared/vehicleProfiles.ts'),
+    ])
+    const identity = profiles.buildVehicleIdentity(12, 2)
+    useConnectionStore.getState().setClientId(
+      'ui-client', 5, '00000000-0000-4000-8000-000000000005',
+    )
+    useConnectionStore.getState().setController(
+      'ui-client', Date.now() + 60_000, 5, '00000000-0000-4000-8000-000000000005',
+    )
+    useConnectionStore.setState({
+      vehicleReady: true,
+    })
+    useTelemetryStore.getState().setVehicleIdentity(identity)
+    useTelemetryStore.getState().setStatus({
+      armed: true,
+      mode: 'Position',
+      modeId: 3,
+      failsafe: 'unknown',
+      systemStatus: 4,
+      identity,
+    })
+    useParameterStore.getState().addParam({
+      id: 'MC_ROLLRATE_P', value: 0.12, type: 9, param_count: 1, param_index: 0,
+    })
+  })
+
+  const confirmation = page.getByRole('checkbox', { name: /Preflight|飞行前检查/ })
+  await expect(confirmation).toBeVisible()
+  await confirmation.check()
+  await expect(page.getByRole('button', { name: '开始自动调参' })).toBeEnabled()
+  await expectNoPageOverflow(page)
+
+  await page.evaluate(async () => {
+    const { useAutotuneStore } = await import('/src/web/stores/autotuneStore.ts')
+    useAutotuneStore.getState().applySnapshot({
+      sessionId: 'ui-autotune', seq: 1, requestId: 'ui-autotune-request',
+      ownerClientId: 'ui-client', recoverUntil: null, family: 'px4', phase: 'tuning',
+      verification: 'not_applicable', progress: 40, axis: 'pitch', initialModeId: 3,
+      updatedAt: Date.now(), cancelSupported: false,
+      baselineParameters: { MC_ROLLRATE_P: 0.12 },
+    })
+  })
+  await expect(page.getByRole('heading', { name: '正在调参', level: 3 })).toBeVisible()
+  await expect(page.getByText('需要中止时，请通过遥控器切换模式或降落。')).toBeVisible()
+  await expectNoPageOverflow(page)
+})
+
 test('Terminal quick commands return keyboard focus to the terminal', async ({ page }) => {
   await openDemo(page, '/diagnostics?section=messages&tab=terminal')
   await page.evaluate(async () => {
@@ -138,6 +195,15 @@ test('Terminal quick commands return keyboard focus to the terminal', async ({ p
 })
 
 const tabCases = [
+  {
+    name: 'PID tuning tasks',
+    route: '/tuning/pid',
+    tablistName: 'PID 调参方式',
+    section: null,
+    first: { id: 'manual', label: '手动' },
+    second: { id: 'auto', label: '自动' },
+    last: { id: 'auto', label: '自动' },
+  },
   {
     name: 'Sensor diagnostics',
     route: '/settings?section=sensors',

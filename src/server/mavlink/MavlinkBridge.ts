@@ -53,6 +53,8 @@ import { getPx4AirframeInfo, isSupportedArduCopterFrame } from '../../shared/air
 import { parameterEnumOptions, parameterEnumValuesMatch } from '../../shared/parameterEnumMetadata'
 import { CalibrationSession } from './CalibrationSession'
 import type { CalibrationStartRequest } from './CalibrationSessionManager'
+import { AutotuneSession } from './AutotuneSession'
+import type { AutotuneStartRequest } from './AutotuneSessionManager'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
 const BLUETOOTH_PARAM_STALL_TIMEOUT_MS = 3500
@@ -106,6 +108,8 @@ const ALL_MOTOR_TEST_INSTANCES = Object.freeze(
   Array.from({ length: 12 }, (_, index) => index + 1),
 )
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 246, 310, 400])
+const PX4_AUTOTUNE_PARAMETER = /^(?:MC_(?:ROLL|PITCH|YAW)(?:RATE)?_[A-Z0-9_]+|MPC_THR_HOVER)$/
+const ARDUPILOT_AUTOTUNE_PARAMETER = /^ATC_(?:RAT_(?:RLL|PIT|YAW)_[A-Z0-9_]+|ANG_(?:RLL|PIT|YAW)_P|ACCEL_[RPY]_MAX)$/
 const HANDLED_MESSAGE_IDS = new Set([
   1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 76, 77, 100, 105, 106, 110, 116, 118,
   120, 126, 129, 132, 147, 148, 173, 191, 192, 230, 245, 253,
@@ -266,6 +270,7 @@ export class MavlinkBridge extends EventEmitter {
   // Last armed flag from the selected heartbeat; null until known. Used to
   // refuse bench-only operations (motor test, calibration) while armed.
   private lastArmedState: boolean | null = null
+  private lastModeId: number | null = null
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
@@ -289,6 +294,9 @@ export class MavlinkBridge extends EventEmitter {
   // [cal] text, command ACKs, ACCELCAL_VEHICLE_POS and MAG_CAL_* messages)
   // and clears the reference when the session reaches a terminal snapshot.
   private activeCalibration: CalibrationSession | null = null
+  // In-flight autotune is independent from disarmed sensor calibration. The
+  // server manager owns authority; the bridge only supplies protocol evidence.
+  private activeAutotune: AutotuneSession | null = null
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
@@ -723,6 +731,11 @@ export class MavlinkBridge extends EventEmitter {
       this.activeCalibration = null
       session.terminate('target_reset', '已选飞控目标已变更或复位，校准会话终止')
     }
+    if (this.activeAutotune) {
+      const session = this.activeAutotune
+      this.activeAutotune = null
+      session.terminate('target_reset', '已选飞控目标已变更或复位，自动调参会话终止')
+    }
     this.targetSysId = null
     this.targetCompId = null
     this.selectedHeartbeatReady = false
@@ -739,6 +752,7 @@ export class MavlinkBridge extends EventEmitter {
     this.parameterTypes.clear()
     this.parameterCacheLimitWarned = false
     this.lastArmedState = null
+    this.lastModeId = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
@@ -1063,6 +1077,10 @@ export class MavlinkBridge extends EventEmitter {
     if (identityChanged) {
       this.advanceVehicleSafetyGeneration()
       this.abortAirframeTransaction('safety_context_changed_no_rollback:identity_changed')
+      this.activeAutotune?.terminate(
+        'identity_changed',
+        '飞控身份已变更，自动调参会话终止',
+      )
     }
     if (becameArmed) {
       this.abortAirframeTransaction('safety_context_changed_no_rollback:vehicle_armed')
@@ -1110,6 +1128,8 @@ export class MavlinkBridge extends EventEmitter {
 
     this.lastArmedState = armed
     const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
+    this.lastModeId = mode.id
+    this.activeAutotune?.handleVehicleStatus({ armed, modeId: mode.id })
     this.emit('message', {
       type: 'status',
       data: {
@@ -1460,6 +1480,7 @@ export class MavlinkBridge extends EventEmitter {
     // logic below would otherwise treat them as orphaned). The session only
     // reacts to its own command id.
     this.activeCalibration?.handleCommandAck(d.command as number, d.result)
+    this.activeAutotune?.handleCommandAck(d.command as number, d.result, d.progress)
     if (d.command === (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_SET_MESSAGE_INTERVAL) {
       if (d.result === MAV_RESULT_ACCEPTED) {
         // Requests for different message ids share one command id. Some ids
@@ -2219,6 +2240,7 @@ export class MavlinkBridge extends EventEmitter {
     // the PX4 [cal] protocol lives entirely in STATUSTEXT. statustext
     // broadcasting is unchanged so MessagesPage stays compatible.
     this.activeCalibration?.handleStatustext(text)
+    this.activeAutotune?.handleStatustext(text)
   }
 
   private pruneStatustextAssemblies(): void {
@@ -2302,6 +2324,16 @@ export class MavlinkBridge extends EventEmitter {
           'start_calibration',
           'unsupported_operation',
           '校准请求必须经由校准会话管理器发起',
+          msg.requestId,
+        )
+        break
+      case 'autotune_start':
+      case 'autotune_action':
+      case 'autotune_reclaim':
+        this.emitOperationError(
+          msg.type,
+          'unsupported_operation',
+          '自动调参请求必须经由会话管理器处理',
           msg.requestId,
         )
         break
@@ -3764,6 +3796,94 @@ export class MavlinkBridge extends EventEmitter {
       : 0b111111
   }
 
+  /** Create an in-flight autotune session after stack, target and armed gates. */
+  createAutotuneSession(request: AutotuneStartRequest): AutotuneSession | null {
+    if (!this.hasReadyTarget()) {
+      this.emitOperationError(
+        'autotune_start', 'target_not_ready',
+        '尚未收到已选飞控的有效心跳', request.requestId, true,
+      )
+      return null
+    }
+    const identity = this.selectedIdentity
+    const capability = identity ? vehicleCapabilities(identity).autotune : 'none'
+    if (!identity || (identity.family !== 'px4' && identity.family !== 'ardupilot')
+      || capability === 'none') {
+      this.emitOperationError(
+        'autotune_start', 'unsupported_vehicle_profile',
+        '当前飞控或机型尚未适配自动调参', request.requestId,
+      )
+      return null
+    }
+    if (this.lastArmedState !== true) {
+      this.emitOperationError(
+        'autotune_start',
+        this.lastArmedState === false ? 'vehicle_disarmed' : 'arming_state_unknown',
+        this.lastArmedState === false
+          ? '自动调参只能在已解锁飞行中开始'
+          : '尚未确认飞行器解锁状态',
+        request.requestId,
+      )
+      return null
+    }
+    if (this.lastModeId === null) {
+      this.emitOperationError(
+        'autotune_start', 'mode_unknown', '尚未确认当前飞行模式', request.requestId,
+      )
+      return null
+    }
+    if (identity.family === 'ardupilot' && this.lastModeId === 15) {
+      this.emitOperationError(
+        'autotune_start', 'already_in_autotune_mode', '飞控已处于 AutoTune 模式', request.requestId,
+      )
+      return null
+    }
+
+    const parameterPattern = identity.family === 'px4'
+      ? PX4_AUTOTUNE_PARAMETER
+      : ARDUPILOT_AUTOTUNE_PARAMETER
+    const baselineParameters: Record<string, number> = {}
+    for (const [id, value] of this.parameterValues) {
+      if (parameterPattern.test(id)) baselineParameters[id] = value
+    }
+    if (Object.keys(baselineParameters).length === 0) {
+      this.emitOperationError(
+        'autotune_start', 'parameters_not_ready',
+        '请先完成参数同步，以便记录调参前基线', request.requestId, true,
+      )
+      return null
+    }
+    const initialModeId = this.lastModeId
+    const session = new AutotuneSession({
+      sessionId: request.sessionId,
+      requestId: request.requestId,
+      family: identity.family,
+      initialModeId,
+      baselineParameters,
+      sendCommand: (commandId, params) =>
+        this.writeMessage(this.buildCommand(commandId, params.slice(0, 7)), 'high'),
+      setMode: (modeId) => {
+        const encoded = encodeModeCommand(identity, modeId)
+        return encoded.ok
+          && this.writeMessage(
+            this.buildCommand(MAVLINK_COMMANDS.MAV_CMD_DO_SET_MODE, encoded.params),
+            'high',
+          )
+      },
+      emitSnapshot: (snapshot) => {
+        request.emitSnapshot(snapshot)
+        const terminal = snapshot.phase === 'saved'
+          || snapshot.phase === 'discarded'
+          || snapshot.phase === 'failed'
+          || snapshot.phase === 'interrupted'
+          || (snapshot.family === 'px4' && snapshot.phase === 'completed')
+        if (terminal && this.activeAutotune === session) this.activeAutotune = null
+      },
+    })
+    this.activeAutotune = session
+    return session
+  }
+
   // FC -> GCS COMMAND_LONG. The only inbound COMMAND_LONG this GCS acts on is
   // ACCELCAL_VEHICLE_POS (42429) during ArduPilot six-position accel
   // calibration; forward its param1 to the active session.
@@ -4039,6 +4159,11 @@ export class MavlinkBridge extends EventEmitter {
       const session = this.activeCalibration
       this.activeCalibration = null
       session.terminate('bridge_destroyed', '服务正在关闭，校准会话终止')
+    }
+    if (this.activeAutotune) {
+      const session = this.activeAutotune
+      this.activeAutotune = null
+      session.terminate('bridge_destroyed', '服务正在关闭，自动调参会话终止')
     }
     if (this.manualControlFlushHandle) {
       clearImmediate(this.manualControlFlushHandle)
