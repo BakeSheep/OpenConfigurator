@@ -27,13 +27,16 @@ OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Elec
 
 飞控类型只根据 HEARTBEAT 识别。PX4 与 ArduPilot 使用各自的 vehicle profile、参数和指令路径；未识别或尚未适配的机型保持只读。
 
+界面按八个任务域组织，桌面与移动端共用同一套路由。浏览器重连后会恢复连接、控制权和当前 MAVLink 目标状态，并在目标与权限就绪后自动继续参数同步。
+
 ## 主要功能
 
-- USB 串口、Windows Bluetooth SPP 与 Linux BlueZ SPP 连接，支持 MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
+- USB 串口、Windows Bluetooth SPP 与 Linux BlueZ SPP 连接，支持连接预设、硬件身份重新匹配、MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
 - 姿态、定位、电池、传感器、RC、执行器、EKF 和 MAVLink 消息实时监控
-- 参数同步、搜索、QGC 参数文件导入/导出、机架选择、遥控器校准、飞行模式、电源/电池、安全保护、PID/EKF 调整、传感器校准与串口配置
+- 参数自动同步与进度显示、搜索、QGC 参数文件导入/导出、机架选择、遥控器校准、飞行模式、电源/电池、安全保护、PID/EKF 调整与独立传感器校准页
+- PID 参数写入会实时复核飞控就绪、已上锁、机型支持与当前客户端控制权，并等待参数回显后确认写入
 - 带安全门控的解锁/上锁、模式切换、起飞、降落、返航、电机测试和手柄 RC override
-- PX4 ULog 与 ArduPilot DataFlash 日志浏览、下载、离线分析、图表 CSV/PNG 与完整结构化 ZIP 导出
+- PX4 ULog 与 ArduPilot DataFlash 日志浏览、下载、离线分析、可用时基于 GPS 的绝对起飞时间、图表 CSV/PNG 与完整结构化 ZIP 导出
 - 通过 ArduPilot passthrough、PX4 `SERIAL_CONTROL` 或 19200 波特直连配置 AM32 ESC 参数
 - 同一套前端支持本地 Web 运行和 Windows x64 Electron 免安装包
 
@@ -54,8 +57,12 @@ ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会�
 |---|---|
 | 总览 | 姿态、关键遥测、系统健康与自定义数据板 |
 | 飞行操作 | 预检、模式切换与带安全门控的飞行指令 |
-| 飞行器设置 | 机架、传感器、遥控器校准、飞行模式、电源/电池、安全保护、EKF、执行器、ESC、手柄与端口 |
-| 调参与诊断 | 参数、PID、波形、MAVLink 消息、飞行日志及结构化导出 |
+| 机体配置 | 机架、传感器实时诊断、独立校准、电源/电池与安全保护 |
+| 动力与输出 | 执行器映射、无桨电机测试与 AM32 ESC 参数配置 |
+| 遥控输入 | 遥控器校准、手柄输入与飞行模式分配 |
+| 调参与状态 | 完整参数、PID 调参与 EKF 融合状态 |
+| 日志与链路 | MAVLink 消息、消息频率、飞控终端与实时波形 |
+| 日志与分析 | 飞行日志列表、下载、离线分析与结构化导出 |
 
 ## 快速开始
 

@@ -28,13 +28,16 @@ OpenConfigurator combines a React SPA, a local Node.js service, and an optional 
 
 The flight controller stack is identified only from HEARTBEAT. PX4 and ArduPilot use separate vehicle profiles, parameters, and command paths; unknown or unadapted vehicle types remain read-only.
 
+The interface is organized into eight task domains that share the same routes on desktop and mobile. After a browser reconnect, the app restores connection, control-authority, and current MAVLink target state, then resumes parameter synchronization when the target and authority are ready.
+
 ## Highlights
 
-- USB serial, Windows Bluetooth SPP, and Linux BlueZ SPP connections with MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
+- USB serial, Windows Bluetooth SPP, and Linux BlueZ SPP connections with saved presets, hardware-identity re-resolution, MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
 - Realtime attitude, position, battery, sensor, RC, actuator, EKF, and MAVLink message monitoring
-- Parameter sync and search, QGC parameter-file import/export, airframe selection, radio calibration, flight modes, power/battery and safety setup, PID/EKF tuning, sensor calibration, and serial-port configuration
+- Automatic parameter synchronization with visible progress, search, QGC parameter-file import/export, airframe selection, radio calibration, flight modes, power/battery and safety setup, PID/EKF tuning, and a dedicated sensor-calibration page
+- PID parameter writes re-check vehicle readiness, disarmed state, profile support, and current-client control authority, then wait for the matching parameter echo before confirming the write
 - Safety-gated arming, mode changes, takeoff, landing, RTL, motor tests, and gamepad RC override
-- PX4 ULog and ArduPilot DataFlash browsing, download, offline analysis, chart CSV/PNG export, and complete structured ZIP export
+- PX4 ULog and ArduPilot DataFlash browsing, download, offline analysis, GPS-derived absolute takeoff time when available, chart CSV/PNG export, and complete structured ZIP export
 - AM32 ESC settings over ArduPilot passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial
 - The same frontend delivered through a local web service or a portable Windows x64 Electron build
 
@@ -55,8 +58,12 @@ See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md
 |---|---|
 | Overview | Attitude, key telemetry, system health, and a custom data board |
 | Flight Operations | Preflight checks, mode switching, and safety-gated flight commands |
-| Vehicle Settings | Airframes, sensors, radio calibration, flight modes, power/battery, safety, EKF, actuators, ESCs, gamepad, and ports |
-| Tuning & Diagnostics | Parameters, PID, waveforms, MAVLink messages, flight logs, and structured export |
+| Airframe Configuration | Airframes, live sensor diagnostics, dedicated calibration, power/battery, and safety setup |
+| Propulsion & Outputs | Actuator mapping, propeller-removed motor tests, and AM32 ESC settings |
+| Control Input | Radio calibration, gamepad input, and flight-mode assignment |
+| Tuning & State | Full parameters, PID tuning, and EKF fusion state |
+| Logs & Link | MAVLink messages, message rates, flight-controller terminal, and realtime waveforms |
+| Logs & Analysis | Flight-log listing, download, offline analysis, and structured export |
 
 ## Quick start
 
