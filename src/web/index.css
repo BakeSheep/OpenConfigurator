@@ -1104,7 +1104,7 @@ input[type="range"]:focus-visible {
   display: grid;
   width: 100%;
   height: 100%;
-  grid-template-columns: minmax(140px, auto) auto minmax(0, 1fr) minmax(40px, auto);
+  grid-template-columns: minmax(260px, auto) minmax(0, 1fr) minmax(220px, auto);
   align-items: center;
   gap: 12px;
   padding: 0 14px;
@@ -1123,6 +1123,7 @@ input[type="range"]:focus-visible {
 .mc-sidebar--mobile {
   display: none;
 }
+.mc-sidebar__more, .mc-sidebar__more-menu { display: none; }
 
 .mc-topbar__preset-delete {
   min-width: 24px;
@@ -1138,11 +1139,12 @@ input[type="range"]:focus-visible {
 }
 
 .mc-statusbar__summary:hover { background: var(--bg-tertiary); }
+.mc-statusbar__left { display: inline-flex; min-width: 0; align-items: center; gap: 8px; }
 .mc-statusbar__link-quality,
 .mc-statusbar__activity { display: inline-flex; min-width: 0; align-items: center; gap: 7px; white-space: nowrap; }
-.mc-statusbar__link-quality { color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
+.mc-statusbar__link-quality { padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-full); color: var(--text-secondary); font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
 .mc-statusbar__metrics { display: inline-flex; min-width: 0; align-items: center; gap: 10px; color: var(--text-secondary); white-space: nowrap; }
-.mc-statusbar__metric { display: inline-flex; align-items: baseline; gap: 4px; font-size: 10px; }
+.mc-statusbar__metric { display: inline-flex; align-items: baseline; gap: 4px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-full); font-size: 10px; }
 .mc-statusbar__metric strong { color: var(--text-primary); font-size: 10px; font-weight: 750; }
 .mc-statusbar__metric-label { color: var(--text-secondary); }
 .mc-statusbar__activity { justify-content: flex-end; overflow: hidden; }
@@ -1157,6 +1159,7 @@ input[type="range"]:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.mc-statusbar__brand { min-width: 0; overflow: hidden; color: var(--text-secondary); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 
 .mc-statusbar__drawer {
   position: absolute;
@@ -1291,7 +1294,7 @@ input[type="range"]:focus-visible {
   }
 
   .mc-statusbar__summary {
-    grid-template-columns: minmax(110px, auto) auto minmax(0, 1fr) minmax(36px, auto);
+    grid-template-columns: minmax(210px, auto) minmax(0, 1fr) minmax(150px, auto);
   }
 
   .mc-statusbar__link-quality { overflow: hidden; text-overflow: ellipsis; }
@@ -2842,6 +2845,11 @@ input[type="range"]:focus-visible {
     border-radius: 0 0 4px 4px;
     transform: translateX(-50%);
   }
+  .mc-sidebar__more { display: flex; height: 47px; min-height: 47px; flex: 1 1 25%; flex-direction: row; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); font-size: 11px; }
+  .mc-sidebar__more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mc-sidebar__more-menu { position: absolute; right: 8px; bottom: 62px; z-index: 20; display: grid; min-width: 180px; gap: 4px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-secondary); box-shadow: var(--card-shadow); }
+  .mc-sidebar__more-menu a { padding: 9px 10px; border-radius: var(--radius-md); color: var(--text-secondary); text-decoration: none; font-size: 12px; }
+  .mc-sidebar__more-menu a[data-active="true"] { background: var(--accent-dim); color: var(--accent); }
 
   .mc-workspace { padding: 14px 12px 20px; }
 
@@ -2850,13 +2858,13 @@ input[type="range"]:focus-visible {
   .mc-page-header > div:last-child { margin-top: 12px; }
 
   .mc-statusbar__summary {
-    grid-template-columns: minmax(56px, auto) auto auto;
+    grid-template-columns: minmax(150px, auto) minmax(0, 1fr) minmax(70px, auto);
     gap: 7px;
     padding-inline: 8px;
   }
 
   .mc-statusbar__link-quality { max-width: 76px; }
-  .mc-statusbar__message { display: none; }
+  .mc-statusbar__message { display: inline-block; max-width: 90px; }
   .mc-statusbar__metrics { gap: 7px; }
   .mc-statusbar__activity .mc-badge { max-width: 118px; }
   .mc-statusbar__drawer { max-height: calc(100dvh - var(--topbar-height) - 16px); overflow-y: auto; }

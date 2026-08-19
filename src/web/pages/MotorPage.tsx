@@ -150,7 +150,7 @@ function getFallbackRotor(index: number, count: number) {
   }
 }
 
-export default function MotorPage({ embedded = false }: { embedded?: boolean }) {
+export default function MotorPage({ embedded = false, panel }: { embedded?: boolean; panel?: 'mapping' | 'test' }) {
   const { t } = useTranslation()
   const send = sendClientMessage
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
@@ -171,7 +171,8 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
   const motorTestSupported = caps.motorTest !== 'none'
   const actuatorWritesSupported = caps.actuatorConfig
   const [safetyConfirmed, setSafetyConfirmed] = useState(false)
-  const [activePanel, setActivePanel] = useQueryTab(MOTOR_TAB_IDS, 'mapping')
+  const [queryPanel, setQueryPanel] = useQueryTab(MOTOR_TAB_IDS, 'mapping')
+  const activePanel = panel ?? queryPanel
   const [levels, setLevels] = useState<number[]>([])
   // Family-specific frame/actuator read model: SERVOx_FUNCTION for ArduPilot,
   // PWM_MAIN/AUX_FUNCx + CA_ROTOR* for PX4.
@@ -403,7 +404,7 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
   const changePanel = (panel: string) => {
     if (panel !== 'mapping' && panel !== 'test') return
-    setActivePanel(panel)
+    if (!panel) setQueryPanel(panel)
   }
 
   // URL history navigation can also leave the test panel. Apply the same
@@ -416,13 +417,13 @@ export default function MotorPage({ embedded = false }: { embedded?: boolean }) 
 
   return (
     <div className={embedded ? 'mc-fade-in mc-motor-page' : 'mc-workspace mc-fade-in mc-motor-page'}>
-      <PageTabs
+      {!panel && <PageTabs
         tabs={[{ id: 'mapping', label: t('motor.tabMapping') }, { id: 'test', label: t('motor.tabTest') }]}
         active={activePanel}
         onChange={changePanel}
         ariaLabel={t('motor.title')}
         idBase="motor-settings"
-      />
+      />}
 
       <Toolbar
         summary={(

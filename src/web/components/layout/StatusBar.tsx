@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
 import { useSensorStore } from '../../stores/sensorStore'
+import { useParameterStore } from '../../stores/parameterStore'
 import { useTelemetryStore, type StatusSeverity } from '../../stores/telemetryStore'
 import { Badge } from '../ui/Feedback'
 import { Button } from '../ui/Button'
@@ -50,6 +51,13 @@ export default function StatusBar() {
   const opticalFlow = useSensorStore((state) => state.opticalFlow)
   const sensorStale = useSensorStore((state) => state.isStale)
   const latest = statusLogs[0]
+  const parameterLoading = useParameterStore((state) => state.loading)
+  const parameterError = useParameterStore((state) => state.error)
+  const parameterReceived = useParameterStore((state) => state.receivedCount)
+  const parameterTotal = useParameterStore((state) => state.totalCount)
+  const parameterPercent = parameterTotal > 0
+    ? Math.min(99, Math.max(1, Math.round(parameterReceived / parameterTotal * 100)))
+    : 0
 
   const imuFresh = !sensorStale('imu')
   const tempSources = [
@@ -102,24 +110,29 @@ export default function StatusBar() {
         aria-controls="mc-statusbar-details"
         onClick={() => setExpanded((current) => !current)}
       >
-        <span className="mc-statusbar__link-quality" title={t('statusbar.linkQuality')}>
-          <span className="mc-status-dot" style={{ background: linkQuality.color }} aria-hidden="true" />
-          <span>{transportOpen ? `${t('statusbar.linkQuality')} ${linkQuality.percent}%` : t('statusbar.disconnected')}</span>
-        </span>
-        <span className="mc-statusbar__metrics">
-          <span className="mc-statusbar__metric" title={t('statusbar.cpuLoad')}>
-            <span className="mc-statusbar__metric-label">CPU</span>
-            <strong className="mc-mono">{cpuLoad !== null && !sysStatusStale ? `${cpuLoad.toFixed(0)}%` : '—'}</strong>
+        <span className="mc-statusbar__left">
+          <span className="mc-statusbar__link-quality" title={t('statusbar.linkQuality')}>
+            <span className="mc-status-dot" style={{ background: linkQuality.color }} aria-hidden="true" />
+            <span>{transportOpen ? `${t('statusbar.linkQuality')} ${linkQuality.percent}%` : t('statusbar.disconnected')}</span>
           </span>
-          <span className="mc-statusbar__metric" title={t('statusbar.avgTemp')}>
-            <span className="mc-statusbar__metric-label">{t('statusbar.avgTempLabel')}</span>
-            <strong className="mc-mono">{avgTemp !== null ? `${avgTemp.toFixed(1)}°C` : '—'}</strong>
+          <span className="mc-statusbar__metrics">
+            <span className="mc-statusbar__metric" title={t('statusbar.cpuLoad')}>
+              <span className="mc-statusbar__metric-label">CPU</span>
+              <strong className="mc-mono">{cpuLoad !== null && !sysStatusStale ? `${cpuLoad.toFixed(0)}%` : '—'}</strong>
+            </span>
+            <span className="mc-statusbar__metric" title={t('statusbar.avgTemp')}>
+              <span className="mc-statusbar__metric-label">{t('statusbar.avgTempLabel')}</span>
+              <strong className="mc-mono">{avgTemp !== null ? `${avgTemp.toFixed(1)}°C` : '—'}</strong>
+            </span>
           </span>
         </span>
-        <span className="mc-statusbar__message" aria-live="polite">
-          {latest?.text ?? t('statusbar.messageRateIdle')}
+        <span className="mc-statusbar__brand" aria-live="polite">
+          {parameterError ?? (parameterLoading
+            ? `${t('parameter.progress.syncing')} ${parameterTotal > 0 ? `${parameterReceived}/${parameterTotal} · ${parameterPercent}%` : t('parameter.progress.waitingResponse')}`
+            : 'OpenConfigurator')}
         </span>
         <span className="mc-statusbar__activity">
+          <span className="mc-statusbar__message" aria-live="polite">{latest?.text ?? t('statusbar.messageRateIdle')}</span>
           {escBanner && <Badge tone="accent">{escBanner}</Badge>}
           <Icon name="chevronDown" size={13} aria-hidden="true" data-expanded={expanded || undefined} />
         </span>

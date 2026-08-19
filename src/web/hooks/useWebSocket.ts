@@ -52,6 +52,11 @@ let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempt = 0
 let autoParamRequestPending = false
+let autoParamRequestTimer: ReturnType<typeof setTimeout> | null = null
+let autoParamRequestInFlight = false
+let autoParamRequestId: string | null = null
+let autoParamSyncGeneration: number | null = null
+let autoParamRequestAttempts = 0
 // Tracks the last vehicleReady seen so parameter downloads trigger only on the
 // false→true edge, not on every re-broadcast connection snapshot.
 let lastVehicleReady = false
@@ -67,6 +72,9 @@ let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
 
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30_000
+const AUTO_PARAM_INITIAL_DELAY_MS = 300
+const AUTO_PARAM_RETRY_DELAY_MS = 750
+const AUTO_PARAM_MAX_ATTEMPTS = 6
 
 function flushParamBatch() {
   if (paramFlushTimer) {
@@ -117,6 +125,113 @@ function sendToServer(msg: ClientMessage) {
   return true
 }
 
+function clearAutomaticParamRequestTimer(): void {
+  if (autoParamRequestTimer) clearTimeout(autoParamRequestTimer)
+  autoParamRequestTimer = null
+}
+
+/**
+ * Stop only the browser-side automatic request state. The server remains the
+ * authority for an already-started generation; this helper is used when a
+ * user explicitly starts a refresh or when the physical link goes away.
+ */
+function cancelAutomaticParamRequest(): void {
+  clearAutomaticParamRequestTimer()
+  autoParamRequestPending = false
+  autoParamRequestInFlight = false
+  autoParamRequestId = null
+  autoParamSyncGeneration = null
+  autoParamRequestAttempts = 0
+}
+
+function prepareAutomaticParamRetry(): void {
+  const connection = useConnectionStore.getState()
+  autoParamRequestInFlight = false
+  autoParamRequestId = null
+  autoParamSyncGeneration = null
+  if (!connection.vehicleReady || !connection.transportOpen) {
+    cancelAutomaticParamRequest()
+    return
+  }
+  if (autoParamRequestAttempts >= AUTO_PARAM_MAX_ATTEMPTS) {
+    cancelAutomaticParamRequest()
+    const { receivedCount, totalCount } = useParameterStore.getState()
+    useParameterStore.getState().setParamFailed(receivedCount, totalCount)
+    return
+  }
+  autoParamRequestPending = true
+  const paramStore = useParameterStore.getState()
+  paramStore.clear()
+  paramStore.setLoading(true)
+  // A controller lease may temporarily belong to another browser. Keep the
+  // request pending, but let the next controller snapshot wake it instead of
+  // burning through all retry attempts while this client is read-only.
+  if (connection.canControl) scheduleAutomaticParamRequest(AUTO_PARAM_RETRY_DELAY_MS)
+}
+
+function tryStartAutomaticParamRequest(): boolean {
+  const connection = useConnectionStore.getState()
+  // The bridge rejects parameter downloads until both heartbeat-derived target
+  // IDs are known. Keep the pending flag alive until the target event arrives.
+  // Both IDs are required: the server deliberately rejects a request until a
+  // heartbeat-confirmed target is selected, and a system-only target can point
+  // at the wrong component during discovery.
+  if (
+    !autoParamRequestPending
+    || autoParamRequestInFlight
+    || !connection.vehicleReady
+    || !connection.transportOpen
+    || !connection.canControl
+    || connection.targetSystemId === null
+    || connection.targetComponentId === null
+  ) return false
+  const requestId = `auto-param-${Date.now().toString(36)}-${autoParamRequestAttempts + 1}`
+  autoParamRequestInFlight = true
+  autoParamRequestId = requestId
+  if (!sendToServer({ type: 'param_request_list', requestId })) {
+    autoParamRequestInFlight = false
+    autoParamRequestId = null
+    return false
+  }
+  autoParamRequestAttempts += 1
+  clearAutomaticParamRequestTimer()
+  console.log('[FC] Automatic parameter download started')
+  return true
+}
+
+function scheduleAutomaticParamRequest(delayMs = AUTO_PARAM_INITIAL_DELAY_MS): void {
+  if (!autoParamRequestPending || autoParamRequestInFlight || autoParamRequestTimer) return
+  // Let the server finish publishing the heartbeat-derived target and
+  // controller boundary before putting the parameter burst on the link.
+  autoParamRequestTimer = setTimeout(() => {
+    autoParamRequestTimer = null
+    if (!tryStartAutomaticParamRequest() && autoParamRequestPending && !autoParamRequestInFlight) {
+      scheduleAutomaticParamRequest()
+    }
+  }, delayMs)
+}
+
+function handleAutomaticRequestRejection(requestId: string | undefined, retryable: boolean | undefined): void {
+  if (!autoParamRequestInFlight || requestId !== autoParamRequestId) return
+  if (retryable !== true) {
+    cancelAutomaticParamRequest()
+    const { receivedCount, totalCount } = useParameterStore.getState()
+    useParameterStore.getState().setParamFailed(receivedCount, totalCount)
+    return
+  }
+  prepareAutomaticParamRetry()
+}
+
+function finishAutomaticParamRequest(generation: number): void {
+  if (!autoParamRequestInFlight || autoParamSyncGeneration !== generation) return
+  cancelAutomaticParamRequest()
+}
+
+function retryAutomaticParamRequest(generation: number): void {
+  if (!autoParamRequestInFlight || autoParamSyncGeneration !== generation) return
+  prepareAutomaticParamRetry()
+}
+
 export function handleMessage(msg: ServerMessage) {
   const connStore = useConnectionStore.getState()
   const telemetryStore = useTelemetryStore.getState()
@@ -140,6 +255,10 @@ export function handleMessage(msg: ServerMessage) {
         msg.data.safetyEpoch,
         msg.data.safetyAuthorityId,
       )
+      // A parameter request may have been waiting for a controller lease held
+      // by another client. Re-evaluate it as soon as the lease boundary
+      // changes instead of relying only on the periodic retry timer.
+      if (autoParamRequestPending && !autoParamRequestInFlight) scheduleAutomaticParamRequest()
       break
     case 'connection': {
       const wasRawSessionActive = connStore.rawSessionActive
@@ -147,7 +266,10 @@ export function handleMessage(msg: ServerMessage) {
       connStore.setConnectionSnapshot({
         status: msg.data.status ?? (msg.data.connected ? 'connected' : 'disconnected'),
         transportOpen: transportOpenNow,
-        vehicleReady: msg.data.vehicleReady ?? msg.data.connected,
+        // Transport-open is not vehicle-ready. Older fallback behavior treated
+        // any open serial transport as a confirmed target and could consume
+        // the one-shot sync edge before the first heartbeat arrived.
+        vehicleReady: msg.data.vehicleReady === true,
         rawSessionActive: msg.data.rawSessionActive ?? false,
         safetyEpoch: msg.data.safetyEpoch,
         safetyAuthorityId: msg.data.safetyAuthorityId,
@@ -155,7 +277,7 @@ export function handleMessage(msg: ServerMessage) {
         type: msg.data.type,
         baudRate: msg.data.baudRate,
       })
-      const vehicleReadyNow = msg.data.vehicleReady ?? msg.data.connected
+      const vehicleReadyNow = msg.data.vehicleReady === true
       if (vehicleReadyNow) {
         // Wait for the first autopilot heartbeat before requesting parameters:
         // the backend learns the actual target system/component IDs from that
@@ -164,18 +286,16 @@ export function handleMessage(msg: ServerMessage) {
         // connection snapshots (e.g. when another client joins), and clearing an
         // already-downloaded parameter list on every snapshot would wipe it.
         if (!lastVehicleReady && !preserveParamsOnReadyRecovery) {
+          cancelAutomaticParamRequest()
           discardParamBatch()
           paramStore.clear()
           paramStore.setLoading(true)
           autoParamRequestPending = true
+          autoParamRequestAttempts = 0
           // vehicleReady is emitted only after the backend has selected a
-          // heartbeat-confirmed target. Start immediately so page-level
-          // protocol effects (for example DataFlash log enumeration) cannot
-          // win the link and reject the automatic parameter sync as busy.
-          if (sendToServer({ type: 'param_request_list' })) {
-            autoParamRequestPending = false
-            console.log('[FC] Automatic parameter download started')
-          }
+          // heartbeat-confirmed target. Schedule after the boundary settles so
+          // page-level protocol effects cannot race the automatic sync.
+          scheduleAutomaticParamRequest()
         }
         preserveParamsOnReadyRecovery = false
       } else if (msg.data.rawSessionActive || (transportOpenNow && wasRawSessionActive)) {
@@ -184,7 +304,7 @@ export function handleMessage(msg: ServerMessage) {
         // the FC identity, synchronized parameters and ESC session state: this
         // is not a disconnect, and clearing them makes the passthrough toggle
         // appear to turn itself off even though no parameter was changed.
-        autoParamRequestPending = false
+        cancelAutomaticParamRequest()
         discardParamBatch()
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
@@ -194,17 +314,21 @@ export function handleMessage(msg: ServerMessage) {
         // is actually closed. Keep target-bound state until a later snapshot
         // confirms a link drop; a recovered heartbeat from the same open
         // transport must not wipe and re-download an otherwise valid cache.
-        autoParamRequestPending = false
+        cancelAutomaticParamRequest()
         discardParamBatch()
         telemetryStore.markAllStale()
         sensorStore.markAllOffline()
-        preserveParamsOnReadyRecovery = true
+        // A newly-opened transport also spends time in this state before its
+        // first heartbeat. Preserve only when readiness was previously seen on
+        // this same still-open transport; otherwise the upcoming ready edge is
+        // the initial connection and must start a full parameter download.
+        preserveParamsOnReadyRecovery = preserveParamsOnReadyRecovery || lastVehicleReady
       } else if (msg.data.reconnect) {
         // Bluetooth link dropped but the backend is auto-reconnecting. Keep the
         // last-known telemetry visible (greyed) instead of a full reset: the
         // link is expected back shortly. Params are cleared because they will
         // re-download automatically once the autopilot heartbeat returns.
-        autoParamRequestPending = false
+        cancelAutomaticParamRequest()
         discardParamBatch()
         connStore.setReconnecting(msg.data.reconnect)
         telemetryStore.markAllStale()
@@ -212,7 +336,7 @@ export function handleMessage(msg: ServerMessage) {
         paramStore.clear()
         preserveParamsOnReadyRecovery = false
       } else {
-        autoParamRequestPending = false
+        cancelAutomaticParamRequest()
         discardParamBatch()
         if (!(msg.data.transportOpen ?? msg.data.connected)) connStore.setDisconnected()
         // On link drop: mark telemetry data as stale (values are retained so
@@ -254,10 +378,7 @@ export function handleMessage(msg: ServerMessage) {
       break
     case 'status':
       telemetryStore.setStatus(msg.data)
-      if (autoParamRequestPending && sendToServer({ type: 'param_request_list' })) {
-        autoParamRequestPending = false
-        console.log('[FC] Automatic parameter download started')
-      }
+      if (autoParamRequestPending) scheduleAutomaticParamRequest()
       break
     case 'param':
       queueParam(msg.data)
@@ -276,6 +397,7 @@ export function handleMessage(msg: ServerMessage) {
       }
       flushParamBatch()
       paramStore.setParamComplete(msg.data.count)
+      if (msg.generation !== undefined) finishAutomaticParamRequest(msg.generation)
       break
     case 'param_retry':
       if (!acceptsParamGeneration(msg.generation)) {
@@ -453,12 +575,14 @@ export function handleMessage(msg: ServerMessage) {
     case 'client_error': {
       // Boundary rejections (controller conflict, validation failure, rate
       // limit, ...) must reach the operator, not vanish silently.
+      handleAutomaticRequestRejection(msg.data.requestId, msg.data.retryable)
       const message = translateServerError(msg.data.code, msg.data.message)
       console.warn('[WS] Request rejected:', msg.data.code, msg.data.message)
       telemetryStore.addStatusLog(3, t('websocket.requestDenied', { message, retryable: msg.data.retryable ? t('websocket.retryable') : '' }))
       break
     }
     case 'operation_error': {
+      handleAutomaticRequestRejection(msg.data.requestId, msg.data.retryable)
       const message = translateServerError(msg.data.code, msg.data.message)
       telemetryStore.setOperationError({ ...msg.data, message })
       if (msg.data.operation === 'shell') useShellStore.getState().setStatus(false, message)
@@ -481,6 +605,10 @@ export function handleMessage(msg: ServerMessage) {
           break
         }
         activeParamGeneration = msg.data.generation
+        if (
+          autoParamRequestInFlight
+          && msg.data.ownerClientId === connStore.clientId
+        ) autoParamSyncGeneration = msg.data.generation
         discardParamBatch()
         paramStore.clear()
         paramStore.setLoading(true)
@@ -502,6 +630,8 @@ export function handleMessage(msg: ServerMessage) {
             + `${msg.data.reason ? `：${msg.data.reason}` : ''}`,
         )
       }
+      if (msg.data.status === 'complete') finishAutomaticParamRequest(msg.data.generation)
+      else retryAutomaticParamRequest(msg.data.generation)
       activeParamGeneration = null
       break
     case 'target':
@@ -522,6 +652,7 @@ export function handleMessage(msg: ServerMessage) {
       } else {
         console.log('[WS] target update:', msg.data)
       }
+      if (autoParamRequestPending) scheduleAutomaticParamRequest()
       break
     case 'esc_session': {
       const escStore = useEscStore.getState()
@@ -705,7 +836,8 @@ function handleSensor(msgType: string, wireData: unknown) {
   }
 }
 
-function connectSocket() {
+/** Exported for the WebSocket lifecycle regression tests; App.tsx remains the sole runtime owner. */
+export function connectSocket() {
   // Reuse an existing open/connecting connection instead of spawning a new one.
   if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
     return
@@ -719,7 +851,7 @@ function connectSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
   // In dev mode, connect to backend port directly
-  const port = import.meta.env.DEV ? '3000' : window.location.port
+  const port = import.meta.env?.DEV ? '3000' : window.location.port
   const url = `${protocol}//${host}:${port}/ws`
 
   const ws = new WebSocket(url)
@@ -728,6 +860,10 @@ function connectSocket() {
   ws.onopen = () => {
     reconnectAttempt = 0
     console.log('[WS] Connected to server')
+    // A readiness snapshot can arrive while the socket is still transitioning
+    // to OPEN in browser implementations. Retry the deferred automatic sync
+    // as soon as the transport is definitely writable.
+    if (autoParamRequestPending) scheduleAutomaticParamRequest()
   }
 
   ws.onmessage = (event) => processServerMessage(event.data)
@@ -793,7 +929,7 @@ export function sendClientMessage(msg: ClientMessage): boolean {
   // handles messages without a socket. It is NEVER registered in live mode,
   // so the no-socket safety property below is preserved for real links.
   if (demoClientMessageInterceptor) return demoClientMessageInterceptor(msg)
-  if (msg.type === 'param_request_list') autoParamRequestPending = false
+  if (msg.type === 'param_request_list') cancelAutomaticParamRequest()
   return sendToServer(msg)
 }
 

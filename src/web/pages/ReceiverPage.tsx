@@ -16,9 +16,8 @@ import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { useVehicleSetupStore } from '../stores/vehicleSetupStore'
-import FlightModeSetupPage from './FlightModeSetupPage'
 
-const RECEIVER_TABS = ['calibration', 'flight-modes'] as const
+const RECEIVER_TABS = ['calibration'] as const
 
 interface RadioCommitment {
   epoch: number
@@ -138,7 +137,6 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
       <PageTabs
         tabs={[
           { id: 'calibration', label: t('receiver.calibration') },
-          { id: 'flight-modes', label: t('settings.section.flightModes.label') },
         ]}
         active={activeTab}
         onChange={setActiveTab}
@@ -256,7 +254,6 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
           </div>
         )}
 
-        {activeTab === 'flight-modes' && <FlightModeSetupPage />}
       </TabPanel>
 
       <ConfirmDialog

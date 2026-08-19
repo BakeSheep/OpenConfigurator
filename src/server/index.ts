@@ -110,6 +110,8 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   readonly currentParamRunId?: number
   /** Cached one-shot autopilot_version message for late-joining WS clients. */
   getAutopilotVersionMessage?(): ServerMessage | null
+  /** Current MAVLink target snapshot for late-joining/reconnected WS clients. */
+  getTargetMessage?(): Extract<ServerMessage, { type: 'target' }>
   getMessageRatesMessage?(): Extract<ServerMessage, { type: 'message_rates' }>
   readonly vehicleIdentity?: VehicleIdentity | null
   getParameterValue?(id: string): number | null
@@ -1907,6 +1909,17 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
       },
     })
     safeSend(ws, connectionMessage())
+    // A target event is normally emitted while the client is already online,
+    // but a browser can reconnect after the FC heartbeat has selected a target.
+    // Replay the authoritative target alongside the connection snapshot so
+    // readiness-dependent clients can start their initial parameter sync.
+    const targetSnapshot = mavlinkBridge.getTargetMessage?.() ?? null
+    if (targetSnapshot) {
+      safeSend(ws, {
+        ...targetSnapshot,
+        data: { ...targetSnapshot.data, safetyEpoch, safetyAuthorityId },
+      })
+    }
     safeSend(ws, controllerMessage('snapshot'))
     // Replay one-shot state for late-joining or reconnected clients.
     const versionSnapshot = mavlinkBridge.getAutopilotVersionMessage?.() ?? null

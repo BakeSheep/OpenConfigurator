@@ -109,10 +109,12 @@ function imuUnitSummary(data: unknown, t: TFunction): string | null {
   return null
 }
 
-export default function MessagesPage({ embedded = false }: { embedded?: boolean }) {
+export default function MessagesPage({ embedded = false, tab }: { embedded?: boolean; tab?: (typeof MESSAGE_TAB_IDS)[number] }) {
   const { t } = useTranslation()
   const tabs = useMemo(() => TAB_KEYS.map((tab) => ({ ...tab, label: t(tab.label) })), [t])
-  const [activeTab, setActiveTab] = useQueryTab(MESSAGE_TAB_IDS, 'messages')
+  const [queryTab, setQueryTab] = useQueryTab(MESSAGE_TAB_IDS, 'messages')
+  const activeTab = tab ?? queryTab
+  const setActiveTab = (next: string) => { if (!tab) setQueryTab(next) }
   const [paused, setPaused] = useState(false)
   const connected = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
@@ -192,13 +194,13 @@ export default function MessagesPage({ embedded = false }: { embedded?: boolean 
 
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace' : 'mc-workspace mc-fade-in mc-data-workspace'}>
-      <PageTabs
+      {!tab && <PageTabs
         tabs={tabs}
         active={activeTab}
         onChange={setActiveTab}
         ariaLabel={t('diagnostics.section.messages.label')}
         idBase="message-diagnostics"
-      />
+      />}
       {activeTab !== 'terminal' && (
         <Toolbar
           summary={t('messages.activeSummary', { live: liveCount, logs: displayLogs.length })}

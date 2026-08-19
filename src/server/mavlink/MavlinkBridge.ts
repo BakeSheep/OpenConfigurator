@@ -505,7 +505,12 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   private emitTarget(reason: 'discovered' | 'selected' | 'reset'): void {
-    this.emit('message', {
+    this.emit('message', this.buildTargetMessage(reason))
+  }
+
+  private buildTargetMessage(reason: 'discovered' | 'selected' | 'reset'):
+    Extract<ServerMessage, { type: 'target' }> {
+    return {
       type: 'target',
       data: {
         systemId: this.targetSysId,
@@ -520,7 +525,22 @@ export class MavlinkBridge extends EventEmitter {
           type: target.type,
         })),
       },
-    } as ServerMessage)
+    }
+  }
+
+  /**
+   * Return the current target state without emitting it. The WebSocket
+   * boundary uses this when a client joins after the target was discovered;
+   * without the replay, that client can see vehicleReady=true but never learn
+   * the target IDs needed to request parameters.
+   */
+  getTargetMessage(): Extract<ServerMessage, { type: 'target' }> {
+    const reason: 'discovered' | 'selected' | 'reset' = this.targetSysId === null
+      ? 'reset'
+      : this.hasReadyTarget()
+        ? 'selected'
+        : 'discovered'
+    return this.buildTargetMessage(reason)
   }
 
   private emitOperationError(
