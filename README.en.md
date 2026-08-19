@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/dashboard.png" alt="Flight overview with demo data" width="860" />
+  <img src="docs/screenshots/dashboard.en.jpg" alt="Flight overview with demo data" width="860" />
 </p>
 
 > [!WARNING]

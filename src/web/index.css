@@ -2340,7 +2340,7 @@ input[type="range"]:focus-visible {
 .mc-sensor-health[data-state="warning"] strong { color: var(--warning); }
 .mc-sensor-health[data-state="error"] strong { color: var(--danger); }
 .mc-calibration-catalog, .mc-sensor-diagnostics { display: flex; flex-direction: column; gap: 13px; }
-.mc-calibration-catalog { padding-top: 18px; border-top: 1px solid var(--border); }
+.mc-calibration-catalog { padding-bottom: 28px; }
 .mc-calibration-catalog__header { display: flex; align-items: center; min-height: 28px; }
 .mc-calibration-catalog__header h3 { margin: 0; color: var(--text-primary); font-size: 16px; }
 .mc-calibration-task-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--border); gap: 1px; box-shadow: var(--card-shadow); }

@@ -373,7 +373,8 @@ export const zh = {
     waitingParams: '等待参数加载…',
     section: {
       airframe: { label: '机架', description: '识别当前飞行器配置' },
-      sensors: { label: '传感器', description: '监控与校准' },
+      sensors: { label: '传感器', description: '实时状态与数据' },
+      calibration: { label: '校准', description: '传感器校准任务' },
       actuators: { label: '执行器', description: '输出映射与电机测试' },
       esc: { label: '电调', description: 'AM32 参数读取与配置' },
       receiver: { label: '遥控器', description: '通道校准与飞行模式' },

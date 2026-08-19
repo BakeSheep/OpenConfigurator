@@ -33,6 +33,7 @@ export default function DomainPage({ domainId }: { domainId: string }) {
       case 'flight': return <Navigate to="/flight" replace />
       case 'airframe': return <AirframeSetupPage />
       case 'sensors': return <SensorPage embedded />
+      case 'calibration': return <SensorPage embedded view="calibration" />
       case 'power': return <PowerSetupPage />
       case 'safety': return <SafetySetupPage />
       case 'mapping': return <MotorPage embedded panel="mapping" />

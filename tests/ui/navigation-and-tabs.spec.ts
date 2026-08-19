@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { hashSearchParams, openDemo } from './support'
+import { expectNoPageOverflow, hashSearchParams, openDemo } from './support'
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -67,15 +67,18 @@ test('legacy EKF diagnostics deep link redirects to Other Settings EKF task', as
   await expectQuery(page, { section: 'other', tab: 'ekf', probe: 'keep' })
 })
 
-test('Sensor diagnostics and calibration stay on one page during a busy session', async ({ page }) => {
-  await openDemo(page, '/dashboard')
-  await page.evaluate(() => { window.location.hash = '/settings?section=sensors' })
+test('Sensor calibration has its own top navigation page and keeps busy sessions visible', async ({ page }) => {
+  await openDemo(page, '/airframe/sensors')
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('传感器')
-  const historyAtSensor = await page.evaluate(() => window.history.length)
-
   await expect(page.getByRole('tablist', { name: '实时诊断' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '传感器校准', level: 3 })).toHaveCount(0)
+
+  const airframeNav = page.getByRole('navigation', { name: '业务域页面' })
+  await airframeNav.getByRole('link', { name: '校准', exact: true }).click()
+  await expect(page).toHaveURL(/#\/airframe\/calibration$/)
+  await expect(page.locator('.mc-section-frame__header h2')).toHaveText('校准')
+  await expect(page.getByRole('tablist', { name: '实时诊断' })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: '传感器校准', level: 3 })).toBeVisible()
-  await expect(page.locator('#sensor-tasks-tab-monitor')).toHaveCount(0)
 
   await page.evaluate(async () => {
     const { useCalibrationStore } = await import('/src/web/stores/calibrationStore.ts')
@@ -96,12 +99,27 @@ test('Sensor diagnostics and calibration stay on one page during a busy session'
     })
   })
 
-  await expectQuery(page, { section: 'sensors', mode: null })
   await expect(page.getByText('当前校准')).toBeVisible()
-  expect(await page.evaluate(() => window.history.length)).toBe(historyAtSensor)
 
   await page.goBack()
-  await expect(page.locator('main h1')).toHaveText('总览')
+  await expect(page.locator('.mc-section-frame__header h2')).toHaveText('传感器')
+  await expect(page.getByRole('tablist', { name: '实时诊断' })).toBeVisible()
+})
+
+test('Sensor calibration navigation and cards fit supported viewport widths', async ({ page }) => {
+  for (const viewport of [
+    { width: 360, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 768 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await openDemo(page, '/airframe/calibration')
+    const nav = page.getByRole('navigation', { name: '业务域页面' })
+    await expect(nav.getByRole('link', { name: '校准', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '传感器校准', level: 3 })).toBeVisible()
+    await expectNoPageOverflow(page)
+  }
 })
 
 test('Terminal quick commands return keyboard focus to the terminal', async ({ page }) => {

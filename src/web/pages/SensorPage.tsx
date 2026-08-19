@@ -672,7 +672,13 @@ function CalibrationWizard({
   )
 }
 
-export default function SensorPage({ embedded = false }: { embedded?: boolean }) {
+export default function SensorPage({
+  embedded = false,
+  view = 'diagnostics',
+}: {
+  embedded?: boolean
+  view?: 'diagnostics' | 'calibration'
+}) {
   const { t } = useTranslation()
   const tabs = useMemo(() => buildTabs(t), [t])
   const calibrationLabels = useMemo(() => getCalibrationLabels(t), [t])
@@ -865,7 +871,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
   )
   return (
     <div className={embedded ? 'mc-fade-in mc-data-workspace mc-sensor-workbench' : 'mc-workspace mc-fade-in mc-data-workspace mc-sensor-workbench'}>
-      <section className="mc-sensor-diagnostics">
+      {view === 'diagnostics' && <section className="mc-sensor-diagnostics">
         <PageTabs
           tabs={tabs}
           active={activeTab}
@@ -1020,9 +1026,9 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
         </>
       )}
         </TabPanel>
-      </section>
+      </section>}
 
-      <section className="mc-calibration-catalog">
+      {view === 'calibration' && <section className="mc-calibration-catalog">
         <header className="mc-calibration-catalog__header">
           <h3>{t('sensor.calibration.title')}</h3>
         </header>
@@ -1078,7 +1084,7 @@ export default function SensorPage({ embedded = false }: { embedded?: boolean })
             {wizard}
           </section>
         )}
-      </section>
+      </section>}
     </div>
   )
 }

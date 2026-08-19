@@ -373,7 +373,8 @@ export const en = {
     waitingParams: 'Waiting for parameters to load…',
     section: {
       airframe: { label: 'Airframe', description: 'Identify the current vehicle configuration' },
-      sensors: { label: 'Sensors', description: 'Monitor and calibrate' },
+      sensors: { label: 'Sensors', description: 'Live status and data' },
+      calibration: { label: 'Calibration', description: 'Sensor calibration tasks' },
       actuators: { label: 'Actuators', description: 'Output mapping and motor test' },
       esc: { label: 'ESC', description: 'AM32 parameter reading and configuration' },
       receiver: { label: 'Receiver', description: 'Channel calibration and flight modes' },
