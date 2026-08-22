@@ -128,6 +128,49 @@ export interface CalibrationSnapshot {
   cancelSupported: boolean
 }
 
+// -- In-flight controller autotune sessions ----------------------------------
+
+export type AutotunePhase =
+  | 'starting'
+  | 'tuning'
+  | 'paused'
+  | 'verifying'
+  | 'applying'
+  | 'awaiting_disarm'
+  | 'completed'
+  | 'testing'
+  | 'save_pending'
+  | 'saved'
+  | 'discarded'
+  | 'failed'
+  | 'interrupted'
+
+export type AutotuneVerification =
+  | 'not_applicable'
+  | 'firmware_completed'
+  | 'parameters_saved'
+
+export interface AutotuneSnapshot {
+  sessionId: string
+  seq: number
+  requestId: string
+  ownerClientId: string | null
+  recoverUntil: number | null
+  family: 'px4' | 'ardupilot'
+  phase: AutotunePhase
+  verification: AutotuneVerification
+  /** PX4 firmware progress. ArduPilot deliberately reports null. */
+  progress: number | null
+  axis: 'roll' | 'pitch' | 'yaw' | null
+  initialModeId: number
+  updatedAt: number
+  cancelSupported: boolean
+  /** Parameter values captured before the in-flight run. */
+  baselineParameters: Record<string, number>
+  failureCode?: string
+  failureReason?: string
+}
+
 export interface AttitudeData {
   roll: number
   pitch: number
@@ -584,6 +627,16 @@ export type ServerMessage =
         safetyEpoch?: number
         safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
+        selectionSource?: 'explicit' | null
+        conflict?: {
+          reason: 'multiple_stable_targets' | 'same_system_identity_conflict'
+          candidates: Array<{
+            systemId: number
+            componentId: number
+            autopilot: number
+            type: number
+          }>
+        } | null
         /** Classified identity of the selected target; null until known. */
         identity: VehicleIdentity | null
         discovered?: Array<{
@@ -658,6 +711,11 @@ export type ServerMessage =
         /** Opaque id used by GET /api/logs/downloads/:downloadId. */
         downloadId: string
         sizeBytes: number
+        /** Size reported by LOG_ENTRY before any short end marker adjusted it. */
+        advertisedSizeBytes: number
+        sizeAdjusted: boolean
+        /** LOG_REQUEST_DATA provides no checksum or authenticated digest. */
+        integrity: 'unverified'
         fileName: string
       }
     }
@@ -708,6 +766,11 @@ export type ServerMessage =
       type: 'calibration_session_started'
       data: { sessionId: string; requestId: string; recoveryToken: string }
     }
+  | { type: 'autotune_update'; data: AutotuneSnapshot }
+  | {
+      type: 'autotune_session_started'
+      data: { sessionId: string; requestId: string; recoveryToken: string }
+    }
   | { type: 'radio_calibration_snapshot'; data: RadioCalibrationSnapshot }
   | {
       type: 'radio_calibration_started'
@@ -726,7 +789,15 @@ export type ClientMessage =
       expectedSafetyEpoch?: number
       expectedSafetyAuthorityId?: string
     }
-  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | {
+      type: 'param_set'
+      requestId?: string
+      data: { id: string; value: number; paramType: number }
+      /** Required for safety-sensitive parameters (CBRK_*, arming, failsafe, output mapping). */
+      safetyConfirmation?: 'sensitive_param'
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
+    }
   | {
       type: 'vehicle_config_set'
       requestId: string
@@ -802,6 +873,26 @@ export type ClientMessage =
   | {
       // Reattach a disconnected owner to its running calibration session.
       type: 'calibration_reclaim'
+      requestId: string
+      data: { sessionId: string; recoveryToken: string }
+    }
+  | {
+      type: 'autotune_start'
+      requestId: string
+      safetyConfirmation: 'autotune_in_flight'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
+  | {
+      type: 'autotune_action'
+      requestId: string
+      data: {
+        sessionId: string
+        action: 'abort' | 'test_gains' | 'restore_gains'
+      }
+    }
+  | {
+      type: 'autotune_reclaim'
       requestId: string
       data: { sessionId: string; recoveryToken: string }
     }

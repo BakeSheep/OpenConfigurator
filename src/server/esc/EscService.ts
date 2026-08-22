@@ -24,6 +24,7 @@ import { detectEscs, FourWayClient, MspClient } from './EscDetector'
 import { EscSessionManager } from './EscSessionManager'
 import { Px4SerialControlTransport } from './Px4SerialControlTransport'
 import { Am32SettingsService } from './Am32SettingsService'
+import { escSafetyViolation, type EscSafetySnapshotProvider } from './EscSafetyContext'
 
 export interface EscServiceOptions {
   connManager: ConnectionManager
@@ -35,6 +36,13 @@ export interface EscServiceOptions {
   getVehicleIdentity?: () => VehicleIdentity | null
   /** Latest server-validated vehicle parameter, or null when not synchronized. */
   getParameterValue?: (id: string) => number | null
+  /**
+   * Server-authoritative armed/target/connection evidence for ESC safety
+   * (OCSA-002). Re-validated at every operation boundary; a snapshot that is
+   * not strictly disarmed and generation-stable refuses or terminates the
+   * session. Omitted only by legacy test harnesses.
+   */
+  getSafetyContext?: EscSafetySnapshotProvider
   pinController: (ownerClientId: string, sessionId: string) => void
   releaseController: (sessionId: string) => void
   /** Reason string when the MAVLink link is busy (param sync/FTP/log), else null. */
@@ -65,6 +73,7 @@ export class EscService {
       createTransport: (target) => this.createTransport(target),
       pinController: options.pinController,
       releaseController: options.releaseController,
+      ...(options.getSafetyContext ? { getSafetyContext: options.getSafetyContext } : {}),
       beforeTransportClose: async (transport, reason, signal) => {
         if (!this.fourWayActive.has(transport)) return
         this.fourWayActive.delete(transport)
@@ -105,12 +114,29 @@ export class EscService {
     return this.options.logger ?? console
   }
 
+  /**
+   * Latest safety violation for the live session, evaluated against the
+   * baseline bound at start (entry rules while the transport is still
+   * opening). Null when allowed or when no provider is configured.
+   */
+  private transportSafetyViolation(): EscError | null {
+    const provider = this.options.getSafetyContext
+    if (!provider) return null
+    const mode = this.manager.snapshot().mode
+    if (!mode) return null
+    const baseline = this.manager.safetyBaseline()
+    return escSafetyViolation({ snapshot: provider(), baseline, mode, now: Date.now() })
+  }
+
   private createTransport(target: EscTransportTarget): EscByteTransport {
     if (this.options.transportFactory) {
       const transport = this.options.transportFactory(target)
       this.currentTransport = transport
       return transport
     }
+    // Per-transaction boundary: transports re-check the latest snapshot so a
+    // violation aborts the session even between service-level job boundaries.
+    const checkSafety = (): EscError | null => this.transportSafetyViolation()
     let transport: EscByteTransport
     switch (target.mode) {
       case 'ardupilot_passthrough':
@@ -118,10 +144,11 @@ export class EscService {
           connManager: this.options.connManager,
           bridge: this.options.bridge,
           ...(this.options.isLinkBusy ? { checkBusy: this.options.isLinkBusy } : {}),
+          checkSafety,
         })
         break
       case 'px4_serial_control':
-        transport = new Px4SerialControlTransport({ bridge: this.options.bridge })
+        transport = new Px4SerialControlTransport({ bridge: this.options.bridge, checkSafety })
         break
       case 'direct':
         transport = new ArduPilotRawTransport({
@@ -129,6 +156,7 @@ export class EscService {
           bridge: this.options.bridge,
           targetMode: 'direct',
           ...(this.options.isLinkBusy ? { checkBusy: this.options.isLinkBusy } : {}),
+          checkSafety,
         })
         break
     }
@@ -272,6 +300,8 @@ export class EscService {
             this.devices.set(device.index, device)
             continue
           }
+          // Target boundary: re-validate before the next ESC is addressed.
+          this.manager.assertSafetyCurrent(clientId, sessionId)
           try {
             const result = await settingsService.read(sessionId, device.index, signal)
             detected[position] = result.device
@@ -318,6 +348,8 @@ export class EscService {
       const perTarget: EscJobTargetResult[] = []
       for (let ordinal = 0; ordinal < selected.length; ordinal++) {
         const escIndex = selected[ordinal]
+        // Target boundary: re-validate before the next ESC is addressed.
+        this.manager.assertSafetyCurrent(clientId, sessionId)
         this.options.emit({
           type: 'esc_job_progress',
           data: {
@@ -388,6 +420,10 @@ export class EscService {
         // disconnects while it is in flight, let that target finish safely,
         // but never enter the next target with an orphaned acknowledgement.
         this.manager.assertSettingsWriteAllowed(clientId, sessionId)
+        // Target boundary: an armed/target/connection change must stop the
+        // batch before the next ESC is addressed (unlike an owner loss, this
+        // also aborts the in-flight target through the session signal).
+        this.manager.assertSafetyCurrent(clientId, sessionId)
         const escIndex = targets[ordinal]
         this.options.emit({
           type: 'esc_job_progress',
@@ -504,6 +540,15 @@ export class EscService {
     if (status !== 'connected' && this.manager.snapshot().mode === 'px4_serial_control') {
       this.manager.handleExternalLinkLost()
     }
+  }
+
+  /**
+   * Push-based safety boundary (server observed an armed heartbeat or a
+   * target reset). Terminates the active session and releases the borrowed
+   * link; a no-op when no session is live.
+   */
+  handleVehicleSafetyBoundary(reason: string): void {
+    this.manager.handleVehicleSafetyBoundary(reason)
   }
 
   handleClientDisconnected(clientId: string): void {

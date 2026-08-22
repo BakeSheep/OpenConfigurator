@@ -48,7 +48,24 @@ function bluetoothEndpointLabel(port: string | null, ports: Array<{ path: string
 
 export default function Topbar() {
   const { t } = useTranslation()
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, bluetoothPorts, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
+  const {
+    status,
+    transportOpen,
+    vehicleReady,
+    canControl,
+    port,
+    type,
+    reconnect,
+    bluetoothPorts,
+    targetSystemId,
+    targetComponentId,
+    targetConflict,
+    discoveredTargets,
+    setConnectDialogOpen,
+    setStatus,
+    setConnectionError,
+    setActivePresetId,
+  } = useConnectionStore()
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const { theme, toggleTheme } = useThemeStore()
@@ -232,6 +249,15 @@ export default function Topbar() {
       expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
     setActiveStatusMenu(null)
+  }
+
+  const selectTarget = (systemId: number, componentId: number) => {
+    if (!transportOpen || !canControl) return
+    sendClientMessage({
+      type: 'select_target',
+      requestId: `target-${Date.now().toString(36)}`,
+      data: { systemId, componentId },
+    })
   }
 
   useEffect(() => () => {
@@ -657,6 +683,39 @@ export default function Topbar() {
                 <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? t('topbar.connect.bluetoothSPP') : t('topbar.connect.usbSerial')}</span>
                 <span className="ml-1.5 mc-mono text-[11px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
               </div>
+              {targetConflict && (
+                <p className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--warning-tint)', color: 'var(--warning-foreground)' }}>
+                  {t('topbar.connect.targetConflict')}
+                </p>
+              )}
+              {discoveredTargets.length > 0 && (
+                <div className="mb-2">
+                  <p className="mb-1 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>
+                    {t('topbar.connect.flightControllers')}
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {discoveredTargets.map((target) => {
+                      const selected = target.systemId === targetSystemId && target.componentId === targetComponentId
+                      return (
+                        <button
+                          key={`${target.systemId}:${target.componentId}`}
+                          type="button"
+                          className={`mc-btn mc-btn--compact w-full ${selected ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+                          disabled={!canControl || selected}
+                          onClick={() => selectTarget(target.systemId, target.componentId)}
+                        >
+                          <span className="mc-mono">SYS {target.systemId} / COMP {target.componentId}</span>
+                          {selected && (
+                            <span className="ml-1">
+                              · {t('topbar.connect.selected')}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <button type="button" className="mc-btn mc-btn-danger mc-btn--compact w-full" onClick={disconnectTransport}>{t('topbar.connect.disconnect')}</button>
               <button type="button" className="mc-btn mc-btn-ghost mc-btn--compact mt-1.5 w-full" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>{t('topbar.connect.manage')}</button>
             </div>

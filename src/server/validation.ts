@@ -43,6 +43,7 @@ const CLIENT_DENIED_COMMANDS = new Set<string>([
   'MAV_CMD_DO_SET_SERVO',
   'MAV_CMD_SET_MESSAGE_INTERVAL',
   'MAV_CMD_REQUEST_MESSAGE',
+  'MAV_CMD_DO_AUTOTUNE_ENABLE',
   'MAV_CMD_DO_START_MAG_CAL',
   'MAV_CMD_DO_ACCEPT_MAG_CAL',
   'MAV_CMD_DO_CANCEL_MAG_CAL',
@@ -406,9 +407,41 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       if (!PARAM_TYPES.has(paramType)) {
         fail('unsupported_param_type', `不支持的 MAV_PARAM_TYPE：${paramType}`, 'data.paramType')
       }
+      const safetyConfirmation = input.safetyConfirmation === undefined
+        ? undefined
+        : text(input.safetyConfirmation, 'safetyConfirmation', {
+            minBytes: 1,
+            maxBytes: 32,
+            pattern: /^sensitive_param$/,
+          }) as 'sensitive_param'
+      const expectedSafetyEpoch = input.expectedSafetyEpoch === undefined
+        ? undefined
+        : finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+            integer: true,
+          })
+      const expectedSafetyAuthorityId = input.expectedSafetyAuthorityId === undefined
+        ? undefined
+        : safetyAuthorityId(input.expectedSafetyAuthorityId)
+      if (
+        safetyConfirmation === 'sensitive_param'
+        && (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined)
+      ) {
+        fail('safety_epoch_required', '敏感参数写入必须绑定当前 safety authority/epoch', 'expectedSafetyEpoch')
+      }
+      if (
+        safetyConfirmation === undefined
+        && (expectedSafetyEpoch !== undefined || expectedSafetyAuthorityId !== undefined)
+      ) {
+        fail('unexpected_safety_context', '未确认敏感参数写入时不得携带 safety authority/epoch', 'expectedSafetyEpoch')
+      }
       return withRequestId({
         type: 'param_set',
         data: { id: paramId, value: paramValue, paramType },
+        ...(safetyConfirmation === undefined ? {} : { safetyConfirmation }),
+        ...(expectedSafetyEpoch === undefined ? {} : { expectedSafetyEpoch }),
+        ...(expectedSafetyAuthorityId === undefined ? {} : { expectedSafetyAuthorityId }),
       }, id) as BoundaryClientMessage
     }
 
@@ -687,6 +720,62 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
           }),
         },
       }, id) as BoundaryClientMessage
+    }
+
+    case 'autotune_start': {
+      if (id === undefined) fail('missing_request_id', 'autotune_start 必须携带 requestId', 'requestId')
+      restrictKeys(input, [
+        'type', 'requestId', 'safetyConfirmation',
+        'expectedSafetyEpoch', 'expectedSafetyAuthorityId',
+      ], 'message')
+      if (input.safetyConfirmation !== 'autotune_in_flight') {
+        fail('safety_confirmation_required', '自动调参必须显式确认 autotune_in_flight', 'safetyConfirmation')
+      }
+      return {
+        type: 'autotune_start',
+        requestId: id,
+        safetyConfirmation: 'autotune_in_flight',
+        expectedSafetyEpoch: finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+          min: 0, max: Number.MAX_SAFE_INTEGER, integer: true,
+        }),
+        expectedSafetyAuthorityId: safetyAuthorityId(input.expectedSafetyAuthorityId),
+      }
+    }
+
+    case 'autotune_action': {
+      if (id === undefined) fail('missing_request_id', 'autotune_action 必须携带 requestId', 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId', 'action'], 'data')
+      const action = text(data.action, 'data.action', {
+        minBytes: 1, maxBytes: 32, pattern: /^[a-z_]+$/,
+      })
+      if (action !== 'abort' && action !== 'test_gains' && action !== 'restore_gains') {
+        fail('invalid_autotune_action', `不支持的自动调参动作：${action}`, 'data.action')
+      }
+      return {
+        type: 'autotune_action',
+        requestId: id,
+        data: {
+          sessionId: calibrationSessionId(data.sessionId),
+          action: action as 'abort' | 'test_gains' | 'restore_gains',
+        },
+      }
+    }
+
+    case 'autotune_reclaim': {
+      if (id === undefined) fail('missing_request_id', 'autotune_reclaim 必须携带 requestId', 'requestId')
+      const data = record(input.data, 'data')
+      restrictKeys(data, ['sessionId', 'recoveryToken'], 'data')
+      return {
+        type: 'autotune_reclaim',
+        requestId: id,
+        data: {
+          sessionId: calibrationSessionId(data.sessionId),
+          recoveryToken: text(data.recoveryToken, 'data.recoveryToken', {
+            minBytes: 16, maxBytes: 128, pattern: /^[A-Za-z0-9_-]+$/,
+          }),
+        },
+      }
     }
 
     case 'manual_control': {
@@ -1173,7 +1262,10 @@ export function parseServerConfig(
     )
   }
 
-  const rawToken = overrides.authToken ?? env.SKYLAB_AUTH_TOKEN?.trim() ?? null
+  // 显式传入 authToken: null（如桌面模式）表示"忽略部署环境变量"，不得回退到 env。
+  const rawToken = overrides.authToken !== undefined
+    ? overrides.authToken
+    : env.SKYLAB_AUTH_TOKEN?.trim() ?? null
   const authToken = rawToken === ''
     ? null
     : rawToken

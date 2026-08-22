@@ -24,13 +24,13 @@ const workspaces = [
   { name: 'settings joystick', route: '/settings?section=joystick', heading: '飞行器设置', section: '游戏手柄' },
   { name: 'settings ports', route: '/settings?section=ports', heading: '飞行器设置', section: '端口' },
   { name: 'settings other', route: '/settings?section=other', heading: '飞行器设置', section: '其他设置' },
-  { name: 'diagnostics', route: '/diagnostics', heading: '调参与诊断', section: '完整参数' },
-  { name: 'diagnostics pid', route: '/diagnostics?section=pid', heading: '调参与诊断', section: 'PID 调参' },
+  { name: 'diagnostics', route: '/diagnostics', heading: '调参与状态', section: '完整参数' },
+  { name: 'diagnostics pid', route: '/diagnostics?section=pid', heading: '调参与状态', section: 'PID 调参' },
   { name: 'settings other ekf', route: '/settings?section=other&tab=ekf', heading: '飞行器设置', section: '其他设置' },
-  { name: 'diagnostics waveforms', route: '/diagnostics?section=waveforms', heading: '调参与诊断', section: '实时波形' },
-  { name: 'diagnostics messages', route: '/diagnostics?section=messages', heading: '调参与诊断', section: 'MAVLink 消息' },
-  { name: 'diagnostics logs', route: '/diagnostics?section=logs', heading: '调参与诊断', section: '飞行日志' },
-  { name: 'diagnostics log analysis', route: '/diagnostics?section=log-analysis', heading: '调参与诊断', section: '日志分析' },
+  { name: 'diagnostics waveforms', route: '/diagnostics?section=waveforms', heading: '调参与状态', section: '实时波形' },
+  { name: 'diagnostics messages', route: '/diagnostics?section=messages', heading: '调参与状态', section: 'MAVLink 消息' },
+  { name: 'diagnostics logs', route: '/diagnostics?section=logs', heading: '调参与状态', section: '飞行日志' },
+  { name: 'diagnostics log analysis', route: '/diagnostics?section=log-analysis', heading: '调参与状态', section: '日志分析' },
 ] as const
 
 for (const workspace of workspaces) {

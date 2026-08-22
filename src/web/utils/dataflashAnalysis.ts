@@ -490,7 +490,7 @@ export async function parseDataflashLog(source: Blob | ArrayBuffer): Promise<Ulo
     .filter((series) => series.times.length > 0)
 
   const paramList: UlogParamEntry[] = [...params.entries()]
-    .map(([name, value]) => ({ name, value }))
+    .map(([name, value]) => ({ name, value, type: 9 }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return {

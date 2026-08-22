@@ -359,6 +359,8 @@ type PrivateBridge = {
   targetSysId: number | null
   targetCompId: number | null
   pendingCommands: Map<number, unknown>
+  uncertainCommands: Set<number>
+  uncertainCommandUntil: Map<number, number>
   commandQuarantineUntil: Map<number, number>
   pendingParamSets: Map<string, unknown>
   parameterValues: Map<string, number>
@@ -369,7 +371,7 @@ type PrivateBridge = {
   messageIntervalSupport: string
 }
 
-function inject(
+function injectOnce(
   bridge: MavlinkBridge,
   msgId: number,
   payload: Buffer,
@@ -384,6 +386,31 @@ function inject(
     compId,
     version: 2,
   })
+}
+
+// Most protocol tests need an already-ready target. Discover and explicitly
+// select the first autopilot before delivering its readiness heartbeat; tests
+// for discovery itself use injectOnce().
+function inject(
+  bridge: MavlinkBridge,
+  msgId: number,
+  payload: Buffer,
+  sysId = 42,
+  compId = 1,
+): void {
+  const internals = bridge as unknown as PrivateBridge
+  if (msgId === 0 && internals.targetSysId === null) {
+    injectOnce(bridge, msgId, payload, sysId, compId)
+    if (internals.discoveredTargets.has(`${sysId}:${compId}`)) {
+      bridge.handleClientMessage({
+        type: 'select_target',
+        data: { systemId: sysId, componentId: compId },
+      })
+      injectOnce(bridge, msgId, payload, sysId, compId)
+    }
+    return
+  }
+  injectOnce(bridge, msgId, payload, sysId, compId)
 }
 
 function commandAckPayload(
@@ -454,9 +481,22 @@ assert.equal(last(messages)?.data.code, 'target_not_ready')
 inject(bridge, 0, heartbeatPayload(8), 42, 191)
 assert.equal((bridge as unknown as PrivateBridge).targetSysId, null)
 
-inject(bridge, 0, heartbeatPayload(), 42, 1)
+injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, null)
+assert.equal(connection.vehicleReady, false, 'one heartbeat is discovery evidence only')
+injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, null)
+injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal((bridge as unknown as PrivateBridge).targetSysId, null, 'heartbeats never authorize a target')
+bridge.handleClientMessage({
+  type: 'select_target',
+  requestId: 'select-primary-target',
+  data: { systemId: 42, componentId: 1 },
+})
 assert.equal((bridge as unknown as PrivateBridge).targetSysId, 42)
 assert.equal((bridge as unknown as PrivateBridge).targetCompId, 1)
+assert.equal(connection.vehicleReady, false, 'selection needs a fresh heartbeat from the chosen target')
+injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
 assert.equal(connection.vehicleReady, true)
 assert.equal(connection.heartbeatNotifications, 1)
 assert.ok(messages.some((message) => message.type === 'status' && message.data.mode === 'Hold'))
@@ -469,6 +509,7 @@ assert.equal(px4Status.data.identity.autopilotId, 12)
 assert.equal(px4Status.data.identity.vehicleTypeId, 2)
 const selectedTarget = findLast(messages, (message) => message.type === 'target' && message.data.reason === 'selected')
 assert.equal(selectedTarget.data.identity.family, 'px4')
+assert.equal(selectedTarget.data.selectionSource, 'explicit')
 assert.ok(selectedTarget.data.discovered.every((entry: { type: number }) => typeof entry.type === 'number'))
 
 const initialCommandFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
@@ -938,6 +979,9 @@ assert.equal(
 
 // PARAM_SET validates inputs, waits through stale mismatched broadcasts for a
 // matching echo, and carries requestId through the final result.
+// OCSA-001/005: the write policy derives the encoded type from the server-side
+// PARAM_VALUE cache, so the parameter must be observed before a raw write.
+inject(bridge, 22, paramValuePayload('TEST_PARAM', 12.5))
 bridge.handleClientMessage({
   type: 'param_set',
   requestId: 'param-ok',
@@ -1111,14 +1155,19 @@ bridge.handleClientMessage({
   data: { id: '参数', value: 1, paramType: 9 },
 })
 assert.equal(connection.frames.length, framesBeforeInvalidParam)
+// OCSA-001/005: the authoritative type cache doubles as a write allowlist, so
+// a never-cached (here: malformed) id is refused as parameter_type_unknown
+// before range validation would report invalid_param.
 assert.ok(messages.some((message) =>
   message.type === 'operation_error'
   && message.data.requestId === 'param-invalid'
-  && message.data.code === 'invalid_param'
+  && message.data.code === 'parameter_type_unknown'
 ))
 
 // C-cast transports must reject integer values that float32 would silently
 // round; bytewise PARAM encoding remains able to carry the full 32-bit range.
+inject(bridge, 22, paramValuePayload('UINT32_MAX', 0, 5))
+inject(bridge, 22, paramValuePayload('TIMEOUT_PARAM', 0))
 ;(bridge as unknown as PrivateBridge).paramEncoding = 'c-cast'
 const paramFramesBeforeUnrepresentable = connection.frames.filter(
   (frame) => frameMessageId(frame) === 23,
@@ -1510,6 +1559,47 @@ inject(bridge, 77, commandAckPayload(176, 0), 43, 1)
 assert.equal((bridge as unknown as PrivateBridge).pendingCommands.has(176), false)
 
 bridge.destroy()
+
+// A lost ACK quarantines the command id for a bounded safety window, not for
+// the entire remaining connection lifetime.
+{
+  const ttlConnection = new FakeConnection()
+  const ttlBridge = new MavlinkBridge(ttlConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 5,
+    versionRetryMs: 20,
+  })
+  const ttlMessages: any[] = []
+  ttlBridge.on('message', (message) => ttlMessages.push(message))
+  inject(ttlBridge, 0, heartbeatPayload(), 61, 1)
+  const sendMode = (requestId: string) => ttlBridge.handleClientMessage({
+    type: 'command',
+    requestId,
+    cmd: 'MAV_CMD_DO_SET_MODE',
+    params: [1, 4, 3, 0, 0, 0, 0],
+  })
+  sendMode('uncertain-ttl-first')
+  await waitFor(() => ttlMessages.some((message) =>
+    message.type === 'operation_error'
+    && message.data.requestId === 'uncertain-ttl-first'
+    && message.data.code === 'command_timeout'
+  ))
+  sendMode('uncertain-ttl-blocked')
+  assert.equal(findLast(ttlMessages, (message) =>
+    message.type === 'operation_error'
+    && message.data.requestId === 'uncertain-ttl-blocked')?.data.code, 'command_result_uncertain')
+
+  const ttlInternals = ttlBridge as unknown as PrivateBridge
+  ttlInternals.uncertainCommandUntil.set(176, performance.now() - 1)
+  const framesBeforeExpiryRetry = ttlConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length
+  sendMode('uncertain-ttl-expired')
+  assert.equal(ttlConnection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176
+  ).length, framesBeforeExpiryRetry + 1)
+  ttlBridge.destroy()
+}
 
 // Repeated IN_PROGRESS ACKs may extend the ordinary response window, but they
 // cannot extend the fixed transaction deadline forever.
@@ -2189,6 +2279,8 @@ bridge.destroy()
   )
 
   const genericMutationFrames = genericConnection.frames.length
+  // OCSA-001/005: raw writes need an authoritative cached type first.
+  inject(genericBridge, 22, paramValuePayload('TEST_PARAM', 1))
   genericBridge.handleClientMessage({
     type: 'param_set',
     requestId: 'generic-param',
@@ -2276,6 +2368,8 @@ bridge.destroy()
     frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 511
   )).length
   const beforeMutations = mutationFrameCount()
+  // OCSA-001/005: raw writes need an authoritative cached type first.
+  inject(planeBridge, 22, paramValuePayload('TEST_PARAM', 1))
   planeBridge.handleClientMessage({
     type: 'param_set',
     requestId: 'plane-param',
@@ -2401,6 +2495,76 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 
   pauseBridge.destroy()
   console.log('MAVLink ESC pause/resume checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// In-flight autotune wiring: stack/capability/armed/parameter-baseline gates,
+// PX4 ACK progress and ArduCopter mode + STATUSTEXT evidence.
+// ---------------------------------------------------------------------------
+{
+  const textPayload = (text: string): Buffer => {
+    const payload = Buffer.alloc(54)
+    payload[0] = 6
+    Buffer.from(text, 'ascii').copy(payload, 1, 0, 50)
+    return payload
+  }
+
+  const px4Connection = new FakeConnection()
+  const px4Bridge = new MavlinkBridge(px4Connection as never, { codec: { protocol: 'v2' } })
+  const px4Heartbeat = heartbeatPayload(12, 2, 0x03040000)
+  px4Heartbeat[6] = 0x80
+  inject(px4Bridge, 0, px4Heartbeat, 61, 1)
+  inject(px4Bridge, 22, paramValuePayload('MC_ROLLRATE_P', 0.12), 61, 1)
+  const px4Snapshots: any[] = []
+  const px4Session = (px4Bridge as any).createAutotuneSession({
+    sessionId: 'autotune-px4', requestId: 'autotune-px4', ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => px4Snapshots.push(snapshot),
+  })
+  assert.notEqual(px4Session, null)
+  px4Session.start()
+  const command212 = () => px4Connection.frames.filter((frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 212)
+  assert.equal(command212().length, 1)
+  assert.equal(framePayload(command212()[0]).readFloatLE(0), 1)
+  inject(px4Bridge, 77, commandAckPayload(212, 5, 255, 190, 40), 61, 1)
+  assert.equal(last(px4Snapshots)?.phase, 'tuning')
+  assert.equal(last(px4Snapshots)?.axis, 'pitch')
+  inject(px4Bridge, 77, commandAckPayload(212, 0, 255, 190, 100), 61, 1)
+  assert.equal(last(px4Snapshots)?.phase, 'completed')
+  assert.ok(Math.abs(last(px4Snapshots)?.baselineParameters.MC_ROLLRATE_P - 0.12) < 1e-6)
+  px4Bridge.destroy()
+
+  const apConnection = new FakeConnection()
+  const apBridge = new MavlinkBridge(apConnection as never, { codec: { protocol: 'v2' } })
+  const apHeartbeat = heartbeatPayload(3, 2, 5)
+  apHeartbeat[6] = 0x80
+  inject(apBridge, 0, apHeartbeat, 62, 1)
+  inject(apBridge, 22, paramValuePayload('ATC_RAT_RLL_P', 0.14), 62, 1)
+  const apSnapshots: any[] = []
+  const apSession = (apBridge as any).createAutotuneSession({
+    sessionId: 'autotune-ap', requestId: 'autotune-ap', ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => apSnapshots.push(snapshot),
+  })
+  assert.notEqual(apSession, null)
+  apSession.start()
+  const setMode = findLast(apConnection.frames, (frame) =>
+    frameMessageId(frame) === 76 && framePayload(frame).readUInt16LE(28) === 176)
+  assert.ok(setMode)
+  assert.equal(framePayload(setMode!).readFloatLE(4), 15)
+  const apAutotuneHeartbeat = heartbeatPayload(3, 2, 15)
+  apAutotuneHeartbeat[6] = 0x80
+  inject(apBridge, 0, apAutotuneHeartbeat, 62, 1)
+  inject(apBridge, 253, textPayload('AutoTune: Success'), 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'completed')
+  const apDisarmed = heartbeatPayload(3, 2, 15)
+  inject(apBridge, 0, apDisarmed, 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'save_pending')
+  inject(apBridge, 253, textPayload('AutoTune: Saved gains'), 62, 1)
+  assert.equal(last(apSnapshots)?.phase, 'saved')
+  assert.equal(last(apSnapshots)?.verification, 'parameters_saved')
+  apBridge.destroy()
+
+  console.log('MAVLink autotune session wiring checks passed')
 }
 
 // ---------------------------------------------------------------------------
@@ -2699,4 +2863,318 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
   assert.equal(internals.cacheParameterValue('P0', 99), true)
   assert.equal(internals.parameterValues.get('P0'), 99)
   cacheBridge.destroy()
+}
+
+// ---------------------------------------------------------------------------
+// OCSA-001/005: the raw param_set path is governed by a server-authoritative
+// write policy - armed gate, authoritative type, sensitive-parameter
+// confirmation bound to the live safety epoch.
+// ---------------------------------------------------------------------------
+{
+  const policyConnection = new FakeConnection()
+  const policyBridge = new MavlinkBridge(policyConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const policyMessages: any[] = []
+  policyBridge.on('message', (message) => policyMessages.push(message))
+  const internals = policyBridge as unknown as PrivateBridge & { lastArmedState: boolean | null }
+  const paramFrameCount = () => policyConnection.frames.filter((frame) => frameMessageId(frame) === 23).length
+  const lastErrorCode = () => findLast(policyMessages, (message) => message.type === 'operation_error')?.data.code
+
+  inject(policyBridge, 0, heartbeatPayload(), 42, 1)
+  // The authoritative cache is populated from PARAM_VALUE before any write.
+  inject(policyBridge, 22, paramValuePayload('PLAIN_PARAM', 1))
+  inject(policyBridge, 22, paramValuePayload('CBRK_IO_SAFETY', 0, 2))
+
+  // Baseline: a disarmed vehicle accepts an ordinary cached parameter.
+  const baselineFrames = paramFrameCount()
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-ok',
+    data: { id: 'PLAIN_PARAM', value: 2, paramType: 9 },
+  })
+  assert.equal(paramFrameCount(), baselineFrames + 1)
+  // Echo completes the pending transaction so later cases can write again.
+  inject(policyBridge, 22, paramValuePayload('PLAIN_PARAM', 2))
+
+  // armed === true fails closed before serialization.
+  const armedHeartbeat = heartbeatPayload()
+  armedHeartbeat[6] = 0x80
+  inject(policyBridge, 0, armedHeartbeat, 42, 1)
+  const framesWhileArmed = paramFrameCount()
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-armed',
+    data: { id: 'PLAIN_PARAM', value: 3, paramType: 9 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed)
+  assert.equal(lastErrorCode(), 'vehicle_armed')
+
+  // Unknown arming state also fails closed.
+  internals.lastArmedState = null
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-unknown',
+    data: { id: 'PLAIN_PARAM', value: 3, paramType: 9 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed)
+  assert.equal(lastErrorCode(), 'arming_state_unknown')
+
+  // Back to disarmed: sensitive parameters need the server confirmation
+  // literal plus the current safety epoch; the browser-side promise alone is
+  // not trusted.
+  inject(policyBridge, 0, heartbeatPayload(), 42, 1)
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-sensitive-no-confirm',
+    data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed)
+  assert.equal(lastErrorCode(), 'safety_confirmation_required')
+
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-sensitive-wrong-epoch',
+    safetyConfirmation: 'sensitive_param',
+    expectedSafetyEpoch: 999,
+    expectedSafetyAuthorityId: 'authority-a',
+    data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed)
+  assert.equal(lastErrorCode(), 'safety_confirmation_required')
+
+  let epoch = 7
+  policyBridge.setSafetyEpochProvider(() => ({ epoch, authorityId: 'authority-a' }))
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-sensitive-ok',
+    safetyConfirmation: 'sensitive_param',
+    expectedSafetyEpoch: 7,
+    expectedSafetyAuthorityId: 'authority-a',
+    data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed + 1)
+  // Complete the pending write so the next case can reuse the parameter.
+  inject(policyBridge, 22, paramValuePayload('CBRK_IO_SAFETY', 1, 2))
+
+  // A stale epoch captured before a boundary change must be rejected.
+  epoch = 8
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-sensitive-stale-epoch',
+    safetyConfirmation: 'sensitive_param',
+    expectedSafetyEpoch: 7,
+    expectedSafetyAuthorityId: 'authority-a',
+    data: { id: 'CBRK_IO_SAFETY', value: 2, paramType: 5 },
+  })
+  assert.equal(paramFrameCount(), framesWhileArmed + 1)
+  assert.equal(lastErrorCode(), 'safety_confirmation_required')
+
+  // The client-declared paramType is ignored: range checks and encoding use
+  // the server-cached REAL32 type even when the client claims INT32.
+  policyBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'policy-type-authority',
+    data: { id: 'PLAIN_PARAM', value: 1.5, paramType: 5 },
+  })
+  const authorityFrame = findLast(
+    policyConnection.frames.filter((frame) => frameMessageId(frame) === 23),
+    (frame) => framePayload(frame).subarray(6, 16).toString('ascii').startsWith('PLAIN_PARA'),
+  )
+  assert.ok(authorityFrame)
+  assert.equal(framePayload(authorityFrame).readFloatLE(0), 1.5)
+
+  policyBridge.destroy()
+  console.log('MAVLink parameter write policy checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// OCSA-004: two stable autopilot candidates on one link fail closed for every
+// mutation until an explicit target selection resolves the ambiguity.
+// ---------------------------------------------------------------------------
+{
+  const conflictConnection = new FakeConnection()
+  const conflictBridge = new MavlinkBridge(conflictConnection as never, {
+    codec: { protocol: 'v2' },
+  })
+  const conflictMessages: any[] = []
+  conflictBridge.on('message', (message) => conflictMessages.push(message))
+  const framesBeforeConflict = conflictConnection.frames.filter((frame) => frameMessageId(frame) === 23).length
+  // TARGET_STABILITY_HEARTBEAT_MIN is 3: three heartbeats from each of two
+  // systems create two stable candidates and thus a conflict.
+  for (let index = 0; index < 3; index += 1) {
+    injectOnce(conflictBridge, 0, heartbeatPayload(), 42, 1)
+  }
+  for (let index = 0; index < 3; index += 1) {
+    injectOnce(conflictBridge, 0, heartbeatPayload(12), 43, 1)
+  }
+  conflictBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'conflict-param',
+    data: { id: 'PLAIN_PARAM', value: 2, paramType: 9 },
+  })
+  assert.equal(
+    conflictConnection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+    framesBeforeConflict,
+  )
+  assert.equal(
+    findLast(conflictMessages, (message) => message.type === 'operation_error'
+      && message.data.requestId === 'conflict-param')?.data.code,
+    'target_conflict',
+  )
+
+  // The conflict gate is centralized: higher-level parameter flows, shell and
+  // filesystem mutations cannot bypass it.
+  for (const blocked of [
+    {
+      type: 'vehicle_config_set', requestId: 'conflict-config', feature: 'safety',
+      data: { id: 'PLAIN_PARAM', value: 2 },
+    },
+    { type: 'shell_open', requestId: 'conflict-shell' },
+    {
+      type: 'fs_delete', requestId: 'conflict-delete', safetyConfirmation: 'delete_files',
+      data: { entries: [{ path: '/fs/microsd/log/a.ulg', kind: 'file' }] },
+    },
+  ] as const) {
+    conflictBridge.handleClientMessage(blocked as any, { clientId: 'owner-a' })
+    assert.equal(
+      findLast(conflictMessages, (message) => message.type === 'operation_error'
+        && message.data.requestId === blocked.requestId)?.data.code,
+      'target_conflict',
+      `${blocked.type} must fail closed during target conflict`,
+    )
+  }
+
+  // An explicit client choice clears the conflict and restores writability.
+  conflictBridge.handleClientMessage({
+    type: 'select_target',
+    requestId: 'conflict-select',
+    data: { systemId: 42, componentId: 1 },
+  })
+  injectOnce(conflictBridge, 0, heartbeatPayload(), 42, 1)
+  inject(conflictBridge, 22, paramValuePayload('PLAIN_PARAM', 1))
+  conflictBridge.handleClientMessage({
+    type: 'param_set',
+    requestId: 'conflict-param-2',
+    data: { id: 'PLAIN_PARAM', value: 2, paramType: 9 },
+  })
+  assert.equal(
+    conflictConnection.frames.filter((frame) => frameMessageId(frame) === 23).length,
+    framesBeforeConflict + 1,
+  )
+  conflictBridge.destroy()
+  console.log('MAVLink multi-target conflict fail-closed checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// OCSA-007: PX4 shell sessions are owned by the requesting WS client, keep
+// their output private, and can only be driven by that client.
+// ---------------------------------------------------------------------------
+{
+  const shellConnection = new FakeConnection()
+  const shellOwnedBridge = new MavlinkBridge(shellConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  const broadcastMessages: any[] = []
+  shellOwnedBridge.on('message', (message) => broadcastMessages.push(message))
+  const delivered = new Map<string, any[]>()
+  shellOwnedBridge.setShellDelivery((clientId, message) => {
+    const list = delivered.get(clientId) ?? []
+    list.push(message)
+    delivered.set(clientId, list)
+  })
+  const lastDelivered = (clientId: string): any => {
+    const list = delivered.get(clientId)
+    return list?.[list.length - 1]
+  }
+  const lastBroadcast = (): any => broadcastMessages[broadcastMessages.length - 1]
+  inject(shellOwnedBridge, 0, heartbeatPayload(), 42, 1)
+
+  const serialFrameCount = () => shellConnection.frames.filter((frame) => frameMessageId(frame) === 126).length
+  const ownerMeta = { clientId: 'client-a' }
+  shellOwnedBridge.handleClientMessage({ type: 'shell_open', requestId: 'owned-shell' }, ownerMeta)
+  assert.equal(lastDelivered('client-a')?.type, 'shell_status')
+  assert.equal(lastDelivered('client-a')?.data.reason, 'probing')
+  assert.ok(!broadcastMessages.some((message) => message.type.startsWith('shell_')))
+
+  const probeReply = Buffer.alloc(79)
+  probeReply[6] = 10
+  probeReply[7] = 1
+  probeReply[8] = 5
+  Buffer.from('nsh> ', 'ascii').copy(probeReply, 9)
+  inject(shellOwnedBridge, 126, probeReply)
+  assert.equal(lastDelivered('client-a')?.type, 'shell_output')
+  assert.equal(lastDelivered('client-a')?.data.text, 'nsh> ')
+
+  // Non-owners can neither write nor close, and see no output.
+  const framesBeforeForeignWrite = serialFrameCount()
+  shellOwnedBridge.handleClientMessage({ type: 'shell_write', data: { text: 'reboot\r' } }, { clientId: 'client-b' })
+  assert.equal(serialFrameCount(), framesBeforeForeignWrite)
+  assert.ok(!broadcastMessages.some((message) => message.type === 'shell_output'))
+  assert.ok(Array.from(delivered.values()).flat().every(
+    (message) => !(message.type === 'shell_output' && message.data.text.includes('nsh> ') === false),
+  ))
+
+  shellOwnedBridge.handleClientMessage({ type: 'shell_close' }, { clientId: 'client-b' })
+  assert.equal(serialFrameCount(), framesBeforeForeignWrite)
+  assert.notEqual(lastDelivered('client-a')?.data.active, false)
+
+  // The owner keeps full control.
+  const framesBeforeOwnerWrite = serialFrameCount()
+  shellOwnedBridge.handleClientMessage({ type: 'shell_write', data: { text: 'ver hw\r' } }, ownerMeta)
+  assert.equal(serialFrameCount(), framesBeforeOwnerWrite + 1)
+  shellOwnedBridge.handleClientMessage({ type: 'shell_close' }, ownerMeta)
+  assert.equal(lastDelivered('client-a')?.type, 'shell_status')
+  assert.equal(lastDelivered('client-a')?.data.active, false)
+
+  // Server-initiated owner_lost close announces to every client so no UI
+  // keeps a dead terminal open.
+  shellOwnedBridge.handleClientMessage({ type: 'shell_open', requestId: 'orphan-shell' }, ownerMeta)
+  inject(shellOwnedBridge, 126, probeReply)
+  shellOwnedBridge.closeShellSession('owner_lost')
+  assert.equal(lastBroadcast()?.type, 'shell_status')
+  assert.equal(lastBroadcast()?.data.active, false)
+  assert.equal(lastBroadcast()?.data.reason, 'owner_lost')
+  shellOwnedBridge.destroy()
+  console.log('MAVLink shell owner isolation checks passed')
+}
+
+// ---------------------------------------------------------------------------
+// OCSA-015: a HEARTBEAT identity change terminates the active calibration so
+// no [cal]/MAG_CAL evidence is consumed across firmware swaps.
+// ---------------------------------------------------------------------------
+{
+  const identityCalConnection = new FakeConnection()
+  const identityCalBridge = new MavlinkBridge(identityCalConnection as never, {
+    codec: { protocol: 'v2' },
+    commandTimeoutMs: 20,
+    versionRetryMs: 20,
+  })
+  inject(identityCalBridge, 0, heartbeatPayload(12, 2, 0), 44, 1)
+  const snapshots: any[] = []
+  const session = (identityCalBridge as any).createCalibrationSession({
+    sessionId: 'sess-identity-cal',
+    requestId: 'identity-cal',
+    kind: 'gyro',
+    ownerClientId: 'owner',
+    emitSnapshot: (snapshot: any) => snapshots.push(snapshot),
+  })
+  assert.notEqual(session, null)
+  session.start()
+
+  // Same identity again: session stays alive.
+  inject(identityCalBridge, 0, heartbeatPayload(12, 2, 0), 44, 1)
+  assert.notEqual(last(snapshots)?.phase, 'failed')
+
+  // Different vehicle type under the same system id: immediate termination.
+  inject(identityCalBridge, 0, heartbeatPayload(12, 1, 0), 44, 1)
+  assert.equal(last(snapshots)?.phase, 'failed')
+  assert.equal(last(snapshots)?.failureCode, 'identity_changed')
+  assert.equal((identityCalBridge as any).activeCalibration, null)
+  identityCalBridge.destroy()
+  console.log('MAVLink calibration identity-change termination checks passed')
 }

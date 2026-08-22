@@ -155,6 +155,7 @@ test('StructuredUlogDecoder emits schemas, parameters, records, events and integ
   const parameters = output.filter((entry) => entry.kind === 'parameter').map((entry) => entry.parameter)
   assert.deepEqual(parameters.map((entry) => entry.kind), ['initial', 'default', 'change'])
   assert.deepEqual(parameters.map((entry) => entry.value), [2.5, 1.5, 4.5])
+  assert.deepEqual(parameters.map((entry) => entry.mavParamType), [9, 9, 9])
   const record = output.find((entry) => entry.kind === 'record')
   assert.equal(record?.kind === 'record' && record.record.data.value, 3.25)
   assert.equal(record?.kind === 'record' && record.record.timeUs, '1250000')
@@ -184,7 +185,9 @@ test('StructuredDataflashDecoder preserves all records and creates boot segments
   assert.equal(records[2].data.Unsigned, '18446744073709551615')
   assert.equal(records[3].bootId, 1)
   assert.ok(output.some((entry) => entry.kind === 'event' && entry.event.type === 'boot-boundary'))
-  assert.ok(output.some((entry) => entry.kind === 'parameter' && entry.parameter.name === 'FRAME_CLASS'))
+  assert.ok(output.some((entry) => entry.kind === 'parameter'
+    && entry.parameter.name === 'FRAME_CLASS'
+    && entry.parameter.mavParamType === 9))
   const complete = [...output].reverse().find((entry) => entry.kind === 'complete')
   assert.equal(complete?.kind === 'complete' && complete.metadata.bootCount, 2)
 })

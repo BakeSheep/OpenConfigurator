@@ -13,6 +13,9 @@ export interface LogDownloadTask {
   /** Set once the backend registered the finished file. */
   downloadId?: string
   fileName?: string
+  advertisedSizeBytes?: number
+  sizeAdjusted?: boolean
+  integrity?: 'unverified'
   /** Consumer hint: 'save' triggers a browser download, 'analyze' loads the analysis page. */
   intent: 'save' | 'analyze'
   error?: string
@@ -41,7 +44,15 @@ interface LogTransferState {
   clearSelection: () => void
   beginDownload: (logId: number, intent: 'save' | 'analyze') => void
   setDownloadProgress: (logId: number, receivedBytes: number, totalBytes: number, rateBps: number) => void
-  completeDownload: (logId: number, downloadId: string, fileName: string, sizeBytes: number) => void
+  completeDownload: (
+    logId: number,
+    downloadId: string,
+    fileName: string,
+    sizeBytes: number,
+    advertisedSizeBytes: number,
+    sizeAdjusted: boolean,
+    integrity: 'unverified',
+  ) => void
   failDownload: (message: string) => void
   clearDownload: () => void
   beginErase: () => void
@@ -89,13 +100,24 @@ export const useLogTransferStore = create<LogTransferState>((set) => ({
       ? { ...state.download, receivedBytes, totalBytes, rateBps }
       : state.download,
   })),
-  completeDownload: (logId, downloadId, fileName, sizeBytes) => set((state) => ({
+  completeDownload: (
+    logId,
+    downloadId,
+    fileName,
+    sizeBytes,
+    advertisedSizeBytes,
+    sizeAdjusted,
+    integrity,
+  ) => set((state) => ({
     download: state.download && state.download.logId === logId
       ? {
         ...state.download,
         status: 'done',
         downloadId,
         fileName,
+        advertisedSizeBytes,
+        sizeAdjusted,
+        integrity,
         receivedBytes: sizeBytes,
         totalBytes: sizeBytes,
       }
