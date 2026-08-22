@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./fonts.css";
 
 :root {
   color-scheme: light;
@@ -26,7 +27,7 @@
   --danger-dim: rgba(220, 38, 38, 0.08);
   --info: #0284c7;
   --info-dim: rgba(2, 132, 199, 0.10);
-  --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --font-sans: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, monospace;
   --topbar-height: 48px;
   --statusbar-height: 31px;
@@ -102,7 +103,7 @@
   --color-warning: var(--warning);
   --color-danger: var(--danger);
   --color-info: var(--info);
-  --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --font-sans: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", "SFMono-Regular", Consolas, monospace;
 }
 

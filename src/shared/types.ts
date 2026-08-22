@@ -627,6 +627,16 @@ export type ServerMessage =
         safetyEpoch?: number
         safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
+        selectionSource?: 'explicit' | null
+        conflict?: {
+          reason: 'multiple_stable_targets' | 'same_system_identity_conflict'
+          candidates: Array<{
+            systemId: number
+            componentId: number
+            autopilot: number
+            type: number
+          }>
+        } | null
         /** Classified identity of the selected target; null until known. */
         identity: VehicleIdentity | null
         discovered?: Array<{
@@ -701,6 +711,11 @@ export type ServerMessage =
         /** Opaque id used by GET /api/logs/downloads/:downloadId. */
         downloadId: string
         sizeBytes: number
+        /** Size reported by LOG_ENTRY before any short end marker adjusted it. */
+        advertisedSizeBytes: number
+        sizeAdjusted: boolean
+        /** LOG_REQUEST_DATA provides no checksum or authenticated digest. */
+        integrity: 'unverified'
         fileName: string
       }
     }
@@ -774,7 +789,15 @@ export type ClientMessage =
       expectedSafetyEpoch?: number
       expectedSafetyAuthorityId?: string
     }
-  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | {
+      type: 'param_set'
+      requestId?: string
+      data: { id: string; value: number; paramType: number }
+      /** Required for safety-sensitive parameters (CBRK_*, arming, failsafe, output mapping). */
+      safetyConfirmation?: 'sensitive_param'
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
+    }
   | {
       type: 'vehicle_config_set'
       requestId: string

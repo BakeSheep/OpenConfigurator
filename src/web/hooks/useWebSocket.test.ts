@@ -44,6 +44,43 @@ test('a soft vehicle-readiness loss preserves parameters across heartbeat recove
   assert.equal(useParameterStore.getState().params.has('TEST_PARAM'), true)
 })
 
+test('target discovery stays unselected until the server reports an explicit choice', () => {
+  useConnectionStore.getState().setDisconnected()
+  handleMessage({
+    type: 'target',
+    data: {
+      systemId: null,
+      componentId: null,
+      ready: false,
+      reason: 'discovered',
+      selectionSource: null,
+      conflict: null,
+      identity: null,
+      discovered: [{ systemId: 42, componentId: 1, autopilot: 12, type: 2 }],
+    },
+  })
+  assert.equal(useConnectionStore.getState().targetSystemId, null)
+  assert.deepEqual(useConnectionStore.getState().discoveredTargets, [
+    { systemId: 42, componentId: 1, autopilot: 12, type: 2 },
+  ])
+
+  handleMessage({
+    type: 'target',
+    data: {
+      systemId: 42,
+      componentId: 1,
+      ready: false,
+      reason: 'selected',
+      selectionSource: 'explicit',
+      conflict: null,
+      identity: null,
+      discovered: [{ systemId: 42, componentId: 1, autopilot: 12, type: 2 }],
+    },
+  })
+  assert.equal(useConnectionStore.getState().targetSystemId, 42)
+  assert.equal(useConnectionStore.getState().targetSelectionSource, 'explicit')
+})
+
 test('parse and handler failures are isolated from later WebSocket messages', () => {
   const errors: unknown[][] = []
   const originalError = console.error

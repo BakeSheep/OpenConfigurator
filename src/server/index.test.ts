@@ -250,6 +250,10 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   destroyed = false
   parameterCancellationCalls = 0
   vehicleRebootQueued = true
+  targetConflict = false
+  throwOnMessageType: ClientMessage['type'] | null = null
+  readonly shellCloseReasons: string[] = []
+  private shellDelivery: ((clientId: string, message: ServerMessage) => void) | null = null
   destroyError: Error | null = null
   readonly ftpDownloads = new Map<string, {
     filePath: string
@@ -258,6 +262,7 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
   }>()
 
   handleClientMessage(message: ClientMessage): { vehicleRebootQueued: boolean } {
+    if (message.type === this.throwOnMessageType) throw new Error(`forced ${message.type} failure`)
     this.messages.push(message)
     if (message.type === 'param_request_list') this.currentParamRunId += 1
     const vehicleRebootQueued = message.type === 'reboot_vehicle' && this.vehicleRebootQueued
@@ -274,6 +279,19 @@ class FakeMavlinkBridge extends EventEmitter implements MavlinkBridgeBoundary {
       } satisfies ServerMessage)
     }
     return { vehicleRebootQueued }
+  }
+
+  setShellDelivery(delivery: ((clientId: string, message: ServerMessage) => void) | null): void {
+    this.shellDelivery = delivery
+  }
+
+  closeShellSession(reason: string): void {
+    this.shellCloseReasons.push(reason)
+    void this.shellDelivery
+  }
+
+  hasTargetConflict(): boolean {
+    return this.targetConflict
   }
 
   createCalibrationSession(request: CalibrationStartRequest): FakeCalibrationSession {
@@ -1313,6 +1331,63 @@ test('expired controller leases allow a waiting observer to become controller', 
 
 })
 
+test('a throwing shell open rolls back its owner and controller pin', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    started.bridge.throwOnMessageType = 'shell_open'
+
+    client.ws.send(JSON.stringify({ type: 'shell_open', requestId: 'shell-throws' }))
+    const failure = await client.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'shell-throws',
+    )
+    assert.equal(failure.data?.code, 'operation_failed')
+    assert.deepEqual(started.bridge.shellCloseReasons, ['open_failed'])
+
+    client.ws.send(JSON.stringify({ type: 'release_control', requestId: 'release-after-shell-failure' }))
+    const released = await client.waitFor('controller', (message) => message.data?.reason === 'released')
+    assert.equal(released.data?.clientId, null)
+  } finally {
+    client.ws.close()
+    await started.runtime.shutdown('test')
+  }
+})
+
+test('target conflict blocks manager-owned mutation flows before controller claim', async () => {
+  const started = await startTestServer()
+  const client = await connectWs(started.wsUrl)
+  try {
+    await client.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.emit('statusChange', 'connected')
+    started.bridge.targetConflict = true
+
+    client.ws.send(JSON.stringify({
+      type: 'start_calibration',
+      requestId: 'cal-conflicted-target',
+      data: { kind: 'gyro' },
+    }))
+    const rejected = await client.waitFor(
+      'client_error',
+      (message) => message.data?.requestId === 'cal-conflicted-target',
+    )
+    assert.equal(rejected.data?.code, 'target_conflict')
+    assert.equal(started.bridge.calibrationSessions.length, 0)
+    assert.ok(!client.messages.some((message) => message.type === 'controller' && message.data?.reason === 'claimed'))
+  } finally {
+    client.ws.close()
+    await started.runtime.shutdown('test')
+  }
+})
+
 test('stale safety confirmations expire before automatic claim and cannot dispatch', async () => {
   const started = await startTestServer(testConfig(), {
     heartbeatIntervalMs: 1_000,
@@ -2232,4 +2307,44 @@ test('download errors after headers are sent are forwarded for stream terminatio
 
   assert.equal(forwarded, transferError)
   assert.equal(statusCalls, 0)
+})
+
+test('esc direct mode refuses connections with flight-controller history', async () => {
+  const started = await startTestServer(testConfig(), { controllerLeaseMs: 300 })
+  const owner = await connectWs(started.wsUrl)
+  try {
+    await owner.waitFor('hello')
+    started.connManager.status = 'connected'
+    started.connManager.transportOpen = true
+    started.connManager.vehicleReady = true
+    started.connManager.config = {
+      type: 'serial',
+      port: 'COM9',
+      baudRate: 19200,
+    } as ConnectionConfig
+    started.connManager.emit('statusChange', 'connected')
+    await owner.waitFor('connection', (message) => message.data?.vehicleReady === true)
+
+    // The connection carried a ready vehicle heartbeat, so it may not be
+    // repurposed in place for a directly attached ESC: an explicit reconnect
+    // with the direct-ESC preset is required first.
+    const beforeDirectAttempt = owner.messages.length
+    started.connManager.emit('vehicleReadyChange', true)
+    await owner.waitFor('connection', () => true, 1_000, beforeDirectAttempt)
+    owner.ws.send(JSON.stringify({
+      type: 'esc_session_start',
+      requestId: 'esc-direct-fc-history',
+      safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+      ...latestSafetyExpectation(owner),
+      data: { mode: 'direct' },
+    }))
+    const refused = await owner.waitFor(
+      'esc_op_error',
+      (message) => message.data?.requestId === 'esc-direct-fc-history',
+    )
+    assert.equal(refused.data?.code, 'precondition_failed')
+  } finally {
+    await closeWs(owner)
+    await started.runtime.shutdown('test')
+  }
 })

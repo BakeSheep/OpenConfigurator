@@ -1,4 +1,5 @@
 import type { ParamData, VehicleIdentity } from '../../shared/types'
+import { isSensitiveParameter } from '../../shared/parameterSafety'
 
 const INTEGER_PARAM_RANGES: Readonly<Record<number, readonly [number, number]>> = {
   1: [0, 0xff],
@@ -86,7 +87,7 @@ export function mavParamValuesMatch(left: number, right: number, type: number): 
 }
 
 export function isDangerousParameter(name: string): boolean {
-  return name.startsWith('CBRK_')
+  return isSensitiveParameter(name)
 }
 
 export function parseQgcParameterFile(content: string): QgcParameterParseResult {

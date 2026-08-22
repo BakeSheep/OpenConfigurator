@@ -1,5 +1,7 @@
 import { create } from 'zustand'
-import type { ConnectionStatus, PortInfo } from '../../shared/types'
+import type { ConnectionStatus, PortInfo, ServerMessage } from '../../shared/types'
+
+type TargetMessageData = Extract<ServerMessage, { type: 'target' }>['data']
 
 export interface ReconnectInfo {
   attempt: number
@@ -33,6 +35,9 @@ interface ConnectionState {
   baudRate: number | null
   targetSystemId: number | null
   targetComponentId: number | null
+  targetSelectionSource: TargetMessageData['selectionSource']
+  targetConflict: TargetMessageData['conflict']
+  discoveredTargets: NonNullable<TargetMessageData['discovered']>
   clientId: string | null
   controllerClientId: string | null
   controllerExpiresAt: number | null
@@ -65,7 +70,15 @@ interface ConnectionState {
   }) => void
   setClientId: (clientId: string, safetyEpoch: number, safetyAuthorityId: string) => void
   setController: (clientId: string | null, expiresAt: number | null, safetyEpoch: number, safetyAuthorityId: string) => void
-  setTarget: (systemId: number | null, componentId: number | null, safetyEpoch?: number, safetyAuthorityId?: string) => void
+  setTarget: (
+    systemId: number | null,
+    componentId: number | null,
+    safetyEpoch?: number,
+    safetyAuthorityId?: string,
+    selectionSource?: TargetMessageData['selectionSource'],
+    conflict?: TargetMessageData['conflict'],
+    discovered?: TargetMessageData['discovered'],
+  ) => void
   setReconnecting: (info: ReconnectInfo) => void
   setDisconnected: () => void
   setLinkStats: (stats: LinkStats) => void
@@ -85,6 +98,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   baudRate: null,
   targetSystemId: null,
   targetComponentId: null,
+  targetSelectionSource: null,
+  targetConflict: null,
+  discoveredTargets: [],
   clientId: null,
   controllerClientId: null,
   controllerExpiresAt: null,
@@ -130,11 +146,22 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     safetyAuthorityId,
     canControl: controllerClientId === null || controllerClientId === state.clientId,
   })),
-  setTarget: (targetSystemId, targetComponentId, safetyEpoch, safetyAuthorityId) => set((state) => {
+  setTarget: (
+    targetSystemId,
+    targetComponentId,
+    safetyEpoch,
+    safetyAuthorityId,
+    targetSelectionSource,
+    targetConflict,
+    discoveredTargets,
+  ) => set((state) => {
     const normalizedComponentId = targetSystemId === null ? null : targetComponentId
     return {
       targetSystemId,
       targetComponentId: normalizedComponentId,
+      ...(targetSelectionSource === undefined ? {} : { targetSelectionSource }),
+      ...(targetConflict === undefined ? {} : { targetConflict }),
+      ...(discoveredTargets === undefined ? {} : { discoveredTargets }),
       ...(safetyEpoch === undefined ? {} : { safetyEpoch }),
       ...(safetyAuthorityId === undefined ? {} : { safetyAuthorityId }),
     }
@@ -147,6 +174,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     rawSessionActive: false,
     targetSystemId: null,
     targetComponentId: null,
+    targetSelectionSource: null,
+    targetConflict: null,
+    discoveredTargets: [],
     reconnect: info,
   })),
   setDisconnected: () => set((state) => ({
@@ -159,6 +189,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     baudRate: null,
     targetSystemId: null,
     targetComponentId: null,
+    targetSelectionSource: null,
+    targetConflict: null,
+    discoveredTargets: [],
     reconnect: null,
     linkStats: null,
     controllerClientId: null,

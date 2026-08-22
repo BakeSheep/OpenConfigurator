@@ -562,7 +562,16 @@ export function handleMessage(msg: ServerMessage) {
         msg.data.downloadId,
         msg.data.fileName,
         msg.data.sizeBytes,
+        msg.data.advertisedSizeBytes,
+        msg.data.sizeAdjusted,
+        msg.data.integrity,
       )
+      if (msg.data.sizeAdjusted) {
+        telemetryStore.addStatusLog(4, t('websocket.dataflashSizeAdjusted', {
+          advertised: msg.data.advertisedSizeBytes,
+          final: msg.data.sizeBytes,
+        }))
+      }
       break
     case 'log_erase_done':
       useLogTransferStore.getState().completeErase()
@@ -650,6 +659,9 @@ export function handleMessage(msg: ServerMessage) {
         msg.data.componentId,
         msg.data.safetyEpoch,
         msg.data.safetyAuthorityId,
+        msg.data.selectionSource,
+        msg.data.conflict,
+        msg.data.discovered,
       )
       telemetryStore.setVehicleIdentity(msg.data.systemId === null ? null : msg.data.identity)
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {

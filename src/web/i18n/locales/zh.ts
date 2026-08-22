@@ -188,6 +188,9 @@ export const zh = {
       selectDevice: '选择设备',
       addDevice: '添加设备',
       noPresets: '暂无预设设备',
+      flightControllers: '已发现的飞控',
+      targetConflict: '发现多个可用飞控，危险操作已暂停。请显式选择目标。',
+      selected: '已选中',
     },
   },
   sidebar: {
@@ -547,7 +550,7 @@ export const zh = {
     importSummarySkipped: '跳过 {{count}}',
     importLine: '第 {{line}} 行',
     importEmptyFile: '文件中没有参数记录',
-    importDangerousConfirm: '其中 {{count}} 项为安全断路器参数；我确认这些写入可能关闭飞行安全保护。',
+    importDangerousConfirm: '其中 {{count}} 项为安全敏感参数；我确认这些写入可能关闭飞行安全保护或改变输出映射。',
     importCancel: '取消',
     importStartWrite: '确认写入 {{count}} 项',
     importWriting: '正在逐项写入并等待飞控回显',
@@ -1206,6 +1209,7 @@ export const zh = {
     paramSyncFailed: '参数同步已失败',
     paramSyncCancelled: '参数同步已取消',
     targetSelected: '已选定飞控目标 system {{systemId}} / component {{componentId}}',
+    dataflashSizeAdjusted: '日志下载大小与飞控公告不同（{{advertised}} → {{final}} 字节）；LOG_DATA 不提供完整性校验。',
   },
   terminal: {
     empty: {
@@ -2108,6 +2112,7 @@ export const zh = {
       erasing: '正在擦除全部日志并等待飞控确认…',
       eraseDone: '全部日志已擦除',
       eraseFailed: '擦除失败：{{error}}',
+      sizeAdjusted: '下载已完成，但飞控将日志大小从 {{advertised}} 调整为 {{final}}；LOG_DATA 无校验和，请将文件视为未验证。',
     },
   },
 } as const

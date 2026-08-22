@@ -12,6 +12,7 @@ import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { isSensitiveParameter } from '../../shared/parameterSafety'
 import { parameterEnumLabel, parameterEnumOptions, parameterEnumValuesMatch } from '../utils/parameterEnumMetadata'
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
 import {
@@ -22,9 +23,6 @@ import {
   type QgcParameterPreviewEntry,
 } from '../utils/qgcParameterFile'
 
-// PX4 circuit-breaker parameters disable safety protections outright; writing
-// them by accident must require an explicit confirmation.
-const DANGEROUS_PARAM_PREFIXES = ['CBRK_']
 const QGC_PARAMETER_FILE_MAX_BYTES = 2 * 1024 * 1024
 const PARAM_IMPORT_WRITE_TIMEOUT_MS = 5000
 
@@ -82,12 +80,17 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const firmwareVersion = useTelemetryStore((state) => state.autopilotVersion?.firmwareVersion ?? null)
   const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
+  const armed = useTelemetryStore((state) => state.status?.armed)
   const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
-  const canWrite = canAccess && profileWritable
+  // OCSA-001: mirror the server gate — raw parameter writes require a
+  // confirmed disarmed vehicle, not just a writable profile.
+  const canWrite = canAccess && profileWritable && armed === false
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -204,10 +207,16 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (!entry) return
     const requestId = `param-import-${importRunSequence.current}-${importJob.nextIndex}-${Date.now().toString(36)}`
     setImportJob((current) => current ? { ...current, pendingRequestId: requestId } : current)
+    const sensitive = entry.dangerous
     if (!send({
       type: 'param_set',
       requestId,
       data: { id: entry.row.name, value: entry.row.value, paramType: entry.row.type },
+      ...(sensitive && safetyAuthorityId ? {
+        safetyConfirmation: 'sensitive_param' as const,
+        expectedSafetyEpoch: safetyEpoch,
+        expectedSafetyAuthorityId: safetyAuthorityId,
+      } : {}),
     })) {
       setImportJob((current) => {
         if (!current || current.pendingRequestId !== requestId) return current
@@ -219,7 +228,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
         }
       })
     }
-  }, [canWrite, importJob, importSelection, send, t, targetComponentId, targetSystemId])
+  }, [canWrite, importJob, importSelection, safetyAuthorityId, safetyEpoch, send, t, targetComponentId, targetSystemId])
 
   useEffect(() => {
     if (importJob?.status !== 'done' || !importResyncPending.current || !canAccess) return
@@ -270,14 +279,24 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       return
     }
     if (
-      DANGEROUS_PARAM_PREFIXES.some((prefix) => id.startsWith(prefix))
+      isSensitiveParameter(id)
       && !window.confirm(
         t('parameter.circuitBreakerConfirm', { id, value }),
       )
     ) return
     setWriteError(null)
     setPendingWrite({ id, value })
-    send({ type: 'param_set', requestId: `param-${id}-${Date.now().toString(36)}`, data: { id, value, paramType: param.type } })
+    const sensitive = isSensitiveParameter(id)
+    send({
+      type: 'param_set',
+      requestId: `param-${id}-${Date.now().toString(36)}`,
+      data: { id, value, paramType: param.type },
+      ...(sensitive && safetyAuthorityId ? {
+        safetyConfirmation: 'sensitive_param' as const,
+        expectedSafetyEpoch: safetyEpoch,
+        expectedSafetyAuthorityId: safetyAuthorityId,
+      } : {}),
+    })
     if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
     writeTimer.current = window.setTimeout(() => {
       setPendingWrite((current) => {
@@ -424,6 +443,11 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
 
       {!canAccess && params.size > 0 && <Notice tone="warning">{t('parameter.connectToSync')}</Notice>}
       {canAccess && !profileWritable && <Notice tone="warning">{t('parameter.writeNotSupported')}</Notice>}
+      {canAccess && profileWritable && armed !== false && (
+        <Notice tone="warning">
+          {armed ? t('vehicleSetup.disarmRequired') : t('vehicleSetup.armingUnknown')}
+        </Notice>
+      )}
       {writeError && <Notice tone="danger">{writeError}</Notice>}
 
       <div className="mc-param-search">

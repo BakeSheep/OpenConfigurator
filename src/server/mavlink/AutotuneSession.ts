@@ -13,6 +13,18 @@ export const AUTOTUNE_POLL_INTERVAL_MS = 1_000
 export const PX4_AUTOTUNE_TIMEOUT_MS = 15 * 60_000
 export const ARDUPILOT_AUTOTUNE_TIMEOUT_MS = 30 * 60_000
 export const ARDUPILOT_SAVE_TIMEOUT_MS = 15_000
+/**
+ * OCSA-011: ArduPilot abort/test/restore converge through a single
+ * fire-and-forget SET_MODE frame. Without a per-action deadline a lost frame
+ * used to hold actionPending until the overall timeout, leaving the GCS abort
+ * button dead for up to half an hour. Every transmission therefore gets this
+ * short per-attempt deadline (deliberately far below the overall timeout) and
+ * the frame is resent at most ARDUPILOT_ACTION_MAX_RESENDS times before the
+ * action fails with an explicit 'action_timeout'.
+ */
+export const ARDUPILOT_ACTION_TIMEOUT_MS = 3_000
+/** Automatic resends allowed per action before it is failed (OCSA-011). */
+export const ARDUPILOT_ACTION_MAX_RESENDS = 2
 
 const TERMINAL_PHASES: ReadonlySet<AutotunePhase> =
   new Set(['saved', 'discarded', 'failed', 'interrupted'])
@@ -36,7 +48,7 @@ export interface AutotuneSessionOptions {
   clearTimer?: (handle: unknown) => void
 }
 
-type TimerSlot = 'poll' | 'overall' | 'save'
+type TimerSlot = 'poll' | 'overall' | 'save' | 'action'
 
 /**
  * Protocol-only in-flight autotune state machine. It never arms, takes off,
@@ -71,6 +83,16 @@ export class AutotuneSession {
   private failureReason: string | undefined
   private actionPending: AutotuneAction | null = null
   private testModeTransition = false
+  /**
+   * OCSA-011: monotonic tag bumped before every action transmission (first
+   * attempt and each resend). Convergence evidence is only ever credited to
+   * the pending action, and a finished or failed action retires its slot, so
+   * a late mode change or STATUSTEXT answering a retired transmission can
+   * never be misattributed as convergence proof of a newer one.
+   */
+  private actionEpoch = 0
+  /** Resends already spent on the pending action. */
+  private actionResends = 0
 
   constructor(options: AutotuneSessionOptions) {
     this.sessionId = options.sessionId
@@ -167,12 +189,12 @@ export class AutotuneSession {
       this.setRunningPhase('paused')
     } else if (/\bsuccess\b/i.test(line)) {
       this.actionPending = null
+      this.clearSlot('action')
       this.phase = 'completed'
       this.verification = 'firmware_completed'
       this.emit()
     } else if (/pilot testing gains/i.test(line)) {
-      this.actionPending = null
-      this.testModeTransition = false
+      this.clearActionLocks()
       this.phase = 'testing'
       this.verification = 'firmware_completed'
       this.emit()
@@ -254,33 +276,69 @@ export class AutotuneSession {
     }
     if (action === 'abort') {
       if (this.phase === 'save_pending') return { ok: false, code: 'save_pending' }
-      this.actionPending = action
-      if (!this.setMode(this.initialModeId)) {
-        this.actionPending = null
-        return { ok: false, code: 'write_rejected' }
-      }
-      return { ok: true }
-    }
-    if (action === 'test_gains') {
+    } else if (action === 'test_gains') {
       if (this.phase !== 'completed') return { ok: false, code: 'invalid_phase' }
-      this.actionPending = action
+      // A rejected write below clears this again via clearActionLocks().
       this.testModeTransition = true
-      if (!this.setMode(this.initialModeId)) {
-        this.actionPending = null
-        this.testModeTransition = false
-        return { ok: false, code: 'write_rejected' }
-      }
-      return { ok: true }
-    }
-    if (this.phase !== 'completed' && this.phase !== 'testing') {
+    } else if (this.phase !== 'completed' && this.phase !== 'testing') {
       return { ok: false, code: 'invalid_phase' }
     }
+    // Every ArduPilot action converges through the same stack-aware
+    // SET_MODE(initialModeId) frame; only the expected evidence differs.
+    return this.beginAction(action, () => this.setMode(this.initialModeId))
+  }
+
+  /**
+   * Sends the first attempt of an action and arms its independent deadline
+   * (OCSA-011): a lost frame can no longer hold actionPending until the
+   * overall timeout because each transmission is judged on its own.
+   */
+  private beginAction(
+    action: AutotuneAction,
+    send: () => boolean,
+  ): AutotuneActionResult {
     this.actionPending = action
-    if (!this.setMode(this.initialModeId)) {
-      this.actionPending = null
+    this.actionResends = 0
+    if (!this.transmitAction(send)) {
+      this.clearActionLocks()
       return { ok: false, code: 'write_rejected' }
     }
     return { ok: true }
+  }
+
+  /** One epoch-tagged transmission plus its bounded convergence window. */
+  private transmitAction(send: () => boolean): boolean {
+    // Bump before the write so any evidence observed from now on can only be
+    // credited to this epoch, never to a retired attempt or finished action.
+    const epoch = this.actionEpoch + 1
+    this.actionEpoch = epoch
+    if (!send()) return false
+    this.arm('action', ARDUPILOT_ACTION_TIMEOUT_MS, () => {
+      // A timer only judges its own transmission: a newer attempt re-arms the
+      // slot, so a stale firing must not spend a resend or fail an action it
+      // never sent.
+      if (epoch !== this.actionEpoch) return
+      this.onActionTimeout(send)
+    })
+    return true
+  }
+
+  private onActionTimeout(send: () => boolean): void {
+    if (this.terminal || this.actionPending === null) return
+    if (this.actionResends < ARDUPILOT_ACTION_MAX_RESENDS) {
+      this.actionResends += 1
+      if (this.transmitAction(send)) return
+      this.fail('write_rejected', '连接发送队列拒绝自动调参操作重发指令')
+      return
+    }
+    this.fail('action_timeout', '自动调参操作指令多次发送后仍未获得飞控确认')
+  }
+
+  /** Releases the action lock without touching the session phase. */
+  private clearActionLocks(): void {
+    this.actionPending = null
+    this.testModeTransition = false
+    this.clearSlot('action')
   }
 
   private sendPx4Poll(): boolean {

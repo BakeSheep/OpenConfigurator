@@ -17,7 +17,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
 import type { FsEntry, ServerMessage } from '../../shared/types'
-import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
+import {
+  assertDownloadCapacity,
+  DownloadCapacityError,
+  FTP_DOWNLOAD_DIR_PREFIX,
+  FTP_DOWNLOAD_FILE_PATTERN,
+  isSafeDevicePath,
+  isSafeRemoteBasename,
+} from './downloadLimits'
 
 const FTP_HEADER_SIZE = 12
 const FTP_MAX_DATA = 239
@@ -47,7 +54,34 @@ const MAX_NO_PROGRESS_PASSES = 5
 // than by re-bursting the remainder of the file.
 const GAP_FILL_MAX_BYTES = 64 * 1024
 const GAP_FILL_MAX_INTERVALS = 32
+// OCSA-009: the fallback path (burst unsupported) skips the GAP_FILL_MAX_
+// INTERVALS gate, so a hostile server scattering single-byte chunks could grow
+// the interval list without bound. 1024 is 32x the normal gate and orders of
+// magnitude above any real loss-recovery fragmentation; beyond it the transfer
+// is refused instead of looping forever.
+const GAP_FILL_HARD_MAX_INTERVALS = 1024
+const MAX_QUEUED_FILE_WRITES = 2048
 const LIST_MAX_ENTRIES = 2000
+// OCSA-009: parsed entries alone do not bound a listing - `S`/unknown records
+// only advance the wire offset, so a hostile server can stream such pages
+// forever. Cap total wire records (4x the entry cap: skip records are rare on
+// real firmware), total pages (a page holds many records in 239 bytes, so
+// 1000 pages is far beyond any SD-card listing) and thereby the offset growth.
+const LIST_MAX_WIRE_RECORDS = 8000
+const LIST_MAX_PAGES = 1000
+// OCSA-009: burst-pass termination budgets. The quiet timer alone is reset by
+// every same-session frame, so hostile firmware can keep a pass alive forever
+// by resending useless data. Each pass therefore also gets:
+// - a hard deadline independent of traffic (10 min exceeds any legitimate
+//   inter-chunk silence - Bluetooth quiet is 3.2 s - by orders of magnitude
+//   while still bounding a hijacked state machine),
+// - a per-pass frame budget computed from the remaining file size (2x the
+//   theoretical minimum chunk count plus slack for reordering/duplicates),
+// - a cumulative budget for frames that recovered no new bytes (duplicates,
+//   out-of-range offsets); 256 is far above any real retransmission burst.
+const BURST_PASS_HARD_DEADLINE_MS = 10 * 60 * 1000
+const BURST_PASS_FRAME_SLACK = 64
+const BURST_PASS_NO_PROGRESS_FRAMES = 256
 const DELETE_MAX_DEPTH = 6
 const DELETE_MAX_ITEMS = 512
 const MAX_RETAINED_DOWNLOADS = 5
@@ -195,7 +229,10 @@ function sanitizeFileName(devicePath: string): string {
 
 export class MavlinkFtp {
   private readonly transport: FtpTransport
-  private readonly downloadDir: string
+  /** Explicitly configured directory; null means "create a private one". */
+  private readonly explicitDownloadDir: string | null
+  /** Resolved download directory, set once ensureDownloadDir() succeeds. */
+  private downloadDir: string | null = null
   private state: 'idle' | FtpOperation = 'idle'
   private seq = 0
   private pending: PendingRequest | null = null
@@ -203,15 +240,23 @@ export class MavlinkFtp {
   private cancelRequested = false
   private destroyed = false
   private readonly downloads = new Map<string, FtpDownloadRecord>()
-  private downloadDirReady: Promise<void> | null = null
+  private downloadDirReady: Promise<string> | null = null
 
   constructor(transport: FtpTransport, downloadDir?: string) {
     this.transport = transport
-    this.downloadDir = downloadDir ?? path.join(os.tmpdir(), 'openconfigurator-logs')
+    this.explicitDownloadDir = downloadDir ?? null
   }
 
   get busy(): boolean {
     return this.state !== 'idle'
+  }
+
+  /**
+   * Directory holding this instance's downloads once prepared (diagnostics and
+   * tests); null until the first operation created it.
+   */
+  get activeDownloadDir(): string | null {
+    return this.downloadDir
   }
 
   getDownload(downloadId: string): FtpDownloadRecord | null {
@@ -459,7 +504,7 @@ export class MavlinkFtp {
 
   private async runList(dirPath: string, requestId?: string): Promise<void> {
     try {
-      const entries = await this.collectDirectory(dirPath)
+      const { entries } = await this.collectDirectory(dirPath)
       this.transport.emitMessage({ type: 'fs_list', data: { path: dirPath, entries } })
     } catch (error) {
       this.reportFailure('list', error, requestId)
@@ -468,10 +513,18 @@ export class MavlinkFtp {
     }
   }
 
-  private async collectDirectory(dirPath: string): Promise<FsEntry[]> {
+  private async collectDirectory(
+    dirPath: string,
+  ): Promise<{ entries: FsEntry[]; unsafeNames: string[] }> {
     const entries: FsEntry[] = []
+    const unsafeNames: string[] = []
     let offset = 0
+    let wireRecords = 0
+    let pages = 0
     for (;;) {
+      if (++pages > LIST_MAX_PAGES) {
+        throw new FtpError('ftp_list_overflow', `目录分页超出 ${LIST_MAX_PAGES} 页上限`)
+      }
       const reply = await this.transact(FTP_OPCODES.ListDirectory, {
         offset,
         data: Buffer.from(dirPath, 'utf8'),
@@ -480,22 +533,40 @@ export class MavlinkFtp {
         if (isEofNak(reply)) break
         throw nakError(reply, `列目录 ${dirPath} 失败`)
       }
-      const { parsed, wireCount } = this.parseListChunk(reply.data)
+      const { parsed, wireCount, unsafeNames: pageUnsafe } = this.parseListChunk(reply.data)
       if (wireCount === 0) break
       entries.push(...parsed)
+      unsafeNames.push(...pageUnsafe)
       offset += wireCount
+      wireRecords += wireCount
+      if (wireRecords > LIST_MAX_WIRE_RECORDS) {
+        throw new FtpError('ftp_list_overflow', `目录记录数超出 ${LIST_MAX_WIRE_RECORDS} 条上限`)
+      }
+      if (offset > 0xffff_ffff) {
+        throw new FtpError('ftp_list_overflow', '目录偏移超出协议范围')
+      }
       if (entries.length >= LIST_MAX_ENTRIES) break
     }
-    return entries
+    return { entries, unsafeNames }
   }
 
   /**
    * ListDirectory data: NUL-separated records. `F<name>\t<size>` for files,
    * `D<name>` for directories, `S` for entries the firmware skipped. Skip
    * records still advance the wire offset.
+   *
+   * Names are remote-controlled (OCSA-016): anything that is not a single safe
+   * basename is skipped and reported through `unsafeNames` instead of being
+   * joined into a device path later. `D.`/`D..` are protocol-normal relative
+   * entries and are dropped quietly, as before.
    */
-  private parseListChunk(data: Buffer): { parsed: FsEntry[]; wireCount: number } {
+  private parseListChunk(data: Buffer): {
+    parsed: FsEntry[]
+    wireCount: number
+    unsafeNames: string[]
+  } {
     const parsed: FsEntry[] = []
+    const unsafeNames: string[] = []
     let wireCount = 0
     for (const record of data.toString('utf8').split('\0')) {
       if (record.length === 0) continue
@@ -503,43 +574,91 @@ export class MavlinkFtp {
       const kindChar = record[0]
       const rest = record.slice(1)
       if (kindChar === 'D') {
-        if (rest && rest !== '.' && rest !== '..') {
-          parsed.push({ name: rest, kind: 'dir', sizeBytes: null })
+        if (rest === '.' || rest === '..') continue
+        if (!isSafeRemoteBasename(rest)) {
+          if (rest) unsafeNames.push(rest)
+          continue
         }
+        parsed.push({ name: rest, kind: 'dir', sizeBytes: null })
       } else if (kindChar === 'F') {
         const tabIndex = rest.lastIndexOf('\t')
         const name = tabIndex >= 0 ? rest.slice(0, tabIndex) : rest
         const size = tabIndex >= 0 ? Number.parseInt(rest.slice(tabIndex + 1), 10) : Number.NaN
-        if (name) {
-          parsed.push({
-            name,
-            kind: 'file',
-            sizeBytes: Number.isFinite(size) && size >= 0 ? size : null,
-          })
+        if (!isSafeRemoteBasename(name)) {
+          if (name) unsafeNames.push(name)
+          continue
         }
+        parsed.push({
+          name,
+          kind: 'file',
+          sizeBytes: Number.isFinite(size) && size >= 0 ? size : null,
+        })
       }
       // 'S' and unknown records only advance the offset.
     }
-    return { parsed, wireCount }
+    return { parsed, wireCount, unsafeNames }
   }
 
   // ------------------------------------------------------------------
   // Download
   // ------------------------------------------------------------------
 
-  private async ensureDownloadDir(): Promise<void> {
-    if (!this.downloadDirReady) {
-      this.downloadDirReady = (async () => {
-        await fsp.mkdir(this.downloadDir, { recursive: true })
-        // Stale files from a previous server run are unreachable (their ids
-        // died with the process), so clear them out.
-        const names = await fsp.readdir(this.downloadDir).catch(() => [] as string[])
-        await Promise.allSettled(
-          names.map((name) => fsp.unlink(path.join(this.downloadDir, name))),
-        )
-      })()
+  /**
+   * Prepare the download directory and return its path. The ready promise is
+   * cached, but a failure resets it (synchronously with the rejection) so the
+   * next call retries instead of replaying the cached error forever (OCSA-014).
+   */
+  private async ensureDownloadDir(): Promise<string> {
+    if (this.downloadDirReady) return this.downloadDirReady
+    const ready = this.prepareDownloadDir()
+    this.downloadDirReady = ready
+    try {
+      return await ready
+    } catch (error) {
+      if (this.downloadDirReady === ready) this.downloadDirReady = null
+      throw error
     }
-    await this.downloadDirReady
+  }
+
+  private async prepareDownloadDir(): Promise<string> {
+    let dir: string
+    if (this.explicitDownloadDir !== null) {
+      // Explicitly configured directory (tests / embedded deployments): keep
+      // using it directly, but never widen it beyond mkdir.
+      await fsp.mkdir(this.explicitDownloadDir, { recursive: true })
+      dir = this.explicitDownloadDir
+    } else {
+      // OCSA-008: fixed predictable names under os.tmpdir() could be
+      // pre-created or symlinked by any local process before the service, and
+      // multiple instances shared one wipe-everything cleanup. mkdtemp()
+      // creates an atomically unique private directory per service instance.
+      dir = await fsp.mkdtemp(path.join(os.tmpdir(), FTP_DOWNLOAD_DIR_PREFIX))
+      // Node creates mkdtemp directories 0700; enforce it in case a umask or
+      // platform ever relaxes that default.
+      await fsp.chmod(dir, 0o700).catch(() => undefined)
+      // Never sweep sibling instance directories based only on age: an idle
+      // but live process can legitimately keep one for longer than a day.
+      // Instance and crash leftovers are left to the operating system's tmp
+      // policy; runtime teardown must not race an in-flight file write.
+    }
+    this.downloadDir = dir
+    await this.removeStaleArtifacts(dir)
+    return dir
+  }
+
+  /**
+   * Remove artifacts of previous runs. Only names matching this instance's own
+   * random `<16 hex>.part|ulg` format are unlinked - never arbitrary top-level
+   * entries, which may belong to another instance or to whoever configured the
+   * directory (OCSA-008).
+   */
+  private async removeStaleArtifacts(dir: string): Promise<void> {
+    const names = await fsp.readdir(dir).catch(() => [] as string[])
+    await Promise.allSettled(
+      names
+        .filter((name) => FTP_DOWNLOAD_FILE_PATTERN.test(name))
+        .map((name) => fsp.unlink(path.join(dir, name))),
+    )
   }
 
   private async runDownload(filePath: string, requestId?: string): Promise<void> {
@@ -552,9 +671,10 @@ export class MavlinkFtp {
       fileName: string
     } | null = null
     const downloadId = randomBytes(DOWNLOAD_ID_BYTES).toString('hex')
-    const partPath = path.join(this.downloadDir, `${downloadId}.part`)
+    let partPath: string | null = null
     try {
-      await this.ensureDownloadDir()
+      const downloadDir = await this.ensureDownloadDir()
+      partPath = path.join(downloadDir, `${downloadId}.part`)
       // Clear any half-open session a crashed GCS left on the FC.
       await this.transact(FTP_OPCODES.ResetSessions, {}, 2).catch(() => undefined)
 
@@ -569,7 +689,7 @@ export class MavlinkFtp {
       const fileSize = openReply.data.readUInt32LE(0)
 
       try {
-        await assertDownloadCapacity(this.downloadDir, fileSize)
+        await assertDownloadCapacity(downloadDir, fileSize)
       } catch (error) {
         if (error instanceof DownloadCapacityError) {
           throw new FtpError(error.code, error.message)
@@ -581,6 +701,8 @@ export class MavlinkFtp {
       let missing: Array<[number, number]> =
         fileSize > 0 ? [[0, fileSize]] : []
       let writeChain: Promise<unknown> = Promise.resolve()
+      let queuedFileWrites = 0
+      let resourceLimitError: FtpError | null = null
       let lastProgressAt = 0
       let lastProgressBytes = 0
 
@@ -600,14 +722,40 @@ export class MavlinkFtp {
         })
       }
 
-      const writeChunk = (offset: number, data: Buffer) => {
+      // Returns the number of bytes this chunk newly covered, so a download
+      // pass can tell progress from duplicate/noise frames (OCSA-009).
+      const writeChunk = (offset: number, data: Buffer): number => {
+        if (resourceLimitError) return -1
         const end = Math.min(fileSize, offset + data.length)
-        if (end <= offset) return
+        if (end <= offset) return 0
+        const before = remainingBytes(missing)
         const slice = data.subarray(0, end - offset)
-        missing = subtractInterval(missing, offset, end)
+        const nextMissing = subtractInterval(missing, offset, end)
+        if (nextMissing.length > GAP_FILL_HARD_MAX_INTERVALS) {
+          resourceLimitError = new FtpError(
+            'download_gap_overflow',
+            `下载缺口数量超过 ${GAP_FILL_HARD_MAX_INTERVALS}，已终止本次传输`,
+            true,
+          )
+          return -1
+        }
+        if (queuedFileWrites >= MAX_QUEUED_FILE_WRITES) {
+          resourceLimitError = new FtpError(
+            'download_write_backlog',
+            '本地文件写入积压超过安全上限，已终止本次传输',
+            true,
+          )
+          return -1
+        }
+        missing = nextMissing
+        const added = before - remainingBytes(missing)
         const target = handle!
-        writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
+        queuedFileWrites++
+        writeChain = writeChain.then(
+          () => target.write(slice, 0, slice.length, offset),
+        ).finally(() => { queuedFileWrites-- })
         emitProgress()
+        return added
       }
 
       emitProgress(true)
@@ -631,9 +779,15 @@ export class MavlinkFtp {
             readWindowSize,
           )
         } else {
-          await this.burstPass(session, missing[0][0], writeChunk)
+          // Frame budget: a legitimate burst needs at most one frame per
+          // FTP_MAX_DATA bytes of the remaining file; 2x plus slack absorbs
+          // reordering and retransmissions (OCSA-009).
+          const remaining = Math.max(0, missing[0][1] - missing[0][0])
+          const maxFrames = Math.ceil(remaining / FTP_MAX_DATA) * 2 + BURST_PASS_FRAME_SLACK
+          await this.burstPass(session, missing[0][0], writeChunk, maxFrames)
         }
         await writeChain
+        if (resourceLimitError) throw resourceLimitError
         const after = remainingBytes(missing)
         if (after < before) {
           noProgressPasses = 0
@@ -683,7 +837,7 @@ export class MavlinkFtp {
         )
       }
 
-      const finalPath = path.join(this.downloadDir, `${downloadId}.ulg`)
+      const finalPath = path.join(downloadDir, `${downloadId}.ulg`)
       await fsp.rename(partPath, finalPath)
       const fileName = sanitizeFileName(filePath)
       this.registerDownload(downloadId, { filePath: finalPath, fileName, sizeBytes: fileSize })
@@ -696,7 +850,7 @@ export class MavlinkFtp {
     } catch (error) {
       await handle?.close().catch(() => undefined)
       handle = null
-      await fsp.unlink(partPath).catch(() => undefined)
+      if (partPath !== null) await fsp.unlink(partPath).catch(() => undefined)
       this.reportFailure('download', error, requestId)
     } finally {
       if (session !== null) {
@@ -711,19 +865,28 @@ export class MavlinkFtp {
     }
   }
 
-  /** One burst pass: the FC streams chunks until EOF/complete or the link goes quiet. */
+  /**
+   * One burst pass: the FC streams chunks until EOF/complete or the link goes
+   * quiet. The quiet timer alone is reset by every same-session frame, so the
+   * pass is additionally bounded by a traffic-independent hard deadline, a
+   * frame budget and a no-progress frame budget (OCSA-009).
+   */
   private burstPass(
     session: number,
     startOffset: number,
-    writeChunk: (offset: number, data: Buffer) => void,
+    writeChunk: (offset: number, data: Buffer) => number,
+    maxFrames: number,
   ): Promise<void> {
     return new Promise((resolve) => {
       let finished = false
       let quietTimer: ReturnType<typeof setTimeout> | null = null
+      let frames = 0
+      let noProgressFrames = 0
       const finish = () => {
         if (finished) return
         finished = true
         if (quietTimer) clearTimeout(quietTimer)
+        if (deadlineTimer) clearTimeout(deadlineTimer)
         this.burstSink = null
         resolve()
       }
@@ -731,16 +894,33 @@ export class MavlinkFtp {
         if (quietTimer) clearTimeout(quietTimer)
         quietTimer = setTimeout(finish, this.burstQuietMs())
       }
+      // Hard deadline: never extended by incoming traffic.
+      const deadlineTimer = setTimeout(finish, BURST_PASS_HARD_DEADLINE_MS)
       this.burstSink = (reply) => {
         if (reply.session !== session) return
+        frames++
         armQuietTimer()
+        if (frames > maxFrames || noProgressFrames >= BURST_PASS_NO_PROGRESS_FRAMES) {
+          // Hostile or broken peer: end the pass and let the outer no-progress
+          // accounting decide between retry and failure.
+          finish()
+          return
+        }
         if (reply.opcode === FTP_OPCODES.Nak) {
           // EOF marks the natural end of the stream; any other NAK also ends
           // the pass and the outer loop decides whether to retry.
           finish()
           return
         }
-        if (reply.size > 0) writeChunk(reply.offset, reply.data)
+        const added = reply.size > 0 ? writeChunk(reply.offset, reply.data) : 0
+        if (added < 0) {
+          finish()
+          return
+        }
+        // A legitimate stream may reorder or duplicate a frame now and then,
+        // but never hundreds in a row; total frames stay bounded by maxFrames.
+        if (added > 0) noProgressFrames = 0
+        else noProgressFrames++
         if (reply.burstComplete) finish()
       }
       armQuietTimer()
@@ -760,7 +940,7 @@ export class MavlinkFtp {
   private async gapFillPass(
     session: number,
     missingSnapshot: Array<[number, number]>,
-    writeChunk: (offset: number, data: Buffer) => void,
+    writeChunk: (offset: number, data: Buffer) => number,
     chunkSize: number,
     windowSize: number,
   ): Promise<void> {
@@ -770,6 +950,16 @@ export class MavlinkFtp {
       throw new FtpError(
         'ftp_window_unsupported',
         'FTP 读取窗口 >1 需要先将 pending 改为按 seq 索引的 Map',
+      )
+    }
+    // OCSA-009: the fallback path bypasses the GAP_FILL_MAX_INTERVALS gate, so
+    // cap fragmentation here; individual requests already self-terminate via
+    // transact() retries, and futile passes are bounded by the outer loop.
+    if (missingSnapshot.length > GAP_FILL_HARD_MAX_INTERVALS) {
+      throw new FtpError(
+        'download_gap_overflow',
+        `下载缺口数量超过 ${GAP_FILL_HARD_MAX_INTERVALS}，已终止本次传输`,
+        true,
       )
     }
     for (const [start, end] of [...missingSnapshot]) {
@@ -807,7 +997,7 @@ export class MavlinkFtp {
             throw nakError(reply, '读取文件块失败')
           }
           if (reply.size === 0) return
-          writeChunk(reply.offset, reply.data)
+          if (writeChunk(reply.offset, reply.data) < 0) return
         }
         if (retryPass) return // outer loop retains missing intervals and retries
       }
@@ -837,8 +1027,14 @@ export class MavlinkFtp {
       // Expand directories depth-first so files are removed before their
       // parent directory (the firmware can only remove empty directories).
       const work: Array<{ path: string; kind: 'file' | 'dir' }> = []
+      // Names the FC reported that failed the basename/device-path checks.
+      // They are skipped (never deleted) and kept apart from the deleted set;
+      // the wire `fs_delete_done` message only carries a count, so the skip is
+      // recorded here and in the parse results rather than inventing a new
+      // user-facing message shape.
+      const skippedUnsafe: string[] = []
       for (const entry of entries) {
-        await this.expandDeleteTarget(entry.path, entry.kind, 0, work)
+        await this.expandDeleteTarget(entry.path, entry.kind, 0, work, skippedUnsafe)
       }
       let done = 0
       for (const item of work) {
@@ -871,9 +1067,18 @@ export class MavlinkFtp {
     kind: 'file' | 'dir',
     depth: number,
     out: Array<{ path: string; kind: 'file' | 'dir' }>,
+    skippedUnsafe: string[],
   ): Promise<void> {
     if (out.length >= DELETE_MAX_ITEMS) {
       throw new FtpError('delete_too_many', `单次删除不能超过 ${DELETE_MAX_ITEMS} 项`)
+    }
+    // OCSA-016 defense in depth: re-check the composed device path with the
+    // same rules as the WS boundary (devicePath()) before sending it to the
+    // FC. Listing names are validated as single basenames below, so a joined
+    // child can never escape `targetPath` - this also fail-closes any
+    // unexpected caller input.
+    if (!isSafeDevicePath(targetPath)) {
+      throw new FtpError('invalid_device_path', `删除路径不合法：${targetPath}`)
     }
     if (kind === 'file') {
       out.push({ path: targetPath, kind: 'file' })
@@ -882,13 +1087,15 @@ export class MavlinkFtp {
     if (depth >= DELETE_MAX_DEPTH) {
       throw new FtpError('delete_too_deep', `目录嵌套超过 ${DELETE_MAX_DEPTH} 层`)
     }
-    const children = await this.collectDirectory(targetPath)
+    const { entries: children, unsafeNames } = await this.collectDirectory(targetPath)
+    skippedUnsafe.push(...unsafeNames)
     for (const child of children) {
       await this.expandDeleteTarget(
         joinDevicePath(targetPath, child.name),
         child.kind,
         depth + 1,
         out,
+        skippedUnsafe,
       )
     }
     out.push({ path: targetPath, kind: 'dir' })

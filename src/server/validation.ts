@@ -407,9 +407,41 @@ export function parseClientMessage(value: unknown): BoundaryClientMessage {
       if (!PARAM_TYPES.has(paramType)) {
         fail('unsupported_param_type', `不支持的 MAV_PARAM_TYPE：${paramType}`, 'data.paramType')
       }
+      const safetyConfirmation = input.safetyConfirmation === undefined
+        ? undefined
+        : text(input.safetyConfirmation, 'safetyConfirmation', {
+            minBytes: 1,
+            maxBytes: 32,
+            pattern: /^sensitive_param$/,
+          }) as 'sensitive_param'
+      const expectedSafetyEpoch = input.expectedSafetyEpoch === undefined
+        ? undefined
+        : finiteNumber(input.expectedSafetyEpoch, 'expectedSafetyEpoch', {
+            min: 0,
+            max: Number.MAX_SAFE_INTEGER,
+            integer: true,
+          })
+      const expectedSafetyAuthorityId = input.expectedSafetyAuthorityId === undefined
+        ? undefined
+        : safetyAuthorityId(input.expectedSafetyAuthorityId)
+      if (
+        safetyConfirmation === 'sensitive_param'
+        && (expectedSafetyEpoch === undefined || expectedSafetyAuthorityId === undefined)
+      ) {
+        fail('safety_epoch_required', '敏感参数写入必须绑定当前 safety authority/epoch', 'expectedSafetyEpoch')
+      }
+      if (
+        safetyConfirmation === undefined
+        && (expectedSafetyEpoch !== undefined || expectedSafetyAuthorityId !== undefined)
+      ) {
+        fail('unexpected_safety_context', '未确认敏感参数写入时不得携带 safety authority/epoch', 'expectedSafetyEpoch')
+      }
       return withRequestId({
         type: 'param_set',
         data: { id: paramId, value: paramValue, paramType },
+        ...(safetyConfirmation === undefined ? {} : { safetyConfirmation }),
+        ...(expectedSafetyEpoch === undefined ? {} : { expectedSafetyEpoch }),
+        ...(expectedSafetyAuthorityId === undefined ? {} : { expectedSafetyAuthorityId }),
       }, id) as BoundaryClientMessage
     }
 
@@ -1230,7 +1262,10 @@ export function parseServerConfig(
     )
   }
 
-  const rawToken = overrides.authToken ?? env.SKYLAB_AUTH_TOKEN?.trim() ?? null
+  // 显式传入 authToken: null（如桌面模式）表示"忽略部署环境变量"，不得回退到 env。
+  const rawToken = overrides.authToken !== undefined
+    ? overrides.authToken
+    : env.SKYLAB_AUTH_TOKEN?.trim() ?? null
   const authToken = rawToken === ''
     ? null
     : rawToken

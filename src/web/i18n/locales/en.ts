@@ -188,6 +188,9 @@ export const en = {
       selectDevice: 'Select Device',
       addDevice: 'Add Device',
       noPresets: 'No preset devices',
+      flightControllers: 'Discovered Flight Controllers',
+      targetConflict: 'Multiple flight controllers detected. Dangerous operations are paused until you explicitly select a target.',
+      selected: 'Selected',
     },
   },
   sidebar: {
@@ -532,7 +535,7 @@ export const en = {
     importSummarySkipped: '{{count}} skipped',
     importLine: 'Line {{line}}',
     importEmptyFile: 'The file contains no parameter records',
-    importDangerousConfirm: '{{count}} entries are circuit-breaker parameters. I understand these writes may disable flight safety protections.',
+    importDangerousConfirm: '{{count}} entries are safety-sensitive parameters. I understand these writes may disable flight protections or change output mappings.',
     importCancel: 'Cancel',
     importStartWrite: 'Write {{count}} Parameters',
     importWriting: 'Writing sequentially and waiting for FC echoes',
@@ -1191,6 +1194,7 @@ export const en = {
     paramSyncFailed: 'Parameter sync failed',
     paramSyncCancelled: 'Parameter sync cancelled',
     targetSelected: 'Flight controller target selected system {{systemId}} / component {{componentId}}',
+    dataflashSizeAdjusted: 'Downloaded log size differs from the flight controller advertisement ({{advertised}} → {{final}} bytes); LOG_DATA provides no integrity checksum.',
   },
   terminal: {
     empty: {
@@ -2093,6 +2097,7 @@ export const en = {
       erasing: 'Erasing all logs and waiting for FC confirmation…',
       eraseDone: 'All logs erased',
       eraseFailed: 'Erase failed: {{error}}',
+      sizeAdjusted: 'Download completed, but the flight controller adjusted the log from {{advertised}} to {{final}}. LOG_DATA has no checksum; treat this file as unverified.',
     },
   },
 } as const

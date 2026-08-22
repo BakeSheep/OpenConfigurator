@@ -393,4 +393,40 @@ assert.equal(parseClientMessage({
   data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
 }).type, 'autotune_reclaim')
 
+// Sensitive param_set confirmations must survive the runtime boundary; bridge
+// unit tests alone do not exercise this reconstruction step.
+const sensitiveParam = parseClientMessage({
+  type: 'param_set',
+  requestId: 'param-sensitive',
+  safetyConfirmation: 'sensitive_param',
+  expectedSafetyEpoch: 7,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+})
+assert.equal(sensitiveParam.type, 'param_set')
+if (sensitiveParam.type === 'param_set') {
+  assert.equal(sensitiveParam.safetyConfirmation, 'sensitive_param')
+  assert.equal(sensitiveParam.expectedSafetyEpoch, 7)
+  assert.equal(sensitiveParam.expectedSafetyAuthorityId, SAFETY_AUTHORITY_ID)
+}
+expectFail(
+  {
+    type: 'param_set',
+    safetyConfirmation: 'sensitive_param',
+    data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+  },
+  'safety_epoch_required',
+  'sensitive param without epoch',
+)
+expectFail(
+  {
+    type: 'param_set',
+    expectedSafetyEpoch: 7,
+    expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+    data: { id: 'PLAIN_PARAM', value: 1, paramType: 9 },
+  },
+  'unexpected_safety_context',
+  'unconfirmed param with safety context',
+)
+
 console.log('calibration boundary validation checks passed')
