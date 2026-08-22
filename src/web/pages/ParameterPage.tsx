@@ -6,6 +6,7 @@ import { Button } from '../components/ui/Button'
 import Dialog from '../components/ui/Dialog'
 import { Notice } from '../components/ui/Feedback'
 import StatePanel from '../components/ui/StatePanel'
+import { TabPanel, Tabs } from '../components/ui/Tabs'
 import Toolbar from '../components/ui/Toolbar'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
@@ -17,10 +18,12 @@ import { parameterEnumLabel, parameterEnumOptions, parameterEnumValuesMatch } fr
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
 import {
   buildQgcParameterPreview,
+  filterQgcParameterPreview,
   parseQgcParameterFile,
   serializeQgcParameterFile,
   type QgcParameterPreview,
   type QgcParameterPreviewEntry,
+  type QgcParameterPreviewFilter,
 } from '../utils/qgcParameterFile'
 
 const QGC_PARAMETER_FILE_MAX_BYTES = 2 * 1024 * 1024
@@ -101,6 +104,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const [writeError, setWriteError] = useState<string | null>(null)
   const [importSelection, setImportSelection] = useState<ParameterImportSelection | null>(null)
   const [importJob, setImportJob] = useState<ParameterImportJob | null>(null)
+  const [importPreviewFilter, setImportPreviewFilter] = useState<QgcParameterPreviewFilter>('write')
   const [dangerousImportAcknowledged, setDangerousImportAcknowledged] = useState(false)
   const writeTimer = useRef<number | null>(null)
   const importInput = useRef<HTMLInputElement | null>(null)
@@ -340,6 +344,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       const preview = buildQgcParameterPreview(parsed, params, targetSystemId, targetComponentId)
       setWriteError(null)
       setDangerousImportAcknowledged(false)
+      setImportPreviewFilter('write')
       setImportJob(null)
       setImportSelection({ fileName: file.name, preview, systemId: targetSystemId, componentId: targetComponentId })
     } catch {
@@ -374,6 +379,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (importWriting) return
     setImportSelection(null)
     setImportJob(null)
+    setImportPreviewFilter('write')
     setDangerousImportAcknowledged(false)
   }
 
@@ -401,6 +407,9 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     ? preview.entries.length - preview.writable.length - unchangedImportCount + preview.issues.length
     : 0
   const completedImportCount = importJob ? importJob.succeeded.length + importJob.failed.length : 0
+  const filteredImportPreview = preview
+    ? filterQgcParameterPreview(preview, importPreviewFilter)
+    : { entries: [], issues: [] }
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
@@ -600,38 +609,55 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
         >
           <div className="space-y-3">
             <p className="mc-param-import-file mc-mono">{importSelection.fileName}</p>
-            <div className="mc-param-import-summary">
-              <span data-state="write">{t('parameter.importSummaryWrite', { count: preview.writable.length })}</span>
-              <span data-state="same">{t('parameter.importSummaryUnchanged', { count: unchangedImportCount })}</span>
-              <span data-state="skip">{t('parameter.importSummarySkipped', { count: skippedImportCount })}</span>
-            </div>
 
             {!importJob ? (
               <>
-                <ul className="mc-modal__list mc-param-import-list">
-                  {preview.entries.map((entry) => (
-                    <li key={`${entry.row.line}:${entry.row.name}`} data-state={entry.status}>
-                      <span>
-                        <code>{entry.row.name}</code>
-                        <small>{t(`parameter.importStatus.${entry.status}`)}</small>
-                      </span>
-                      <span className="mc-mono">
-                        {entry.current ? `${entry.current.value} → ${entry.row.value}` : String(entry.row.value)}
-                      </span>
-                    </li>
-                  ))}
-                  {preview.issues.map((issue) => (
-                    <li key={`issue:${issue.line}`} data-state="invalid_value">
-                      <span>
-                        <code>{t('parameter.importLine', { line: issue.line })}</code>
-                        <small>{t(`parameter.importIssue.${issue.reason}`)}</small>
-                      </span>
-                    </li>
-                  ))}
-                  {preview.entries.length === 0 && preview.issues.length === 0 && (
-                    <li>{t('parameter.importEmptyFile')}</li>
-                  )}
-                </ul>
+                <Tabs
+                  tabs={[
+                    { id: 'write', label: t('parameter.importSummaryWrite', { count: preview.writable.length }) },
+                    { id: 'unchanged', label: t('parameter.importSummaryUnchanged', { count: unchangedImportCount }) },
+                    { id: 'skipped', label: t('parameter.importSummarySkipped', { count: skippedImportCount }) },
+                  ]}
+                  active={importPreviewFilter}
+                  onChange={(filter) => setImportPreviewFilter(filter as QgcParameterPreviewFilter)}
+                  ariaLabel={t('parameter.importFilterAria')}
+                  idBase="parameter-import-filter"
+                  panelId="parameter-import-filter-panel"
+                  className="mc-param-import-summary"
+                />
+                <TabPanel
+                  id="parameter-import-filter-panel"
+                  idBase="parameter-import-filter"
+                  tabId={importPreviewFilter}
+                  className="mc-param-import-filter-panel"
+                >
+                  <ul className="mc-modal__list mc-param-import-list">
+                    {filteredImportPreview.entries.map((entry) => (
+                      <li key={`${entry.row.line}:${entry.row.name}`} data-state={entry.status}>
+                        <span>
+                          <code>{entry.row.name}</code>
+                          <small>{t(`parameter.importStatus.${entry.status}`)}</small>
+                        </span>
+                        <span className="mc-mono">
+                          {entry.current ? `${entry.current.value} → ${entry.row.value}` : String(entry.row.value)}
+                        </span>
+                      </li>
+                    ))}
+                    {filteredImportPreview.issues.map((issue) => (
+                      <li key={`issue:${issue.line}`} data-state="invalid_value">
+                        <span>
+                          <code>{t('parameter.importLine', { line: issue.line })}</code>
+                          <small>{t(`parameter.importIssue.${issue.reason}`)}</small>
+                        </span>
+                      </li>
+                    ))}
+                    {filteredImportPreview.entries.length === 0 && filteredImportPreview.issues.length === 0 && (
+                      <li>{preview.entries.length === 0 && preview.issues.length === 0
+                        ? t('parameter.importEmptyFile')
+                        : t('parameter.importFilterEmpty')}</li>
+                    )}
+                  </ul>
+                </TabPanel>
 
                 {preview.dangerousCount > 0 && (
                   <label className="mc-param-import-danger">

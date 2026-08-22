@@ -63,12 +63,57 @@ export interface QgcParameterPreview {
   dangerousCount: number
 }
 
+export type QgcParameterPreviewFilter = 'write' | 'unchanged' | 'skipped'
+
+export interface FilteredQgcParameterPreview {
+  entries: QgcParameterPreviewEntry[]
+  issues: QgcParameterParseIssue[]
+}
+
+export function filterQgcParameterPreview(
+  preview: QgcParameterPreview,
+  filter: QgcParameterPreviewFilter,
+): FilteredQgcParameterPreview {
+  if (filter === 'write') {
+    return { entries: preview.entries.filter((entry) => entry.status === 'write'), issues: [] }
+  }
+  if (filter === 'unchanged') {
+    return { entries: preview.entries.filter((entry) => entry.status === 'unchanged'), issues: [] }
+  }
+  return {
+    entries: preview.entries.filter((entry) => entry.status !== 'write' && entry.status !== 'unchanged'),
+    issues: preview.issues,
+  }
+}
+
 export interface QgcParameterSerializationOptions {
   systemId: number
   componentId: number
   params: Iterable<ParamData>
   identity?: VehicleIdentity | null
   firmwareVersion?: string | null
+}
+
+export interface LogParameterSnapshotEntry {
+  name: string
+  value: number
+  type?: number
+}
+
+/** Build importable MAVLink parameter rows from a log snapshot. */
+export function logSnapshotParams(
+  params: Iterable<LogParameterSnapshotEntry>,
+  family: 'px4' | 'ardupilot',
+): ParamData[] {
+  return Array.from(params, (param, index) => ({
+    id: param.name,
+    value: param.value,
+    // Older parsed snapshots did not retain types. For those, ArduPilot uses
+    // REAL32 while PX4 values fall back to REAL32 or INT32 by numeric shape.
+    type: param.type ?? (family === 'ardupilot' || !Number.isSafeInteger(param.value) ? 9 : 6),
+    param_count: 0,
+    param_index: index,
+  }))
 }
 
 export function validateMavParamValue(value: number, type: number): boolean {

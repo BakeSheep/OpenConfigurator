@@ -66,6 +66,8 @@ export interface StructuredLogParameter {
   name: string
   value: StructuredJsonValue
   kind: 'initial' | 'default' | 'change'
+  /** MAV_PARAM_TYPE when the source log preserves the parameter wire type. */
+  mavParamType?: number
   defaultTypes?: number
 }
 

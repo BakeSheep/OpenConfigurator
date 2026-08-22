@@ -3336,14 +3336,17 @@ input[type="range"]:focus-visible {
   font-size: 12px;
 }
 
-.mc-param-import-summary {
-  display: flex;
+.mc-tabbar.mc-param-import-summary {
   flex-wrap: wrap;
   gap: 8px;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
 }
 
-.mc-param-import-summary span {
-  padding: 4px 9px;
+.mc-param-import-summary .mc-tab {
+  min-height: var(--mc-control-compact);
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-tertiary);
@@ -3351,9 +3354,14 @@ input[type="range"]:focus-visible {
   font-size: 12px;
 }
 
-.mc-param-import-summary span[data-state='write'] {
+.mc-param-import-summary .mc-tab[data-active='true'] {
   border-color: var(--accent);
+  background: var(--accent-dim);
   color: var(--accent);
+}
+
+.mc-param-import-filter-panel {
+  min-width: 0;
 }
 
 .mc-param-import-list {

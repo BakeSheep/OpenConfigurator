@@ -446,6 +446,9 @@ export class StructuredDataflashDecoder implements StructuredFlightLogDecoder {
           seq: seq++, bootId, timeUs: recordTime?.toString() ?? null,
           name: data.Name, value: data.Value ?? null,
           kind: seenParameters.has(parameterKey) ? 'change' : 'initial',
+          // ArduPilot's traditional PARAM_VALUE protocol exposes parameters
+          // as MAV_PARAM_TYPE_REAL32, including values that look integral.
+          mavParamType: 9,
         }
         seenParameters.add(parameterKey)
         parameterCount++

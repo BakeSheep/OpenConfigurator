@@ -37,37 +37,6 @@ export type GamepadActionId =
   | LegacyGamepadModeActionId
   | QualifiedGamepadModeActionId
 
-export const GAMEPAD_ARM_HOLD_MS = 2_000
-
-export type GamepadArmHoldTransition =
-  | { kind: 'idle' }
-  | { kind: 'started'; startedAt: number }
-  | { kind: 'pending'; startedAt: number }
-  | { kind: 'confirmed' }
-  | { kind: 'cancelled' }
-
-export function requiresGamepadArmHold(action: GamepadActionId, armed: boolean): boolean {
-  return !armed && (action === 'arm' || action === 'toggle_arm')
-}
-
-/** Pure transition helper so an arm mapping can never fire on its press edge. */
-export function resolveGamepadArmHoldTransition(
-  pressed: boolean,
-  wasPressed: boolean,
-  startedAt: number | undefined,
-  now: number,
-  holdMs = GAMEPAD_ARM_HOLD_MS,
-): GamepadArmHoldTransition {
-  if (pressed && !wasPressed) return { kind: 'started', startedAt: now }
-  if (pressed && startedAt !== undefined) {
-    return now - startedAt >= holdMs
-      ? { kind: 'confirmed' }
-      : { kind: 'pending', startedAt }
-  }
-  if (!pressed && startedAt !== undefined) return { kind: 'cancelled' }
-  return { kind: 'idle' }
-}
-
 interface ParsedModeAction {
   profile: 'px4' | 'ardupilot:copter'
   modeId: number

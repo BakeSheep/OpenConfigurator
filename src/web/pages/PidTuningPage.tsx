@@ -10,12 +10,8 @@ import Icon from '../components/ui/Icon'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Feedback'
 import { EmptyState } from '../components/ui/PageFrame'
-import { PageTabs } from '../components/ui/PageFrame'
-import { TabPanel } from '../components/ui/Tabs'
 import Toolbar from '../components/ui/Toolbar'
-import AutotunePanel from '../components/tuning/AutotunePanel'
 import { sendClientMessage } from '../hooks/useWebSocket'
-import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -31,8 +27,6 @@ type PidDefinition = ParameterFieldDefinition
 type PidGroup = ParameterGroupDefinition
 
 const pidLikePattern = /(?:RATE_[PID]$|_(?:P|I|D)$|ATC_RAT_)/
-const PID_TASKS = ['manual', 'auto'] as const
-
 function formatValue(value: number, step: number) {
   return formatParameterValue(value, step)
 }
@@ -51,26 +45,7 @@ function updateFades(element: HTMLDivElement | null) {
 }
 
 export default function PidTuningPage() {
-  const { t } = useTranslation()
-  const [task, setTask] = useQueryTab(PID_TASKS, 'manual')
-  return (
-    <div className="space-y-4">
-      <PageTabs
-        idBase="pid-tuning"
-        panelId="pid-tuning-panel"
-        active={task}
-        onChange={setTask}
-        ariaLabel={t('pidTuning.taskNavigation')}
-        tabs={[
-          { id: 'manual', label: t('pidTuning.manual') },
-          { id: 'auto', label: t('pidTuning.auto') },
-        ]}
-      />
-      <TabPanel id="pid-tuning-panel" idBase="pid-tuning" tabId={task}>
-        {task === 'auto' ? <AutotunePanel /> : <ManualPidTuningPage />}
-      </TabPanel>
-    </div>
-  )
+  return <ManualPidTuningPage />
 }
 
 function ManualPidTuningPage() {
