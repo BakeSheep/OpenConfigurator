@@ -605,7 +605,10 @@ async function testDefaultPrivateDirIsolated(): Promise<void> {
     `unexpected download directory ${dir}`,
   )
   const stats = await fsp.stat(dir)
-  assert.equal(stats.mode & 0o777, 0o700, 'the private directory must be 0700')
+  // The 0700 isolation guarantee is POSIX-only; Windows directories have no mode bits.
+  if (process.platform !== 'win32') {
+    assert.equal(stats.mode & 0o777, 0o700, 'the private directory must be 0700')
+  }
   await service.destroy()
   await fsp.rm(dir, { recursive: true, force: true })
 }
