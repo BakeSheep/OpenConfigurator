@@ -63,7 +63,7 @@ user confirmation → ClientMessage → runtime validation
 - 连接请求携带 `deviceId` 时，服务端在打开端口前重新解析并核对身份；身份缺失或歧义分别返回 `DEVICE_NOT_FOUND` / `IDENTITY_AMBIGUOUS`，不会回退到"当前唯一端口"。仅路径的旧请求保留直接路径模式。
 - 原生打开失败映射为稳定错误码（`SERIAL_PERMISSION_DENIED` 附带设备属主/组、`SERIAL_BUSY`、`SERIAL_NOT_FOUND`、`SERIAL_OPEN_TIMEOUT` 等，见 `src/shared/types.ts` 的 `ConnectionErrorCode`）。
 - 串口自动重连（feature flag `serialAutoReconnect`，env `OPENCONF_SERIAL_AUTO_RECONNECT`）：`SerialWorker` 与 `BluetoothWorker` 暴露同一事件协议，普通 USB 掉线进入有界重试（默认 5 次：1/2/3/5/5s），每次重试都按稳定身份重新解析路径；已确认的飞控重启与普通掉线共享这一个状态机，并在默认 ~45s 宽限窗口内持续重试（至少 12 次）。`IDENTITY_AMBIGUOUS` 立即终止，不猜测。重开只代表 transport 恢复，`vehicleReady` 仍需新一代次的合法 autopilot HEARTBEAT；target-bound 确认、RC override、ESC raw 会话不会自动恢复。
-- Linux BLE GATT transport 未实现（计划 Phase 3），保留 experimental/未完成状态，未经 HIL 证据不会宣称支持。
+- Linux BLE GATT transport 未实现，保留 experimental/未完成状态，未经 HIL 证据不会宣称支持。
 
 ## ESC 会话
 
