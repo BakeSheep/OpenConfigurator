@@ -1245,6 +1245,7 @@ export const en = {
       apNote: 'These are external MAVProxy console commands and cannot be executed in the FC terminal on this page.',
       writeToTerminal: 'Write to terminal: {{command}}',
       useExternalMavproxy: 'Use in external MAVProxy console',
+      scrollRegion: 'Terminal quick command list',
     },
     px4: {
       cat: {
@@ -1911,6 +1912,7 @@ export const en = {
     expo: 'Expo',
     buttonAssignment: 'Button Assignment',
     buttonHint: 'Actions only execute after enabling gamepad control.',
+    buttonActionSelect: 'Action for button {{button}}',
     repeat: 'Repeat',
     advancedSettings: 'Advanced Settings',
     throttleCenterZero: 'Center-zero Throttle',

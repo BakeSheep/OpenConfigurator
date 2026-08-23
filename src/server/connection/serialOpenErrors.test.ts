@@ -38,6 +38,20 @@ test('busy, missing and timeout failures map to stable codes', () => {
     classifySerialOpenError('COM7', new Error('打开串口 COM7 超时（5s）。端口可能被占用或设备无响应。')).code,
     'SERIAL_OPEN_TIMEOUT',
   )
+  // The timeout hint text contains “被占用”, which must not re-classify as
+  // SERIAL_BUSY under the win32 message heuristic.
+  assert.equal(
+    classifySerialOpenError('COM7', new Error('打开串口 COM7 超时（5s）。端口可能被占用或设备无响应。'), {
+      platform: 'win32',
+    }).code,
+    'SERIAL_OPEN_TIMEOUT',
+  )
+  assert.equal(
+    classifySerialOpenError('COM7', new Error('The port is in use by another process'), {
+      platform: 'win32',
+    }).code,
+    'SERIAL_BUSY',
+  )
 })
 
 test('unknown errors pass through unchanged', () => {

@@ -210,7 +210,12 @@ export default function JoystickPage({ embedded = false, panel = 'overview' }: {
               return (
                 <div key={index} className="grid grid-cols-[36px_1fr_auto] items-center gap-2 rounded-lg border p-2" style={{ borderColor: buttons[index] ? 'var(--accent)' : 'var(--border)', background: buttons[index] ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
                   <span className="mc-mono grid h-8 place-items-center rounded-md text-[11px] font-bold" style={{ background: 'var(--bg-tertiary)', color: buttons[index] ? 'var(--accent)' : 'var(--text-secondary)' }}>B{index}</span>
-                  <select className="mc-select" value={selectedAction} onChange={(event) => setButtonAssignment(index, { action: event.target.value as GamepadActionId })}>
+                  <select
+                    className="mc-select"
+                    value={selectedAction}
+                    aria-label={t('joystick.buttonActionSelect', { button: index })}
+                    onChange={(event) => setButtonAssignment(index, { action: event.target.value as GamepadActionId })}
+                  >
                     {!selectedActionAvailable && (
                       <option value={selectedAction} disabled>{t('joystick.action.unavailableAssigned')}</option>
                     )}

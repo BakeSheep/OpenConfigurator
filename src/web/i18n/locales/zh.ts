@@ -1260,6 +1260,7 @@ export const zh = {
       apNote: '以下是外部 MAVProxy 控制台命令，不能在本页飞控终端执行。',
       writeToTerminal: '写入终端：{{command}}',
       useExternalMavproxy: '请在外部 MAVProxy 控制台使用',
+      scrollRegion: '终端指令速查列表',
     },
     px4: {
       cat: {
@@ -1926,6 +1927,7 @@ export const zh = {
     expo: '指数',
     buttonAssignment: '按钮分配',
     buttonHint: '动作仅在"启用手柄控制"后执行。',
+    buttonActionSelect: '按钮 {{button}} 的动作',
     repeat: '重复',
     advancedSettings: '高级设置',
     throttleCenterZero: '摇杆中位为零油门',

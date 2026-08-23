@@ -29,9 +29,11 @@ function LegacySettingsRedirect() {
 function LegacyDiagnosticsRedirect() {
   const [params] = useSearchParams()
   const section = params.get('section')
+  const tab = params.get('tab')
   const target: Record<string, string> = {
     parameters: '/tuning', pid: '/tuning/pid', waveforms: '/flight-data/waveforms',
-    messages: '/flight-data', logs: '/flight-logs', 'log-analysis': '/flight-logs/analysis', ekf: '/tuning/ekf',
+    messages: tab === 'terminal' ? '/flight-data/terminal' : tab === 'status' ? '/flight-data/status' : '/flight-data',
+    logs: '/flight-logs', 'log-analysis': '/flight-logs/analysis', ekf: '/tuning/ekf',
   }
   return <Navigate to={target[section ?? ''] ?? '/tuning'} replace />
 }

@@ -43,6 +43,15 @@ export function classifySerialOpenError(
     return result
   }
 
+  // Our own open-timeout error must be recognized before the win32 message
+  // heuristic below: its hint text contains “被占用”, which would otherwise
+  // re-classify the timeout as SERIAL_BUSY on Windows.
+  if (classified && /打开串口.*超时/.test(classified.message ?? '')) {
+    const result = new Error(classified.message) as Error & { code?: ConnectionErrorCode }
+    result.code = 'SERIAL_OPEN_TIMEOUT'
+    return result
+  }
+
   if (
     isCoded(error, 'EBUSY')
     || isCoded(error, 'ERROR_ACCESS_DENIED')
@@ -60,12 +69,6 @@ export function classifySerialOpenError(
       `串口 ${path} 不存在或已被拔出。请重新扫描并选择设备。`,
     ) as Error & { code?: ConnectionErrorCode }
     result.code = 'SERIAL_NOT_FOUND'
-    return result
-  }
-
-  if (classified && /打开串口.*超时/.test(classified.message ?? '')) {
-    const result = new Error(classified.message) as Error & { code?: ConnectionErrorCode }
-    result.code = 'SERIAL_OPEN_TIMEOUT'
     return result
   }
 

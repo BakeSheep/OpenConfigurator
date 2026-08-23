@@ -1582,6 +1582,8 @@ input[type="range"]:focus-visible {
 .mc-mode-slot strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .mc-mode-slot small { color: var(--text-disabled); font: 8px var(--font-mono); }
 .mc-mode-slot[data-active="true"] { background: var(--accent-dim); box-shadow: inset 0 -3px 0 var(--accent); }
+/* The accent-tint slot background fails AA for the 8px disabled-gray id label. */
+.mc-mode-slot[data-active="true"] small { color: var(--text-secondary); }
 .mc-mode-mask { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(180px, 230px); align-items: center; gap: 12px; }
 .mc-mode-mask__label { display: flex; min-width: 0; flex-direction: column; gap: 3px; color: var(--text-primary); font-size: 12px; font-weight: 600; }
 .mc-mode-mask__label code { color: var(--text-secondary); font-size: 9px; }
