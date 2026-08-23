@@ -328,10 +328,10 @@ export class MavlinkBridge extends EventEmitter {
   private targetSysId: number | null = null
   private targetCompId: number | null = null
   private selectedHeartbeatReady = false
-  // OCSA-004: set once a client explicitly chose a target. Discovery never
-  // grants command authority: a human choice is required even with one peer.
+  // OCSA-004: set once a client explicitly resolves a multi-target link. A
+  // unique peer may be selected automatically after stable heartbeat proof.
   private explicitTargetSelected = false
-  private targetSelectionSource: 'explicit' | null = null
+  private targetSelectionSource: 'automatic' | 'explicit' | null = null
   // Non-null while mutually conflicting stable autopilot candidates are on the
   // bus; every write mutation fails closed until it clears.
   private targetConflict: TargetConflictState | null = null
@@ -599,13 +599,22 @@ export class MavlinkBridge extends EventEmitter {
     return !existed
   }
 
+  private stableDiscoveredTargets(now = performance.now()): DiscoveredTarget[] {
+    return [...this.discoveredTargets.values()]
+      .filter((candidate) =>
+        candidate.heartbeatCount >= TARGET_STABILITY_HEARTBEAT_MIN
+        && now - candidate.lastHeartbeatAt <= TARGET_DISCOVERY_STALE_MS
+      )
+      .sort((a, b) => a.systemId - b.systemId || a.componentId - b.componentId)
+  }
+
   /**
    * OCSA-004: fail closed when the bus carries mutually conflicting autopilot
-   * candidates. Two stable candidates on an unselected link require an
-   * explicit choice; two candidates sharing one system id remain a conflict
-   * even after a selection because their identity is ambiguous on the wire.
+   * candidates. Two stable candidates on an automatically selected link
+   * require an explicit choice; two candidates sharing one system id remain a
+   * conflict because their identity is ambiguous on the wire.
    */
-  private refreshTargetConflict(): void {
+  private refreshTargetConflict(): boolean {
     const now = performance.now()
     for (const [key, candidate] of this.discoveredTargets) {
       if (
@@ -613,31 +622,27 @@ export class MavlinkBridge extends EventEmitter {
         && key !== this.targetKey(this.targetSysId ?? -1, this.targetCompId ?? -1)
       ) this.discoveredTargets.delete(key)
     }
-    const stable = [...this.discoveredTargets.values()]
-      .filter((candidate) =>
-        candidate.heartbeatCount >= TARGET_STABILITY_HEARTBEAT_MIN
-        && now - candidate.lastHeartbeatAt <= TARGET_DISCOVERY_STALE_MS
-      )
-      .sort((a, b) => a.heartbeatCount - b.heartbeatCount)
+    const stable = this.stableDiscoveredTargets(now)
     let conflict: TargetConflictState | null = null
-    if (!this.explicitTargetSelected && stable.length >= 2) {
-      conflict = { reason: 'multiple_stable_targets', candidates: stable.map(toCandidate) }
-    } else {
-      const bySystem = new Map<number, DiscoveredTarget[]>()
-      for (const candidate of stable) {
-        const group = bySystem.get(candidate.systemId) ?? []
-        group.push(candidate)
-        bySystem.set(candidate.systemId, group)
-      }
-      for (const group of bySystem.values()) {
-        if (group.length >= 2) {
-          conflict = { reason: 'same_system_identity_conflict', candidates: group.map(toCandidate) }
-          break
-        }
+    const bySystem = new Map<number, DiscoveredTarget[]>()
+    for (const candidate of stable) {
+      const group = bySystem.get(candidate.systemId) ?? []
+      group.push(candidate)
+      bySystem.set(candidate.systemId, group)
+    }
+    for (const group of bySystem.values()) {
+      if (group.length >= 2) {
+        conflict = { reason: 'same_system_identity_conflict', candidates: group.map(toCandidate) }
+        break
       }
     }
-    const changed = (conflict === null) !== (this.targetConflict === null)
-      || conflict?.reason !== this.targetConflict?.reason
+    if (!conflict && !this.explicitTargetSelected && stable.length >= 2) {
+      conflict = { reason: 'multiple_stable_targets', candidates: stable.map(toCandidate) }
+    }
+    const conflictKey = (value: TargetConflictState | null) => value === null
+      ? ''
+      : `${value.reason}:${value.candidates.map((candidate) => `${candidate.systemId}:${candidate.componentId}`).join(',')}`
+    const changed = conflictKey(conflict) !== conflictKey(this.targetConflict)
     this.targetConflict = conflict
     // Surface the transition immediately so clients can render it and the WS
     // boundary can invalidate outstanding safety confirmations.
@@ -645,6 +650,7 @@ export class MavlinkBridge extends EventEmitter {
       this.advanceVehicleSafetyGeneration()
       this.emitTarget(conflict ? 'discovered' : 'selected')
     }
+    return changed
   }
 
   /** True while mutually conflicting stable targets force writes to fail closed. */
@@ -1040,6 +1046,24 @@ export class MavlinkBridge extends EventEmitter {
     this.pendingParamSets.clear()
   }
 
+  private activateTarget(
+    discovered: DiscoveredTarget,
+    source: 'automatic' | 'explicit',
+  ): void {
+    // Invalidate transaction fingerprints before pending callbacks are
+    // completed by cancelProtocolOperations(). No rollback may be sent while
+    // a target switch is already in progress.
+    this.advanceVehicleSafetyGeneration()
+    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
+    this.cancelProtocolOperations(false, 'target_switched')
+    this.targetSysId = discovered.systemId
+    this.targetCompId = discovered.componentId
+    this.selectedHeartbeatReady = false
+    this.targetSelectionSource = source
+    this.resetSelectedProtocolState()
+    this.emitTarget('selected')
+  }
+
   private selectTarget(systemId: number, componentId: number, requestId?: string): void {
     const discovered = this.discoveredTargets.get(this.targetKey(systemId, componentId))
     if (!discovered) {
@@ -1055,22 +1079,12 @@ export class MavlinkBridge extends EventEmitter {
     // re-evaluate the conflict state with that fact.
     this.explicitTargetSelected = true
     this.targetSelectionSource = 'explicit'
-    this.refreshTargetConflict()
+    const conflictChanged = this.refreshTargetConflict()
     if (this.targetSysId === systemId && this.targetCompId === componentId) {
-      this.emitTarget('selected')
+      if (!conflictChanged) this.emitTarget('selected')
       return
     }
-    // Invalidate transaction fingerprints before pending callbacks are
-    // completed by cancelProtocolOperations(). No rollback may be sent while
-    // a target switch is already in progress.
-    this.advanceVehicleSafetyGeneration()
-    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
-    this.cancelProtocolOperations(false, 'target_switched')
-    this.targetSysId = systemId
-    this.targetCompId = componentId
-    this.selectedHeartbeatReady = false
-    this.resetSelectedProtocolState()
-    this.emitTarget('selected')
+    this.activateTarget(discovered, 'explicit')
   }
 
   private startHeartbeat() {
@@ -1281,9 +1295,16 @@ export class MavlinkBridge extends EventEmitter {
     // Stability evidence changed: re-evaluate the multi-target conflict state
     // before any state derived from the selected target is updated.
     this.refreshTargetConflict()
-    // A heartbeat only creates discovery evidence. Never turn an unauthenticated
-    // first speaker into the command target; selection must come from an
-    // explicit select_target request made through the controller boundary.
+    // A single stable peer is the ordinary one-port/one-flight-controller
+    // case: bind it automatically. Ambiguous stable peers remain fail-closed
+    // and must be resolved through select_target.
+    if (this.targetSysId === null && this.targetConflict === null) {
+      const stable = this.stableDiscoveredTargets()
+      if (stable.length === 1) {
+        this.explicitTargetSelected = false
+        this.activateTarget(stable[0], 'automatic')
+      }
+    }
     if (this.targetSysId === null) return
     if (!this.isSelectedSource(msg)) return
 

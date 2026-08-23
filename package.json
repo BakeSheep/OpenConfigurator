@@ -37,6 +37,8 @@
     "preview": "vite preview",
     "desktop": "npm run build:desktop && electron .",
     "dist:win:dir": "npm run build:desktop && electron-builder --win --x64 --dir",
+    "dist:linux:dir": "npm run build:desktop && electron-builder --linux --x64 --dir",
+    "dist:linux": "npm run build:desktop && electron-builder --linux --x64",
     "dist:win": "npm run build:desktop && electron-builder --win --x64"
   },
   "devDependencies": {
@@ -94,7 +96,8 @@
     "compression": "maximum",
     "asar": true,
     "asarUnpack": [
-      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*"
+      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*",
+      "node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/**/*"
     ],
     "directories": {
       "output": "release"
@@ -113,12 +116,25 @@
       "!node_modules/**/*.map",
       "!node_modules/@serialport/bindings-cpp/prebuilds/android-*{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/darwin-*{,/**/*}",
-      "!node_modules/@serialport/bindings-cpp/prebuilds/linux-*{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/win32-arm64{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/win32-ia32{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/src{,/**/*}"
     ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Science",
+      "electronLanguages": [
+        "en-US",
+        "zh-CN"
+      ],
+      "icon": "build/icon.svg"
+    },
     "win": {
+      "files": [
+        "!node_modules/@serialport/bindings-cpp/prebuilds/linux-*{,/**/*}"
+      ],
       "target": [
         "portable"
       ],

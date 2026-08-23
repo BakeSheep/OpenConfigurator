@@ -487,16 +487,9 @@ assert.equal(connection.vehicleReady, false, 'one heartbeat is discovery evidenc
 injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
 assert.equal((bridge as unknown as PrivateBridge).targetSysId, null)
 injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
-assert.equal((bridge as unknown as PrivateBridge).targetSysId, null, 'heartbeats never authorize a target')
-bridge.handleClientMessage({
-  type: 'select_target',
-  requestId: 'select-primary-target',
-  data: { systemId: 42, componentId: 1 },
-})
 assert.equal((bridge as unknown as PrivateBridge).targetSysId, 42)
 assert.equal((bridge as unknown as PrivateBridge).targetCompId, 1)
-assert.equal(connection.vehicleReady, false, 'selection needs a fresh heartbeat from the chosen target')
-injectOnce(bridge, 0, heartbeatPayload(), 42, 1)
+assert.equal(connection.vehicleReady, true, 'the third continuous heartbeat proves and readies one stable target')
 assert.equal(connection.vehicleReady, true)
 assert.equal(connection.heartbeatNotifications, 1)
 assert.ok(messages.some((message) => message.type === 'status' && message.data.mode === 'Hold'))
@@ -509,7 +502,7 @@ assert.equal(px4Status.data.identity.autopilotId, 12)
 assert.equal(px4Status.data.identity.vehicleTypeId, 2)
 const selectedTarget = findLast(messages, (message) => message.type === 'target' && message.data.reason === 'selected')
 assert.equal(selectedTarget.data.identity.family, 'px4')
-assert.equal(selectedTarget.data.selectionSource, 'explicit')
+assert.equal(selectedTarget.data.selectionSource, 'automatic')
 assert.ok(selectedTarget.data.discovered.every((entry: { type: number }) => typeof entry.type === 'number'))
 
 const initialCommandFrames = connection.frames.filter((frame) => frameMessageId(frame) === 76)
@@ -3066,6 +3059,35 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
   )
   conflictBridge.destroy()
   console.log('MAVLink multi-target conflict fail-closed checks passed')
+}
+
+// A duplicated SYS ID is an on-wire identity conflict, not a choice the UI can
+// safely resolve. It remains fail-closed even after an explicit component pick.
+{
+  const identityConflictConnection = new FakeConnection()
+  const identityConflictBridge = new MavlinkBridge(identityConflictConnection as never, {
+    codec: { protocol: 'v2' },
+  })
+  const identityConflictMessages: any[] = []
+  identityConflictBridge.on('message', (message) => identityConflictMessages.push(message))
+  for (let index = 0; index < 3; index += 1) {
+    injectOnce(identityConflictBridge, 0, heartbeatPayload(), 42, 1)
+  }
+  for (let index = 0; index < 3; index += 1) {
+    injectOnce(identityConflictBridge, 0, heartbeatPayload(12), 42, 2)
+  }
+  assert.equal(
+    findLast(identityConflictMessages, (message) => message.type === 'target')?.data.conflict?.reason,
+    'same_system_identity_conflict',
+  )
+  identityConflictBridge.handleClientMessage({
+    type: 'select_target',
+    requestId: 'identity-conflict-select',
+    data: { systemId: 42, componentId: 2 },
+  })
+  assert.equal(identityConflictBridge.hasTargetConflict(), true)
+  identityConflictBridge.destroy()
+  console.log('MAVLink same-system identity conflict checks passed')
 }
 
 // ---------------------------------------------------------------------------

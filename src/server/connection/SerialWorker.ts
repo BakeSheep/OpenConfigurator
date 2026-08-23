@@ -4,29 +4,37 @@ import {
   type SerialWritePriority,
   type SerialWriteQueueTag,
 } from './SerialConnection'
-import {
-  BluetoothConnection,
-  BluetoothPortResolutionError,
-  type BluetoothPortSelector,
-} from './BluetoothConnection'
-import type { ConnectionConfig } from '../../shared/types'
-import { LinuxRfcommConnection } from './LinuxRfcommConnection'
-import {
-  invalidateSppChannel,
-  parseLinuxRfcommPath,
-} from './discovery/bluetoothDiscovery'
-
-const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
-const DEFAULT_RECONNECT_BASE_INTERVAL_MS = 5000
-const DEFAULT_MAX_RECONNECT_INTERVAL_MS = 15000
-const DEFAULT_OPEN_TIMEOUT_MS = 20000
-const DEFAULT_VEHICLE_CONFIRM_TIMEOUT_MS = 5000
-const DEFAULT_DISCONNECT_TIMEOUT_MS = 30000
+import { ConnectionResolutionError } from './ConnectionDiscoveryService'
+import type { ReconnectProgress, ReconnectTerminalReason } from './workerLifecycle'
+import type { ConnectionConfig, PortInfo } from '../../shared/types'
 
 export type { ReconnectProgress, ReconnectTerminalReason } from './workerLifecycle'
-import type { ReconnectProgress, ReconnectTerminalReason } from './workerLifecycle'
 
-export interface BluetoothSerialLink extends EventEmitter {
+/**
+ * Self-recovering serial link (connection compatibility plan §Phase 4).
+ *
+ * Mirrors BluetoothWorker's event protocol so ConnectionManager can treat both
+ * as one "managed, self-recovering link" family:
+ *
+ * - ordinary USB drop → bounded retries (default 5: 1s/2s/3s/5s/5s) with the
+ *   target re-resolved from its stable identity before every attempt, so a
+ *   path change (ttyACM0 → ttyACM1, COM7 → COM9) is followed safely;
+ * - confirmed flight-controller reboot → retries throughout the longer
+ *   ~45s grace window (with a minimum attempt budget), sharing this single
+ *   state machine with ordinary drops so the two never race;
+ * - explicit disconnect, identity ambiguity and permission-class errors end
+ *   recovery immediately (fail closed, never guess between twin devices).
+ */
+
+const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
+const DEFAULT_RECONNECT_BACKOFF_SCHEDULE_MS = [1000, 2000, 3000, 5000, 5000]
+const DEFAULT_REBOOT_MAX_ATTEMPTS = 12
+const DEFAULT_REBOOT_DELAY_MS = 1000
+const DEFAULT_REBOOT_GRACE_MS = 45_000
+const DEFAULT_OPEN_TIMEOUT_MS = 5000
+const DEFAULT_DISCONNECT_TIMEOUT_MS = 15_000
+
+export interface SerialWorkerLink extends EventEmitter {
   readonly connected: boolean
   connect(path: string, baudRate: number, timeoutMs?: number): Promise<void>
   disconnect(timeoutMs?: number): Promise<void>
@@ -38,22 +46,27 @@ export interface BluetoothSerialLink extends EventEmitter {
   cancelQueuedWrites?(queueTag: SerialWriteQueueTag): number
 }
 
-export interface BluetoothWorkerOptions {
-  serialFactory?: () => BluetoothSerialLink
-  linkFactory?: (path: string) => BluetoothSerialLink
-  resolvePort?: (selector: BluetoothPortSelector) => Promise<string | null>
+export interface SerialTargetResolution {
+  path: string
+  identity: PortInfo | null
+}
+
+export interface SerialWorkerOptions {
+  serialFactory?: () => SerialWorkerLink
+  resolveTarget?: (config: ConnectionConfig) => Promise<SerialTargetResolution>
   maxReconnectAttempts?: number
-  reconnectBaseIntervalMs?: number
-  maxReconnectIntervalMs?: number
+  reconnectBackoffScheduleMs?: readonly number[]
+  rebootMaxAttempts?: number
+  rebootDelayMs?: number
+  rebootGraceMs?: number
   openTimeoutMs?: number
-  vehicleConfirmTimeoutMs?: number
   disconnectTimeoutMs?: number
+  monotonicNow?: () => number
   wallClock?: () => number
-  invalidateSppChannel?: (address: string) => void
 }
 
 interface LinkHandlers {
-  conn: BluetoothSerialLink
+  conn: SerialWorkerLink
   generation: number
   onData: (data: Buffer) => void
   onDataSent: (count: number) => void
@@ -63,12 +76,17 @@ interface LinkHandlers {
   onDiagnostic: (details: unknown) => void
 }
 
-type ConfigWithAddress = ConnectionConfig & { bluetoothAddress?: string }
+class OperationCancelledError extends Error {
+  constructor() {
+    super('串口连接操作已取消。')
+    this.name = 'OperationCancelledError'
+  }
+}
 
-export class BluetoothWorker extends EventEmitter {
-  private readonly selectorConfig: ConfigWithAddress
+export class SerialWorker extends EventEmitter {
+  private readonly config: ConnectionConfig
   private currentPort: string
-  private conn: BluetoothSerialLink | null = null
+  private conn: SerialWorkerLink | null = null
   private handlers: LinkHandlers | null = null
   private _transportOpen = false
   private _vehicleReady = false
@@ -76,7 +94,6 @@ export class BluetoothWorker extends EventEmitter {
   private lifecycleGeneration = 0
   private reconnectAttempts = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private confirmationTimer: ReturnType<typeof setTimeout> | null = null
   private cancelActiveResolution: (() => void) | null = null
   private activeAttempt: Promise<void> | null = null
   private teardownPromise: Promise<void> | null = null
@@ -84,49 +101,54 @@ export class BluetoothWorker extends EventEmitter {
   private disconnectPromise: Promise<void> | null = null
   private _lastReconnectError: Error | null = null
   private _terminalReason: ReconnectTerminalReason | null = null
+  private expectedRebootUntil = 0
+  private expectedRebootInterruption = false
+  // True once a reboot window was armed in this lifecycle. If the window
+  // expires without recovery, terminate with REBOOT_WINDOW_EXPIRED instead of
+  // silently extending into the ordinary retry budget.
+  private rebootAwaited = false
+  private rebootAttemptLimit = 0
 
-  private readonly serialFactory: NonNullable<BluetoothWorkerOptions['serialFactory']>
-  private readonly linkFactory: NonNullable<BluetoothWorkerOptions['linkFactory']>
-  private readonly resolvePort: NonNullable<BluetoothWorkerOptions['resolvePort']>
+  private readonly serialFactory: NonNullable<SerialWorkerOptions['serialFactory']>
+  private readonly resolveTarget: NonNullable<SerialWorkerOptions['resolveTarget']>
   private readonly maxReconnectAttempts: number
-  private readonly reconnectBaseIntervalMs: number
-  private readonly maxReconnectIntervalMs: number
+  private readonly reconnectBackoffScheduleMs: readonly number[]
+  private readonly rebootMaxAttempts: number
+  private readonly rebootDelayMs: number
+  private readonly rebootGraceMs: number
   private readonly openTimeoutMs: number
-  private readonly vehicleConfirmTimeoutMs: number
   private readonly disconnectTimeoutMs: number
+  private readonly monotonicNow: () => number
   private readonly wallClock: () => number
-  private readonly invalidateChannel: (address: string) => void
 
-  constructor(config: ConnectionConfig, options: BluetoothWorkerOptions = {}) {
+  constructor(config: ConnectionConfig, options: SerialWorkerOptions = {}) {
     super()
-    this.selectorConfig = { ...config }
+    this.config = { ...config }
     this.currentPort = config.port
     this.serialFactory = options.serialFactory ?? (() => new SerialConnection())
-    this.linkFactory = options.linkFactory ?? ((path) => LinuxRfcommConnection.supports(path)
-      ? new LinuxRfcommConnection()
-      : this.serialFactory())
-    this.resolvePort = options.resolvePort ?? ((selector) => BluetoothConnection.findPortByIds(selector))
+    this.resolveTarget = options.resolveTarget
+      ?? (async (request) => ({ path: request.port, identity: null }))
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS
-    this.reconnectBaseIntervalMs = options.reconnectBaseIntervalMs ?? DEFAULT_RECONNECT_BASE_INTERVAL_MS
-    this.maxReconnectIntervalMs = options.maxReconnectIntervalMs ?? DEFAULT_MAX_RECONNECT_INTERVAL_MS
+    this.reconnectBackoffScheduleMs = options.reconnectBackoffScheduleMs
+      ?? DEFAULT_RECONNECT_BACKOFF_SCHEDULE_MS
+    this.rebootMaxAttempts = options.rebootMaxAttempts ?? DEFAULT_REBOOT_MAX_ATTEMPTS
+    this.rebootDelayMs = options.rebootDelayMs ?? DEFAULT_REBOOT_DELAY_MS
+    this.rebootGraceMs = options.rebootGraceMs ?? DEFAULT_REBOOT_GRACE_MS
     this.openTimeoutMs = options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS
-    this.vehicleConfirmTimeoutMs = options.vehicleConfirmTimeoutMs
-      ?? DEFAULT_VEHICLE_CONFIRM_TIMEOUT_MS
     this.disconnectTimeoutMs = options.disconnectTimeoutMs ?? DEFAULT_DISCONNECT_TIMEOUT_MS
+    this.monotonicNow = options.monotonicNow ?? (() => performance.now())
     this.wallClock = options.wallClock ?? Date.now
-    this.invalidateChannel = options.invalidateSppChannel ?? invalidateSppChannel
   }
 
-  /** Compatibility alias: connected means the serial/RFCOMM transport is open. */
-  get connected() {
+  get connected(): boolean {
     return this._transportOpen
   }
 
-  get transportOpen() {
+  get transportOpen(): boolean {
     return this._transportOpen
   }
 
-  get vehicleReady() {
+  get vehicleReady(): boolean {
     return this._vehicleReady
   }
 
@@ -134,17 +156,22 @@ export class BluetoothWorker extends EventEmitter {
     return this.currentPort
   }
 
-  get lastReconnectError(): Error | null {
-    return this._lastReconnectError
-  }
-
   get terminalReason(): ReconnectTerminalReason | null {
     return this._terminalReason
   }
 
+  get lastReconnectError(): Error | null {
+    return this._lastReconnectError
+  }
+
+  /** True while the recovery schedule follows the FC-reboot grace window. */
+  get expectedRebootActive(): boolean {
+    return this.expectedRebootUntil > this.monotonicNow()
+  }
+
   async connect(): Promise<void> {
     if (this.activeAttempt || this.conn || this._transportOpen) {
-      throw new Error('蓝牙连接已在进行或已打开。')
+      throw new Error('串口连接已在进行或已打开。')
     }
     this.intentionalDisconnect = false
     this._terminalReason = null
@@ -170,12 +197,11 @@ export class BluetoothWorker extends EventEmitter {
 
   /**
    * Called only after MavlinkBridge validates an autopilot HEARTBEAT for the
-   * selected vehicle. Raw serial bytes never invoke this method.
+   * selected vehicle; resets the bounded recovery budget.
    */
   confirmVehicleHeartbeat(): void {
     if (this.intentionalDisconnect || !this.conn || !this._transportOpen) return
     const generation = this.lifecycleGeneration
-    this.clearConfirmationTimer()
     const changed = !this._vehicleReady
     this.setVehicleReady(true)
     this.reconnectAttempts = 0
@@ -184,20 +210,56 @@ export class BluetoothWorker extends EventEmitter {
     if (changed) this.emit('vehicleReady', { port: this.currentPort, generation })
   }
 
+  /**
+   * Mark a deliberate FC reboot: the recovery schedule switches to the longer
+   * grace window shared with ordinary drops (one state machine, no racing).
+   */
+  expectVehicleReboot(graceMs = this.rebootGraceMs): boolean {
+    if (!this.conn || !this._transportOpen) return false
+    const effectiveGraceMs = Math.max(1, graceMs)
+    this.expectedRebootUntil = this.monotonicNow() + effectiveGraceMs
+    this.expectedRebootInterruption = false
+    this.rebootAwaited = true
+    this.rebootAttemptLimit = Math.max(
+      this.rebootMaxAttempts,
+      Math.ceil(effectiveGraceMs / Math.max(1, this.rebootDelayMs)),
+    )
+    this.reconnectAttempts = 0
+    this.setVehicleReady(false)
+    return true
+  }
+
+  cancelExpectedVehicleReboot(): void {
+    this.expectedRebootUntil = 0
+    this.expectedRebootInterruption = false
+    // A validated vehicle ended the reboot story; later drops are ordinary.
+    this.rebootAwaited = false
+    this.rebootAttemptLimit = 0
+  }
+
+  /** Drop the current transport and enter recovery (heartbeat loss, FC reboot). */
+  forceReconnect(reason = '链路需要重建'): void {
+    if (this.intentionalDisconnect) return
+    this._lastReconnectError = new Error(reason)
+    void this.handleDrop(this.lifecycleGeneration)
+  }
+
   async disconnect(): Promise<void> {
     if (this.disconnectPromise) {
       return this.withTimeout(
         this.disconnectPromise,
         this.disconnectTimeoutMs,
-        `等待蓝牙连接任务停止超时（${Math.round(this.disconnectTimeoutMs / 1000)}s）。`,
+        `等待串口连接任务停止超时（${Math.round(this.disconnectTimeoutMs / 1000)}s）。`,
       )
     }
-    const hadLifecycle = !!this.conn || !!this.activeAttempt || !!this.reconnectTimer || this._transportOpen
+    const hadLifecycle = !!this.conn
+      || !!this.activeAttempt
+      || !!this.reconnectTimer
+      || this._transportOpen
     this.intentionalDisconnect = true
     ++this.lifecycleGeneration
     this.cancelActiveResolution?.()
     this.clearReconnectTimer()
-    this.clearConfirmationTimer()
     this.setVehicleReady(false)
     this.setTransportOpen(false)
 
@@ -208,20 +270,13 @@ export class BluetoothWorker extends EventEmitter {
       } catch (error) {
         teardownError = this.toError(error)
       }
-
       const attempt = this.activeAttempt
-      if (attempt) {
-        await attempt.catch(() => undefined)
-      }
-
-      // An attempt can publish its provisional connection immediately before
-      // noticing the invalidated generation. Sweep once more after it settles.
+      if (attempt) await attempt.catch(() => undefined)
       try {
         await this.teardownConnection()
       } catch (error) {
         teardownError ??= this.toError(error)
       }
-
       this.reconnectAttempts = 0
       this.dropPromise = null
       if (teardownError) throw teardownError
@@ -235,15 +290,11 @@ export class BluetoothWorker extends EventEmitter {
     return this.withTimeout(
       work,
       this.disconnectTimeoutMs,
-      `等待蓝牙连接任务停止超时（${Math.round(this.disconnectTimeoutMs / 1000)}s）。`,
+      `等待串口连接任务停止超时（${Math.round(this.disconnectTimeoutMs / 1000)}s）。`,
     )
   }
 
-  forceReconnect(reason = '飞控心跳超时'): void {
-    if (this.intentionalDisconnect) return
-    this._lastReconnectError = new Error(reason)
-    void this.handleDrop(this.lifecycleGeneration)
-  }
+  // -- internals -----------------------------------------------------------
 
   private runOpenAttempt(generation: number, reconnecting: boolean): Promise<void> {
     if (this.activeAttempt) return this.activeAttempt
@@ -256,48 +307,30 @@ export class BluetoothWorker extends EventEmitter {
   }
 
   private async openOnce(generation: number, reconnecting: boolean): Promise<void> {
-    let resolved: string | null
-    try {
-      resolved = await this.resolvePortCancellable(generation)
-    } catch (error) {
-      this._lastReconnectError = this.toError(error)
-      throw error
-    }
+    // Re-resolve the target from its stable identity before every attempt so
+    // a re-enumerated device is followed to its new path, never guessed.
+    const resolution = await this.resolveTargetCancellable(generation)
     this.assertCurrent(generation)
-    if (!resolved) {
-      const error = new Error(
-        `未找到蓝牙设备 "${this.selectorConfig.port}" 对应的 SPP 串口。`
-        + ' 请确认设备已配对并启用 SPP 服务。',
-      )
-      this._lastReconnectError = error
-      throw error
-    }
-    this.currentPort = resolved
+    this.currentPort = resolution.path
 
-    const conn = this.linkFactory(resolved)
+    const conn = this.serialFactory()
     this.conn = conn
     this.attachLink(conn, generation)
     try {
-      await conn.connect(resolved, this.selectorConfig.baudRate, this.openTimeoutMs)
+      await conn.connect(resolution.path, this.config.baudRate, this.openTimeoutMs)
       this.assertCurrent(generation, conn)
       this.setTransportOpen(true)
       this.setVehicleReady(false)
-      this.emit('transportConnected', { port: resolved, generation, reconnecting })
-      // Compatibility event: physical transport is available, so Bridge may
-      // reset its parser and start the GCS heartbeat needed for validation.
-      this.emit('connected', { port: resolved, generation, reconnecting })
-      if (!this._vehicleReady) this.startConfirmationTimer(generation)
+      this.emit('transportConnected', {
+        port: resolution.path,
+        generation,
+        reconnecting,
+        identity: resolution.identity ?? undefined,
+      })
+      this.emit('connected', { port: resolution.path, generation, reconnecting })
     } catch (error) {
       const failure = this.toError(error)
-      if (!(error instanceof OperationCancelledError)) {
-        this._lastReconnectError = failure
-        // A cached Linux RFCOMM channel may become stale after re-pairing or a
-        // firmware change. Never let the retry loop reuse a channel that just
-        // failed to open; the next attempt performs one fresh targeted SDP.
-        const rfcomm = parseLinuxRfcommPath(resolved)
-        const address = rfcomm?.address ?? this.selectorConfig.bluetoothAddress
-        if (rfcomm && address) this.invalidateChannel(address)
-      }
+      if (!(error instanceof OperationCancelledError)) this._lastReconnectError = failure
       try {
         await this.teardownConnection(conn)
       } catch (closeError) {
@@ -312,14 +345,43 @@ export class BluetoothWorker extends EventEmitter {
     }
   }
 
-  private attachLink(conn: BluetoothSerialLink, generation: number): void {
+  private async resolveTargetCancellable(
+    generation: number,
+  ): Promise<SerialTargetResolution> {
+    const work = this.resolveTarget(this.config)
+    const timeoutMs = this.openTimeoutMs
+    return new Promise<SerialTargetResolution>((resolve, reject) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        finish(() => reject(new Error(
+          `解析串口设备 ${this.config.port} 超时（${Math.round(timeoutMs / 1000)}s）。`,
+        )))
+      }, timeoutMs)
+      const finish = (callback: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (this.cancelActiveResolution === cancel) this.cancelActiveResolution = null
+        callback()
+      }
+      const cancel = () => finish(() => reject(new OperationCancelledError()))
+      this.cancelActiveResolution = cancel
+      work.then(
+        (resolution) => finish(() => resolve(resolution)),
+        (error) => finish(() => reject(this.toError(error))),
+      )
+      if (generation !== this.lifecycleGeneration || this.intentionalDisconnect) {
+        cancel()
+      }
+    })
+  }
+
+  private attachLink(conn: SerialWorkerLink, generation: number): void {
     const handlers: LinkHandlers = {
       conn,
       generation,
       onData: (data: Buffer) => {
         if (!this.isCurrent(generation, conn)) return
-        // Data must reach Bridge even before vehicle confirmation so it can
-        // validate the heartbeat that completes readiness.
         this.emit('data', data)
       },
       onDataSent: (count: number) => {
@@ -368,10 +430,13 @@ export class BluetoothWorker extends EventEmitter {
     }
     if (this.dropPromise) return this.dropPromise
 
-    this.clearConfirmationTimer()
+    if (this.expectedRebootActive) this.expectedRebootInterruption = true
     this.setVehicleReady(false)
     this.setTransportOpen(false)
-    this.emit('transportDisconnected', { generation, error: this._lastReconnectError?.message })
+    this.emit('transportDisconnected', {
+      generation,
+      error: this._lastReconnectError?.message,
+    })
 
     const drop = Promise.resolve().then(async () => {
       try {
@@ -401,23 +466,36 @@ export class BluetoothWorker extends EventEmitter {
       || this.intentionalDisconnect
       || generation !== this.lifecycleGeneration
     ) return
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+
+    const rebootSchedule = this.expectedRebootActive
+    if (this.rebootAwaited && !rebootSchedule) {
+      // The FC was expected to restart but never came back inside the grace
+      // window; extending into ordinary retries would mislead the operator.
+      this.finishTerminal(
+        'REBOOT_WINDOW_EXPIRED',
+        this._lastReconnectError ?? new Error('飞控重启后设备未在等待窗口内重新出现。'),
+      )
+      return
+    }
+    const maxAttempts = rebootSchedule ? this.rebootAttemptLimit : this.maxReconnectAttempts
+    if (this.reconnectAttempts >= maxAttempts) {
       this.finishTerminal(
         'MAX_ATTEMPTS',
         this._lastReconnectError
-          ?? new Error(`蓝牙重连已达最大次数（${this.maxReconnectAttempts}）。`),
+          ?? new Error(`串口重连已达最大次数（${maxAttempts}）。`),
       )
       return
     }
 
     this.reconnectAttempts += 1
-    const delayMs = Math.min(
-      this.reconnectBaseIntervalMs * (2 ** (this.reconnectAttempts - 1)),
-      this.maxReconnectIntervalMs,
-    )
+    const delayMs = rebootSchedule
+      ? this.rebootDelayMs
+      : this.reconnectBackoffScheduleMs[
+        Math.min(this.reconnectAttempts - 1, this.reconnectBackoffScheduleMs.length - 1)
+      ]
     const progress: ReconnectProgress = {
       attempt: this.reconnectAttempts,
-      maxAttempts: this.maxReconnectAttempts,
+      maxAttempts,
       delayMs,
       ...(this._lastReconnectError ? { lastError: this._lastReconnectError.message } : {}),
     }
@@ -428,30 +506,17 @@ export class BluetoothWorker extends EventEmitter {
       void this.runOpenAttempt(generation, true).catch((error) => {
         if (this.intentionalDisconnect || generation !== this.lifecycleGeneration) return
         this._lastReconnectError = this.toError(error)
-        // Deterministic resolution failures (ambiguous port set, identity
-        // mismatch) cannot be cured by retrying: burn no backoff budget on a
-        // misleading "reconnecting" display and surface a terminal reason.
-        if (error instanceof BluetoothPortResolutionError) {
-          this.finishTerminal(error.code, this.toError(error))
+        // Ambiguous identity can never be cured by retrying: fail closed
+        // instead of guessing between twin devices. A vanished device
+        // (DEVICE_NOT_FOUND) keeps its bounded retry budget.
+        if (error instanceof ConnectionResolutionError && error.code === 'IDENTITY_AMBIGUOUS') {
+          this.finishTerminal(error.code, error)
           return
         }
         this.scheduleReconnect(generation)
       })
     }, delayMs)
-  }
-
-  private startConfirmationTimer(generation: number): void {
-    this.clearConfirmationTimer()
-    this.confirmationTimer = setTimeout(() => {
-      this.confirmationTimer = null
-      if (
-        this.intentionalDisconnect
-        || generation !== this.lifecycleGeneration
-        || this._vehicleReady
-      ) return
-      this._lastReconnectError = new Error('蓝牙传输已打开，但未收到经过验证的飞控心跳。')
-      void this.handleDrop(generation)
-    }, this.vehicleConfirmTimeoutMs)
+    this.reconnectTimer.unref?.()
   }
 
   private clearReconnectTimer(): void {
@@ -460,13 +525,7 @@ export class BluetoothWorker extends EventEmitter {
     this.reconnectTimer = null
   }
 
-  private clearConfirmationTimer(): void {
-    if (!this.confirmationTimer) return
-    clearTimeout(this.confirmationTimer)
-    this.confirmationTimer = null
-  }
-
-  private async teardownConnection(expected?: BluetoothSerialLink): Promise<void> {
+  private async teardownConnection(expected?: SerialWorkerLink): Promise<void> {
     if (this.teardownPromise) return this.teardownPromise
     const conn = expected ?? this.conn
     if (!conn) return
@@ -503,7 +562,7 @@ export class BluetoothWorker extends EventEmitter {
   private finishTerminal(code: string, error: Error): void {
     this.intentionalDisconnect = true
     this.clearReconnectTimer()
-    this.clearConfirmationTimer()
+    this.cancelExpectedVehicleReboot()
     this.setVehicleReady(false)
     this.setTransportOpen(false)
     this._terminalReason = {
@@ -517,7 +576,7 @@ export class BluetoothWorker extends EventEmitter {
     this.emit('disconnected')
   }
 
-  private isCurrent(generation: number, conn?: BluetoothSerialLink): boolean {
+  private isCurrent(generation: number, conn?: SerialWorkerLink): boolean {
     return (
       !this.intentionalDisconnect
       && generation === this.lifecycleGeneration
@@ -525,44 +584,8 @@ export class BluetoothWorker extends EventEmitter {
     )
   }
 
-  private assertCurrent(generation: number, conn?: BluetoothSerialLink): void {
+  private assertCurrent(generation: number, conn?: SerialWorkerLink): void {
     if (!this.isCurrent(generation, conn)) throw new OperationCancelledError()
-  }
-
-  private resolvePortCancellable(generation: number): Promise<string | null> {
-    const work = this.resolvePort({
-      vendorId: this.selectorConfig.vendorId,
-      productId: this.selectorConfig.productId,
-      bluetoothServiceClassId: this.selectorConfig.bluetoothServiceClassId,
-      bluetoothAddress: this.selectorConfig.bluetoothAddress,
-      label: this.currentPort,
-    })
-
-    return new Promise<string | null>((resolve, reject) => {
-      let settled = false
-      const timer = setTimeout(() => {
-        finish(() => reject(new Error(
-          `解析蓝牙 SPP 串口超时（${Math.round(this.openTimeoutMs / 1000)}s）。`,
-        )))
-      }, this.openTimeoutMs)
-      const finish = (callback: () => void) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        if (this.cancelActiveResolution === cancel) this.cancelActiveResolution = null
-        callback()
-      }
-      const cancel = () => finish(() => reject(new OperationCancelledError()))
-      this.cancelActiveResolution = cancel
-      if (generation !== this.lifecycleGeneration || this.intentionalDisconnect) {
-        cancel()
-        return
-      }
-      work.then(
-        (port) => finish(() => resolve(port)),
-        (error) => finish(() => reject(error)),
-      )
-    })
   }
 
   private emitPublicError(error: Error): void {
@@ -596,14 +619,6 @@ export class BluetoothWorker extends EventEmitter {
   }
 
   private toError(error: unknown): Error {
-    if (error instanceof BluetoothPortResolutionError) return error
     return error instanceof Error ? error : new Error(String(error))
-  }
-}
-
-class OperationCancelledError extends Error {
-  constructor() {
-    super('蓝牙连接操作已取消。')
-    this.name = 'OperationCancelledError'
   }
 }

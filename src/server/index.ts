@@ -23,6 +23,8 @@ import {
 import type {
   ClientMessage,
   ConnectionConfig,
+  ConnectionDiscoveryWarning,
+  ConnectionScanResult,
   ConnectionStatus,
   ParamData,
   PortInfo,
@@ -31,6 +33,10 @@ import type {
 import type { VehicleIdentity } from '../shared/vehicleProfiles'
 import { isSafetyReduction } from '../shared/vehicleSetupProfiles'
 import { ConnectionManager } from './connection/ConnectionManager'
+import {
+  ConnectionDiscoveryService,
+  ConnectionResolutionError,
+} from './connection/ConnectionDiscoveryService'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
 import {
   CalibrationSessionManager,
@@ -161,8 +167,16 @@ export interface MavlinkBridgeBoundary extends EventEmitter {
   destroy(): void | Promise<void>
 }
 
+export interface ConnectionDiscoveryBoundary {
+  scan(kind: 'serial' | 'bluetooth', scope?: string): Promise<ConnectionScanResult>
+  scanAll(): Promise<{ serial: PortInfo[]; bluetooth: PortInfo[]; warnings: ConnectionDiscoveryWarning[] }>
+  resolveSerialTarget(config: ConnectionConfig): Promise<{ path: string; identity: PortInfo | null }>
+  invalidate(): void
+}
+
 export interface BackendServices {
   connManager: ConnectionManagerBoundary
+  connectionDiscovery: ConnectionDiscoveryBoundary
   mavlinkBridge: MavlinkBridgeBoundary
 }
 
@@ -514,10 +528,15 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS
   const staticDir = options.staticDir ?? distPath
 
-  const connManager = options.services?.connManager ?? new ConnectionManager()
+  const connectionDiscovery = options.services?.connectionDiscovery ?? new ConnectionDiscoveryService()
+  const connManager = options.services?.connManager
+    ?? new ConnectionManager({
+      serialAutoReconnect: config.serialAutoReconnect,
+      serialResolveTarget: (request) => connectionDiscovery.resolveSerialTarget(request),
+    })
   const mavlinkBridge = options.services?.mavlinkBridge
     ?? new MavlinkBridge(connManager as ConnectionManager)
-  const services: BackendServices = { connManager, mavlinkBridge }
+  const services: BackendServices = { connManager, connectionDiscovery, mavlinkBridge }
 
   const app = express()
   app.disable('x-powered-by')
@@ -1647,10 +1666,22 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
 
   app.use(express.json({ limit: JSON_BODY_LIMIT, strict: true }))
 
-  app.get('/api/connections/scan', limitConnectionInspection, async (_request, response, next) => {
+  app.get('/api/connections/scan', limitConnectionInspection, async (request, response, next) => {
     try {
-      const ports = await connManager.scanPorts()
-      response.json({ success: true, data: ports })
+      const kind = request.query.kind
+      if (kind === undefined) {
+        // Deprecated combined scan kept for legacy clients; current UI flows
+        // use per-kind requests and never wait on the other transport.
+        const { serial, bluetooth, warnings } = await connectionDiscovery.scanAll()
+        response.json({ success: true, data: { serial, bluetooth, warnings } })
+        return
+      }
+      if (kind !== 'serial' && kind !== 'bluetooth') {
+        throw new HttpBoundaryError(400, 'invalid_scan_kind', 'kind 必须是 serial 或 bluetooth')
+      }
+      const scope = typeof request.query.scope === 'string' ? request.query.scope : undefined
+      const result = await connectionDiscovery.scan(kind, scope)
+      response.json({ success: true, data: result satisfies ConnectionScanResult })
     } catch (error) {
       next(error)
     }
@@ -1682,11 +1713,34 @@ export function createApp(options: CreateAppOptions = {}): BackendRuntime {
     try {
       if (shuttingDown) throw new HttpBoundaryError(503, 'shutting_down', '服务正在关闭')
       requireRestConnectionControl(request)
-      const connectionConfig = parseConnectionConfig(request.body)
+      const parsed = parseConnectionConfig(request.body)
+      // Fail closed on identity mismatch/ambiguity before any port is opened
+      // (connection compatibility plan §4.3). Path-only legacy configs keep
+      // the direct-path behavior.
+      let connectionConfig = parsed
+      if (parsed.type === 'serial') {
+        try {
+          const resolved = await connectionDiscovery.resolveSerialTarget(parsed)
+          connectionConfig = {
+            ...parsed,
+            port: resolved.path,
+            ...(parsed.deviceId === undefined && resolved.identity?.deviceId
+              ? { deviceId: resolved.identity.deviceId }
+              : {}),
+          }
+          connectionDiscovery.invalidate()
+        } catch (error) {
+          if (error instanceof ConnectionResolutionError) {
+            throw new HttpBoundaryError(409, error.code, error.message)
+          }
+          throw error
+        }
+      }
       logger.log('[API] connect request:', {
         type: connectionConfig.type,
         port: connectionConfig.port,
         baudRate: connectionConfig.baudRate,
+        ...(connectionConfig.deviceId ? { deviceId: connectionConfig.deviceId } : {}),
       })
       await connManager.connect(connectionConfig)
       response.json({ success: true })

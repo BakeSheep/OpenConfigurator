@@ -21,12 +21,14 @@ class FakeBluetoothLink extends EventEmitter implements BluetoothSerialLink {
   pendingConnect = false
   pendingDisconnect = false
   disconnectError: Error | null = null
+  connectError: Error | null = null
   private resolveConnect: (() => void) | null = null
   private rejectConnect: ((error: Error) => void) | null = null
   private resolveDisconnect: (() => void) | null = null
 
   connect(): Promise<void> {
     this.connectCalls += 1
+    if (this.connectError) return Promise.reject(this.connectError)
     if (!this.pendingConnect) {
       this.connected = true
       return Promise.resolve()
@@ -70,6 +72,26 @@ class FakeBluetoothLink extends EventEmitter implements BluetoothSerialLink {
     return true
   }
 }
+
+test('failed Linux RFCOMM open invalidates the resolved SPP channel', async () => {
+  const link = new FakeBluetoothLink()
+  link.connectError = new Error('RFCOMM channel refused')
+  const invalidated: string[] = []
+  const path = 'bt-rfcomm://08fad1176949/3'
+  const worker = new BluetoothWorker({
+    type: 'bluetooth',
+    port: path,
+    baudRate: 57600,
+    bluetoothAddress: '08:FA:D1:17:69:49',
+  }, {
+    linkFactory: () => link,
+    resolvePort: async () => path,
+    invalidateSppChannel: (address) => invalidated.push(address),
+  })
+
+  await assert.rejects(worker.connect(), /RFCOMM channel refused/)
+  assert.deepEqual(invalidated, ['08:FA:D1:17:69:49'])
+})
 
 const config = {
   type: 'bluetooth' as const,
@@ -206,14 +228,15 @@ test('Linux paired BlueZ SPP devices are exposed and service-only selection stay
   }
   const scanned = await BluetoothConnection.scanDevices(dependencies)
   assert.equal(scanned.length, 1)
-  assert.deepEqual(scanned[0], {
-    ...paired,
-    bluetoothAddress: '08fad1176949',
-    recommended: true,
-    productId: undefined,
-    vendorId: undefined,
-    pnpId: undefined,
-  })
+  assert.equal(scanned[0].path, paired.path)
+  assert.equal(scanned[0].transport, 'bluetooth-spp')
+  assert.equal(scanned[0].bluetoothAddress, '08:FA:D1:17:69:49')
+  assert.equal(scanned[0].bluetoothChannel, 1)
+  assert.equal(scanned[0].bluetoothServiceClassId, '0x1101')
+  assert.equal(scanned[0].availability, 'paired')
+  assert.equal(scanned[0].requiresDeepResolution, false)
+  assert.equal(scanned[0].recommended, true)
+  assert.ok(scanned[0].deviceId?.startsWith('bt-spp:'))
   assert.equal(await BluetoothConnection.findPortByIds(
     { bluetoothServiceClassId: '0x1101', label: 'Bluetooth SPP 0x1101' },
     dependencies,

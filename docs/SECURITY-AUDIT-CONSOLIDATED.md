@@ -148,21 +148,21 @@ direct 模式设计上表示“串口直接连接 ESC”，不能把所有 direc
 - 提供按 `(sysid, compid)` 的 graceful 模式：一旦观测到有效签名，该源之后强制签名。
 - 不可信或多点链路默认使用 `MAVLINK_SIGNING_REQUIRE=1`。
 
-### OCSA-004 — 首心跳自动选中目标
+### OCSA-004 — MAVLink 目标稳定性与多目标冲突
 
 **严重度：Medium**  
-**状态：Partial（行为真实，原 High 定级偏高）**
+**状态：Mitigated（主动总线攻击风险仍需 MAVLink signing）**
 
 **位置**
 
 - `src/server/mavlink/MavlinkBridge.ts:1043-1064`
 - `src/server/mavlink/MavlinkBridge.ts:826-851`
 
-任意 `autopilot !== INVALID(8)` 的首个格式有效 HEARTBEAT 会成为选中目标，后续真实飞控不会自动替换它。但显式选择、N 个心跳或 `AUTOPILOT_VERSION` 一致性只能减少误选，不能认证未签名总线上的主动攻击者。
+单一飞控需要连续 3 个心跳达到稳定门槛后才自动绑定。出现多个稳定的不同 SYS/COMP 目标时，写操作失败关闭并要求用户显式选择；同一 SYS ID 出现多个稳定身份时，显式选择也不会解除冲突，必须断开重复设备或修改 ID。心跳稳定性只能减少误选，不能认证未签名总线上的主动攻击者。
 
 **建议**
 
-- 在 UI 中显示所有稳定发现目标并明确区分 auto-selected/confirmed。
+- UI 在单一稳定目标时不增加第二次选择；仅多目标冲突时显示候选项。
 - 多目标或身份冲突时不进入可写状态。
 - 安全性依赖强制签名、预配置 target allowlist 或可验证身份，而不是心跳计数。
 

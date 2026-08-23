@@ -11,6 +11,7 @@ import {
   type ReconnectProgress,
   type ReconnectTerminalReason,
 } from './BluetoothWorker'
+import { SerialWorker, type SerialWorkerOptions } from './SerialWorker'
 import type { ConnectionConfig, ConnectionStatus, PortInfo } from '../../shared/types'
 
 const DEFAULT_SERIAL_SOFT_HEARTBEAT_TIMEOUT_MS = 5000
@@ -75,17 +76,36 @@ interface ManagedSerialLink extends ManagedLink {
   connect(path: string, baudRate: number, timeoutMs?: number): Promise<void>
 }
 
-interface ManagedBluetoothLink extends ManagedLink {
+/**
+ * A link that owns its own bounded recovery loop (BluetoothWorker, SerialWorker
+ * with auto-reconnect). ConnectionManager forwards drops to it instead of
+ * tearing the whole connection down.
+ */
+interface ManagedRecoveryLink extends ManagedLink {
   readonly resolvedPort: string
   readonly terminalReason: ReconnectTerminalReason | null
+  readonly expectedRebootActive?: boolean
   connect(): Promise<void>
   confirmVehicleHeartbeat(): void
   forceReconnect(reason?: string): void
+  expectVehicleReboot?(graceMs?: number): boolean
+  cancelExpectedVehicleReboot?(): void
 }
+
+/** @deprecated internal alias kept for existing option signatures. */
+type ManagedBluetoothLink = ManagedRecoveryLink
 
 export interface ConnectionManagerOptions {
   serialFactory?: () => ManagedSerialLink
-  bluetoothFactory?: (config: ConnectionConfig) => ManagedBluetoothLink
+  bluetoothFactory?: (config: ConnectionConfig) => ManagedRecoveryLink
+  /**
+   * Feature flag `serialAutoReconnect` (plan §10.2): serial links route
+   * through SerialWorker so ordinary USB drops enter a bounded, identity-safe
+   * recovery. Explicit disconnect still wins immediately.
+   */
+  serialAutoReconnect?: boolean
+  serialWorkerFactory?: (config: ConnectionConfig) => ManagedRecoveryLink
+  serialResolveTarget?: SerialWorkerOptions['resolveTarget']
   listSerialPorts?: () => Promise<PortInfo[]>
   listBluetoothPorts?: () => Promise<PortInfo[]>
   monotonicNow?: () => number
@@ -162,7 +182,10 @@ export class ConnectionManager extends EventEmitter {
   private rebootReconnectToken = 0
 
   private readonly serialFactory: () => ManagedSerialLink
-  private readonly bluetoothFactory: (config: ConnectionConfig) => ManagedBluetoothLink
+  private readonly bluetoothFactory: (config: ConnectionConfig) => ManagedRecoveryLink
+  private readonly serialAutoReconnect: boolean
+  private readonly serialWorkerFactory: (config: ConnectionConfig) => ManagedRecoveryLink
+  private readonly serialResolveTarget: SerialWorkerOptions['resolveTarget']
   private readonly listSerialPorts: () => Promise<PortInfo[]>
   private readonly listBluetoothPorts: () => Promise<PortInfo[]>
   private readonly monotonicNow: () => number
@@ -183,6 +206,14 @@ export class ConnectionManager extends EventEmitter {
     super()
     this.serialFactory = options.serialFactory ?? (() => new SerialConnection())
     this.bluetoothFactory = options.bluetoothFactory ?? ((config) => new BluetoothWorker(config))
+    this.serialAutoReconnect = options.serialAutoReconnect ?? true
+    this.serialResolveTarget = options.serialResolveTarget
+      ?? (async (config) => ({ path: config.port, identity: null }))
+    this.serialWorkerFactory = options.serialWorkerFactory
+      ?? ((config) => new SerialWorker(config, {
+        serialFactory: () => this.serialFactory(),
+        resolveTarget: this.serialResolveTarget,
+      }))
     this.listSerialPorts = options.listSerialPorts ?? (() => SerialConnection.listPorts())
     this.listBluetoothPorts = options.listBluetoothPorts ?? (() => BluetoothConnection.scanDevices())
     this.monotonicNow = options.monotonicNow ?? (() => performance.now())
@@ -294,6 +325,19 @@ export class ConnectionManager extends EventEmitter {
           const worker = this.bluetoothFactory(config)
           this.link = worker
           this.wireLink(worker, generation, 'bluetooth')
+          await worker.connect()
+          if (this.isConnectRequestCancelled(requestId)) {
+            throw this.connectionCancelledError()
+          }
+          if (this.isActive(worker, generation) && !this._transportOpen) {
+            this.onLinkTransportConnected(worker, generation)
+          }
+        } else if (this.serialAutoReconnect) {
+          // Self-recovering serial link: ordinary drops and FC reboots share
+          // SerialWorker's bounded recovery state machine.
+          const worker = this.serialWorkerFactory(config)
+          this.link = worker
+          this.wireLink(worker, generation, 'serial')
           await worker.connect()
           if (this.isConnectRequestCancelled(requestId)) {
             throw this.connectionCancelledError()
@@ -530,9 +574,8 @@ export class ConnectionManager extends EventEmitter {
     // pre-reboot traffic cannot make the UI look live again prematurely.
     if (!staleRebootHeartbeat) {
       this.setVehicleReady(true)
-      if (this.linkKind === 'bluetooth') {
-        ;(this.link as ManagedBluetoothLink).confirmVehicleHeartbeat()
-      }
+      const recoveryLink = this.isRecoveryLink(this.link) ? this.link as ManagedRecoveryLink : null
+      recoveryLink?.confirmVehicleHeartbeat()
     }
   }
 
@@ -552,6 +595,10 @@ export class ConnectionManager extends EventEmitter {
     this.rebootInterruptionObserved = false
     this.rebootReconnectAttempt = 0
     this.rebootReconnectToken += 1
+    // Delegate the recovery schedule to a worker-owned window so ordinary
+    // drops and expected reboots share one state machine (plan §Phase 4).
+    const recoveryLink = this.isRecoveryLink(this.link) ? this.link as ManagedRecoveryLink : null
+    recoveryLink?.expectVehicleReboot?.(graceMs)
     // The reboot command itself is sufficient to invalidate physical vehicle
     // readiness even if USB keeps the COM port open throughout the restart.
     // A fresh heartbeat after the stale-heartbeat guard raises it again.
@@ -568,6 +615,12 @@ export class ConnectionManager extends EventEmitter {
       || this._status !== 'connected'
     ) return
     this.lastMavlinkActivity = this.monotonicNow()
+  }
+
+  private isRecoveryLink(link: ManagedLink | null): link is ManagedRecoveryLink {
+    return !!link
+      && typeof (link as ManagedRecoveryLink).forceReconnect === 'function'
+      && typeof (link as ManagedRecoveryLink).confirmVehicleHeartbeat === 'function'
   }
 
   private wireLink(
@@ -607,7 +660,8 @@ export class ConnectionManager extends EventEmitter {
       },
       onError: (error: Error) => {
         if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
-        if (kind === 'bluetooth') {
+        if (this.isRecoveryLink(link)) {
+          // The worker owns recovery; errors surface for telemetry only.
           if (!this._reconnectTerminalReason) {
             this.setLastError(this.errorDetail('reconnect', error.message, error))
           }
@@ -621,12 +675,17 @@ export class ConnectionManager extends EventEmitter {
       },
     }
 
-    if (kind === 'bluetooth') {
-      const bluetooth = link as ManagedBluetoothLink
+    if (this.isRecoveryLink(link)) {
       handlers.onTransportConnected = () => this.onLinkTransportConnected(link, generation)
       handlers.onConnected = () => this.onLinkTransportConnected(link, generation)
       handlers.onTransportDisconnected = () => {
         if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
+        // The worker owns recovery, so the manager never runs its own reboot
+        // cleanup here; still record the interruption so a post-recovery
+        // heartbeat is not misjudged as a stale pre-reboot one.
+        if (this.isExpectedVehicleReboot()) this.rebootInterruptionObserved = true
+        // A raw ESC session never survives a transport generation change.
+        this.abortRawSession('link_lost')
         this.stopHeartbeatMonitor()
         this.clearPreTransportData()
         this.setVehicleReady(false)
@@ -656,12 +715,12 @@ export class ConnectionManager extends EventEmitter {
         if (ready && (!this._transportOpen || this._status !== 'connected')) return
         this.setVehicleReady(ready)
       }
-      bluetooth.on('transportConnected', handlers.onTransportConnected)
-      bluetooth.on('connected', handlers.onConnected)
-      bluetooth.on('transportDisconnected', handlers.onTransportDisconnected)
-      bluetooth.on('reconnecting', handlers.onReconnecting)
-      bluetooth.on('terminal', handlers.onTerminal)
-      bluetooth.on('vehicleReadyChange', handlers.onVehicleReadyChange)
+      link.on('transportConnected', handlers.onTransportConnected)
+      link.on('connected', handlers.onConnected)
+      link.on('transportDisconnected', handlers.onTransportDisconnected)
+      link.on('reconnecting', handlers.onReconnecting)
+      link.on('terminal', handlers.onTerminal)
+      link.on('vehicleReadyChange', handlers.onVehicleReadyChange)
     }
 
     link.on('data', handlers.onData)
@@ -699,10 +758,12 @@ export class ConnectionManager extends EventEmitter {
   private onLinkTransportConnected(link: ManagedLink, generation: number): void {
     if (!this.isActive(link, generation) || this.cleanupGeneration === generation) return
     if (this._transportOpen && this._status === 'connected') return
-    if (this.linkKind === 'bluetooth' && this._config) {
+    if (this.isRecoveryLink(link) && this._config) {
+      // Recovery links re-resolve the device; follow path changes (COM renumber
+      // or ttyACM0 → ttyACM1) into the stored config.
       this._config = {
         ...this._config,
-        port: (link as ManagedBluetoothLink).resolvedPort,
+        port: link.resolvedPort,
       }
     }
 
@@ -783,7 +844,10 @@ export class ConnectionManager extends EventEmitter {
   ): void {
     if (this.scheduledCleanupGenerations.has(generation)) return
     const rebootToken = this.rebootReconnectToken
-    const rebootConfig = this.isExpectedVehicleReboot()
+    // Recovery links (SerialWorker) own their reconnect schedule including
+    // the reboot window; the manager-level reboot timer must not race them.
+    const rebootConfig = !this.isRecoveryLink(link)
+      && this.isExpectedVehicleReboot()
       && this.linkKind === 'serial'
       && this._config
       ? { ...this._config }
@@ -883,6 +947,7 @@ export class ConnectionManager extends EventEmitter {
     if (!this._transportOpen || this._status !== 'connected') return
     const now = this.monotonicNow()
     const bluetooth = this.linkKind === 'bluetooth'
+    const recoveryLink = this.isRecoveryLink(this.link) ? this.link as ManagedRecoveryLink : null
     const softDeadline = bluetooth
       ? this.bluetoothSoftHeartbeatTimeoutMs
       : this.serialSoftHeartbeatTimeoutMs
@@ -897,12 +962,15 @@ export class ConnectionManager extends EventEmitter {
     if (!softExpiredWithoutActivity && !hardExpired) return
     if (this.heartbeatTimeoutFired) return
 
-    if (this.isExpectedVehicleReboot() && this.link) {
+    // A SerialWorker tracks its own reboot window; both must agree before the
+    // reboot-aware recovery replaces the heartbeat-timeout error path.
+    const workerExpectsReboot = recoveryLink?.expectedRebootActive === true
+    if ((this.isExpectedVehicleReboot() || workerExpectsReboot) && this.link) {
       this.heartbeatTimeoutFired = true
       this.rebootInterruptionObserved = true
       this.setVehicleReady(false)
-      if (bluetooth) {
-        ;(this.link as ManagedBluetoothLink).forceReconnect('飞控重启后等待重新连接')
+      if (recoveryLink) {
+        recoveryLink.forceReconnect('飞控重启后等待重新连接')
       } else {
         this.scheduleSpontaneousCleanup(
           this.link,
@@ -919,7 +987,7 @@ export class ConnectionManager extends EventEmitter {
       ? `飞控心跳超过硬期限 ${Math.round(hardDeadline)}ms`
       : `飞控心跳超时且 ${Math.round(activityAge)}ms 内无有效 MAVLink 活动`
     const error = new Error(reason)
-    this.setLastError(this.errorDetail('heartbeat', reason, error))
+    this.setLastError(this.errorDetail('heartbeat', reason, { code: 'VEHICLE_HEARTBEAT_TIMEOUT' }))
     console.warn(
       `[Connection] MAVLink timeout: heartbeat=${Math.round(heartbeatAge)}ms`
       + ` activity=${Math.round(activityAge)}ms type=${this.linkKind ?? 'unknown'}`
@@ -931,8 +999,8 @@ export class ConnectionManager extends EventEmitter {
       hardExpired,
     })
 
-    if (bluetooth && this.link) {
-      ;(this.link as ManagedBluetoothLink).forceReconnect(reason)
+    if (recoveryLink) {
+      recoveryLink.forceReconnect(reason)
     } else if (this.link) {
       this.emit('connectionError', error)
       this.scheduleSpontaneousCleanup(
@@ -992,6 +1060,9 @@ export class ConnectionManager extends EventEmitter {
     this.rebootReconnectAttempt = 0
     this.rebootReconnectToken += 1
     this._reconnect = null
+    if (this.link && this.isRecoveryLink(this.link)) {
+      (this.link as ManagedRecoveryLink).cancelExpectedVehicleReboot?.()
+    }
   }
 
   private prepareForTeardown(status: ConnectionStatus): void {

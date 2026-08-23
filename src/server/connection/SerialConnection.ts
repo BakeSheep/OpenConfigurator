@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events'
 import { SerialPort } from 'serialport'
 import type { PortInfo } from '../../shared/types'
+import { classifySerialOpenError, readSerialOwnership } from './serialOpenErrors'
 
 export type SerialLifecycleState = 'idle' | 'opening' | 'open' | 'closing'
 export type SerialWritePriority = 'normal' | 'high' | 'critical'
@@ -196,7 +197,17 @@ export class SerialConnection extends EventEmitter {
       this.handlePortError(binding, this.toError(error))
     }
 
-    return connectPromise
+    // Classify native open failures (permission/busy/missing/timeout) so the
+    // REST boundary and UI receive a stable code plus an actionable hint.
+    return connectPromise.catch(async (error: unknown) => {
+      const errno = (error as NodeJS.ErrnoException | null)?.code
+      if (errno !== 'EACCES' && errno !== 'EPERM') {
+        throw classifySerialOpenError(path, error)
+      }
+      throw classifySerialOpenError(path, error, {
+        ownership: await readSerialOwnership(path),
+      })
+    })
   }
 
   async disconnect(timeoutMs = this.closeTimeoutMs): Promise<void> {

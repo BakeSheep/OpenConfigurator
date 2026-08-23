@@ -627,7 +627,8 @@ export type ServerMessage =
         safetyEpoch?: number
         safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
-        selectionSource?: 'explicit' | null
+        /** Unique stable targets are automatic; ambiguous links require an explicit choice. */
+        selectionSource?: 'automatic' | 'explicit' | null
         conflict?: {
           reason: 'multiple_stable_targets' | 'same_system_identity_conflict'
           candidates: Array<{
@@ -976,6 +977,14 @@ export type ClientMessage =
       data: { sessionId: string; targets: number[]; values: Record<string, number> }
     }
 
+/**
+ * Physical link technology behind a discovered device candidate. BLE GATT
+ * candidates must never masquerade as serial/SPP entries.
+ */
+export type ConnectionTransport = 'serial' | 'bluetooth-spp' | 'bluetooth-ble'
+
+export type DeviceAvailability = 'available' | 'paired' | 'offline' | 'unknown'
+
 export interface PortInfo {
   path: string
   manufacturer?: string
@@ -987,7 +996,62 @@ export interface PortInfo {
   productId?: string
   vendorId?: string
   pnpId?: string
+  // Opaque per-process identifier from the discovery service. Preferred key
+  // for connect requests; the server re-verifies identity before opening.
+  deviceId?: string
+  transport?: ConnectionTransport
+  // Stable device path on Linux (/dev/serial/by-id/...); survives renumbering.
+  stablePath?: string
+  // Operator-facing label (friendly name or manufacturer + serial suffix).
+  displayName?: string
+  serialNumber?: string
+  usbLocationId?: string
+  // Quick Bluetooth discovery knows the device is paired but cannot prove it
+  // is currently reachable without a blocking SDP/GATT round trip.
+  availability?: DeviceAvailability
+  // Set when connecting requires the slow targeted resolution path (SDP
+  // channel lookup, GATT service discovery) for this specific device.
+  requiresDeepResolution?: boolean
 }
+
+export type ConnectionScanKind = 'serial' | 'bluetooth'
+export type ConnectionScanScope = 'recommended' | 'all' | 'quick'
+
+export interface ConnectionDiscoveryWarning {
+  code: string
+  message: string
+}
+
+export interface ConnectionScanResult {
+  kind: ConnectionScanKind
+  scope: ConnectionScanScope
+  // Monotonic per-service counter; clients must ignore results from an older
+  // generation than the latest request they issued.
+  scanGeneration: number
+  cached: boolean
+  devices: PortInfo[]
+  warnings: ConnectionDiscoveryWarning[]
+}
+
+/**
+ * Stable, localizable connection failure codes. The UI must map these instead
+ * of matching native error strings (connection-compatibility plan §4.4).
+ */
+export type ConnectionErrorCode =
+  | 'SERIAL_PERMISSION_DENIED'
+  | 'SERIAL_BUSY'
+  | 'SERIAL_NOT_FOUND'
+  | 'SERIAL_OPEN_TIMEOUT'
+  | 'IDENTITY_AMBIGUOUS'
+  | 'DEVICE_NOT_FOUND'
+  | 'BLUETOOTH_ADAPTER_UNAVAILABLE'
+  | 'BLUETOOTH_TOOL_MISSING'
+  | 'BLUETOOTH_DEVICE_NOT_PAIRED'
+  | 'BLUETOOTH_DEVICE_OFFLINE'
+  | 'BLUETOOTH_SPP_CHANNEL_UNRESOLVED'
+  | 'BLUETOOTH_GATT_PROFILE_UNSUPPORTED'
+  | 'BLUEZ_DBUS_RUNTIME_MISSING'
+  | 'VEHICLE_HEARTBEAT_TIMEOUT'
 
 export interface ConnectionConfig {
   type: 'serial' | 'bluetooth'
@@ -1000,6 +1064,12 @@ export interface ConnectionConfig {
   bluetoothAddress?: string
   bluetoothServiceClassId?: string
   bluetoothChannel?: number
+  // Discovery-v2 identity fields. When deviceId is present the server
+  // re-resolves the candidate and fails closed on mismatch/ambiguity.
+  deviceId?: string
+  transport?: ConnectionTransport
+  stablePath?: string
+  serialNumber?: string
 }
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'

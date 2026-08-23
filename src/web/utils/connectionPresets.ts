@@ -8,6 +8,10 @@ export interface ConnectionPreset {
   baudRate: number
   vendorId?: string
   productId?: string
+  deviceId?: string
+  transport?: ConnectionConfig['transport']
+  stablePath?: string
+  serialNumber?: string
   bluetoothAddress?: string
   bluetoothChannel?: number
   bluetoothServiceClassId?: string
@@ -47,6 +51,10 @@ export function connectionConfigFromPreset(preset: ConnectionPreset): Connection
     baudRate: preset.baudRate,
     ...(preset.vendorId ? { vendorId: preset.vendorId } : {}),
     ...(preset.productId ? { productId: preset.productId } : {}),
+    ...(preset.deviceId ? { deviceId: preset.deviceId } : {}),
+    ...(preset.transport ? { transport: preset.transport } : {}),
+    ...(preset.stablePath ? { stablePath: preset.stablePath } : {}),
+    ...(preset.serialNumber ? { serialNumber: preset.serialNumber } : {}),
     ...(preset.bluetoothAddress ? { bluetoothAddress: preset.bluetoothAddress } : {}),
     ...(preset.bluetoothChannel ? { bluetoothChannel: preset.bluetoothChannel } : {}),
     ...(preset.bluetoothServiceClassId
@@ -79,6 +87,10 @@ function enrichSerialPreset(preset: ConnectionPreset, port: PortInfo): Connectio
     name: port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path,
     ...(port.vendorId ? { vendorId: canonicalUsbId(port.vendorId) ?? port.vendorId } : {}),
     ...(port.productId ? { productId: canonicalUsbId(port.productId) ?? port.productId } : {}),
+    ...(port.deviceId ? { deviceId: port.deviceId } : {}),
+    ...(port.transport ? { transport: port.transport } : {}),
+    ...(port.stablePath ? { stablePath: port.stablePath } : {}),
+    ...(port.serialNumber ? { serialNumber: port.serialNumber } : {}),
   }
 }
 
@@ -117,6 +129,29 @@ export function resolveSerialPreset(
 ): ConnectionPreset | null {
   if (preset.type !== 'serial') return preset
 
+  if (preset.deviceId) {
+    const matches = ports.filter((port) => port.deviceId === preset.deviceId)
+    if (matches.length === 1) return enrichSerialPreset(preset, matches[0])
+    if (matches.length > 1) return null
+    // A newer discovery pass may have selected a stronger identity namespace.
+    // Continue only when the preset also carries independently verifiable
+    // stable evidence; deviceId-only requests must never fall back to VID/PID.
+    if (!preset.stablePath && !preset.serialNumber) return null
+  }
+  if (preset.stablePath) {
+    const matches = ports.filter((port) => port.stablePath === preset.stablePath)
+    return matches.length === 1 ? enrichSerialPreset(preset, matches[0]) : null
+  }
+  if (preset.serialNumber) {
+    const presetVendorId = canonicalUsbId(preset.vendorId)
+    const presetProductId = canonicalUsbId(preset.productId)
+    const matches = ports.filter((port) =>
+      port.serialNumber === preset.serialNumber
+      && (!presetVendorId || canonicalUsbId(port.vendorId) === presetVendorId)
+      && (!presetProductId || canonicalUsbId(port.productId) === presetProductId))
+    return matches.length === 1 ? enrichSerialPreset(preset, matches[0]) : null
+  }
+
   const identifiedUsbPorts = ports.filter((port) => port.vendorId && port.productId)
   const presetVendorId = canonicalUsbId(preset.vendorId)
   const presetProductId = canonicalUsbId(preset.productId)
@@ -126,23 +161,20 @@ export function resolveSerialPreset(
       canonicalUsbId(port.vendorId) === presetVendorId
       && canonicalUsbId(port.productId) === presetProductId
     )
-    if (matches.length === 1) return enrichSerialPreset(preset, matches[0])
-
-    // Identical adapters cannot be distinguished by VID/PID alone. Retain the
-    // saved path only when the device currently on it has the expected identity.
+    // VID/PID-only presets do not prove physical identity. They remain usable
+    // only while the expected device is still on the saved path; COM/tty
+    // renumbering requires one explicit rescan so the preset can be upgraded.
     const matchingPath = matches.find((port) =>
       port.path.toUpperCase() === preset.port.toUpperCase()
     )
     return matchingPath ? enrichSerialPreset(preset, matchingPath) : null
   }
 
-  // Legacy presets have no identity. Keep an existing path, or migrate only
-  // when exactly one identified USB serial device exists; otherwise fail closed.
+  // Legacy presets have no physical identity. Keep an existing path, but never
+  // migrate to the only visible USB device: it may be another identical FC.
   const samePath = ports.find((port) => port.path.toUpperCase() === preset.port.toUpperCase())
   if (samePath) return enrichSerialPreset(preset, samePath)
-  return identifiedUsbPorts.length === 1
-    ? enrichSerialPreset(preset, identifiedUsbPorts[0])
-    : null
+  return null
 }
 
 /** Resolve a saved Bluetooth device to the current SPP endpoint without guessing. */
@@ -178,6 +210,13 @@ export function samePresetDevice(a: ConnectionPreset, b: ConnectionPreset): bool
     const bAddress = normalizeBluetoothAddress(b.bluetoothAddress)
     if (aAddress && bAddress) return aAddress === bAddress
     return a.port.toUpperCase() === b.port.toUpperCase()
+  }
+  if (a.deviceId && b.deviceId) return a.deviceId === b.deviceId
+  if (a.stablePath && b.stablePath) return a.stablePath === b.stablePath
+  if (a.serialNumber && b.serialNumber) {
+    return a.serialNumber === b.serialNumber
+      && canonicalUsbId(a.vendorId) === canonicalUsbId(b.vendorId)
+      && canonicalUsbId(a.productId) === canonicalUsbId(b.productId)
   }
   const aVendor = canonicalUsbId(a.vendorId)
   const aProduct = canonicalUsbId(a.productId)

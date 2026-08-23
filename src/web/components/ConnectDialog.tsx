@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState, type KeyboardEvent } from 'rea
 import { useTranslation } from 'react-i18next'
 import { useConnectionStore } from '../stores/connectionStore'
 import { BAUD_RATES, DEFAULT_BAUD_RATE } from '../../shared/constants'
+import type { PortInfo } from '../../shared/types'
 import { getRestControlHeaders } from '../hooks/useWebSocket'
 import { appRuntimeMode } from '../runtime'
 import {
@@ -42,7 +43,24 @@ interface PickedPort {
 }
 
 export default function ConnectDialog() {
-  const { status, connectDialogOpen, serialPorts, bluetoothPorts, scanning, transportOpen, connectionError, setPorts, setScanning, setStatus, setConnectionError, setConnectDialogOpen, setActivePresetId } = useConnectionStore()
+  const {
+    status,
+    connectDialogOpen,
+    serialScan,
+    bluetoothScan,
+    showAllSerialPorts,
+    transportOpen,
+    connectionError,
+    scanConnections,
+    setShowAllSerialPorts,
+    cancelConnectionScans,
+    setStatus,
+    setConnectionError,
+    setConnectDialogOpen,
+    setActivePresetId,
+  } = useConnectionStore()
+  const serialPorts = serialScan.devices
+  const bluetoothPorts = bluetoothScan.devices
   const { t } = useTranslation()
   const [selectedPort, setSelectedPort] = useState('')
   const [baudRate, setBaudRate] = useState(DEFAULT_BAUD_RATE)
@@ -59,15 +77,46 @@ export default function ConnectDialog() {
   // navigator.serial - there is no backend and no real device to connect.
   const isDemo = appRuntimeMode === 'demo'
 
-  // Auto-scan serial ports every time the dialog opens (the available port
-  // set may change between opens, e.g. user plugged in a new device).
+  // Scan only the transport kind the operator is looking at; the other kind
+  // never blocks this view (connection compatibility plan §Phase 1).
   useEffect(() => {
-    if (connectDialogOpen && !isDemo) {
-      scanPorts()
+    if (!connectDialogOpen || isDemo) return
+    const state = useConnectionStore.getState()
+    if (connType === 'serial' && !state.serialScan.loading && state.serialScan.devices.length === 0) {
+      void state.scanConnections('serial')
     }
-    // scanPorts is stable enough for this purpose (only uses setState fns).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectDialogOpen, isDemo])
+    if (connType === 'bluetooth' && !state.bluetoothScan.loading && state.bluetoothScan.devices.length === 0) {
+      void state.scanConnections('bluetooth')
+    }
+  }, [connectDialogOpen, connType, isDemo])
+
+  // Abandon in-flight scans when the dialog closes so late responses with an
+  // older generation cannot resurrect stale candidate lists.
+  useEffect(() => {
+    if (!connectDialogOpen && !isDemo) cancelConnectionScans()
+  }, [connectDialogOpen, isDemo, cancelConnectionScans])
+
+  // A single high-confidence candidate may be preselected, but a connection is
+  // never started automatically.
+  useEffect(() => {
+    if (connType !== 'serial') return
+    setSelectedPort((current) => {
+      if (current && serialPorts.some((port) => port.path === current)) return current
+      const recommended = serialPorts.filter((port) => port.recommended)
+      const single = recommended.length === 1 ? recommended[0] : undefined
+      return single?.path ?? ''
+    })
+  }, [connType, serialPorts])
+
+  useEffect(() => {
+    if (connType !== 'bluetooth') return
+    setSelectedBtPort((current) => {
+      if (current && bluetoothPorts.some((port) => port.path === current)) return current
+      const recommended = bluetoothPorts.filter((port) => port.recommended)
+      const single = recommended.length === 1 ? recommended[0] : undefined
+      return single?.path ?? ''
+    })
+  }, [connType, bluetoothPorts])
 
   // Check Web Serial support
   useEffect(() => {
@@ -109,24 +158,28 @@ export default function ConnectDialog() {
     radios?.[nextIndex]?.focus()
   }
 
-  const scanPorts = async () => {
-    setScanning(true)
-    try {
-      const res = await fetch('/api/connections/scan')
-      const json = await res.json()
-      if (json.success) {
-        const btPorts = json.data.bluetooth || []
-        setPorts(json.data.serial, btPorts)
-        setSelectedBtPort((current) => current || btPorts[0]?.path || '')
-      } else {
-        setError(json.error || t('connect.scanFailed'))
-      }
-    } catch (err: any) {
-      console.error('Scan failed:', err)
-      setError(t('connect.scanFailedReason', { reason: err?.message || String(err) }))
-    } finally {
-      setScanning(false)
-    }
+  const refreshScan = () => {
+    setError(null)
+    void scanConnections(connType)
+  }
+
+  const toggleShowAllPorts = () => {
+    setShowAllSerialPorts(!showAllSerialPorts)
+    void scanConnections('serial')
+  }
+
+  const serialOptionLabel = (port: PortInfo) => {
+    const name = port.displayName ?? port.friendlyName ?? port.manufacturer ?? port.path
+    return name === port.path ? port.path : `${name} · ${port.path}`
+  }
+
+  const bluetoothOptionLabel = (port: PortInfo) => {
+    const name = port.friendlyName ?? port.displayName ?? port.path
+    const address = port.bluetoothAddress ?? port.path
+    const availability = port.availability === 'paired'
+      ? ` · ${t('connect.pairedDeviceHint')}`
+      : ''
+    return `${name} · ${address}${availability}`
   }
 
   const pickSerialPort = async () => {
@@ -216,6 +269,8 @@ export default function ConnectDialog() {
           bluetoothAddress: selected?.bluetoothAddress,
           bluetoothChannel: selected?.bluetoothChannel,
           bluetoothServiceClassId: selected?.bluetoothServiceClassId,
+          ...(selected?.deviceId ? { deviceId: selected.deviceId } : {}),
+          ...(selected?.transport ? { transport: selected.transport } : {}),
         })
         return
       }
@@ -238,6 +293,10 @@ export default function ConnectDialog() {
       baudRate,
       vendorId: selected?.vendorId,
       productId: selected?.productId,
+      ...(selected?.deviceId ? { deviceId: selected.deviceId } : {}),
+      ...(selected?.transport ? { transport: selected.transport } : {}),
+      ...(selected?.stablePath ? { stablePath: selected.stablePath } : {}),
+      ...(selected?.serialNumber ? { serialNumber: selected.serialNumber } : {}),
     })
   }
 
@@ -288,6 +347,10 @@ export default function ConnectDialog() {
       baudRate,
       ...(selectedSerial?.vendorId ? { vendorId: selectedSerial.vendorId } : {}),
       ...(selectedSerial?.productId ? { productId: selectedSerial.productId } : {}),
+      ...(selectedSerial?.deviceId ? { deviceId: selectedSerial.deviceId } : {}),
+      ...(selectedSerial?.transport ? { transport: selectedSerial.transport } : {}),
+      ...(selectedSerial?.stablePath ? { stablePath: selectedSerial.stablePath } : {}),
+      ...(selectedSerial?.serialNumber ? { serialNumber: selectedSerial.serialNumber } : {}),
       ...(selectedBluetooth?.vendorId ? { vendorId: selectedBluetooth.vendorId } : {}),
       ...(selectedBluetooth?.productId ? { productId: selectedBluetooth.productId } : {}),
       ...(selectedBluetooth?.bluetoothAddress
@@ -315,6 +378,8 @@ export default function ConnectDialog() {
 
   if (isDemo) return null
 
+  const activeScan = connType === 'serial' ? serialScan : bluetoothScan
+  const scanning = activeScan.loading
   const connectionUnavailable = status === 'connecting'
     || (connType === 'bluetooth' ? (!selectedBtPort && !pickedBt) : !selectedPort)
 
@@ -406,18 +471,35 @@ export default function ConnectDialog() {
                   onChange={(event) => setSelectedPort(event.target.value)}
                   className="mc-select min-w-0 flex-1"
                 >
-                  <option value="">{t('connect.selectPortPlaceholder')}</option>
+                  <option value="">
+                    {scanning ? t('connect.scanning') : t('connect.selectPortPlaceholder')}
+                  </option>
                   {serialPorts.map((port) => (
                     <option key={port.path} value={port.path}>
-                      {port.path}{port.manufacturer ? ` - ${port.manufacturer}` : ''}
+                      {serialOptionLabel(port)}
                     </option>
                   ))}
                 </select>
-                <Button onClick={scanPorts} disabled={scanning} tone="quiet" aria-live="polite">
+                <Button onClick={refreshScan} disabled={scanning} tone="quiet" aria-live="polite">
                   {scanning ? t('connect.scanning') : t('connect.refresh')}
                 </Button>
               </div>
             </Field>
+            <div className="flex items-center justify-between gap-2">
+              <Button
+                onClick={toggleShowAllPorts}
+                tone="quiet"
+                size="compact"
+                aria-pressed={showAllSerialPorts}
+              >
+                {showAllSerialPorts ? t('connect.recommendedOnly') : t('connect.showAllPorts')}
+              </Button>
+              {serialScan.stale && serialScan.devices.length > 0 && (
+                <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                  {t('connect.scanStaleHint')}
+                </span>
+              )}
+            </div>
             <Field label={t('connect.baudRate')} controlId={serialBaudRateId}>
               <select
                 id={serialBaudRateId}
@@ -447,21 +529,32 @@ export default function ConnectDialog() {
                   className="mc-select min-w-0 flex-1"
                   aria-describedby={`${bluetoothPortId}-helper`}
                 >
-                  <option value="">{t('connect.noBtSppFound')}</option>
+                  <option value="">
+                    {scanning ? t('connect.scanning') : t('connect.noBtSppFound')}
+                  </option>
                   {bluetoothPorts.map((port) => (
                     <option key={port.path} value={port.path}>
-                      {port.friendlyName
-                        ? `${port.friendlyName} · ${port.bluetoothAddress ?? port.path}`
-                        : `${port.path}${port.manufacturer ? ` - ${port.manufacturer}` : ''}`}
+                      {bluetoothOptionLabel(port)}
                       {port.recommended ? t('connect.recommended') : ''}
                     </option>
                   ))}
                 </select>
-                <Button onClick={scanPorts} disabled={scanning} tone="quiet" aria-live="polite">
+                <Button onClick={refreshScan} disabled={scanning} tone="quiet" aria-live="polite">
                   {scanning ? t('connect.scanning') : t('connect.refresh')}
                 </Button>
               </div>
             </Field>
+
+            {bluetoothScan.warnings.map((warning) => (
+              <div key={warning.code} className="mc-notice" data-tone="warning" role="status">
+                <div className="mc-notice__content">{warning.message}</div>
+              </div>
+            ))}
+            {bluetoothScan.stale && bluetoothScan.devices.length > 0 && (
+              <div className="mc-notice" data-tone="info" role="status">
+                <div className="mc-notice__content">{t('connect.scanStaleHint')}</div>
+              </div>
+            )}
 
             <div className="flex items-center gap-3 text-[11px]" style={{ color: 'var(--text-secondary)' }} aria-hidden="true">
               <span className="h-px flex-1" style={{ background: 'var(--border)' }} />
@@ -509,9 +602,9 @@ export default function ConnectDialog() {
           </div>
         )}
 
-        {(error ?? connectionError) && (
+        {(error ?? activeScan.error ?? connectionError) && (
           <div className="mc-notice" data-tone="danger" role="alert" aria-live="assertive">
-            <div className="mc-notice__content">{error ?? connectionError}</div>
+            <div className="mc-notice__content">{error ?? activeScan.error ?? connectionError}</div>
           </div>
         )}
 

@@ -60,7 +60,6 @@ export default function Topbar() {
     targetSystemId,
     targetComponentId,
     targetConflict,
-    discoveredTargets,
     setConnectDialogOpen,
     setStatus,
     setConnectionError,
@@ -82,6 +81,9 @@ export default function Topbar() {
     : reconnecting
       ? `${t('topbar.connection.reconnecting')}${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? t('topbar.connection.connecting') : t('topbar.connection.disconnected')
+  const targetChoices = targetConflict?.reason === 'multiple_stable_targets'
+    ? targetConflict.candidates
+    : []
 
   // Presets for QGC-style connection dropdown
   const [presets, setPresets] = useState(loadConnectionPresets)
@@ -102,13 +104,21 @@ export default function Topbar() {
     try {
       let resolved = preset
       if (preset.type === 'serial' || preset.type === 'bluetooth') {
-        const scanResponse = await fetch('/api/connections/scan')
+        const scope = preset.type === 'serial' ? 'recommended' : 'quick'
+        const scanResponse = await fetch(
+          `/api/connections/scan?kind=${preset.type}&scope=${scope}`,
+        )
         const scan = await scanResponse.json()
         if (!scanResponse.ok || !scan.success) throw new Error('connection scan failed')
-        useConnectionStore.getState().setPorts(scan.data.serial ?? [], scan.data.bluetooth ?? [])
+        const ports = scan.data.devices ?? []
+        const connectionState = useConnectionStore.getState()
+        connectionState.setPorts(
+          preset.type === 'serial' ? ports : connectionState.serialPorts,
+          preset.type === 'bluetooth' ? ports : connectionState.bluetoothPorts,
+        )
         const matched = preset.type === 'serial'
-          ? resolveSerialPreset(preset, scan.data.serial ?? [])
-          : resolveBluetoothPreset(preset, scan.data.bluetooth ?? [])
+          ? resolveSerialPreset(preset, ports)
+          : resolveBluetoothPreset(preset, ports)
         if (!matched) {
           setConnectionError(t('topbar.connection.presetNotFound'))
           setStatus('error')
@@ -120,6 +130,10 @@ export default function Topbar() {
           resolved.port !== preset.port
           || resolved.vendorId !== preset.vendorId
           || resolved.productId !== preset.productId
+          || resolved.deviceId !== preset.deviceId
+          || resolved.transport !== preset.transport
+          || resolved.stablePath !== preset.stablePath
+          || resolved.serialNumber !== preset.serialNumber
           || resolved.bluetoothAddress !== preset.bluetoothAddress
           || resolved.bluetoothChannel !== preset.bluetoothChannel
           || resolved.bluetoothServiceClassId !== preset.bluetoothServiceClassId
@@ -685,16 +699,18 @@ export default function Topbar() {
               </div>
               {targetConflict && (
                 <p className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--warning-tint)', color: 'var(--warning-foreground)' }}>
-                  {t('topbar.connect.targetConflict')}
+                  {t(targetConflict.reason === 'same_system_identity_conflict'
+                    ? 'topbar.connect.targetIdentityConflict'
+                    : 'topbar.connect.targetConflict')}
                 </p>
               )}
-              {discoveredTargets.length > 0 && (
+              {targetChoices.length > 0 && (
                 <div className="mb-2">
                   <p className="mb-1 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>
                     {t('topbar.connect.flightControllers')}
                   </p>
                   <div className="flex flex-col gap-1">
-                    {discoveredTargets.map((target) => {
+                    {targetChoices.map((target) => {
                       const selected = target.systemId === targetSystemId && target.componentId === targetComponentId
                       return (
                         <button

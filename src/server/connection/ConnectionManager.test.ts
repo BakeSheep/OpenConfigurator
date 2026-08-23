@@ -211,6 +211,7 @@ test('spontaneous serial errors share the operation queue with a following conne
   const links = [first, second]
   const manager = new ConnectionManager({
     serialFactory: () => links.shift()!,
+    serialAutoReconnect: false,
   })
   manager.on('connectionError', () => undefined)
 
@@ -290,6 +291,7 @@ test('valid activity grants only soft grace and cannot suppress the hard heartbe
   const link = new FakeSerialLink()
   const options: ConnectionManagerOptions = {
     serialFactory: () => link,
+    serialAutoReconnect: false,
     monotonicNow: () => now,
     setIntervalFn: (callback) => {
       heartbeatCheck = callback
@@ -353,6 +355,7 @@ test('an expected flight-controller reboot automatically reopens serial and wait
   const links = [first, second]
   const manager = new ConnectionManager({
     serialFactory: () => links.shift()!,
+    serialAutoReconnect: false,
     rebootReconnectDelayMs: 1,
     rebootReconnectGraceMs: 500,
   })
@@ -384,6 +387,7 @@ test('explicit disconnect cancels an expected reboot reconnect', async () => {
   const links = [first, second]
   const manager = new ConnectionManager({
     serialFactory: () => links.shift()!,
+    serialAutoReconnect: false,
     rebootReconnectDelayMs: 20,
     rebootReconnectGraceMs: 500,
   })
@@ -698,3 +702,133 @@ test('beginRawSession rejects bluetooth links', async () => {
 })
 
 
+
+// -- Managed serial recovery (Phase 4: serialAutoReconnect) -------------------
+
+import { SerialWorker } from './SerialWorker'
+
+class RecordingSerialLink extends FakeSerialLink {
+  paths: string[] = []
+  failConnect = false
+
+  async connect(path?: string): Promise<void> {
+    if (path !== undefined) this.paths.push(path)
+    if (this.failConnect) return Promise.reject(new Error(`open failed: ${path}`))
+    return super.connect()
+  }
+}
+
+test('managed serial drop recovers with a new generation and waits for heartbeat', async () => {
+  const first = new RecordingSerialLink()
+  const second = new RecordingSerialLink()
+  const links = [first, second]
+  const paths = ['/dev/ttyACM0', '/dev/ttyACM1']
+  let resolution = 0
+  const manager = new ConnectionManager({
+    serialAutoReconnect: true,
+    serialWorkerFactory: (config) => new SerialWorker(config, {
+      serialFactory: () => links.shift()!,
+      resolveTarget: async () => {
+        const path = paths[Math.min(resolution, paths.length - 1)]
+        resolution += 1
+        return { path, identity: null }
+      },
+      reconnectBackoffScheduleMs: [1],
+      maxReconnectAttempts: 3,
+      rebootDelayMs: 1,
+      rebootGraceMs: 60_000,
+      openTimeoutMs: 500,
+    }),
+  })
+
+  await manager.connect(serialConfig('/dev/ttyACM0'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+  assert.equal(manager.config?.port, '/dev/ttyACM0')
+
+  first.emit('disconnected')
+  await delay(0)
+  assert.equal(manager.status, 'reconnecting', 'an ordinary drop enters bounded recovery')
+  assert.equal(manager.vehicleReady, false)
+  assert.equal(manager.transportOpen, false)
+
+  for (let i = 0; i < 30 && second.paths.length === 0; i += 1) await delay(2)
+  assert.equal(second.paths[0], '/dev/ttyACM1', 'recovery follows the re-resolved path')
+  assert.equal(manager.status, 'connected')
+  assert.equal(manager.transportOpen, true)
+  assert.equal(manager.vehicleReady, false, 'reopen alone never proves vehicle readiness')
+  assert.equal(manager.config?.port, '/dev/ttyACM1')
+
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+  assert.equal(manager.reconnect, null)
+  await manager.disconnect()
+})
+
+test('managed serial recovery exhaustion surfaces a terminal error state', async () => {
+  const first = new RecordingSerialLink()
+  const retries = [new RecordingSerialLink(), new RecordingSerialLink()]
+  retries.forEach((link) => { link.failConnect = true })
+  const links: FakeSerialLink[] = [first, ...retries]
+  const manager = new ConnectionManager({
+    serialAutoReconnect: true,
+    serialWorkerFactory: (config) => new SerialWorker(config, {
+      serialFactory: () => links.shift()!,
+      resolveTarget: async () => ({ path: config.port, identity: null }),
+      reconnectBackoffScheduleMs: [1, 1],
+      maxReconnectAttempts: 2,
+      rebootDelayMs: 1,
+      rebootGraceMs: 60_000,
+      openTimeoutMs: 500,
+    }),
+  })
+  manager.on('connectionError', () => undefined)
+
+  await manager.connect(serialConfig('/dev/ttyACM0'))
+  first.emit('disconnected')
+  for (let i = 0; i < 50 && manager.status !== 'error'; i += 1) await delay(2)
+
+  assert.equal(manager.status, 'error')
+  assert.equal(manager.reconnectTerminalReason?.code, 'MAX_ATTEMPTS')
+  assert.equal(manager.transportOpen, false)
+})
+
+test('managed serial reboot window is delegated to the worker and ends on heartbeat', async () => {
+  const first = new RecordingSerialLink()
+  const second = new RecordingSerialLink()
+  const links = [first, second]
+  const statuses: string[] = []
+  let worker: SerialWorker | null = null
+  const manager = new ConnectionManager({
+    serialAutoReconnect: true,
+    serialWorkerFactory: (config) => {
+      worker = new SerialWorker(config, {
+        serialFactory: () => links.shift()!,
+        resolveTarget: async () => ({ path: config.port, identity: null }),
+        reconnectBackoffScheduleMs: [1],
+        maxReconnectAttempts: 2,
+        rebootDelayMs: 1,
+        rebootGraceMs: 500,
+        openTimeoutMs: 500,
+      })
+      return worker
+    },
+  })
+  manager.on('statusChange', (status: string) => statuses.push(status))
+
+  await manager.connect(serialConfig('COM1'))
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.expectVehicleReboot(), true)
+  assert.equal(worker!.expectedRebootActive, true, 'manager delegates the reboot window')
+
+  first.emit('disconnected')
+  for (let i = 0; i < 30 && second.paths.length === 0; i += 1) await delay(2)
+
+  assert.equal(second.paths.length, 1, 'reboot schedule reopens without user action')
+  assert.equal(manager.status, 'connected')
+  manager.notifyAutopilotHeartbeat()
+  assert.equal(manager.vehicleReady, true)
+  assert.equal(worker!.expectedRebootActive, false, 'validated heartbeat ends the window')
+  assert.ok(statuses.includes('reconnecting'))
+  await manager.disconnect()
+})

@@ -59,6 +59,12 @@ export interface ServerConfig {
   allowDevOrigin: boolean
   wsMaxPayload: number
   wsMaxClients: number
+  /**
+   * Feature flag `serialAutoReconnect` (plan §10.2): ordinary USB drops enter
+   * a bounded identity-safe recovery state machine. Disable to fall back to
+   * the pre-Phase-4 "drop → disconnected" behavior.
+   */
+  serialAutoReconnect: boolean
 }
 
 export class InputValidationError extends Error {
@@ -1145,6 +1151,23 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
       integer: true,
     })
 
+  // Discovery-v2 identity fields (connection compatibility plan §4.1/§4.3).
+  const identityTextOptions = {
+    minBytes: 1,
+    maxBytes: 256,
+    pattern: /^[\x21-\x7e]+$/,
+  }
+  const deviceId = optionalText(input.deviceId, 'deviceId', identityTextOptions)
+  const serialNumber = optionalText(input.serialNumber, 'serialNumber', identityTextOptions)
+  const stablePath = optionalText(input.stablePath, 'stablePath', identityTextOptions)
+  const transport = input.transport === undefined
+    ? undefined
+    : input.transport === 'serial'
+      || input.transport === 'bluetooth-spp'
+      || input.transport === 'bluetooth-ble'
+      ? (input.transport as ConnectionConfig['transport'])
+      : fail('invalid_format', 'transport 必须是 serial、bluetooth-spp 或 bluetooth-ble', 'transport')
+
   return {
     type: input.type,
     port,
@@ -1154,6 +1177,10 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
     ...(bluetoothServiceClassId === undefined ? {} : { bluetoothServiceClassId }),
     ...(bluetoothAddress === undefined ? {} : { bluetoothAddress }),
     ...(bluetoothChannel === undefined ? {} : { bluetoothChannel }),
+    ...(deviceId === undefined ? {} : { deviceId }),
+    ...(transport === undefined ? {} : { transport }),
+    ...(stablePath === undefined ? {} : { stablePath }),
+    ...(serialNumber === undefined ? {} : { serialNumber }),
   }
 }
 
@@ -1293,6 +1320,10 @@ export function parseServerConfig(
     authToken,
     allowedOrigins: [...new Set(allowedOrigins.map(normalizeConfiguredOrigin))],
     allowDevOrigin: overrides.allowDevOrigin ?? env.NODE_ENV !== 'production',
+    serialAutoReconnect: overrides.serialAutoReconnect
+      ?? (env.OPENCONF_SERIAL_AUTO_RECONNECT === undefined
+        ? true
+        : parseBoolean(env.OPENCONF_SERIAL_AUTO_RECONNECT, 'OPENCONF_SERIAL_AUTO_RECONNECT')),
     wsMaxPayload: overrides.wsMaxPayload === undefined
       ? parseEnvironmentInteger(
         env.SKYLAB_WS_MAX_PAYLOAD,

@@ -53,6 +53,18 @@ user confirmation → ClientMessage → runtime validation
 
 连接状态依次为 native handle → `transportOpen` → `vehicleReady` → controller lease。每次物理重连都创建新的 parser、协议探测、发送序列和链路统计。
 
+## 设备发现与恢复（连接兼容性计划）
+
+`ConnectionDiscoveryService` 只负责发现、分类和身份解析，不拥有活动连接；`ConnectionManager` 仍是活动链路、物理代次与状态发布的唯一入口。
+
+- 扫描 API 按 transport 拆分：`GET /api/connections/scan?kind=serial&scope=recommended|all` 与 `kind=bluetooth&scope=quick`。一次扫描绝不等待另一种 transport；无参数的旧端点保留为 deprecated 组合响应。
+- Linux 串口发现合并 `/dev/serial/by-id` 与当前 tty 为单个设备（`stablePath`、`deviceId`），`ttyS*` 等平台 UART 只出现在 `scope=all`；Windows 保持 COM + PnP 行为并继续排除 incoming Bluetooth 端口。
+- Bluetooth quick discovery 只读本地缓存（`bluetoothctl devices Paired` + `bluetoothctl info`），绝不运行 `sdptool`；已配对但离线的设备保留在列表中并标记 `availability`。阻塞的 SDP 通道解析只对用户选中的一个地址执行（`resolveLinuxSppChannel`），带 TTL channel 缓存。
+- 连接请求携带 `deviceId` 时，服务端在打开端口前重新解析并核对身份；身份缺失或歧义分别返回 `DEVICE_NOT_FOUND` / `IDENTITY_AMBIGUOUS`，不会回退到"当前唯一端口"。仅路径的旧请求保留直接路径模式。
+- 原生打开失败映射为稳定错误码（`SERIAL_PERMISSION_DENIED` 附带设备属主/组、`SERIAL_BUSY`、`SERIAL_NOT_FOUND`、`SERIAL_OPEN_TIMEOUT` 等，见 `src/shared/types.ts` 的 `ConnectionErrorCode`）。
+- 串口自动重连（feature flag `serialAutoReconnect`，env `OPENCONF_SERIAL_AUTO_RECONNECT`）：`SerialWorker` 与 `BluetoothWorker` 暴露同一事件协议，普通 USB 掉线进入有界重试（默认 5 次：1/2/3/5/5s），每次重试都按稳定身份重新解析路径；已确认的飞控重启与普通掉线共享这一个状态机，并在默认 ~45s 宽限窗口内持续重试（至少 12 次）。`IDENTITY_AMBIGUOUS` 立即终止，不猜测。重开只代表 transport 恢复，`vehicleReady` 仍需新一代次的合法 autopilot HEARTBEAT；target-bound 确认、RC override、ESC raw 会话不会自动恢复。
+- Linux BLE GATT transport 未实现（计划 Phase 3），保留 experimental/未完成状态，未经 HIL 证据不会宣称支持。
+
 ## ESC 会话
 
 - ArduPilot passthrough 暂停普通 MAVLink 并切换到 MSP/4-way 原始字节流。
