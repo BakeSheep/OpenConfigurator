@@ -187,7 +187,7 @@ export default function FlightControllerTerminal() {
                 {t('terminal.reference.apNote')}
               </p>
             )}
-            <div className="mc-shell-reference__scroll">
+            <div className="mc-shell-reference__scroll" role="region" tabIndex={0} aria-label={t('terminal.reference.scrollRegion')}>
               {categories.map((category) => (
                 <section key={category.title}>
                   <h3>{category.title}</h3>

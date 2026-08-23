@@ -70,6 +70,8 @@ ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会�
 
 Linux 蓝牙直连使用 BlueZ Profile API，不需要创建 `/dev/rfcomm*` 或执行 `sudo rfcomm`；系统需安装 `bluez`、Python 3、`dbus-python` 与 PyGObject，并先在系统蓝牙设置中完成 SPP 设备配对。
 
+Linux 串口访问权限：普通用户需要加入串口设备属组（Debian/Ubuntu 为 `dialout`，Arch 为 `uucp`，以设备 `ls -l /dev/ttyACM0` 显示的组为准），加入后需重新登录。权限不足时连接错误会直接显示该设备的属主与组。BLE GATT 连接尚未实现。
+
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git
 cd OpenConfigurator
@@ -99,6 +101,7 @@ npm start
 | `npm run build` | 检查类型并构建生产前端 |
 | `npm start` | 启动本地生产服务 |
 | `npm run dist:win` | 构建 Windows x64 portable EXE |
+| `npm run dist:linux` | 构建 Linux x64 AppImage（需在 Linux 上构建） |
 
 ## 架构
 

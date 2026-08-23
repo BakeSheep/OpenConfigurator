@@ -30,6 +30,8 @@ export interface UlogEvent {
 export interface UlogParamEntry {
   name: string
   value: number
+  /** MAV_PARAM_TYPE, when retained by the source log decoder. */
+  type?: number
 }
 
 export interface VibrationSpectrum {

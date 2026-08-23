@@ -41,7 +41,12 @@ export type MavlinkProtocolPreference = 'auto' | 'v1' | 'v2'
 export interface MavlinkSigningOptions {
   key: Buffer
   linkId?: number
-  /** Reject unsigned inbound packets. Defaults to false for compatibility. */
+  /**
+   * Reject unsigned inbound packets. Defaults to false for compatibility, but
+   * even without it the codec degrades gracefully instead of openly: once a
+   * (sysid, compid) source has produced one validly signed frame, every later
+   * frame from that source must be validly signed too (OCSA-003).
+   */
   requireSigned?: boolean
   /** Allow a valid but wall-clock-stale first packet from no-RTC controllers. */
   allowStaleFirstPacket?: boolean
@@ -91,7 +96,17 @@ const SIGNATURE_LENGTH = MavLinkPacketSignature.SIGNATURE_LENGTH
 const SUPPORTED_INCOMPATIBILITY_FLAGS = MavLinkProtocolV2.IFLAG_SIGNED
 const DEFAULT_MAX_BUFFERED_BYTES = 4096
 const MAX_TRACKED_SOURCES = 256
+// Signing-clock comparisons use node-mavlink's scaling of the MAVLink
+// signature timestamp: 100 units per wall-clock millisecond, i.e. the existing
+// SIGNATURE_MAX_AGE_TICKS below spans one minute.
 const SIGNATURE_MAX_AGE_TICKS = 6_000_000
+// First contact from a (sysid, compid, linkId) must fall inside the window
+// [now - SIGNATURE_MAX_AGE_TICKS, now + SIGNATURE_MAX_FUTURE_TICKS]. The
+// future bound exists so one far-future timestamp cannot be stored as the
+// replay watermark, which would silently reject every legitimate follow-up
+// frame from that source as a replay (OCSA-013). Tens of seconds absorbs
+// ordinary clock skew without weakening replay protection.
+const SIGNATURE_MAX_FUTURE_TICKS = 3_000_000 // 30 s
 
 const decodeProtocol = new MavLinkProtocolV2()
 
@@ -136,12 +151,18 @@ export function codecOptionsFromEnvironment(): MavlinkCodecSessionOptions {
   }
   let signing: MavlinkSigningOptions | undefined
   if (secret) {
+    const requireSetting = process.env.MAVLINK_SIGNING_REQUIRE?.trim()
     signing = {
       key: /^[0-9a-f]{64}$/i.test(secret)
         ? Buffer.from(secret, 'hex')
         : MavLinkPacketSignature.key(secret),
       linkId: envInteger(process.env.MAVLINK_SIGNING_LINK_ID, 0, 0, 255),
-      requireSigned: envBoolean(process.env.MAVLINK_SIGNING_REQUIRE),
+      // A configured key is a security opt-in, so omission must fail closed.
+      // Compatibility/graceful mode remains available only as an explicit
+      // MAVLINK_SIGNING_REQUIRE=false decision and emits the warning below.
+      requireSigned: requireSetting === undefined || requireSetting === ''
+        ? true
+        : envBoolean(requireSetting),
       allowStaleFirstPacket: envBoolean(process.env.MAVLINK_SIGNING_ALLOW_STALE_FIRST),
     }
   }
@@ -202,6 +223,8 @@ export class MavlinkCodecSession extends EventEmitter {
   private lastSigningTimestampMs = 0
   private readonly lastRxSeq = new Map<string, number>()
   private readonly replayTimestamps = new Map<string, number>()
+  /** Sources (sysid:compid) observed producing at least one valid signature. */
+  private readonly signedSources = new Set<string>()
   private counters: Omit<MavlinkCodecStats, 'bufferedBytes' | 'protocol'> = {
     rxPackets: 0,
     txPackets: 0,
@@ -222,6 +245,17 @@ export class MavlinkCodecSession extends EventEmitter {
     }
     if (options.signing?.key.length !== undefined && options.signing.key.length !== 32) {
       throw new Error('MAVLink signing key must be 32 bytes')
+    }
+    if (options.signing && !options.signing.requireSigned) {
+      // OCSA-003: with a key configured but no global enforcement the session
+      // still refuses unsigned frames from any source that has proven it
+      // signs. Say so at startup so the residual downgrade window is a
+      // decision, not an accident.
+      console.warn(
+        '[MAVLink] signing key configured without MAVLINK_SIGNING_REQUIRE=1:',
+        'unsigned frames are accepted until a source sends one validly signed frame,',
+        'after which that source must sign every frame',
+      )
     }
     this.options = {
       protocol,
@@ -321,7 +355,10 @@ export class MavlinkCodecSession extends EventEmitter {
     // Replay watermarks are security state, not parser/session framing state.
     // Keep them across a physical reconnect so a recorded signed command or
     // heartbeat cannot become valid again merely because the serial link was
-    // reset. destroy() releases the map with the whole codec object.
+    // reset. The learned per-source signing requirements are kept for the same
+    // reason: forgetting them would let stripped-signature injections through
+    // until the next genuine signed frame re-armed enforcement.
+    // destroy() releases both with the whole codec object.
     this.counters = {
       rxPackets: 0,
       txPackets: 0,
@@ -473,10 +510,18 @@ export class MavlinkCodecSession extends EventEmitter {
     const signed = packet.signature !== null
     const signing = this.options.signing
     if (signing) {
+      const sourceKey = `${header.sysid}:${header.compid}`
       if (!signed) {
-        if (signing.requireSigned) {
+        // Global enforcement, or graceful per-source enforcement: once a
+        // source has proven it signs its frames, a signature-less frame from
+        // it is a downgrade attempt (signature stripping plus injection), not
+        // legacy traffic, and is refused.
+        if (signing.requireSigned || this.signedSources.has(sourceKey)) {
           this.counters.rejectedPackets++
-          this.emit('packetRejected', 'unsigned_packet')
+          this.emit(
+            'packetRejected',
+            signing.requireSigned ? 'unsigned_packet' : 'unsigned_packet_downgrade',
+          )
           return
         }
       } else {
@@ -485,6 +530,10 @@ export class MavlinkCodecSession extends EventEmitter {
           this.emit('packetRejected', 'invalid_signature')
           return
         }
+        // The signature is cryptographically valid, so an active attacker
+        // cannot have forged this observation: arm per-source enforcement even
+        // if the timestamp checks below still reject the frame itself.
+        this.learnSignedSource(sourceKey)
         const replayKey = `${header.sysid}:${header.compid}:${packet.signature!.linkId}`
         const timestamp = packet.signature!.timestamp
         const previous = this.replayTimestamps.get(replayKey)
@@ -501,6 +550,14 @@ export class MavlinkCodecSession extends EventEmitter {
         ) {
           this.counters.rejectedPackets++
           this.emit('packetRejected', 'signature_stale')
+          return
+        }
+        // Apply the future bound to every accepted packet, not only first
+        // contact. Otherwise a source can establish a normal watermark and
+        // poison it with a later far-future signed timestamp.
+        if (timestamp > localTimestamp + SIGNATURE_MAX_FUTURE_TICKS) {
+          this.counters.rejectedPackets++
+          this.emit('packetRejected', 'signature_future')
           return
         }
         if (previous !== undefined && timestamp <= previous) {
@@ -539,6 +596,23 @@ export class MavlinkCodecSession extends EventEmitter {
       compatibilityFlags: header.compatibilityFlags,
       signed,
     } satisfies MavlinkMessage)
+  }
+
+  /**
+   * Remember that a source produced a cryptographically valid signature so
+   * unsigned frames from it are refused from then on (graceful enforcement,
+   * OCSA-003). Bounded like the other per-source maps; forgetting the oldest
+   * entry merely returns that source to lenient handling until it signs again.
+   * Like the replay watermarks this is security state and survives reset().
+   */
+  private learnSignedSource(sourceKey: string): void {
+    if (this.signedSources.has(sourceKey)) return
+    while (this.signedSources.size >= MAX_TRACKED_SOURCES) {
+      const oldest = this.signedSources.values().next().value as string | undefined
+      if (oldest === undefined) break
+      this.signedSources.delete(oldest)
+    }
+    this.signedSources.add(sourceKey)
   }
 
   private accountSequence(sysId: number, compId: number, sequence: number): void {

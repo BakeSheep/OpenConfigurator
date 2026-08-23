@@ -7,7 +7,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { FTP_NAK_ERRORS, FTP_OPCODES } from '../../shared/constants'
 import { crc32Buffer, MavlinkFtp, subtractInterval, type FtpTransport } from './MavlinkFtp'
-import { MAX_LOG_DOWNLOAD_BYTES } from './downloadLimits'
+import {
+  FTP_DOWNLOAD_DIR_PREFIX,
+  MAX_LOG_DOWNLOAD_BYTES,
+  removeStaleInstanceDirs,
+} from './downloadLimits'
 import type { ServerMessage } from '../../shared/types'
 
 // Independent, bit-at-a-time reference for PX4's crc32part convention. Keep
@@ -141,6 +145,45 @@ async function makeFtp(): Promise<{ transport: FakeTransport; ftp: MavlinkFtp; d
   const ftp = new MavlinkFtp(transport, dir)
   transport.ftp = ftp
   return { transport, ftp, dir }
+}
+
+/**
+ * Serve a complete small download (single ReadFile gap-fill pass) so tests can
+ * drive ensureDownloadDir()/directory selection through a real operation.
+ */
+function serveTinyDownload(transport: FakeTransport, content: Buffer, session = 4): void {
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ResetSessions:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      case FTP_OPCODES.OpenFileRO: {
+        const size = Buffer.alloc(4)
+        size.writeUInt32LE(content.length, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, session, data: size })
+        break
+      }
+      case FTP_OPCODES.ReadFile:
+        transport.reply(request, {
+          opcode: FTP_OPCODES.Ack,
+          session,
+          offset: request.offset,
+          data: content.subarray(request.offset, request.offset + request.size),
+        })
+        break
+      case FTP_OPCODES.CalcFileCRC32: {
+        const crc = Buffer.alloc(4)
+        crc.writeUInt32LE(px4ReferenceCrc32(content), 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, data: crc })
+        break
+      }
+      case FTP_OPCODES.TerminateSession:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -615,6 +658,353 @@ await (async () => {
   assert.equal(transport.messagesOf('fs_op_error')[0].data.code, 'download_too_large')
   assert.deepEqual(await fsp.readdir(dir), [])
   assert.equal(ftp.busy, false)
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-009: a peer that keeps resending the same burst frame resets the quiet
+// timer forever; the per-pass hard deadline / frame / no-progress budgets must
+// terminate the pass and the download must fail as stalled instead of hanging.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  const session = 5
+  const noise = Buffer.alloc(200, 0x77)
+  let floodSeq = 100
+  let readFileRequests = 0
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ResetSessions:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      case FTP_OPCODES.OpenFileRO: {
+        const size = Buffer.alloc(4)
+        size.writeUInt32LE(100_000, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, session, data: size })
+        break
+      }
+      case FTP_OPCODES.BurstReadFile:
+        // Never answered directly - the interval below keeps the link busy.
+        break
+      case FTP_OPCODES.ReadFile:
+        // The gap-fill fallback also only ever receives already-covered data.
+        readFileRequests++
+        transport.reply(request, {
+          opcode: FTP_OPCODES.Ack,
+          session,
+          offset: 0,
+          data: noise,
+        })
+        break
+      case FTP_OPCODES.TerminateSession:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
+  // Endless duplicate burst traffic for offset 0: the first frame may write,
+  // every later frame recovers nothing yet still resets the legacy quiet
+  // timer. Without per-pass budgets this pass never returns.
+  const flooder = setInterval(() => {
+    floodSeq = (floodSeq + 1) & 0xffff
+    ftp.handleFtpPayload(buildReply({
+      seq: floodSeq,
+      session,
+      opcode: FTP_OPCODES.Ack,
+      reqOpcode: FTP_OPCODES.BurstReadFile,
+      offset: 0,
+      data: noise,
+    }))
+  }, 1)
+  ftp.startDownload('/fs/microsd/log/flood.ulg')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1, 12_000)
+  clearInterval(flooder)
+  const error = transport.messagesOf('fs_op_error')[0]
+  assert.equal(error.data.operation, 'download')
+  assert.equal(error.data.code, 'download_stalled')
+  assert.ok(readFileRequests >= 1, 'the fallback strategy must have been exercised')
+  await waitFor(() => !ftp.busy)
+  const leftovers = (await fsp.readdir(dir)).filter((name) => name.endsWith('.part'))
+  assert.deepEqual(leftovers, [], 'stalled download must not leave a partial file')
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-009: pages consisting only of `S` (skip) records advance the wire
+// offset without producing entries; the wire-record/page caps must end the
+// listing with an explicit error instead of looping forever.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp } = await makeFtp()
+  transport.responder = (request) => {
+    assert.equal(request.opcode, FTP_OPCODES.ListDirectory)
+    // 50 skip records per page: never an entry, always offset progress.
+    transport.reply(request, {
+      opcode: FTP_OPCODES.Ack,
+      data: Buffer.from('S\0'.repeat(50), 'utf8'),
+    })
+  }
+  ftp.startList('/fs/microsd/log')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  const error = transport.messagesOf('fs_op_error')[0]
+  assert.equal(error.data.operation, 'list')
+  assert.equal(error.data.code, 'ftp_list_overflow')
+  assert.ok(!ftp.busy)
+  ftp.destroy()
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-014: a failed directory preparation must not be cached forever - the
+// next attempt retries and can succeed. The blocking placeholder file is a
+// regular file at the configured path (OCSA-008 "wrong existing type") and
+// must be left untouched by the failed attempt.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-ftp-dirprep-'))
+  const blocked = path.join(base, 'blocked')
+  await fsp.writeFile(blocked, 'placeholder')
+  const transport = new FakeTransport()
+  const ftp = new MavlinkFtp(transport, blocked)
+  transport.ftp = ftp
+  const content = Buffer.from('retry-download-payload')
+  serveTinyDownload(transport, content)
+
+  ftp.startDownload('/fs/microsd/log/retry.ulg', 'attempt-1')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  const failure = transport.messagesOf('fs_op_error')[0]
+  assert.equal(failure.data.operation, 'download')
+  assert.equal(failure.data.code, 'ftp_internal')
+  assert.equal(
+    await fsp.readFile(blocked, 'utf8'),
+    'placeholder',
+    'a regular file occupying the download path must not be deleted',
+  )
+  await waitFor(() => !ftp.busy)
+
+  await fsp.unlink(blocked)
+  ftp.startDownload('/fs/microsd/log/retry.ulg', 'attempt-2')
+  await waitFor(() => transport.messagesOf('fs_download_complete').length === 1)
+  const complete = transport.messagesOf('fs_download_complete')[0]
+  assert.equal(
+    (await fsp.readFile(ftp.getDownload(complete.data.downloadId)!.filePath)).toString(),
+    'retry-download-payload',
+  )
+  ftp.destroy()
+  await fsp.rm(base, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-008: without an explicit directory the service creates a private
+// mkdtemp directory under os.tmpdir() with 0700 permissions.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const transport = new FakeTransport()
+  const ftp = new MavlinkFtp(transport)
+  transport.ftp = ftp
+  serveTinyDownload(transport, Buffer.from('private-dir-check'))
+  ftp.startDownload('/fs/microsd/log/private.ulg')
+  await waitFor(() => transport.messagesOf('fs_download_complete').length === 1)
+  const dir = ftp.activeDownloadDir
+  assert.ok(dir, 'the private download directory must exist after a download')
+  assert.ok(
+    dir.startsWith(path.join(os.tmpdir(), FTP_DOWNLOAD_DIR_PREFIX)),
+    `unexpected download directory ${dir}`,
+  )
+  const stats = await fsp.stat(dir)
+  // The 0700 isolation guarantee is POSIX-only; Windows directories have no mode bits.
+  if (process.platform !== 'win32') {
+    assert.equal(stats.mode & 0o777, 0o700, 'the private directory must be 0700')
+  }
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-008: first-use cleanup only removes files matching this instance's own
+// `<16 hex>.part|ulg` naming - foreign files, other instances' artifacts and
+// subdirectories are never touched.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  await fsp.writeFile(path.join(dir, '0123456789abcdef.part'), 'stale part')
+  await fsp.writeFile(path.join(dir, 'ffffffffffffffff.ulg'), 'stale final')
+  await fsp.writeFile(path.join(dir, 'notes.txt'), 'keep me')
+  await fsp.writeFile(path.join(dir, 'other-instance.log'), 'keep me too')
+  await fsp.mkdir(path.join(dir, 'subdir'))
+  serveTinyDownload(transport, Buffer.from('selective-cleanup'))
+  ftp.startDownload('/fs/microsd/log/cleanup.ulg')
+  await waitFor(() => transport.messagesOf('fs_download_complete').length === 1)
+  const remaining = (await fsp.readdir(dir)).sort()
+  assert.ok(remaining.includes('notes.txt'), 'foreign files must survive cleanup')
+  assert.ok(remaining.includes('other-instance.log'), 'foreign artifacts must survive cleanup')
+  assert.ok(remaining.includes('subdir'), 'subdirectories must survive cleanup')
+  assert.ok(!remaining.includes('0123456789abcdef.part'), 'own stale .part must be removed')
+  assert.ok(!remaining.includes('ffffffffffffffff.ulg'), 'own stale .ulg must be removed')
+  assert.equal(
+    remaining.filter((name) => name.endsWith('.ulg')).length,
+    1,
+    'exactly the new download remains',
+  )
+  ftp.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-008: crash-leftover instance directories are reclaimed by age from the
+// shared parent; live siblings, symlinks and plain files are never followed.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const parent = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-ftp-sweep-'))
+  const now = Date.now()
+  const ancient = path.join(parent, `${FTP_DOWNLOAD_DIR_PREFIX}ancient`)
+  const fresh = path.join(parent, `${FTP_DOWNLOAD_DIR_PREFIX}fresh`)
+  const linkName = path.join(parent, `${FTP_DOWNLOAD_DIR_PREFIX}link`)
+  const linkTarget = path.join(parent, 'link-target')
+  const plainFile = path.join(parent, `${FTP_DOWNLOAD_DIR_PREFIX}plainfile`)
+  await fsp.mkdir(ancient)
+  await fsp.writeFile(path.join(ancient, 'leftover.ulg'), 'crashed instance data')
+  const ancientTime = new Date(now - 60 * 60 * 1000)
+  await fsp.utimes(ancient, ancientTime, ancientTime)
+  await fsp.mkdir(fresh)
+  await fsp.mkdir(linkTarget)
+  await fsp.writeFile(path.join(linkTarget, 'secret.txt'), 'do not delete')
+  await fsp.symlink(linkTarget, linkName)
+  await fsp.lutimes(linkName, ancientTime, ancientTime)
+  await fsp.writeFile(plainFile, 'not a directory')
+
+  const removed = await removeStaleInstanceDirs(
+    parent,
+    FTP_DOWNLOAD_DIR_PREFIX,
+    30 * 60 * 1000,
+    now,
+  )
+  assert.deepEqual(removed, [`${FTP_DOWNLOAD_DIR_PREFIX}ancient`])
+  assert.ok((await fsp.stat(fresh)).isDirectory(), 'a young sibling instance must survive')
+  const linkStats = await fsp.lstat(linkName)
+  assert.ok(linkStats.isSymbolicLink(), 'a symlink at a prefixed name must not be removed')
+  assert.ok(
+    await fsp.readFile(path.join(linkTarget, 'secret.txt')),
+    'the symlink target must not be followed or deleted',
+  )
+  assert.equal(await fsp.readFile(plainFile, 'utf8'), 'not a directory')
+
+  // Once the remaining directories age past the threshold they go too.
+  const removedLater = await removeStaleInstanceDirs(
+    parent,
+    FTP_DOWNLOAD_DIR_PREFIX,
+    30 * 60 * 1000,
+    now + 25 * 60 * 60 * 1000,
+  )
+  assert.deepEqual(removedLater.sort(), [`${FTP_DOWNLOAD_DIR_PREFIX}fresh`])
+  await fsp.rm(parent, { recursive: true, force: true })
+})()
+
+// ---------------------------------------------------------------------------
+// OCSA-016: recursive deletion must skip (and record) listing names that are
+// not single basenames instead of joining them into device paths.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp } = await makeFtp()
+  const longName = 'x'.repeat(101)
+  const removed: Array<{ opcode: number; path: string }> = []
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ListDirectory: {
+        if (request.offset > 0) {
+          transport.reply(request, { opcode: FTP_OPCODES.Nak, data: nakData(FTP_NAK_ERRORS.EOF) })
+          return
+        }
+        const dirPath = request.data.toString('utf8')
+        const page = dirPath === '/fs/microsd/log/danger'
+          ? Buffer.from(
+              'Fa.ulg\t1\0'
+              + 'F../victim\t2\0'
+              + 'Fsub/x.ulg\t3\0'
+              + 'F.\0'
+              + 'F..\0'
+              + 'Fbad\x01name\t4\0'
+              + `F${longName}\t5\0`
+              + 'D../escape\0'
+              + 'Dokdir\0',
+              'utf8',
+            )
+          : Buffer.alloc(0) // okdir is empty
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, data: page })
+        break
+      }
+      case FTP_OPCODES.RemoveFile:
+      case FTP_OPCODES.RemoveDirectory:
+        removed.push({ opcode: request.opcode, path: request.data.toString('utf8') })
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
+  ftp.startDelete([{ path: '/fs/microsd/log/danger', kind: 'dir' }])
+  await waitFor(() => transport.messagesOf('fs_delete_done').length === 1)
+  assert.deepEqual(removed, [
+    { opcode: FTP_OPCODES.RemoveFile, path: '/fs/microsd/log/danger/a.ulg' },
+    { opcode: FTP_OPCODES.RemoveDirectory, path: '/fs/microsd/log/danger/okdir' },
+    { opcode: FTP_OPCODES.RemoveDirectory, path: '/fs/microsd/log/danger' },
+  ])
+  for (const item of removed) {
+    assert.ok(!item.path.includes('..'), 'no removal may escape the selected directory')
+    // eslint-disable-next-line no-control-regex
+    assert.ok(!/[\x00-\x1f\x7f]/.test(item.path), 'no control characters may reach the FC')
+  }
+  assert.equal(transport.messagesOf('fs_delete_done')[0].data.deleted, 3)
+  assert.ok(!ftp.busy)
+  ftp.destroy()
+})()
+
+// ---------------------------------------------------------------------------
+// Sparse but technically progressive burst frames must not grow the interval
+// tracker without bound. Unlike duplicate traffic, every frame below covers
+// new bytes and therefore exercises the hard fragmentation limit.
+// ---------------------------------------------------------------------------
+await (async () => {
+  const { transport, ftp, dir } = await makeFtp()
+  const session = 9
+  const chunk = Buffer.alloc(1, 0x5a)
+  const advertisedSize = 300_000
+  transport.responder = (request) => {
+    switch (request.opcode) {
+      case FTP_OPCODES.ResetSessions:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      case FTP_OPCODES.OpenFileRO: {
+        const size = Buffer.alloc(4)
+        size.writeUInt32LE(advertisedSize, 0)
+        transport.reply(request, { opcode: FTP_OPCODES.Ack, session, data: size })
+        break
+      }
+      case FTP_OPCODES.BurstReadFile:
+        for (let index = 0; index < 1100; index++) {
+          ftp.handleFtpPayload(buildReply({
+            seq: (request.seq + index + 1) & 0xffff,
+            session,
+            opcode: FTP_OPCODES.Ack,
+            reqOpcode: FTP_OPCODES.BurstReadFile,
+            offset: index * 2,
+            data: chunk,
+          }))
+        }
+        break
+      case FTP_OPCODES.TerminateSession:
+        transport.reply(request, { opcode: FTP_OPCODES.Ack })
+        break
+      default:
+        assert.fail(`unexpected opcode ${request.opcode}`)
+    }
+  }
+  ftp.startDownload('/fs/microsd/log/fragmented.ulg')
+  await waitFor(() => transport.messagesOf('fs_op_error').length === 1)
+  assert.equal(transport.messagesOf('fs_op_error')[0].data.code, 'download_gap_overflow')
+  await waitFor(() => !ftp.busy)
   ftp.destroy()
   await fsp.rm(dir, { recursive: true, force: true })
 })()

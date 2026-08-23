@@ -1,0 +1,14 @@
+{
+  "px4": {
+    "ref": "qgroundcontrol@130170966c0d063ae55a1f0cefb8ad71aa2ac5b5",
+    "url": "https://raw.githubusercontent.com/mavlink/qgroundcontrol/130170966c0d063ae55a1f0cefb8ad71aa2ac5b5/src/FirmwarePlugin/PX4/PX4ParameterFactMetaData.json",
+    "sha256": "94bd6df4b48ee60329de0c4bd47124b4aa6fdc8948ad75b972f46ba1aceb23a9",
+    "pinnedAt": "2026-08-21"
+  },
+  "ardupilot": {
+    "ref": "ardupilot-autotest Copter apm.pdef.json (content pin)",
+    "url": "https://autotest.ardupilot.org/Parameters/Copter/apm.pdef.json",
+    "sha256": "714f9ba09f7022e1470ed583eda968309820c9723afb6c693c2c0428ecb934c2",
+    "pinnedAt": "2026-08-21"
+  }
+}

@@ -1,10 +1,6 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import GamepadVisualizer from '../components/gamepad/GamepadVisualizer'
-import Icon from '../components/ui/Icon'
-import { PageTabs } from '../components/ui/PageFrame'
-import { TabPanel } from '../components/ui/Tabs'
-import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
@@ -27,13 +23,6 @@ import {
   saveConnectionPresets,
   updateConnectionPresetGamepadPreference,
 } from '../utils/connectionPresets'
-
-const TAB_KEYS = [
-  { id: 'overview', label: 'joystick.tab.overview' },
-  { id: 'buttons', label: 'joystick.tab.buttons' },
-] as const
-
-const JOYSTICK_TAB_IDS = TAB_KEYS.map((tab) => tab.id)
 
 const STICK_AXES = [
   { axis: 0, label: 'joystick.visualizer.leftX' },
@@ -74,7 +63,7 @@ function ToggleSetting({ label, hint, checked, onChange }: {
   )
 }
 
-export default function JoystickPage({ embedded = false }: { embedded?: boolean }) {
+export default function JoystickPage({ embedded = false, panel = 'overview' }: { embedded?: boolean; panel?: 'overview' | 'buttons' }) {
   const { t } = useTranslation()
   const gamepadState = useGamepadStore()
   const {
@@ -83,7 +72,6 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
     setEnabled, setDeadzone, setExpo,
     setMapping, setButtonAssignment, setAdvanced,
   } = gamepadState
-  const [activeTab, setActiveTab] = useQueryTab(JOYSTICK_TAB_IDS, 'overview')
   const flightControllerConnected = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const activePresetId = useConnectionStore((state) => state.activePresetId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
@@ -92,7 +80,6 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
 
   const buttonCount = Math.max(buttons.length, 16)
 
-  const tabs = useMemo(() => TAB_KEYS.map((tab) => ({ ...tab, label: t(tab.label) })), [t])
   const actionOptions = useMemo(() => [
     ...CORE_ACTION_KEYS.map((action) => ({ ...action, label: t(action.label) })),
     ...availableModes(vehicleIdentity).flatMap((mode) => {
@@ -111,18 +98,8 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
 
   return (
     <div className={embedded ? 'mc-joystick-page mc-fade-in' : 'mc-workspace mc-joystick-page mc-fade-in'}>
-
-      <PageTabs
-        tabs={tabs}
-        active={activeTab}
-        onChange={setActiveTab}
-        ariaLabel={t('settings.section.joystick.label')}
-        idBase="joystick-settings"
-      />
-      <TabPanel idBase="joystick-settings" tabId={activeTab}>
-
-      {activeTab === 'overview' && (
-        <section className="mt-4 space-y-3">
+      {panel === 'overview' && (
+        <section className="space-y-3">
           <div className="mc-card overflow-hidden p-4">
             <div className="mc-joystick-overview-grid">
               <GamepadVisualizer connected={connected} axes={axes} buttons={buttons} />
@@ -219,8 +196,8 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
         </section>
       )}
 
-      {activeTab === 'buttons' && (
-        <section className="mc-card mt-4 overflow-hidden">
+      {panel === 'buttons' && (
+        <section className="mc-card overflow-hidden">
           <div className="border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
             <h3 className="text-[13px] font-bold" style={{ color: 'var(--text-primary)' }}>{t('joystick.buttonAssignment')}</h3>
             <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{t('joystick.buttonHint')}</p>
@@ -233,7 +210,12 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
               return (
                 <div key={index} className="grid grid-cols-[36px_1fr_auto] items-center gap-2 rounded-lg border p-2" style={{ borderColor: buttons[index] ? 'var(--accent)' : 'var(--border)', background: buttons[index] ? 'var(--accent-dim)' : 'var(--bg-secondary)' }}>
                   <span className="mc-mono grid h-8 place-items-center rounded-md text-[11px] font-bold" style={{ background: 'var(--bg-tertiary)', color: buttons[index] ? 'var(--accent)' : 'var(--text-secondary)' }}>B{index}</span>
-                  <select className="mc-select" value={selectedAction} onChange={(event) => setButtonAssignment(index, { action: event.target.value as GamepadActionId })}>
+                  <select
+                    className="mc-select"
+                    value={selectedAction}
+                    aria-label={t('joystick.buttonActionSelect', { button: index })}
+                    onChange={(event) => setButtonAssignment(index, { action: event.target.value as GamepadActionId })}
+                  >
                     {!selectedActionAvailable && (
                       <option value={selectedAction} disabled>{t('joystick.action.unavailableAssigned')}</option>
                     )}
@@ -249,9 +231,6 @@ export default function JoystickPage({ embedded = false }: { embedded?: boolean 
           </div>
         </section>
       )}
-
-      </TabPanel>
-
     </div>
   )
 }

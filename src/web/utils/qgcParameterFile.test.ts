@@ -3,7 +3,9 @@ import test from 'node:test'
 import type { ParamData, VehicleIdentity } from '../../shared/types'
 import {
   buildQgcParameterPreview,
+  filterQgcParameterPreview,
   isDangerousParameter,
+  logSnapshotParams,
   parseQgcParameterFile,
   serializeQgcParameterFile,
 } from './qgcParameterFile'
@@ -37,6 +39,37 @@ test('serializes the official QGC header and sorted tab-delimited rows', () => {
     `7\t1\tFLOAT_PARAM\t${String(Math.fround(0.1))}\t9`,
     '7\t1\tINT_PARAM\t10\t6',
   ])
+})
+
+test('converts PX4 and ArduPilot log snapshots into importable parameter types', () => {
+  const snapshot = [
+    { name: 'INTEGER', value: 3 },
+    { name: 'FLOAT', value: 0.25 },
+    { name: 'INTEGER_FLOAT', value: 2, type: 9 },
+  ]
+  assert.deepEqual(logSnapshotParams(snapshot, 'px4').map(({ id, type }) => [id, type]), [
+    ['INTEGER', 6],
+    ['FLOAT', 9],
+    ['INTEGER_FLOAT', 9],
+  ])
+  assert.deepEqual(logSnapshotParams(snapshot, 'ardupilot').map(({ id, type }) => [id, type]), [
+    ['INTEGER', 9],
+    ['FLOAT', 9],
+    ['INTEGER_FLOAT', 9],
+  ])
+})
+
+test('round-trips a typed log snapshot into the parameter-page import preview', () => {
+  const content = serializeQgcParameterFile({
+    systemId: 7,
+    componentId: 1,
+    params: logSnapshotParams([{ name: 'TYPE_PARAM', value: 3, type: 4 }], 'px4'),
+    identity,
+  })
+  const preview = buildQgcParameterPreview(parseQgcParameterFile(content), liveParams, 7, 1)
+
+  assert.deepEqual(preview.writable.map((entry) => entry.row.name), ['TYPE_PARAM'])
+  assert.equal(preview.writable[0]?.row.type, 4)
 })
 
 test('parses QGC comments plus tab, comma, and whitespace separated rows', () => {
@@ -100,6 +133,12 @@ test('classifies writable changes, float32 equality, target/type/value failures,
   ])
   assert.deepEqual(preview.writable.map((entry) => entry.row.name), ['INT_PARAM'])
   assert.equal(preview.dangerousCount, 0)
+
+  assert.deepEqual(filterQgcParameterPreview(preview, 'write').entries.map((entry) => entry.row.name), ['INT_PARAM'])
+  assert.deepEqual(filterQgcParameterPreview(preview, 'unchanged').entries.map((entry) => entry.row.name), ['FLOAT_PARAM'])
+  assert.deepEqual(filterQgcParameterPreview(preview, 'skipped').entries.map((entry) => entry.row.name), [
+    'CBRK_TEST', 'TYPE_PARAM', 'UNKNOWN', 'CBRK_TEST',
+  ])
 })
 
 test('flags circuit-breaker writes for an additional acknowledgement', () => {

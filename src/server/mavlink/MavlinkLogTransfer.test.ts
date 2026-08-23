@@ -12,8 +12,12 @@ import {
   MavlinkLogTransfer,
   type LogTransferRequest,
   type LogTransferTransport,
+  type LogTransferTimings,
 } from './MavlinkLogTransfer'
-import { MAX_LOG_DOWNLOAD_BYTES } from './downloadLimits'
+import {
+  DATAFLASH_DOWNLOAD_DIR_PREFIX,
+  MAX_LOG_DOWNLOAD_BYTES,
+} from './downloadLimits'
 import type { ServerMessage } from '../../shared/types'
 
 const wait = (milliseconds: number) =>
@@ -81,16 +85,23 @@ class FakeTransport implements LogTransferTransport {
   }
 }
 
-async function makeService(): Promise<{
+async function makeService(
+  options: { downloadDir?: string; timings?: LogTransferTimings } = {},
+): Promise<{
   transport: FakeTransport
   service: MavlinkLogTransfer
-  dir: string
+  dir: string | null
 }> {
   const transport = new FakeTransport()
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-logxfer-test-'))
+  // No downloadDir option -> create a scratch directory and pass it explicitly
+  // (the historical behavior). `downloadDir: undefined` opts into the service's
+  // private default directory instead.
+  const dir = 'downloadDir' in options
+    ? options.downloadDir ?? null
+    : await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-logxfer-test-'))
   const service = new MavlinkLogTransfer(transport, {
-    downloadDir: dir,
-    timings: TEST_TIMINGS,
+    ...(dir !== null ? { downloadDir: dir } : {}),
+    timings: options.timings ?? TEST_TIMINGS,
   })
   transport.service = service
   return { transport, service, dir }
@@ -293,6 +304,9 @@ async function testDownloadTruncatedByEndMarker(): Promise<void> {
   await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
   const complete = transport.messagesOfType('log_download_complete')[0]
   assert.equal(complete.data.sizeBytes, 200)
+  assert.equal(complete.data.advertisedSizeBytes, 400)
+  assert.equal(complete.data.sizeAdjusted, true)
+  assert.equal(complete.data.integrity, 'unverified')
   const record = service.getDownload(complete.data.downloadId)!
   assert.deepEqual(await fsp.readFile(record.filePath), content)
 }
@@ -456,10 +470,198 @@ async function testOversizedDownloadRejectedBeforeTempFile(): Promise<void> {
   service.startDownload(8, 'oversized')
   await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
   assert.equal(transport.messagesOfType('log_op_error')[0].data.code, 'download_too_large')
-  assert.deepEqual(await fsp.readdir(dir), [])
+  assert.deepEqual(await fsp.readdir(dir!), [])
   assert.equal(service.busy, false)
   await service.destroy()
+  await fsp.rm(dir!, { recursive: true, force: true })
+}
+
+/**
+ * OCSA-009: a peer that keeps resending the same LOG_DATA chunk resets the
+ * quiet timer on every frame without filling any missing byte. The per-pass
+ * frame/no-progress budgets must end each pass, and the outer no-progress
+ * accounting must fail the download instead of hanging.
+ */
+async function testDuplicateChunkFloodStalls(): Promise<void> {
+  // A long quiet timer would give every pass a minute of grace; only the new
+  // per-pass budgets can end these passes quickly.
+  const { transport, service } = await makeService({
+    timings: { requestTimeoutMs: 60, streamQuietMs: 60_000, eraseVerifyDelayMs: 10 },
+  })
+  const payload = Buffer.alloc(LOG_DATA_CHUNK_SIZE, 0x5a)
+  transport.responder = (request) => {
+    if (request.kind === 'list') {
+      transport.entry({ id: 11, numLogs: 1, lastLogNum: 11, size: 10_000 })
+      return
+    }
+    if (request.kind !== 'data') return
+    // Flood duplicates of the same already-covered chunk: the very first
+    // frame of the first pass fills [0,90), every later frame is noise that
+    // still resets the quiet timer.
+    for (let index = 0; index < 300; index++) {
+      transport.chunk(11, 0, payload)
+    }
+  }
+  service.startDownload(11)
+  await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
+  const error = transport.messagesOfType('log_op_error')[0]
+  assert.equal(error.data.operation, 'download')
+  assert.equal(error.data.code, 'download_stalled')
+  assert.equal(service.busy, false)
+}
+
+/**
+ * OCSA-009: the hard pass deadline terminates a pass even when the quiet
+ * timer is far too long to fire, so a slow one-chunk-per-request FC still
+ * completes quickly instead of stalling for streamQuietMs per pass.
+ */
+async function testPassDeadlineEndsQuietPasses(): Promise<void> {
+  const { transport, service } = await makeService({
+    timings: {
+      requestTimeoutMs: 60,
+      streamQuietMs: 60_000, // Would stall every pass for a minute...
+      eraseVerifyDelayMs: 10,
+      passDeadlineMs: 80, // ...but the hard deadline ends it instead.
+    },
+  })
+  const content = Buffer.alloc(LOG_DATA_CHUNK_SIZE * 5)
+  for (let index = 0; index < content.length; index++) content[index] = index % 253
+  transport.responder = (request) => {
+    if (request.kind === 'list') {
+      transport.entry({ id: 21, numLogs: 1, lastLogNum: 21, size: content.length })
+      return
+    }
+    if (request.kind !== 'data') return
+    // Serve exactly one chunk per data request, then stay silent: the pass
+    // may only end via the traffic-independent deadline.
+    const end = Math.min(content.length, request.ofs + LOG_DATA_CHUNK_SIZE)
+    transport.chunk(21, request.ofs, content.subarray(request.ofs, end))
+  }
+  const startedAt = Date.now()
+  service.startDownload(21)
+  await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
+  const complete = transport.messagesOfType('log_download_complete')[0]
+  assert.equal(complete.data.sizeBytes, content.length)
+  const record = service.getDownload(complete.data.downloadId)
+  assert.ok(record)
+  assert.deepEqual(await fsp.readFile(record.filePath), content)
+  assert.equal(transport.messagesOfType('log_op_error').length, 0)
+  assert.ok(
+    Date.now() - startedAt < 5000,
+    'the pass deadline, not the 60 s quiet timer, must end each pass',
+  )
+}
+
+/**
+ * OCSA-014: a failed directory preparation must not be cached forever - the
+ * next attempt retries and can succeed. The blocker is a regular file at the
+ * configured path and must not be deleted by the failed attempt.
+ */
+async function testEnsureDirFailureRetries(): Promise<void> {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-logxfer-dirprep-'))
+  const blocked = path.join(base, 'blocked')
+  await fsp.writeFile(blocked, 'placeholder')
+  const { transport, service } = await makeService({ downloadDir: blocked })
+  const content = Buffer.from('retry-payload')
+  serveLog(transport, 31, content)
+
+  service.startDownload(31, 'attempt-1')
+  await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
+  const failure = transport.messagesOfType('log_op_error')[0]
+  assert.equal(failure.data.operation, 'download')
+  assert.equal(failure.data.code, 'log_transfer_internal')
+  assert.equal(
+    await fsp.readFile(blocked, 'utf8'),
+    'placeholder',
+    'a regular file occupying the download path must not be deleted',
+  )
+  await waitFor(() => !service.busy)
+
+  await fsp.unlink(blocked)
+  service.startDownload(31, 'attempt-2')
+  await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
+  const complete = transport.messagesOfType('log_download_complete')[0]
+  const record = service.getDownload(complete.data.downloadId)
+  assert.ok(record)
+  assert.deepEqual(await fsp.readFile(record.filePath), content)
+
+  await service.destroy()
+  await fsp.rm(base, { recursive: true, force: true })
+}
+
+/**
+ * OCSA-008: without an explicit directory the service creates a private
+ * mkdtemp directory under os.tmpdir() with 0700 permissions.
+ */
+async function testDefaultPrivateDirIsolated(): Promise<void> {
+  const { transport, service } = await makeService({ downloadDir: undefined })
+  serveLog(transport, 41, Buffer.from('private-dir-check'))
+  service.startDownload(41)
+  await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
+  const dir = service.activeDownloadDir
+  assert.ok(dir, 'the private download directory must exist after a download')
+  assert.ok(
+    dir.startsWith(path.join(os.tmpdir(), DATAFLASH_DOWNLOAD_DIR_PREFIX)),
+    `unexpected download directory ${dir}`,
+  )
+  const stats = await fsp.stat(dir)
+  // The 0700 isolation guarantee is POSIX-only; Windows directories have no mode bits.
+  if (process.platform !== 'win32') {
+    assert.equal(stats.mode & 0o777, 0o700, 'the private directory must be 0700')
+  }
+  await service.destroy()
   await fsp.rm(dir, { recursive: true, force: true })
+}
+
+/**
+ * OCSA-008: first-use cleanup only removes files matching this instance's own
+ * `<16 hex>.part|bin` naming - foreign files are never touched.
+ */
+async function testCleanupOnlyTouchesOwnArtifacts(): Promise<void> {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-logxfer-clean-'))
+  await fsp.writeFile(path.join(dir, '0123456789abcdef.part'), 'stale part')
+  await fsp.writeFile(path.join(dir, 'ffffffffffffffff.bin'), 'stale final')
+  await fsp.writeFile(path.join(dir, 'notes.txt'), 'keep me')
+  await fsp.writeFile(path.join(dir, 'other-instance.log'), 'keep me too')
+  const { transport, service } = await makeService({ downloadDir: dir })
+  serveLog(transport, 51, Buffer.from('selective-cleanup'))
+  service.startDownload(51)
+  await waitFor(() => transport.messagesOfType('log_download_complete').length === 1)
+  const remaining = (await fsp.readdir(dir)).sort()
+  assert.ok(remaining.includes('notes.txt'), 'foreign files must survive cleanup')
+  assert.ok(remaining.includes('other-instance.log'), 'foreign artifacts must survive cleanup')
+  assert.ok(!remaining.includes('0123456789abcdef.part'), 'own stale .part must be removed')
+  assert.ok(!remaining.includes('ffffffffffffffff.bin'), 'own stale .bin must be removed')
+  assert.equal(
+    remaining.filter((name) => name.endsWith('.bin')).length,
+    1,
+    'exactly the new download remains',
+  )
+  await service.destroy()
+  await fsp.rm(dir, { recursive: true, force: true })
+}
+
+/**
+ * OCSA-009: LOG_ENTRY replies that never add a new in-window id (out-of-window
+ * or duplicate) reset the quiet timer without progress; the list collector
+ * must fail with an explicit overflow error instead of looping forever.
+ */
+async function testListFloodOverflows(): Promise<void> {
+  const { transport, service } = await makeService()
+  transport.responder = (request) => {
+    if (request.kind !== 'list') return
+    // numLogs=1/lastLogNum=1 makes id 1 the only expected entry; these frames
+    // never deliver it and never let the quiet timer expire.
+    for (let index = 0; index < 500; index++) {
+      transport.entry({ id: 50 + index, numLogs: 1, lastLogNum: 1, size: 10 })
+    }
+  }
+  service.startList()
+  await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
+  const error = transport.messagesOfType('log_op_error')[0]
+  assert.equal(error.data.operation, 'list')
+  assert.equal(error.data.code, 'log_list_overflow')
+  assert.equal(service.busy, false)
 }
 
 async function main(): Promise<void> {
@@ -481,7 +683,38 @@ async function main(): Promise<void> {
   await testInvalidLogId()
   await testWriteRejected()
   await testOversizedDownloadRejectedBeforeTempFile()
-  console.log('MavlinkLogTransfer protocol tests passed')
+  await testDuplicateChunkFloodStalls()
+  await testPassDeadlineEndsQuietPasses()
+  await testEnsureDirFailureRetries()
+  await testDefaultPrivateDirIsolated()
+  await testCleanupOnlyTouchesOwnArtifacts()
+  await testListFloodOverflows()
+// Sparse LOG_DATA frames that each cover new bytes must still hit a hard
+// interval limit instead of growing missing[] and the write chain indefinitely.
+await (async () => {
+  const { transport, service, dir } = await makeService()
+  const logId = 71
+  transport.responder = (request) => {
+    if (request.kind === 'list') {
+      transport.entry({ id: logId, numLogs: 1, lastLogNum: logId, size: 220_000 })
+      return
+    }
+    if (request.kind === 'data') {
+      const chunk = Buffer.alloc(LOG_DATA_CHUNK_SIZE, 0x6b)
+      for (let index = 0; index < 1100; index++) {
+        transport.chunk(logId, index * LOG_DATA_CHUNK_SIZE * 2, chunk)
+      }
+    }
+  }
+  service.startDownload(logId, 'fragmented-dataflash')
+  await waitFor(() => transport.messagesOfType('log_op_error').length === 1)
+  assert.equal(transport.messagesOfType('log_op_error')[0].data.code, 'download_gap_overflow')
+  await waitFor(() => !service.busy)
+  service.destroy()
+  if (dir) await fsp.rm(dir, { recursive: true, force: true })
+})()
+
+console.log('MavlinkLogTransfer protocol tests passed')
 }
 
 await main()

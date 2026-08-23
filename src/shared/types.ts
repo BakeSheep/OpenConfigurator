@@ -128,6 +128,49 @@ export interface CalibrationSnapshot {
   cancelSupported: boolean
 }
 
+// -- In-flight controller autotune sessions ----------------------------------
+
+export type AutotunePhase =
+  | 'starting'
+  | 'tuning'
+  | 'paused'
+  | 'verifying'
+  | 'applying'
+  | 'awaiting_disarm'
+  | 'completed'
+  | 'testing'
+  | 'save_pending'
+  | 'saved'
+  | 'discarded'
+  | 'failed'
+  | 'interrupted'
+
+export type AutotuneVerification =
+  | 'not_applicable'
+  | 'firmware_completed'
+  | 'parameters_saved'
+
+export interface AutotuneSnapshot {
+  sessionId: string
+  seq: number
+  requestId: string
+  ownerClientId: string | null
+  recoverUntil: number | null
+  family: 'px4' | 'ardupilot'
+  phase: AutotunePhase
+  verification: AutotuneVerification
+  /** PX4 firmware progress. ArduPilot deliberately reports null. */
+  progress: number | null
+  axis: 'roll' | 'pitch' | 'yaw' | null
+  initialModeId: number
+  updatedAt: number
+  cancelSupported: boolean
+  /** Parameter values captured before the in-flight run. */
+  baselineParameters: Record<string, number>
+  failureCode?: string
+  failureReason?: string
+}
+
 export interface AttitudeData {
   roll: number
   pitch: number
@@ -584,6 +627,17 @@ export type ServerMessage =
         safetyEpoch?: number
         safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
+        /** Unique stable targets are automatic; ambiguous links require an explicit choice. */
+        selectionSource?: 'automatic' | 'explicit' | null
+        conflict?: {
+          reason: 'multiple_stable_targets' | 'same_system_identity_conflict'
+          candidates: Array<{
+            systemId: number
+            componentId: number
+            autopilot: number
+            type: number
+          }>
+        } | null
         /** Classified identity of the selected target; null until known. */
         identity: VehicleIdentity | null
         discovered?: Array<{
@@ -658,6 +712,11 @@ export type ServerMessage =
         /** Opaque id used by GET /api/logs/downloads/:downloadId. */
         downloadId: string
         sizeBytes: number
+        /** Size reported by LOG_ENTRY before any short end marker adjusted it. */
+        advertisedSizeBytes: number
+        sizeAdjusted: boolean
+        /** LOG_REQUEST_DATA provides no checksum or authenticated digest. */
+        integrity: 'unverified'
         fileName: string
       }
     }
@@ -708,6 +767,11 @@ export type ServerMessage =
       type: 'calibration_session_started'
       data: { sessionId: string; requestId: string; recoveryToken: string }
     }
+  | { type: 'autotune_update'; data: AutotuneSnapshot }
+  | {
+      type: 'autotune_session_started'
+      data: { sessionId: string; requestId: string; recoveryToken: string }
+    }
   | { type: 'radio_calibration_snapshot'; data: RadioCalibrationSnapshot }
   | {
       type: 'radio_calibration_started'
@@ -726,7 +790,15 @@ export type ClientMessage =
       expectedSafetyEpoch?: number
       expectedSafetyAuthorityId?: string
     }
-  | { type: 'param_set'; requestId?: string; data: { id: string; value: number; paramType: number } }
+  | {
+      type: 'param_set'
+      requestId?: string
+      data: { id: string; value: number; paramType: number }
+      /** Required for safety-sensitive parameters (CBRK_*, arming, failsafe, output mapping). */
+      safetyConfirmation?: 'sensitive_param'
+      expectedSafetyEpoch?: number
+      expectedSafetyAuthorityId?: string
+    }
   | {
       type: 'vehicle_config_set'
       requestId: string
@@ -802,6 +874,26 @@ export type ClientMessage =
   | {
       // Reattach a disconnected owner to its running calibration session.
       type: 'calibration_reclaim'
+      requestId: string
+      data: { sessionId: string; recoveryToken: string }
+    }
+  | {
+      type: 'autotune_start'
+      requestId: string
+      safetyConfirmation: 'autotune_in_flight'
+      expectedSafetyEpoch: number
+      expectedSafetyAuthorityId: string
+    }
+  | {
+      type: 'autotune_action'
+      requestId: string
+      data: {
+        sessionId: string
+        action: 'abort' | 'test_gains' | 'restore_gains'
+      }
+    }
+  | {
+      type: 'autotune_reclaim'
       requestId: string
       data: { sessionId: string; recoveryToken: string }
     }
@@ -885,6 +977,14 @@ export type ClientMessage =
       data: { sessionId: string; targets: number[]; values: Record<string, number> }
     }
 
+/**
+ * Physical link technology behind a discovered device candidate. BLE GATT
+ * candidates must never masquerade as serial/SPP entries.
+ */
+export type ConnectionTransport = 'serial' | 'bluetooth-spp' | 'bluetooth-ble'
+
+export type DeviceAvailability = 'available' | 'paired' | 'offline' | 'unknown'
+
 export interface PortInfo {
   path: string
   manufacturer?: string
@@ -896,7 +996,62 @@ export interface PortInfo {
   productId?: string
   vendorId?: string
   pnpId?: string
+  // Opaque per-process identifier from the discovery service. Preferred key
+  // for connect requests; the server re-verifies identity before opening.
+  deviceId?: string
+  transport?: ConnectionTransport
+  // Stable device path on Linux (/dev/serial/by-id/...); survives renumbering.
+  stablePath?: string
+  // Operator-facing label (friendly name or manufacturer + serial suffix).
+  displayName?: string
+  serialNumber?: string
+  usbLocationId?: string
+  // Quick Bluetooth discovery knows the device is paired but cannot prove it
+  // is currently reachable without a blocking SDP/GATT round trip.
+  availability?: DeviceAvailability
+  // Set when connecting requires the slow targeted resolution path (SDP
+  // channel lookup, GATT service discovery) for this specific device.
+  requiresDeepResolution?: boolean
 }
+
+export type ConnectionScanKind = 'serial' | 'bluetooth'
+export type ConnectionScanScope = 'recommended' | 'all' | 'quick'
+
+export interface ConnectionDiscoveryWarning {
+  code: string
+  message: string
+}
+
+export interface ConnectionScanResult {
+  kind: ConnectionScanKind
+  scope: ConnectionScanScope
+  // Monotonic per-service counter; clients must ignore results from an older
+  // generation than the latest request they issued.
+  scanGeneration: number
+  cached: boolean
+  devices: PortInfo[]
+  warnings: ConnectionDiscoveryWarning[]
+}
+
+/**
+ * Stable, localizable connection failure codes. The UI must map these instead
+ * of matching native error strings (connection-compatibility plan §4.4).
+ */
+export type ConnectionErrorCode =
+  | 'SERIAL_PERMISSION_DENIED'
+  | 'SERIAL_BUSY'
+  | 'SERIAL_NOT_FOUND'
+  | 'SERIAL_OPEN_TIMEOUT'
+  | 'IDENTITY_AMBIGUOUS'
+  | 'DEVICE_NOT_FOUND'
+  | 'BLUETOOTH_ADAPTER_UNAVAILABLE'
+  | 'BLUETOOTH_TOOL_MISSING'
+  | 'BLUETOOTH_DEVICE_NOT_PAIRED'
+  | 'BLUETOOTH_DEVICE_OFFLINE'
+  | 'BLUETOOTH_SPP_CHANNEL_UNRESOLVED'
+  | 'BLUETOOTH_GATT_PROFILE_UNSUPPORTED'
+  | 'BLUEZ_DBUS_RUNTIME_MISSING'
+  | 'VEHICLE_HEARTBEAT_TIMEOUT'
 
 export interface ConnectionConfig {
   type: 'serial' | 'bluetooth'
@@ -909,6 +1064,12 @@ export interface ConnectionConfig {
   bluetoothAddress?: string
   bluetoothServiceClassId?: string
   bluetoothChannel?: number
+  // Discovery-v2 identity fields. When deviceId is present the server
+  // re-resolves the candidate and fails closed on mismatch/ambiguity.
+  deviceId?: string
+  transport?: ConnectionTransport
+  stablePath?: string
+  serialNumber?: string
 }
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'

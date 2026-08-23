@@ -6,25 +6,26 @@ import { Button } from '../components/ui/Button'
 import Dialog from '../components/ui/Dialog'
 import { Notice } from '../components/ui/Feedback'
 import StatePanel from '../components/ui/StatePanel'
+import { TabPanel, Tabs } from '../components/ui/Tabs'
 import Toolbar from '../components/ui/Toolbar'
 import { sendClientMessage } from '../hooks/useWebSocket'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
+import { isSensitiveParameter } from '../../shared/parameterSafety'
 import { parameterEnumLabel, parameterEnumOptions, parameterEnumValuesMatch } from '../utils/parameterEnumMetadata'
 import { parameterGroupKey, parameterMetadata, parameterSearchText } from '../utils/parameterMetadata'
 import {
   buildQgcParameterPreview,
+  filterQgcParameterPreview,
   parseQgcParameterFile,
   serializeQgcParameterFile,
   type QgcParameterPreview,
   type QgcParameterPreviewEntry,
+  type QgcParameterPreviewFilter,
 } from '../utils/qgcParameterFile'
 
-// PX4 circuit-breaker parameters disable safety protections outright; writing
-// them by accident must require an explicit confirmation.
-const DANGEROUS_PARAM_PREFIXES = ['CBRK_']
 const QGC_PARAMETER_FILE_MAX_BYTES = 2 * 1024 * 1024
 const PARAM_IMPORT_WRITE_TIMEOUT_MS = 5000
 
@@ -82,12 +83,17 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
+  const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
+  const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const firmwareVersion = useTelemetryStore((state) => state.autopilotVersion?.firmwareVersion ?? null)
   const lastOperationError = useTelemetryStore((state) => state.lastOperationError)
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
+  const armed = useTelemetryStore((state) => state.status?.armed)
   const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
-  const canWrite = canAccess && profileWritable
+  // OCSA-001: mirror the server gate — raw parameter writes require a
+  // confirmed disarmed vehicle, not just a writable profile.
+  const canWrite = canAccess && profileWritable && armed === false
   const [search, setSearch] = useState('')
   const [editId, setEditId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -98,6 +104,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const [writeError, setWriteError] = useState<string | null>(null)
   const [importSelection, setImportSelection] = useState<ParameterImportSelection | null>(null)
   const [importJob, setImportJob] = useState<ParameterImportJob | null>(null)
+  const [importPreviewFilter, setImportPreviewFilter] = useState<QgcParameterPreviewFilter>('write')
   const [dangerousImportAcknowledged, setDangerousImportAcknowledged] = useState(false)
   const writeTimer = useRef<number | null>(null)
   const importInput = useRef<HTMLInputElement | null>(null)
@@ -204,10 +211,16 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (!entry) return
     const requestId = `param-import-${importRunSequence.current}-${importJob.nextIndex}-${Date.now().toString(36)}`
     setImportJob((current) => current ? { ...current, pendingRequestId: requestId } : current)
+    const sensitive = entry.dangerous
     if (!send({
       type: 'param_set',
       requestId,
       data: { id: entry.row.name, value: entry.row.value, paramType: entry.row.type },
+      ...(sensitive && safetyAuthorityId ? {
+        safetyConfirmation: 'sensitive_param' as const,
+        expectedSafetyEpoch: safetyEpoch,
+        expectedSafetyAuthorityId: safetyAuthorityId,
+      } : {}),
     })) {
       setImportJob((current) => {
         if (!current || current.pendingRequestId !== requestId) return current
@@ -219,7 +232,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
         }
       })
     }
-  }, [canWrite, importJob, importSelection, send, t, targetComponentId, targetSystemId])
+  }, [canWrite, importJob, importSelection, safetyAuthorityId, safetyEpoch, send, t, targetComponentId, targetSystemId])
 
   useEffect(() => {
     if (importJob?.status !== 'done' || !importResyncPending.current || !canAccess) return
@@ -270,14 +283,24 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       return
     }
     if (
-      DANGEROUS_PARAM_PREFIXES.some((prefix) => id.startsWith(prefix))
+      isSensitiveParameter(id)
       && !window.confirm(
         t('parameter.circuitBreakerConfirm', { id, value }),
       )
     ) return
     setWriteError(null)
     setPendingWrite({ id, value })
-    send({ type: 'param_set', requestId: `param-${id}-${Date.now().toString(36)}`, data: { id, value, paramType: param.type } })
+    const sensitive = isSensitiveParameter(id)
+    send({
+      type: 'param_set',
+      requestId: `param-${id}-${Date.now().toString(36)}`,
+      data: { id, value, paramType: param.type },
+      ...(sensitive && safetyAuthorityId ? {
+        safetyConfirmation: 'sensitive_param' as const,
+        expectedSafetyEpoch: safetyEpoch,
+        expectedSafetyAuthorityId: safetyAuthorityId,
+      } : {}),
+    })
     if (writeTimer.current !== null) window.clearTimeout(writeTimer.current)
     writeTimer.current = window.setTimeout(() => {
       setPendingWrite((current) => {
@@ -321,6 +344,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
       const preview = buildQgcParameterPreview(parsed, params, targetSystemId, targetComponentId)
       setWriteError(null)
       setDangerousImportAcknowledged(false)
+      setImportPreviewFilter('write')
       setImportJob(null)
       setImportSelection({ fileName: file.name, preview, systemId: targetSystemId, componentId: targetComponentId })
     } catch {
@@ -355,6 +379,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     if (importWriting) return
     setImportSelection(null)
     setImportJob(null)
+    setImportPreviewFilter('write')
     setDangerousImportAcknowledged(false)
   }
 
@@ -382,6 +407,9 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
     ? preview.entries.length - preview.writable.length - unchangedImportCount + preview.issues.length
     : 0
   const completedImportCount = importJob ? importJob.succeeded.length + importJob.failed.length : 0
+  const filteredImportPreview = preview
+    ? filterQgcParameterPreview(preview, importPreviewFilter)
+    : { entries: [], issues: [] }
 
   return (
     <div className={embedded ? 'mc-fade-in' : 'mc-workspace mc-fade-in mc-workspace--wide'}>
@@ -424,6 +452,11 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
 
       {!canAccess && params.size > 0 && <Notice tone="warning">{t('parameter.connectToSync')}</Notice>}
       {canAccess && !profileWritable && <Notice tone="warning">{t('parameter.writeNotSupported')}</Notice>}
+      {canAccess && profileWritable && armed !== false && (
+        <Notice tone="warning">
+          {armed ? t('vehicleSetup.disarmRequired') : t('vehicleSetup.armingUnknown')}
+        </Notice>
+      )}
       {writeError && <Notice tone="danger">{writeError}</Notice>}
 
       <div className="mc-param-search">
@@ -576,38 +609,55 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
         >
           <div className="space-y-3">
             <p className="mc-param-import-file mc-mono">{importSelection.fileName}</p>
-            <div className="mc-param-import-summary">
-              <span data-state="write">{t('parameter.importSummaryWrite', { count: preview.writable.length })}</span>
-              <span data-state="same">{t('parameter.importSummaryUnchanged', { count: unchangedImportCount })}</span>
-              <span data-state="skip">{t('parameter.importSummarySkipped', { count: skippedImportCount })}</span>
-            </div>
 
             {!importJob ? (
               <>
-                <ul className="mc-modal__list mc-param-import-list">
-                  {preview.entries.map((entry) => (
-                    <li key={`${entry.row.line}:${entry.row.name}`} data-state={entry.status}>
-                      <span>
-                        <code>{entry.row.name}</code>
-                        <small>{t(`parameter.importStatus.${entry.status}`)}</small>
-                      </span>
-                      <span className="mc-mono">
-                        {entry.current ? `${entry.current.value} → ${entry.row.value}` : String(entry.row.value)}
-                      </span>
-                    </li>
-                  ))}
-                  {preview.issues.map((issue) => (
-                    <li key={`issue:${issue.line}`} data-state="invalid_value">
-                      <span>
-                        <code>{t('parameter.importLine', { line: issue.line })}</code>
-                        <small>{t(`parameter.importIssue.${issue.reason}`)}</small>
-                      </span>
-                    </li>
-                  ))}
-                  {preview.entries.length === 0 && preview.issues.length === 0 && (
-                    <li>{t('parameter.importEmptyFile')}</li>
-                  )}
-                </ul>
+                <Tabs
+                  tabs={[
+                    { id: 'write', label: t('parameter.importSummaryWrite', { count: preview.writable.length }) },
+                    { id: 'unchanged', label: t('parameter.importSummaryUnchanged', { count: unchangedImportCount }) },
+                    { id: 'skipped', label: t('parameter.importSummarySkipped', { count: skippedImportCount }) },
+                  ]}
+                  active={importPreviewFilter}
+                  onChange={(filter) => setImportPreviewFilter(filter as QgcParameterPreviewFilter)}
+                  ariaLabel={t('parameter.importFilterAria')}
+                  idBase="parameter-import-filter"
+                  panelId="parameter-import-filter-panel"
+                  className="mc-param-import-summary"
+                />
+                <TabPanel
+                  id="parameter-import-filter-panel"
+                  idBase="parameter-import-filter"
+                  tabId={importPreviewFilter}
+                  className="mc-param-import-filter-panel"
+                >
+                  <ul className="mc-modal__list mc-param-import-list">
+                    {filteredImportPreview.entries.map((entry) => (
+                      <li key={`${entry.row.line}:${entry.row.name}`} data-state={entry.status}>
+                        <span>
+                          <code>{entry.row.name}</code>
+                          <small>{t(`parameter.importStatus.${entry.status}`)}</small>
+                        </span>
+                        <span className="mc-mono">
+                          {entry.current ? `${entry.current.value} → ${entry.row.value}` : String(entry.row.value)}
+                        </span>
+                      </li>
+                    ))}
+                    {filteredImportPreview.issues.map((issue) => (
+                      <li key={`issue:${issue.line}`} data-state="invalid_value">
+                        <span>
+                          <code>{t('parameter.importLine', { line: issue.line })}</code>
+                          <small>{t(`parameter.importIssue.${issue.reason}`)}</small>
+                        </span>
+                      </li>
+                    ))}
+                    {filteredImportPreview.entries.length === 0 && filteredImportPreview.issues.length === 0 && (
+                      <li>{preview.entries.length === 0 && preview.issues.length === 0
+                        ? t('parameter.importEmptyFile')
+                        : t('parameter.importFilterEmpty')}</li>
+                    )}
+                  </ul>
+                </TabPanel>
 
                 {preview.dangerousCount > 0 && (
                   <label className="mc-param-import-danger">

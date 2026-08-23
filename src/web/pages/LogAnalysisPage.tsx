@@ -38,6 +38,7 @@ import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetada
 import { localizeLogSeries, logLoopLabel } from '../utils/logSeriesLabels'
 import { backendEnabled } from '../runtime'
 import { roundedDurationParts } from '../utils/duration'
+import { logSnapshotParams, serializeQgcParameterFile } from '../utils/qgcParameterFile'
 import {
   buildChartCsv,
   chartExportBaseName,
@@ -784,6 +785,8 @@ function FcDataflashImportDialog({
 export default function LogAnalysisPage({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useTranslation()
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
+  const targetSystemId = useConnectionStore((state) => state.targetSystemId)
+  const targetComponentId = useConnectionStore((state) => state.targetComponentId)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const logs = logSupport(vehicleIdentity)
   const download = useFileExplorerStore((state) => state.download)
@@ -822,6 +825,22 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
   const handleChartCursorTimeChange = useCallback((timeSec: number) => {
     setChartCursorTimeSec(timeSec)
   }, [])
+
+  const exportParameterSnapshot = useCallback(() => {
+    if (!dataset || dataset.params.length === 0) return
+    const family = fileName && isDataflashFileName(fileName) ? 'ardupilot' : 'px4'
+    const content = serializeQgcParameterFile({
+      systemId: targetSystemId ?? 1,
+      componentId: targetComponentId ?? 1,
+      params: logSnapshotParams(dataset.params, family),
+      identity: family === 'px4'
+        ? { family: 'px4', vehicleClass: 'unknown', autopilotId: 12, vehicleTypeId: 0 }
+        : { family: 'ardupilot', vehicleClass: 'unknown', autopilotId: 3, vehicleTypeId: 0 },
+      firmwareVersion: dataset.overview.firmware,
+    })
+    const baseName = (fileName ?? 'flight-log').replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9._-]+/g, '_')
+    downloadBlob(new Blob([content], { type: 'text/plain;charset=utf-8' }), `${baseName}.params`)
+  }, [dataset, fileName, targetComponentId, targetSystemId])
 
   useEffect(() => {
     setChartCursorTimeSec(null)
@@ -1448,7 +1467,18 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
           {/* 9. Parameters */}
           <section className="mc-card mc-analysis-panel">
-            <h3 className="mc-section-title">{t('logAnalysis.paramSnapshot', { count: dataset.params.length })}</h3>
+            <div className="mc-analysis-panel__header">
+              <h3 className="mc-section-title">{t('logAnalysis.paramSnapshot', { count: dataset.params.length })}</h3>
+              <Button
+                tone="secondary"
+                size="compact"
+                leadingIcon={<Icon name="download" size={14} />}
+                onClick={exportParameterSnapshot}
+                disabled={dataset.params.length === 0}
+              >
+                {t('logAnalysis.exportParams')}
+              </Button>
+            </div>
             <input
               type="search"
               className="mc-input"

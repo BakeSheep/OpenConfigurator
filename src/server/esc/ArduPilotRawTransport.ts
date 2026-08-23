@@ -45,6 +45,14 @@ export interface ArduPilotRawTransportOptions {
   targetMode?: 'ardupilot_passthrough' | 'direct'
   /** Quiet interval after MAVLink is paused so queued frames can drain. */
   settleMs?: number
+  /**
+   * Operation-boundary safety re-check (OCSA-002). Evaluated before open and
+   * before every transact against the latest server-side armed/target/
+   * connection snapshot. During passthrough MAVLink is paused, so this is the
+   * only per-operation guard; a non-null error fails the operation and, once
+   * open, aborts the session through onAborted.
+   */
+  checkSafety?: () => EscError | null
 }
 
 const DEFAULT_CAPABILITIES: EscTransportCapabilities = {
@@ -59,6 +67,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
   private readonly connManager: RawSessionProvider
   private readonly bridge: ProtocolPauseController
   private readonly checkBusy: () => string | null
+  private readonly checkSafety: () => EscError | null
   private readonly targetMode: 'ardupilot_passthrough' | 'direct'
   private readonly settleMs: number
   private handle: RawSessionHandle | null = null
@@ -74,6 +83,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
     this.connManager = options.connManager
     this.bridge = options.bridge
     this.checkBusy = options.checkBusy ?? (() => null)
+    this.checkSafety = options.checkSafety ?? (() => null)
     this.targetMode = options.targetMode ?? 'ardupilot_passthrough'
     this.settleMs = options.settleMs
       ?? (this.targetMode === 'ardupilot_passthrough' ? ARDUPILOT_PROTOCOL_QUIET_MS : 0)
@@ -103,6 +113,10 @@ export class ArduPilotRawTransport implements EscByteTransport {
     if (busy) {
       throw new EscError('busy', `链路正忙（${busy}），无法进入 ESC 直通`)
     }
+    // Latest server-side snapshot: armed/target/connection evidence must hold
+    // at the moment the link is borrowed, not only at the session entry gate.
+    const safetyError = this.checkSafety()
+    if (safetyError) throw safetyError
     if (signal.aborted) throw new EscError('cancelled', 'ESC 会话在建立期间被取消')
 
     // Pause MAVLink first so no GCS heartbeat or parser touches the raw stream,
@@ -148,6 +162,14 @@ export class ArduPilotRawTransport implements EscByteTransport {
       throw new EscError('busy', 'ESC 传输已有请求在执行')
     }
     if (signal.aborted) throw new EscError('cancelled', 'ESC 请求已取消')
+    // Per-transaction boundary. MAVLink is paused, so this re-check works
+    // from the latest snapshot plus generation keys; a violation must also
+    // abort the session because probe-level callers may swallow the error.
+    const safetyError = this.checkSafety()
+    if (safetyError) {
+      this.notifyAborted(safetyError)
+      throw safetyError
+    }
 
     this.inFlight = true
     this.rxChunks = []

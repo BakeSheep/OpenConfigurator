@@ -5,6 +5,7 @@ import {
   BrowserWindow,
   dialog,
   Menu,
+  session,
   shell,
   type Event as ElectronEvent,
 } from 'electron'
@@ -78,6 +79,18 @@ async function stopDesktopBackend(): Promise<void> {
   }
 }
 
+// 桌面端不需要摄像头/麦克风/地理位置等任何受控权限，默认全部拒绝（硬化）。
+function installPermissionGuards(): void {
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+    console.warn(`[Desktop] Denied permission request: ${permission}`)
+    callback(false)
+  })
+  session.defaultSession.setPermissionCheckHandler((_contents, permission) => {
+    console.warn(`[Desktop] Denied permission check: ${permission}`)
+    return false
+  })
+}
+
 function createMainWindow(appUrl: string): BrowserWindow {
   const window = new BrowserWindow({
     title: `OpenConfigurator ${app.getVersion()}`,
@@ -137,6 +150,7 @@ if (!ownsSingleInstance) {
 
   void app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
+    installPermissionGuards()
     try {
       const appUrl = await startDesktopBackend()
       mainWindow = createMainWindow(appUrl)

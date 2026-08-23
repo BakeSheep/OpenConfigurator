@@ -46,6 +46,14 @@ export interface Px4SerialControlTransportOptions {
    * because it reads parameters that live in higher layers.
    */
   preflight?: () => EscError | null
+  /**
+   * Operation-boundary safety re-check (OCSA-002). Evaluated before open and
+   * before every transact against the latest server-side armed/target/
+   * connection snapshot. MAVLink stays live in this mode, so an armed
+   * heartbeat is caught at the next frame boundary; a non-null error aborts
+   * the session through onAborted and releases the exclusive UART on close.
+   */
+  checkSafety?: () => EscError | null
   /** Delay after device init before the first data frame (PX4 needs ~2s). */
   initSettleMs?: number
   capabilities?: EscTransportCapabilities
@@ -84,6 +92,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
 
   private readonly bridge: SerialControlBridge
   private readonly preflight: () => EscError | null
+  private readonly checkSafety: () => EscError | null
   private readonly initSettleMs: number
   private readonly waitFn: (ms: number, signal: AbortSignal) => Promise<void>
   private channels: number[] = []
@@ -98,6 +107,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
   constructor(options: Px4SerialControlTransportOptions) {
     this.bridge = options.bridge
     this.preflight = options.preflight ?? (() => null)
+    this.checkSafety = options.checkSafety ?? (() => null)
     this.initSettleMs = options.initSettleMs ?? DEFAULT_INIT_SETTLE_MS
     this.waitFn = options.waitFn ?? defaultWait
     this.capabilities = options.capabilities ?? DEFAULT_CAPABILITIES
@@ -138,6 +148,10 @@ export class Px4SerialControlTransport implements EscByteTransport {
     }
     const preflightError = this.preflight()
     if (preflightError) throw preflightError
+    // Latest server-side snapshot: the vehicle must still be disarmed and
+    // generation-stable at the moment the exclusive UART is claimed.
+    const safetyError = this.checkSafety()
+    if (safetyError) throw safetyError
     if (signal.aborted) throw new EscError('cancelled', 'ESC 会话在建立期间被取消')
 
     this.channels = [...target.channels]
@@ -178,6 +192,14 @@ export class Px4SerialControlTransport implements EscByteTransport {
     if (this.activeDevice === null) throw new EscError('invalid_state', '未选择 ESC 设备')
     if (this.inFlight) throw new EscError('busy', 'ESC 传输已有请求在执行')
     if (signal.aborted) throw new EscError('cancelled', 'ESC 请求已取消')
+    // Per-transaction boundary: an armed (or unknown/target-changed) snapshot
+    // must abort the session and release the exclusive UART immediately, even
+    // when the caller swallows per-transaction errors.
+    const safetyError = this.checkSafety()
+    if (safetyError) {
+      this.notifyAborted(safetyError)
+      throw safetyError
+    }
 
     this.inFlight = true
     this.rxChunks = []

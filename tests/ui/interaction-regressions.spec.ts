@@ -136,6 +136,73 @@ test('dashboard and flight keep their operational UI while disconnected', async 
   await expect(page.locator('main').getByRole('button', { name: '起飞', exact: true })).toBeDisabled()
 })
 
+test('the connection menu hides a unique automatic target and asks only for an ambiguous target', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'The target-selection interaction is viewport-independent.')
+  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
+  await page.goto('/#/dashboard')
+  await expect(page.locator('main h1')).toHaveCount(1)
+
+  await page.evaluate(async () => {
+    const { useConnectionStore } = await import('/src/web/stores/connectionStore.ts')
+    const store = useConnectionStore.getState()
+    const authority = '00000000-0000-4000-8000-000000000042'
+    store.setClientId('ui-target-test', 7, authority)
+    store.setConnectionSnapshot({
+      status: 'connected',
+      transportOpen: true,
+      vehicleReady: true,
+      rawSessionActive: false,
+      port: '/dev/ttyACM0',
+      type: 'serial',
+      baudRate: 115200,
+    })
+    store.setController(null, null, 7, authority)
+    store.setTarget(42, 1, 7, authority, 'automatic', null, [
+      { systemId: 42, componentId: 1, autopilot: 12, type: 2 },
+    ])
+  })
+
+  const connectionButton = page.locator('.mc-topbar__connect')
+  await connectionButton.click()
+  const menu = page.locator('.mc-topbar__arm-dropdown')
+  await expect(menu).toContainText('/dev/ttyACM0')
+  await expect(menu).not.toContainText('选择飞控')
+  await expect(menu).not.toContainText('SYS 42 / COMP 1')
+
+  await page.evaluate(async () => {
+    const { useConnectionStore } = await import('/src/web/stores/connectionStore.ts')
+    const authority = '00000000-0000-4000-8000-000000000042'
+    const candidates = [
+      { systemId: 42, componentId: 1, autopilot: 12, type: 2 },
+      { systemId: 43, componentId: 1, autopilot: 3, type: 2 },
+    ]
+    useConnectionStore.getState().setTarget(42, 1, 8, authority, 'automatic', {
+      reason: 'multiple_stable_targets',
+      candidates,
+    }, candidates)
+  })
+
+  await expect(menu).toContainText('选择飞控')
+  await expect(menu.getByRole('button', { name: /SYS 42 \/ COMP 1/ })).toBeVisible()
+  await expect(menu.getByRole('button', { name: /SYS 43 \/ COMP 1/ })).toBeVisible()
+
+  await page.evaluate(async () => {
+    const { useConnectionStore } = await import('/src/web/stores/connectionStore.ts')
+    const authority = '00000000-0000-4000-8000-000000000042'
+    const candidates = [
+      { systemId: 42, componentId: 1, autopilot: 12, type: 2 },
+      { systemId: 42, componentId: 2, autopilot: 3, type: 2 },
+    ]
+    useConnectionStore.getState().setTarget(42, 1, 9, authority, 'automatic', {
+      reason: 'same_system_identity_conflict',
+      candidates,
+    }, candidates)
+  })
+  await expect(menu).toContainText('请断开重复设备或修改 MAVLink SYS ID')
+  await expect(menu).not.toContainText('选择飞控')
+  await expect(menu.getByRole('button', { name: /SYS \d+ \/ COMP \d+/ })).toHaveCount(0)
+})
+
 async function openLivePx4LogFixture(page: Page) {
   await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')

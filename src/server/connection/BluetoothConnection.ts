@@ -1,23 +1,18 @@
 import { EventEmitter } from 'events'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import type { PortInfo } from '../../shared/types'
+import {
+  BluetoothDiscoveryError,
+  discoverBluetoothQuick,
+  parseLinuxRfcommPath,
+  parseLinuxSppPath,
+  resolveLinuxSppChannel,
+  type BluetoothPortRecord,
+  type BluetoothQuickDependencies,
+  type TargetedSppDependencies,
+} from './discovery/bluetoothDiscovery'
 
-const execFileAsync = promisify(execFile)
-const FLIGHT_CONTROLLER_NAME = /(micoair|pixhawk|cubepilot|cube\s*orange|px4|flight\s*controller|飞控)/i
-const WINDOWS_SPP_SERVICE_ID = '1101'
-
-export interface BluetoothPortRecord {
-  path: string
-  manufacturer?: string
-  friendlyName?: string
-  bluetoothAddress?: string
-  bluetoothChannel?: number
-  bluetoothServiceClassId?: string
-  productId?: string
-  vendorId?: string
-  pnpId?: string
-}
+export { parseLinuxRfcommPath, parseLinuxSppPath }
+export type { BluetoothPortRecord } from './discovery/bluetoothDiscovery'
 
 export interface BluetoothDiscoveryDependencies {
   platform?: NodeJS.Platform
@@ -70,23 +65,8 @@ const normalizeServiceId = (value?: string): string | undefined => {
 }
 
 const getBluetoothAddress = (port: BluetoothPortRecord): string | undefined =>
-  normalizeAddress(port.bluetoothAddress)
-  ?? port.pnpId?.match(/&0&([0-9a-f]{12})_c/i)?.[1]?.toLowerCase()
-
-const linuxRfcommPath = (address: string, channel: number): string =>
-  `bt-rfcomm://${normalizeAddress(address)}/${channel}`
-
-export function parseLinuxRfcommPath(path: string): { address: string; channel: number } | null {
-  const match = path.match(/^bt-rfcomm:\/\/([0-9a-f]{12})\/(\d{1,2})$/i)
-  if (!match) return null
-  const channel = Number(match[2])
-  if (!Number.isInteger(channel) || channel < 1 || channel > 30) return null
-  const compact = match[1].toUpperCase()
-  return {
-    address: compact.match(/.{2}/g)!.join(':'),
-    channel,
-  }
-}
+  port.bluetoothAddress?.toUpperCase()
+  ?? port.pnpId?.match(/&0&([0-9a-f]{12})_c/i)?.[1]?.toUpperCase()
 
 const parseBtVidPid = (port: BluetoothPortRecord): { vid?: string; pid?: string } => {
   const pnpId = port.pnpId ?? ''
@@ -98,47 +78,11 @@ const parseBtVidPid = (port: BluetoothPortRecord): { vid?: string; pid?: string 
 const isIncomingWindowsPort = (port: BluetoothPortRecord): boolean =>
   /_localmfg&0000/i.test(port.pnpId ?? '')
 
-const isUnsupportedIncomingPort = (
-  port: BluetoothPortRecord,
-  platform: NodeJS.Platform,
-): boolean =>
-  isIncomingWindowsPort(port)
-  || (platform === 'darwin' && /bluetooth-incoming-port/i.test(port.path))
-
-const isWindowsSppPort = (port: BluetoothPortRecord, serviceId = WINDOWS_SPP_SERVICE_ID): boolean => {
-  const pnp = (port.pnpId ?? '').toLowerCase()
-  return pnp.includes('bthenum') && pnp.includes(serviceId.padStart(8, '0'))
-}
-
-const isPlatformBluetoothPort = (
-  port: BluetoothPortRecord,
-  platform: NodeJS.Platform,
-  serviceId = WINDOWS_SPP_SERVICE_ID,
-): boolean => {
-  const path = port.path.toLowerCase()
-  const metadata = `${port.manufacturer ?? ''} ${port.pnpId ?? ''}`.toLowerCase()
-  if (platform === 'win32') {
-    return isWindowsSppPort(port, serviceId)
-      || (metadata.includes('bluetooth') && !isIncomingWindowsPort(port))
-  }
-  if (platform === 'linux') {
-    return parseLinuxRfcommPath(port.path) !== null
-      || /^\/dev\/rfcomm\d+$/i.test(port.path)
-      || /\/dev\/serial\/by-id\/.*(?:bluetooth|rfcomm|spp)/i.test(port.path)
-      || /\b(?:bluetooth|rfcomm|bluez)\b/i.test(metadata)
-  }
-  if (platform === 'darwin') {
-    return /^\/dev\/cu\..*(?:bluetooth|\bbt\b|spp)/i.test(path)
-      || /\b(?:bluetooth|iobluetooth|spp)\b/i.test(metadata)
-  }
-  return /\b(?:bluetooth|rfcomm|spp)\b/i.test(`${path} ${metadata}`)
-}
-
 const pathsEqual = (a: string, b: string, platform: NodeJS.Platform): boolean =>
   platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 
-// Bluetooth SPP connection - Windows uses virtual COM ports; Linux also
-// exposes paired BlueZ SPP devices as user-space RFCOMM endpoints.
+// Bluetooth SPP connection - Windows uses virtual COM ports; Linux connects
+// through user-space RFCOMM endpoints resolved for the selected device only.
 export class BluetoothConnection extends EventEmitter {
   private _connected = false
 
@@ -146,49 +90,37 @@ export class BluetoothConnection extends EventEmitter {
     return this._connected
   }
 
+  /**
+   * Quick discovery (plan §Phase 2): reads cached paired-device identity only.
+   * Linux no longer runs `sdptool` during listing; offline paired devices
+   * stay visible so the operator can power them on and connect.
+   */
   static async scanDevices(dependencies: BluetoothDiscoveryDependencies = {}): Promise<PortInfo[]> {
-    const platform = dependencies.platform ?? process.platform
-    const ports = await this.listCandidatePorts(dependencies, platform)
-    const serviceId = WINDOWS_SPP_SERVICE_ID
-    const deviceNames = platform === 'win32'
-      ? await (dependencies.windowsDeviceNames?.() ?? this.getWindowsBluetoothDeviceNames())
-      : new Map<string, string>()
-    const score = (port: BluetoothPortRecord) => {
-      const address = getBluetoothAddress(port)
-      const name = port.friendlyName ?? (address ? deviceNames.get(address) : undefined)
-      const { vid, pid } = parseBtVidPid(port)
-      return (name && FLIGHT_CONTROLLER_NAME.test(name) ? 100 : 0) + (vid && pid ? 10 : 0)
-    }
-
-    return ports
-      .filter((port) => isPlatformBluetoothPort(port, platform, serviceId))
-      .filter((port) => !isUnsupportedIncomingPort(port, platform))
-      .sort((a, b) => score(b) - score(a))
-      .map((port) => {
-        const bluetoothAddress = getBluetoothAddress(port)
-        const friendlyName = port.friendlyName
-          ?? (bluetoothAddress ? deviceNames.get(bluetoothAddress) : undefined)
-        return {
-          path: port.path,
-          manufacturer: port.manufacturer,
-          friendlyName,
-          bluetoothAddress,
-          bluetoothChannel: port.bluetoothChannel,
-          bluetoothServiceClassId: port.bluetoothServiceClassId,
-          recommended: !!friendlyName && FLIGHT_CONTROLLER_NAME.test(friendlyName),
-          productId: port.productId,
-          vendorId: port.vendorId,
-          pnpId: port.pnpId,
-        }
-      })
+    return discoverBluetoothQuick(toQuickDependencies(dependencies))
   }
 
+  /**
+   * Resolve the port for a connect request. On Linux this performs the
+   * targeted (blocking) SDP resolution for the one selected address only.
+   */
   static async findPortByIds(
     selector: BluetoothPortSelector,
-    dependencies: BluetoothDiscoveryDependencies = {},
+    dependencies: BluetoothDiscoveryDependencies & { targetedDependencies?: TargetedSppDependencies } = {},
   ): Promise<string | null> {
     const platform = dependencies.platform ?? process.platform
-    const ports = await this.listCandidatePorts(dependencies, platform)
+    const quick = await discoverBluetoothQuick(toQuickDependencies(dependencies))
+    const ports: BluetoothPortRecord[] = quick.map((device) => ({
+      path: device.path,
+      manufacturer: device.manufacturer,
+      friendlyName: device.friendlyName,
+      bluetoothAddress: device.bluetoothAddress,
+      bluetoothChannel: device.bluetoothChannel,
+      bluetoothServiceClassId: device.bluetoothServiceClassId,
+      productId: device.productId,
+      vendorId: device.vendorId,
+      pnpId: device.pnpId,
+    }))
+
     const requestedServiceValue = normalizeServiceId(selector.bluetoothServiceClassId)
     if (selector.bluetoothServiceClassId && !requestedServiceValue) {
       throw new BluetoothPortResolutionError(
@@ -197,7 +129,6 @@ export class BluetoothConnection extends EventEmitter {
         [],
       )
     }
-    const requestedService = requestedServiceValue ?? WINDOWS_SPP_SERVICE_ID
     const requestedAddress = normalizeAddress(selector.bluetoothAddress)
     if (selector.bluetoothAddress && !requestedAddress) {
       throw new BluetoothPortResolutionError(
@@ -222,26 +153,38 @@ export class BluetoothConnection extends EventEmitter {
         [],
       )
     }
-    const usable = ports.filter((port) =>
-      !isUnsupportedIncomingPort(port, platform)
-      && isPlatformBluetoothPort(port, platform, requestedService)
-    )
+
+    // A Linux quick-scan candidate (bt-spp:// pseudo path) or an explicit
+    // address both narrow resolution to exactly one device before any
+    // blocking SDP work happens.
+    const labelAddress = platform === 'linux' && selector.label
+      ? parseLinuxSppPath(selector.label)
+      : null
+    const targetAddress = selector.bluetoothAddress?.toUpperCase() ?? labelAddress
+
+    if (platform === 'linux' && targetAddress) {
+      const resolved = await this.linuxPathForAddress(targetAddress, selector, quick, dependencies)
+      if (resolved !== undefined) return resolved
+    }
+
+    const usable = ports.filter((port) => !isIncomingWindowsPort(port))
 
     if (selector.label) {
       const direct = ports.filter((port) =>
-        !isUnsupportedIncomingPort(port, platform)
-        && pathsEqual(port.path, selector.label!, platform)
+        pathsEqual(port.path, selector.label!, platform),
       )
       const exact = this.uniqueMatch(direct, `精确路径 "${selector.label}"`)
       if (exact) {
         this.assertRequestedIdentity(exact, selector)
+        // An exact path (bound rfcomm node, COM port) is openable as-is.
         return exact.path
       }
     }
 
     if (requestedAddress) {
       const addressMatch = this.uniqueMatch(
-        usable.filter((port) => getBluetoothAddress(port) === requestedAddress),
+        usable.filter((port) =>
+          normalizeAddress(getBluetoothAddress(port)) === normalizeAddress(selector.bluetoothAddress)),
         `蓝牙地址 ${selector.bluetoothAddress}`,
       )
       if (addressMatch) this.assertRequestedIdentity(addressMatch, selector)
@@ -277,10 +220,17 @@ export class BluetoothConnection extends EventEmitter {
 
     if (platform === 'linux' && selector.bluetoothServiceClassId) {
       const serviceMatch = this.uniqueMatch(
-        usable.filter((port) => normalizeServiceId(port.bluetoothServiceClassId) === requestedService),
+        usable.filter((port) => normalizeServiceId(port.bluetoothServiceClassId) === requestedServiceValue),
         `SPP 服务 ${selector.bluetoothServiceClassId}`,
       )
-      if (serviceMatch) return serviceMatch.path
+      if (serviceMatch) {
+        const address = getBluetoothAddress(serviceMatch)
+        if (address) {
+          const resolved = await this.linuxPathForAddress(address, selector, quick, dependencies)
+          if (resolved !== undefined) return resolved
+        }
+      }
+      return null
     }
 
     if (selector.label) {
@@ -290,7 +240,16 @@ export class BluetoothConnection extends EventEmitter {
         return label.length >= 3 && haystack.includes(label)
       })
       const labelMatch = this.uniqueMatch(labelMatches, `标签 "${selector.label}"`)
-      if (labelMatch) return labelMatch.path
+      if (labelMatch) {
+        if (platform === 'linux') {
+          const address = getBluetoothAddress(labelMatch)
+          if (address) {
+            const resolved = await this.linuxPathForAddress(address, selector, quick, dependencies)
+            if (resolved !== undefined) return resolved
+          }
+        }
+        return labelMatch.path
+      }
     }
 
     // A connection request always carries an explicit path/label or stable
@@ -298,29 +257,48 @@ export class BluetoothConnection extends EventEmitter {
     return null
   }
 
+  /**
+   * Resolve one Linux device to an openable path. A quick-scan candidate that
+   * already carries an RFCOMM channel is used directly; otherwise the
+   * targeted (blocking) SDP resolution runs for exactly this address.
+   * Returns undefined when the address has no usable candidate here.
+   */
+  private static async linuxPathForAddress(
+    address: string,
+    selector: BluetoothPortSelector,
+    quick: PortInfo[],
+    dependencies: { targetedDependencies?: TargetedSppDependencies },
+  ): Promise<string | undefined> {
+    const requested = normalizeAddress(address)
+    if (!requested) {
+      throw new BluetoothPortResolutionError(
+        `蓝牙地址 "${address}" 格式无效。`,
+        'IDENTITY_MISMATCH',
+        [],
+      )
+    }
+    const channeled = quick.find((device) =>
+      normalizeAddress(device.bluetoothAddress) === requested
+      && typeof device.bluetoothChannel === 'number')
+    if (channeled) {
+      this.assertRequestedIdentity(
+        {
+          path: channeled.path,
+          bluetoothAddress: channeled.bluetoothAddress,
+          vendorId: channeled.vendorId,
+          productId: channeled.productId,
+        },
+        selector,
+      )
+      return channeled.path
+    }
+    return (await resolveLinuxSppChannel(address, dependencies.targetedDependencies)).path
+  }
+
   setConnected(value: boolean) {
     this._connected = value
     if (value) this.emit('connected')
     else this.emit('disconnected')
-  }
-
-  private static async listPorts(
-    dependencies: BluetoothDiscoveryDependencies,
-  ): Promise<BluetoothPortRecord[]> {
-    if (dependencies.listPorts) return dependencies.listPorts()
-    const { SerialPort } = await import('serialport')
-    return SerialPort.list()
-  }
-
-  private static async listCandidatePorts(
-    dependencies: BluetoothDiscoveryDependencies,
-    platform: NodeJS.Platform,
-  ): Promise<BluetoothPortRecord[]> {
-    const serialPorts = await this.listPorts(dependencies)
-    if (platform !== 'linux') return serialPorts
-    const paired = await (dependencies.linuxPairedDevices?.() ?? this.getLinuxPairedSppDevices())
-    const knownPaths = new Set(serialPorts.map((port) => port.path))
-    return [...serialPorts, ...paired.filter((port) => !knownPaths.has(port.path))]
   }
 
   private static uniqueMatch(
@@ -341,7 +319,7 @@ export class BluetoothConnection extends EventEmitter {
     selector: BluetoothPortSelector,
   ): void {
     const requestedAddress = normalizeAddress(selector.bluetoothAddress)
-    const actualAddress = getBluetoothAddress(port)
+    const actualAddress = normalizeAddress(getBluetoothAddress(port))
     if (requestedAddress && actualAddress !== requestedAddress) {
       throw new BluetoothPortResolutionError(
         `端口 ${port.path} 的蓝牙地址与请求不一致。`,
@@ -363,98 +341,21 @@ export class BluetoothConnection extends EventEmitter {
       )
     }
   }
+}
 
-  /** Read paired device names and addresses from the Windows Bluetooth registry. */
-  private static async getWindowsBluetoothDeviceNames(): Promise<Map<string, string>> {
-    const names = new Map<string, string>()
-    if (process.platform !== 'win32') return names
-
-    try {
-      const registryPath = 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices'
-      const { stdout } = await execFileAsync('reg.exe', ['query', registryPath, '/s'], {
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 3000,
-        maxBuffer: 1024 * 1024,
-      })
-      let currentAddress: string | null = null
-      for (const line of stdout.split(/\r?\n/)) {
-        if (/^HKEY_/i.test(line)) {
-          currentAddress = line.match(/\\devices\\([0-9a-f]{12})\s*$/i)?.[1]?.toLowerCase() || null
-          continue
-        }
-        if (!currentAddress) continue
-        const hex = line.match(/^\s*Name\s+REG_BINARY\s+([0-9a-f]+)\s*$/i)?.[1]
-        if (!hex) continue
-        const name = Buffer.from(hex, 'hex').toString('utf8').replace(/\0/g, '').trim()
-        if (name) names.set(currentAddress, name)
-      }
-    } catch (error) {
-      console.warn('[Bluetooth] Unable to resolve paired device names:', error)
-    }
-    return names
-  }
-
-  private static async getLinuxPairedSppDevices(): Promise<BluetoothPortRecord[]> {
-    if (process.platform !== 'linux') return []
-    try {
-      let deviceOutput = ''
-      try {
-        const { stdout } = await execFileAsync('bluetoothctl', ['devices', 'Paired'], {
-          encoding: 'utf8',
-          timeout: 5000,
-        })
-        deviceOutput = stdout
-      } catch {
-        const { stdout } = await execFileAsync('bluetoothctl', ['devices'], {
-          encoding: 'utf8',
-          timeout: 5000,
-        })
-        deviceOutput = stdout
-      }
-      const devices = [...deviceOutput.matchAll(/^Device\s+([0-9a-f:]{17})\s+(.+)$/gim)]
-        .sort((a, b) => Number(FLIGHT_CONTROLLER_NAME.test(b[2])) - Number(FLIGHT_CONTROLLER_NAME.test(a[2])))
-      const discovered: BluetoothPortRecord[] = []
-      // BlueZ serializes parts of classic-Bluetooth discovery. Inspect devices
-      // one at a time so an offline headset cannot starve the flight controller's
-      // SDP query.
-      for (const [, address, listedName] of devices) {
-        try {
-          const { stdout: info } = await execFileAsync(
-            'bluetoothctl', ['info', address], { encoding: 'utf8', timeout: 5000 },
-          )
-          const paired = /^\s*Paired:\s*yes\s*$/im.test(info)
-          const hasSpp = /00001101-0000-1000-8000-00805f9b34fb/i.test(info)
-          if (!paired || !hasSpp) continue
-          const { stdout: services } = await execFileAsync(
-            'sdptool', ['search', '--bdaddr', address, 'SP'], {
-              encoding: 'utf8',
-              timeout: FLIGHT_CONTROLLER_NAME.test(listedName) ? 5000 : 1500,
-            },
-          )
-          const channel = Number(services.match(/^\s*Channel:\s*(\d+)\s*$/im)?.[1])
-          if (!Number.isInteger(channel) || channel < 1 || channel > 30) continue
-          const friendlyName = info.match(/^\s*(?:Name|Alias):\s*(.+)$/im)?.[1]?.trim()
-            ?? listedName.trim()
-          discovered.push({
-            path: linuxRfcommPath(address, channel),
-            manufacturer: 'BlueZ',
-            friendlyName,
-            bluetoothAddress: address,
-            bluetoothChannel: channel,
-            bluetoothServiceClassId: '0x1101',
-            pnpId: `bluez:${normalizeAddress(address)}`,
-          })
-        } catch (error) {
-          if (FLIGHT_CONTROLLER_NAME.test(listedName)) {
-            console.warn(`[Bluetooth] Unable to inspect Linux SPP device ${address}:`, error)
-          }
-        }
-      }
-      return discovered
-    } catch (error) {
-      console.warn('[Bluetooth] Unable to enumerate paired Linux SPP devices:', error)
-      return []
-    }
+function toQuickDependencies(
+  dependencies: BluetoothDiscoveryDependencies,
+): BluetoothQuickDependencies {
+  return {
+    ...(dependencies.platform !== undefined ? { platform: dependencies.platform } : {}),
+    ...(dependencies.listPorts ? { listPorts: dependencies.listPorts } : {}),
+    ...(dependencies.windowsDeviceNames
+      ? { windowsDeviceNames: dependencies.windowsDeviceNames }
+      : {}),
+    ...(dependencies.linuxPairedDevices
+      ? { linuxPairedDevices: dependencies.linuxPairedDevices }
+      : {}),
   }
 }
+
+export { BluetoothDiscoveryError, resolveLinuxSppChannel }

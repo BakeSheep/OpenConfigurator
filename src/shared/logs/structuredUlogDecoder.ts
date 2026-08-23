@@ -23,6 +23,19 @@ import {
 } from './index'
 
 const KNOWN_INCOMPATIBLE_FLAGS = 1 // appended data
+const ULOG_MAV_PARAM_TYPES: Readonly<Record<string, number>> = {
+  uint8_t: 1,
+  int8_t: 2,
+  uint16_t: 3,
+  int16_t: 4,
+  uint32_t: 5,
+  int32_t: 6,
+  uint64_t: 7,
+  int64_t: 8,
+  float: 9,
+  double: 10,
+  bool: 1,
+}
 
 async function assertCompatibleUlogSource(source: RandomAccessLogSource): Promise<void> {
   // ULog places the mandatory flag-bits message immediately after its
@@ -76,7 +89,7 @@ function parseRuntimeParameter(raw: {
   key?: unknown
   value?: unknown
   defaultTypes?: unknown
-}): { name: string; value: StructuredJsonValue; defaultTypes: number } | null {
+}): { name: string; value: StructuredJsonValue; mavParamType?: number; defaultTypes: number } | null {
   if (typeof raw.key !== 'string' || !(raw.value instanceof Uint8Array)) return null
   const field = parseFieldDefinition(raw.key)
   if (!field || field.isComplex || field.arrayLength !== undefined) return null
@@ -85,6 +98,7 @@ function parseRuntimeParameter(raw: {
     return {
       name: field.name,
       value: toStructuredJson(parseBasicFieldValue(field, view)),
+      mavParamType: ULOG_MAV_PARAM_TYPES[field.type],
       defaultTypes: typeof raw.defaultTypes === 'number' ? raw.defaultTypes : 0,
     }
   } catch {
@@ -96,6 +110,7 @@ interface ScannedUlogParameter {
   name: string
   value: StructuredJsonValue
   kind: StructuredLogParameter['kind']
+  mavParamType?: number
   defaultTypes: number
 }
 
@@ -242,6 +257,7 @@ export class StructuredUlogDecoder implements StructuredFlightLogDecoder {
         name: entry.name,
         value: entry.value,
         kind: entry.kind,
+        mavParamType: entry.mavParamType,
         defaultTypes: entry.defaultTypes,
       }
       parameterCount++

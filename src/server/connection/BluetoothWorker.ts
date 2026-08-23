@@ -11,6 +11,10 @@ import {
 } from './BluetoothConnection'
 import type { ConnectionConfig } from '../../shared/types'
 import { LinuxRfcommConnection } from './LinuxRfcommConnection'
+import {
+  invalidateSppChannel,
+  parseLinuxRfcommPath,
+} from './discovery/bluetoothDiscovery'
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 const DEFAULT_RECONNECT_BASE_INTERVAL_MS = 5000
@@ -19,19 +23,8 @@ const DEFAULT_OPEN_TIMEOUT_MS = 20000
 const DEFAULT_VEHICLE_CONFIRM_TIMEOUT_MS = 5000
 const DEFAULT_DISCONNECT_TIMEOUT_MS = 30000
 
-export interface ReconnectProgress {
-  attempt: number
-  maxAttempts: number
-  delayMs: number
-  lastError?: string
-}
-
-export interface ReconnectTerminalReason {
-  code: string
-  message: string
-  attempt: number
-  timestamp: number
-}
+export type { ReconnectProgress, ReconnectTerminalReason } from './workerLifecycle'
+import type { ReconnectProgress, ReconnectTerminalReason } from './workerLifecycle'
 
 export interface BluetoothSerialLink extends EventEmitter {
   readonly connected: boolean
@@ -56,6 +49,7 @@ export interface BluetoothWorkerOptions {
   vehicleConfirmTimeoutMs?: number
   disconnectTimeoutMs?: number
   wallClock?: () => number
+  invalidateSppChannel?: (address: string) => void
 }
 
 interface LinkHandlers {
@@ -101,6 +95,7 @@ export class BluetoothWorker extends EventEmitter {
   private readonly vehicleConfirmTimeoutMs: number
   private readonly disconnectTimeoutMs: number
   private readonly wallClock: () => number
+  private readonly invalidateChannel: (address: string) => void
 
   constructor(config: ConnectionConfig, options: BluetoothWorkerOptions = {}) {
     super()
@@ -119,6 +114,7 @@ export class BluetoothWorker extends EventEmitter {
       ?? DEFAULT_VEHICLE_CONFIRM_TIMEOUT_MS
     this.disconnectTimeoutMs = options.disconnectTimeoutMs ?? DEFAULT_DISCONNECT_TIMEOUT_MS
     this.wallClock = options.wallClock ?? Date.now
+    this.invalidateChannel = options.invalidateSppChannel ?? invalidateSppChannel
   }
 
   /** Compatibility alias: connected means the serial/RFCOMM transport is open. */
@@ -293,7 +289,15 @@ export class BluetoothWorker extends EventEmitter {
       if (!this._vehicleReady) this.startConfirmationTimer(generation)
     } catch (error) {
       const failure = this.toError(error)
-      if (!(error instanceof OperationCancelledError)) this._lastReconnectError = failure
+      if (!(error instanceof OperationCancelledError)) {
+        this._lastReconnectError = failure
+        // A cached Linux RFCOMM channel may become stale after re-pairing or a
+        // firmware change. Never let the retry loop reuse a channel that just
+        // failed to open; the next attempt performs one fresh targeted SDP.
+        const rfcomm = parseLinuxRfcommPath(resolved)
+        const address = rfcomm?.address ?? this.selectorConfig.bluetoothAddress
+        if (rfcomm && address) this.invalidateChannel(address)
+      }
       try {
         await this.teardownConnection(conn)
       } catch (closeError) {

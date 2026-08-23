@@ -3,7 +3,7 @@
   "description": "Local-first desktop and web GCS for PX4 and ArduPilot",
   "author": "BakeSheep",
   "private": true,
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "license": "MIT",
   "type": "module",
   "main": "dist-electron/main.mjs",
@@ -22,7 +22,7 @@
     "typecheck": "tsc --noEmit",
     "generate:px4-airframes": "node scripts/generate-px4-airframes.mjs",
     "test:server": "tsx --test && tsx src/web/components/sensors/AccelOrientationVisual.test.tsx",
-    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/codec.test.ts && tsx src/server/mavlink/calProtocol.test.ts && tsx src/server/mavlink/CalibrationSession.test.ts && tsx src/server/mavlink/CalibrationSessionManager.test.ts && tsx src/server/mavlink/RadioCalibrationSessionManager.test.ts && tsx src/server/validation.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts && tsx src/server/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/vehicleSetupProfiles.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/shared/esc/layouts/am32.test.ts && tsx src/server/esc/Am32SettingsService.test.ts && tsx src/server/esc/EscSessionManager.test.ts && tsx src/server/esc/ArduPilotRawTransport.test.ts && tsx src/server/esc/Px4SerialControlTransport.test.ts && tsx src/server/esc/DirectSerialTransport.test.ts && tsx src/server/esc/msp.test.ts && tsx src/server/esc/fourWay.test.ts && tsx src/server/esc/EscDetector.test.ts && tsx src/server/esc/EscService.test.ts",
+    "test:protocol": "tsx src/server/mavlink/MavlinkBridge.test.ts && tsx src/server/mavlink/codec.test.ts && tsx src/server/mavlink/calProtocol.test.ts && tsx src/server/mavlink/CalibrationSession.test.ts && tsx src/server/mavlink/CalibrationSessionManager.test.ts && tsx src/server/mavlink/AutotuneSession.test.ts && tsx src/server/mavlink/AutotuneSessionManager.test.ts && tsx src/server/mavlink/RadioCalibrationSessionManager.test.ts && tsx src/server/validation.test.ts && tsx src/server/mavlink/MavlinkFtp.test.ts && tsx src/server/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/vehicleProfiles.test.ts && tsx src/shared/vehicleSetupProfiles.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/shared/esc/layouts/am32.test.ts && tsx src/server/esc/Am32SettingsService.test.ts && tsx src/server/esc/EscSessionManager.test.ts && tsx src/server/esc/ArduPilotRawTransport.test.ts && tsx src/server/esc/Px4SerialControlTransport.test.ts && tsx src/server/esc/DirectSerialTransport.test.ts && tsx src/server/esc/msp.test.ts && tsx src/server/esc/fourWay.test.ts && tsx src/server/esc/EscDetector.test.ts && tsx src/server/esc/EscService.test.ts",
     "test:desktop": "node scripts/smoke-electron.mjs",
     "test:ftp": "tsx src/server/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
@@ -37,6 +37,8 @@
     "preview": "vite preview",
     "desktop": "npm run build:desktop && electron .",
     "dist:win:dir": "npm run build:desktop && electron-builder --win --x64 --dir",
+    "dist:linux:dir": "npm run build:desktop && electron-builder --linux --x64 --dir",
+    "dist:linux": "npm run build:desktop && electron-builder --linux --x64",
     "dist:win": "npm run build:desktop && electron-builder --win --x64"
   },
   "devDependencies": {
@@ -94,7 +96,8 @@
     "compression": "maximum",
     "asar": true,
     "asarUnpack": [
-      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*"
+      "node_modules/@serialport/bindings-cpp/prebuilds/win32-x64/**/*",
+      "node_modules/@serialport/bindings-cpp/prebuilds/linux-x64/**/*"
     ],
     "directories": {
       "output": "release"
@@ -113,12 +116,25 @@
       "!node_modules/**/*.map",
       "!node_modules/@serialport/bindings-cpp/prebuilds/android-*{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/darwin-*{,/**/*}",
-      "!node_modules/@serialport/bindings-cpp/prebuilds/linux-*{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/win32-arm64{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/prebuilds/win32-ia32{,/**/*}",
       "!node_modules/@serialport/bindings-cpp/src{,/**/*}"
     ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Science",
+      "electronLanguages": [
+        "en-US",
+        "zh-CN"
+      ],
+      "icon": "build/icon.svg"
+    },
     "win": {
+      "files": [
+        "!node_modules/@serialport/bindings-cpp/prebuilds/linux-*{,/**/*}"
+      ],
       "target": [
         "portable"
       ],

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { ServerMessage } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
+import { useAutotuneStore } from '../stores/autotuneStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { connectSocket, handleMessage, processServerMessage } from './useWebSocket'
 
@@ -43,6 +44,43 @@ test('a soft vehicle-readiness loss preserves parameters across heartbeat recove
   assert.equal(useParameterStore.getState().params.has('TEST_PARAM'), true)
 })
 
+test('target discovery stays unselected until the server reports an automatic or explicit choice', () => {
+  useConnectionStore.getState().setDisconnected()
+  handleMessage({
+    type: 'target',
+    data: {
+      systemId: null,
+      componentId: null,
+      ready: false,
+      reason: 'discovered',
+      selectionSource: null,
+      conflict: null,
+      identity: null,
+      discovered: [{ systemId: 42, componentId: 1, autopilot: 12, type: 2 }],
+    },
+  })
+  assert.equal(useConnectionStore.getState().targetSystemId, null)
+  assert.deepEqual(useConnectionStore.getState().discoveredTargets, [
+    { systemId: 42, componentId: 1, autopilot: 12, type: 2 },
+  ])
+
+  handleMessage({
+    type: 'target',
+    data: {
+      systemId: 42,
+      componentId: 1,
+      ready: false,
+      reason: 'selected',
+      selectionSource: 'automatic',
+      conflict: null,
+      identity: null,
+      discovered: [{ systemId: 42, componentId: 1, autopilot: 12, type: 2 }],
+    },
+  })
+  assert.equal(useConnectionStore.getState().targetSystemId, 42)
+  assert.equal(useConnectionStore.getState().targetSelectionSource, 'automatic')
+})
+
 test('parse and handler failures are isolated from later WebSocket messages', () => {
   const errors: unknown[][] = []
   const originalError = console.error
@@ -59,6 +97,21 @@ test('parse and handler failures are isolated from later WebSocket messages', ()
   assert.match(String(errors[0][0]), /Parse error/)
   assert.match(String(errors[1][0]), /Message handler error/)
   assert.equal(useConnectionStore.getState().vehicleReady, true)
+})
+
+test('autotune snapshots dispatch to the persistent session store', () => {
+  useAutotuneStore.getState().reset()
+  handleMessage({
+    type: 'autotune_update',
+    data: {
+      sessionId: 'autotune-ws', seq: 1, requestId: 'autotune-request',
+      ownerClientId: 'client-a', recoverUntil: null, family: 'px4', phase: 'tuning',
+      verification: 'not_applicable', progress: 40, axis: 'pitch', initialModeId: 3,
+      updatedAt: 1, cancelSupported: false, baselineParameters: { MC_ROLLRATE_P: 0.1 },
+    },
+  })
+  assert.equal(useAutotuneStore.getState().snapshot?.sessionId, 'autotune-ws')
+  assert.equal(useAutotuneStore.getState().snapshot?.progress, 40)
 })
 
 test('a retryable rejection restarts the automatic parameter request', async () => {

@@ -3,6 +3,7 @@ import i18next from 'i18next'
 import { connectBackendIfEnabled } from '../runtimeMode'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useCalibrationStore } from '../stores/calibrationStore'
+import { useAutotuneStore } from '../stores/autotuneStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
 
 const t = i18next.t.bind(i18next)
@@ -66,6 +67,7 @@ let restControlToken: string | null = null
 let escReclaimAttempt: string | null = null
 // Same one-shot guard for calibration session reclaim after an owner reconnect.
 let calibrationReclaimAttempt: string | null = null
+let autotuneReclaimAttempt: string | null = null
 let radioReclaimAttempt: string | null = null
 let paramBatch: ParamData[] = []
 let paramFlushTimer: ReturnType<typeof setTimeout> | null = null
@@ -362,6 +364,8 @@ export function handleMessage(msg: ServerMessage) {
         // transient WS disconnect, this permanently invalidates recovery.
         useCalibrationStore.getState().clearRecovery()
         useCalibrationStore.getState().reset()
+        useAutotuneStore.getState().clearRecovery()
+        useAutotuneStore.getState().reset()
         preserveParamsOnReadyRecovery = false
       }
       lastVehicleReady = vehicleReadyNow
@@ -558,7 +562,16 @@ export function handleMessage(msg: ServerMessage) {
         msg.data.downloadId,
         msg.data.fileName,
         msg.data.sizeBytes,
+        msg.data.advertisedSizeBytes,
+        msg.data.sizeAdjusted,
+        msg.data.integrity,
       )
+      if (msg.data.sizeAdjusted) {
+        telemetryStore.addStatusLog(4, t('websocket.dataflashSizeAdjusted', {
+          advertised: msg.data.advertisedSizeBytes,
+          final: msg.data.sizeBytes,
+        }))
+      }
       break
     case 'log_erase_done':
       useLogTransferStore.getState().completeErase()
@@ -589,6 +602,10 @@ export function handleMessage(msg: ServerMessage) {
       if (msg.data.operation === 'calibration_reclaim' && msg.data.code === 'reclaim_denied') {
         useCalibrationStore.getState().clearRecovery()
         calibrationReclaimAttempt = null
+      }
+      if (msg.data.operation === 'autotune_reclaim' && msg.data.code === 'reclaim_denied') {
+        useAutotuneStore.getState().clearRecovery()
+        autotuneReclaimAttempt = null
       }
       if (msg.data.operation === 'radio_calibration_reclaim' && msg.data.code === 'reclaim_denied') {
         useVehicleSetupStore.getState().clearRadioRecovery()
@@ -642,6 +659,9 @@ export function handleMessage(msg: ServerMessage) {
         msg.data.componentId,
         msg.data.safetyEpoch,
         msg.data.safetyAuthorityId,
+        msg.data.selectionSource,
+        msg.data.conflict,
+        msg.data.discovered,
       )
       telemetryStore.setVehicleIdentity(msg.data.systemId === null ? null : msg.data.identity)
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
@@ -728,6 +748,31 @@ export function handleMessage(msg: ServerMessage) {
       calibrationReclaimAttempt = null
       radioReclaimAttempt = null
       useCalibrationStore.getState().setRecovery({
+        sessionId: msg.data.sessionId,
+        recoveryToken: msg.data.recoveryToken,
+      })
+      break
+    case 'autotune_update': {
+      const store = useAutotuneStore.getState()
+      store.applySnapshot(msg.data)
+      const recovery = useAutotuneStore.getState().recovery
+      if (msg.data.ownerClientId === null
+        && msg.data.recoverUntil !== null
+        && recovery?.sessionId === msg.data.sessionId) {
+        const attemptKey = recovery.sessionId + ':' + msg.data.recoverUntil
+        if (autotuneReclaimAttempt !== attemptKey && sendToServer({
+          type: 'autotune_reclaim',
+          requestId: 'autotune-reclaim-' + Date.now().toString(36),
+          data: recovery,
+        })) autotuneReclaimAttempt = attemptKey
+      } else if (msg.data.ownerClientId !== null) {
+        autotuneReclaimAttempt = null
+      }
+      break
+    }
+    case 'autotune_session_started':
+      autotuneReclaimAttempt = null
+      useAutotuneStore.getState().setRecovery({
         sessionId: msg.data.sessionId,
         recoveryToken: msg.data.recoveryToken,
       })
