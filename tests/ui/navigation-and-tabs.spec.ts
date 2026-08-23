@@ -231,15 +231,6 @@ const tabCases = [
     second: { id: 'status', label: '状态' },
     last: { id: 'terminal', label: '终端' },
   },
-  {
-    name: 'Joystick tasks',
-    route: '/settings?section=joystick',
-    tablistName: '游戏手柄',
-    section: 'joystick',
-    first: { id: 'overview', label: '手柄状态' },
-    second: { id: 'buttons', label: '按钮分配' },
-    last: { id: 'buttons', label: '按钮分配' },
-  },
 ] as const
 
 for (const tabs of tabCases) {

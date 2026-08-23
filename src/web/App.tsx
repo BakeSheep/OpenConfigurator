@@ -20,7 +20,7 @@ function LegacySettingsRedirect() {
   const section = params.get('section')
   const target: Record<string, string> = {
     sensors: '/airframe/sensors', actuators: '/propulsion', esc: '/propulsion/esc',
-    receiver: '/control-input', joystick: '/control-input/joystick', other: '/tuning/ekf',
+    receiver: '/control-input', joystick: params.get('tab') === 'buttons' ? '/control-input/joystick-config' : '/control-input/joystick', other: '/tuning/ekf',
     airframe: '/airframe', power: '/airframe/power', safety: '/airframe/safety',
   }
   return <Navigate to={target[section ?? ''] ?? '/airframe'} replace />
@@ -77,6 +77,7 @@ export default function App() {
                   <Route path="/flight" element={<FlightControlPage />} />
                   <Route path="/airframe/*" element={<DomainPage domainId="airframe" />} />
                   <Route path="/propulsion/*" element={<DomainPage domainId="propulsion" />} />
+                  <Route path="/control-input/flight-modes" element={<Navigate to="/control-input/receiver-config" replace />} />
                   <Route path="/control-input/*" element={<DomainPage domainId="control-input" />} />
                   <Route path="/tuning/*" element={<DomainPage domainId="tuning" />} />
                   <Route path="/flight-data/*" element={<DomainPage domainId="flight-data" />} />

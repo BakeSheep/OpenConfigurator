@@ -213,7 +213,7 @@ export const en = {
   domain: {
     overview: { dashboard: 'Live overview' }, flight: { flight: 'Flight operations' },
     airframe: { power: 'Power', safety: 'Safety' },
-    controlInput: { flightModes: 'Flight modes' }, tuning: { ekf: 'EKF' }, flightData: { status: 'Status', terminal: 'Terminal' },
+    controlInput: { receiverConfig: 'Receiver Configuration', joystickConfig: 'Gamepad Configuration' }, tuning: { ekf: 'EKF' }, flightData: { status: 'Status', terminal: 'Terminal' },
   },
   statusbar: {
     firmwareVersion: 'Flight controller firmware model and version',

@@ -285,7 +285,7 @@ const dopQualityPercent = (value: number | null | undefined): number => value ==
 
 function GpsMetric({ label, value, state }: { label: string; value: string; state?: string }) {
   return (
-    <div className="mc-gps-metric" data-state={state}>
+    <div className="mc-card mc-gps-metric" data-state={state}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

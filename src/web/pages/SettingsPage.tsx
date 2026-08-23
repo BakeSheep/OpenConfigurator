@@ -5,7 +5,7 @@ export default function SettingsPage() {
   const [params] = useSearchParams()
   const target: Record<string, string> = {
     sensors: '/airframe/sensors', actuators: '/propulsion', esc: '/propulsion/esc',
-    receiver: '/control-input', joystick: '/control-input/joystick', other: '/tuning/ekf',
+    receiver: '/control-input', joystick: params.get('tab') === 'buttons' ? '/control-input/joystick-config' : '/control-input/joystick', other: '/tuning/ekf',
     airframe: '/airframe', power: '/airframe/power', safety: '/airframe/safety',
   }
   return <Navigate replace to={target[params.get('section') ?? ''] ?? '/airframe'} />

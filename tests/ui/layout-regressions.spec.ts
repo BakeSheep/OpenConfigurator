@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { openDemo } from './support'
+import { expectNoBlockingAxeViolations, expectNoPageOverflow, openDemo } from './support'
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -181,4 +181,138 @@ test('section workspaces stack below a visible horizontal navigator at compact w
     expect(geometry.frameRight).toBeLessThanOrEqual(geometry.viewportWidth)
     expect(geometry.activeVisible).toBe(true)
   }
+})
+
+test('GPS diagnostics reuse shared card and tab styling at supported widths', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'This regression sets all supported widths explicitly.')
+
+  for (const viewport of [
+    { width: 360, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 768 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await openDemo(page, '/airframe/sensors?tab=gps')
+
+    const metrics = page.locator('.mc-gps-metric')
+    const instanceTab = page.locator('.mc-gps-config__tabs .mc-tab[data-active="true"]')
+    const sensorTab = page.locator('.mc-sensor-diagnostics > .mc-tabbar .mc-tab[data-active="true"]')
+    await expect(metrics).toHaveCount(4)
+    await expect(instanceTab).toHaveCount(1)
+
+    const presentation = await page.evaluate(() => {
+      const metric = document.querySelector<HTMLElement>('.mc-gps-metric')!
+      const card = document.querySelector<HTMLElement>('.mc-gps-dop')!
+      const instance = document.querySelector<HTMLElement>('.mc-gps-config__tabs .mc-tab[data-active="true"]')!
+      const sensor = document.querySelector<HTMLElement>('.mc-sensor-diagnostics > .mc-tabbar .mc-tab[data-active="true"]')!
+      const metricStyle = getComputedStyle(metric)
+      const cardStyle = getComputedStyle(card)
+      const metricBefore = getComputedStyle(metric, '::before')
+      const instanceStyle = getComputedStyle(instance)
+      const sensorStyle = getComputedStyle(sensor)
+      return {
+        metricUsesCard: metric.classList.contains('mc-card'),
+        metricBeforeContent: metricBefore.content,
+        metricBackground: metricStyle.backgroundColor,
+        metricRadius: metricStyle.borderRadius,
+        cardBackground: cardStyle.backgroundColor,
+        cardRadius: cardStyle.borderRadius,
+        instanceRadius: instanceStyle.borderRadius,
+        instanceBackground: instanceStyle.backgroundColor,
+        sensorRadius: sensorStyle.borderRadius,
+        sensorBackground: sensorStyle.backgroundColor,
+      }
+    })
+
+    expect(presentation.metricUsesCard).toBe(true)
+    expect(presentation.metricBeforeContent).toBe('none')
+    expect(presentation.metricBackground).toBe(presentation.cardBackground)
+    expect(presentation.metricRadius).toBe(presentation.cardRadius)
+    expect(presentation.instanceRadius).toBe(presentation.sensorRadius)
+    expect(presentation.instanceBackground).toBe(presentation.sensorBackground)
+    await expectNoPageOverflow(page)
+  }
+
+  await page.evaluate(() => {
+    localStorage.setItem('mc-lang', 'en')
+    localStorage.setItem('mc-theme', 'dark')
+  })
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Airframe', level: 1 })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'GPS', exact: true, selected: true })).toBeVisible()
+  await expectNoPageOverflow(page)
+  await expectNoBlockingAxeViolations(page)
+})
+
+test('reviewed GPS, ESC, and control-input surfaces use the shared hierarchy', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop', 'This regression sets the supported widths explicitly.')
+
+  const expectedControlInputLinks = ['遥控器', '遥控器配置', '游戏手柄', '手柄配置']
+  for (const viewport of [
+    { width: 360, height: 768 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 768 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport)
+    await openDemo(page, '/control-input/joystick')
+    const domainNav = page.getByRole('navigation', { name: '业务域页面' })
+    await expect(domainNav.getByRole('link')).toHaveText(expectedControlInputLinks)
+    await expect(page.locator('main').getByRole('tablist')).toHaveCount(0)
+    await expectNoPageOverflow(page)
+  }
+
+  await page.setViewportSize({ width: 1292, height: 1047 })
+  await page.getByRole('link', { name: '手柄配置', exact: true }).click()
+  await expect(page).toHaveURL(/#\/control-input\/joystick-config$/)
+  await expect(page.getByRole('heading', { name: '按钮分配', level: 3 })).toBeVisible()
+  await expect(page.locator('main').getByRole('tablist')).toHaveCount(0)
+
+  await openDemo(page, '/control-input/joystick?tab=buttons')
+  await expect(page).toHaveURL(/#\/control-input\/joystick-config$/)
+  await openDemo(page, '/control-input/flight-modes')
+  await expect(page).toHaveURL(/#\/control-input\/receiver-config$/)
+
+  await openDemo(page, '/propulsion/esc')
+  const connectCard = page.locator('.mc-esc-connect')
+  const modePicker = page.locator('.mc-esc-mode-picker')
+  await expect(connectCard.locator('.mc-esc-connect__header')).toHaveCount(0)
+  await expect(modePicker).toContainText('ArduPilot')
+  const escGeometry = await Promise.all([connectCard.boundingBox(), modePicker.boundingBox()])
+  expect(escGeometry[0]).not.toBeNull()
+  expect(escGeometry[1]).not.toBeNull()
+  expect(escGeometry[1]!.y - escGeometry[0]!.y).toBeLessThanOrEqual(24)
+  await expectNoPageOverflow(page)
+
+  await openDemo(page, '/dashboard')
+  await page.getByRole('button', { name: /21 SAT/ }).click()
+  const gpsTiles = page.locator('.mc-topbar-menu--gps > dl > div')
+  await expect(gpsTiles).toHaveCount(11)
+  const gpsPresentation = await gpsTiles.first().evaluate((tile) => {
+    const style = getComputedStyle(tile)
+    const listStyle = getComputedStyle(tile.parentElement!)
+    return { radius: style.borderRadius, background: style.backgroundColor, gap: listStyle.gap }
+  })
+  expect(Number.parseFloat(gpsPresentation.radius)).toBeGreaterThan(0)
+  expect(gpsPresentation.background).not.toBe('rgba(0, 0, 0, 0)')
+  expect(gpsPresentation.gap).toBe('8px')
+  await expectNoPageOverflow(page)
+  await expectNoBlockingAxeViolations(page)
+
+  await page.evaluate(() => {
+    localStorage.setItem('mc-lang', 'en')
+    localStorage.setItem('mc-theme', 'dark')
+  })
+  await page.reload()
+  await page.getByRole('button', { name: /21 SAT/ }).click()
+  await expect(page.getByText('GPS Details', { exact: true })).toBeVisible()
+  await expectNoPageOverflow(page)
+  await openDemo(page, '/control-input/joystick')
+  await expect(page.getByRole('navigation', { name: 'Business domain pages' }).getByRole('link')).toHaveText([
+    'Receiver', 'Receiver Configuration', 'Joystick', 'Gamepad Configuration',
+  ])
+  await expect(page.locator('main').getByRole('tablist')).toHaveCount(0)
+  await expectNoPageOverflow(page)
+  await expectNoBlockingAxeViolations(page)
 })

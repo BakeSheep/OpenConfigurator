@@ -213,7 +213,7 @@ export const zh = {
   domain: {
     overview: { dashboard: '实时总览' }, flight: { flight: '飞行操作' },
     airframe: { power: '电源', safety: '安全' },
-    controlInput: { flightModes: '飞行模式' }, tuning: { ekf: 'EKF' }, flightData: { status: '状态', terminal: '终端' },
+    controlInput: { receiverConfig: '遥控器配置', joystickConfig: '手柄配置' }, tuning: { ekf: 'EKF' }, flightData: { status: '状态', terminal: '终端' },
   },
   statusbar: {
     firmwareVersion: '飞控固件型号与版本',
