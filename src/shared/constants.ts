@@ -147,7 +147,7 @@ export const MESSAGE_RATE_GROUP_IDS = Object.freeze({
 })
 
 // MAVLink FTP (FILE_TRANSFER_PROTOCOL, msg #110) protocol constants shared by
-// the backend client implementation and its protocol tests.
+// the local runtime implementation and its protocol tests.
 export const FTP_MESSAGE_ID = 110
 
 export const FTP_OPCODES = {

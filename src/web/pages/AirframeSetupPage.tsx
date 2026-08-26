@@ -7,7 +7,7 @@ import {
   PX4_AIRFRAMES,
 } from '../../shared/airframes'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -119,7 +119,7 @@ export default function AirframeSetupPage() {
         ? { family: 'ardupilot' as const, frameClass, frameType }
         : null
     if (!data) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'airframe_apply',
       requestId: setupRequestId('airframe'),
       data,

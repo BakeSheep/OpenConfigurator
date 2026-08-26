@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import type { AutopilotFamily, ParamData } from '../../../shared/types'
 import Icon from '../ui/Icon'
 import { TabPanel, Tabs } from '../ui/Tabs'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import { ARDUPILOT_SERIAL_BAUDS } from '../../utils/parameterProfiles'
@@ -52,7 +52,7 @@ function ParameterSelect({
         title={hint}
         onChange={(event) => {
           if (!param) return
-          sendClientMessage({
+          sendRuntimeCommand({
             type: 'param_set',
             requestId: `gps-${param.id}-${Date.now().toString(36)}`,
             data: { id: param.id, value: Number(event.target.value), paramType: param.type },
@@ -106,7 +106,7 @@ function Px4GpsFields({ instance, writable, params }: {
           onChange={(event) => {
             if (!config) return
             const value = Number(event.target.value) === 0 ? 0 : (configuredPort || px4GpsDefaultPort(instance))
-            sendClientMessage({
+            sendRuntimeCommand({
               type: 'param_set',
               requestId: `gps-${config.id}-${Date.now().toString(36)}`,
               data: { id: config.id, value, paramType: config.type },
@@ -181,7 +181,7 @@ function ArduPilotGpsFields({ instance, writable, params }: {
           onChange={(event) => {
             if (!type) return
             const value = Number(event.target.value) === 0 ? 0 : (Math.round(type.value) || 1)
-            sendClientMessage({
+            sendRuntimeCommand({
               type: 'param_set',
               requestId: `gps-${type.id}-${Date.now().toString(36)}`,
               data: { id: type.id, value, paramType: type.type },

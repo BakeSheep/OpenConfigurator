@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { AttitudeData, GpsData, BatteryData, VehicleStatus, EkfStatusData, RcChannelsData, MotorOutputData, AutopilotVersionData, SysStatusData, VfrHudData, GlobalPositionData, VehicleIdentity } from '../../shared/types'
-import type { ServerMessage } from '../../shared/types'
+import type { RuntimeEvent } from '../../shared/types'
 import {
   appendGpsTrackPoint,
   isTrackableGpsFix,
@@ -26,7 +26,7 @@ export interface CommandAckState {
   time: number
 }
 
-export type OperationErrorState = Extract<ServerMessage, { type: 'operation_error' }>['data'] & { time: number }
+export type OperationErrorState = Extract<RuntimeEvent, { type: 'operation_error' }>['data'] & { time: number }
 
 // Per-field freshness thresholds (ms). High-rate streams (attitude/imu/motors)
 // must update frequently; low-rate streams (gps/battery) are allowed more
@@ -65,7 +65,7 @@ interface TelemetryState {
   rcChannels: RcChannelsData | null
   motorOutputs: MotorOutputData | null
   autopilotVersion: AutopilotVersionData | null
-  // Selected vehicle identity from the backend 'target'/'status' messages.
+  // Selected vehicle identity from the local runtime 'target'/'status' messages.
   // Kept independent of the parameter set and cleared on target reset or
   // disconnect so a reconnected vehicle never reuses a stale profile.
   vehicleIdentity: VehicleIdentity | null

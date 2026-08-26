@@ -5,129 +5,61 @@
 </p>
 
 <p align="center">
-  A local-first desktop and web ground control station for PX4 and ArduPilot.
+  A browser-only, local-data flight-controller configurator and GCS for PX4 and ArduPilot.
 </p>
 
 <p align="center">
-  <a href="https://bakesheep.github.io/OpenConfigurator/"><b>Live demo</b></a> ·
-  <a href="https://github.com/BakeSheep/OpenConfigurator/releases/latest"><b>Latest Release</b></a> ·
+  <a href="https://bakesheep.github.io/OpenConfigurator/"><b>Use online</b></a> ·
   <a href="README.md">中文说明</a> ·
-  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/dashboard.en.jpg" alt="Flight overview with demo data" width="860" />
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
 > [!WARNING]
-> OpenConfigurator is pre-release software, not a certified aviation safety system. Remove all propellers before connecting to motor or ESC controls, and validate changes on real hardware in a controlled environment.
+> OpenConfigurator is pre-release software, not a certified aviation safety system. Remove every propeller before using motor or ESC controls, and validate changes on real hardware in a controlled environment.
 
-## Overview
+<p align="center">
+  <img src="docs/screenshots/dashboard.en.jpg" alt="OpenConfigurator dashboard demo" />
+</p>
 
-OpenConfigurator combines a React SPA, a local Node.js service, and an optional Electron desktop shell. The frontend reaches the service through REST plus one WebSocket; the service owns serial, Windows Bluetooth SPP, Linux BlueZ SPP, MAVLink, log transfer, and ESC sessions. It listens on `127.0.0.1` by default, so device data does not need to pass through a cloud service.
+## Features
 
-The flight controller stack is identified only from HEARTBEAT. PX4 and ArduPilot use separate vehicle profiles, parameters, and command paths; unknown or unadapted vehicle types remain read-only.
+- **Overview** (dashboard): real-time telemetry, connection status, and flight commands.
+- **Flight** (flight operations): arm/disarm, flight commands, and mission control.
+- **Airframe & calibration** (airframe / sensors / calibration / power / safety / ports): airframe selection, sensor setup, calibration wizards, power and safety configuration, port mapping.
+- **Propulsion** (motor mapping / motor test / ESC): motor mapping, motor testing, and AM32 ESC parameters.
+- **Control input** (receiver / joystick): channel monitoring, mapping, and configuration.
+- **Tuning** (parameters / PID / EKF): parameter browsing/comparison, PID, and EKF status.
+- **Flight data** (messages / status / terminal / waveforms): MAVLink messages, system status, NSH terminal, and live waveforms.
+- **Flight logs** (logs / analysis): ULog / DataFlash download and local offline analysis.
 
-The interface is organized into eight task domains that share the same routes on desktop and mobile. After a browser reconnect, the app restores connection, control-authority, and current MAVLink target state, then resumes parameter synchronization when the target and authority are ready.
+## Privacy and deployment model
 
-## Highlights
+OpenConfigurator is a static SPA. Its host serves only HTML, JavaScript, CSS, and bundled assets. The browser connects directly to a flight controller on the same computer through Web Serial. MAVLink bytes, telemetry, parameters, calibration state, logs, and analysis results stay inside the current browser tab and are never uploaded to the deployment server.
 
-- USB serial, Windows Bluetooth SPP, and Linux BlueZ SPP connections with saved presets, hardware-identity re-resolution, MAVLink v1/v2, link diagnostics, and optional MAVLink 2 signing
-- Realtime attitude, position, battery, sensor, RC, actuator, EKF, and MAVLink message monitoring
-- Automatic parameter synchronization with visible progress, search, QGC parameter-file import/export, airframe selection, radio calibration, flight modes, power/battery and safety setup, PID/EKF tuning, and a dedicated sensor-calibration page
-- PID parameter writes re-check vehicle readiness, disarmed state, profile support, and current-client control authority, then wait for the matching parameter echo before confirming the write
-- Safety-gated arming, mode changes, takeoff, landing, RTL, motor tests, and gamepad RC override
-- PX4 ULog and ArduPilot DataFlash browsing, download, offline analysis, GPS-derived absolute takeoff time when available, chart CSV/PNG export, and complete structured ZIP export
-- AM32 ESC settings over ArduPilot passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial
-- The same frontend delivered through a local web service or a portable Windows x64 Electron build
+- Each tab owns one local serial port and Dedicated Worker. There are no accounts, shared control, or cross-browser sessions.
+- The native device picker requires a user click. Reloading only lists prior browser grants; it never opens or occupies a port automatically.
+- Log downloads use temporary local OPFS artifacts. They are consumed on save/analysis and removed on disconnect, eviction, or the next startup.
+- MAVLink signing secrets live only in connection memory and are cleared on disconnect or reload.
+- Production CSP is `connect-src 'none'`. There are no third-party fonts, map tiles, analytics, REST calls, or WebSockets.
 
-The ESC page configures settings only; it does not flash firmware or edit startup tones. Writes preserve unknown EEPROM bytes and verify the complete block by reading it back. Check the [ESC compatibility matrix](docs/ESC-COMPATIBILITY.md) before use.
+Many users can open the same HTTPS deployment and connect their own local controllers. The host sees only normal static-resource GET requests.
 
-## Support boundaries
+## Support
 
-- PX4: the current connection, monitoring, parameter, tuning, calibration, flight-operation, ULog, and NSH terminal paths are available.
-- ArduPilot: ArduCopter is the current adaptation and acceptance target for safety-critical writes. Plane, Rover, Sub, and Tracker can be identified and can show common data and DataFlash logs, but remain read-only.
-- Mission, fence, rally-point, camera/gimbal setup, PX4 ESC PWM calibration, and UAVCAN actuator assignment are not currently provided.
-- Software paths and automated tests do not mean that a specific flight controller, ESC, and firmware combination has passed HIL or flight validation.
-
-See [flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md) and the [ESC compatibility matrix](docs/ESC-COMPATIBILITY.md) for detailed boundaries.
-
-## Workspaces
-
-| Workspace | Main contents |
+| Target | Support |
 |---|---|
-| Overview | Attitude, key telemetry, system health, and a custom data board |
-| Flight Operations | Preflight checks, mode switching, and safety-gated flight commands |
-| Airframe Configuration | Airframes, live sensor diagnostics, dedicated calibration, power/battery, and safety setup |
-| Propulsion & Outputs | Actuator mapping, propeller-removed motor tests, and AM32 ESC settings |
-| Control Input | Radio calibration, gamepad input, and flight-mode assignment |
-| Tuning & State | Full parameters, PID tuning, and EKF fusion state |
-| Logs & Link | MAVLink messages, message rates, flight-controller terminal, and realtime waveforms |
-| Logs & Analysis | Flight-log listing, download, offline analysis, and structured export |
+| Browsers | Desktop Chromium; Web Serial requires an HTTPS secure context or localhost |
+| PX4 | Connection, telemetry, parameters, tuning, calibration, flight operations, ULog, NSH terminal, and ESC paths |
+| ArduPilot | ArduCopter is the target for safety-critical writes; other recognized classes keep common display and DataFlash logs while unsupported writes remain disabled |
+| AM32 ESC | Parameters via ArduPilot raw passthrough, PX4 `SERIAL_CONTROL`, or direct 19200-baud serial; no firmware flashing |
+| Out of scope | Firefox, Safari, mobile browsers, automatic connection, and Electron packages |
 
-## Quick start
+The stack is identified only from HEARTBEAT. Every sensitive write is re-checked in the local Worker against the live connection, target, vehicle capabilities, armed state, and safety epoch. A `COMMAND_ACK` alone is never treated as proof of physical state.
 
-Node.js `>=22.12.0` and npm are required. The Web Serial picker needs Chrome or Edge 89+ and an HTTPS or localhost page.
+See [flight-controller compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md), [ESC compatibility](docs/ESC-COMPATIBILITY.md), and the [HIL checklist](docs/HIL-CHECKLIST.md).
 
-Linux Bluetooth uses the BlueZ Profile API and does not require `/dev/rfcomm*` or `sudo rfcomm`. Install `bluez`, Python 3, `dbus-python`, and PyGObject, then pair the SPP device in system Bluetooth settings before connecting.
+## Development
 
-```bash
-git clone https://github.com/BakeSheep/OpenConfigurator.git
-cd OpenConfigurator
-npm install
-npm run dev
-```
+Environment requirements, setup, common commands, architecture, and deployment instructions live in [CONTRIBUTING.md](CONTRIBUTING.md). See [Architecture](docs/ARCHITECTURE.md) for detailed constraints.
 
-Open <http://localhost:5173>. Vite proxies `/api` and `/ws` to the local server on port `3000`.
-
-For a local production build:
-
-```bash
-npm run build
-npm start
-```
-
-Open <http://localhost:3000>. To view synthetic demo data only, run `npm run dev:web` and open <http://localhost:5173/?demo=1>.
-
-Common commands:
-
-| Command | Purpose |
-|---|---|
-| `npm run dev` | Start the frontend and backend development servers |
-| `npm run typecheck` | Run TypeScript type checks |
-| `npm run test:server` | Run hardware-free regression tests |
-| `npm run test:protocol` | Run MAVLink and ESC protocol tests |
-| `npm run build` | Type-check and build the production frontend |
-| `npm start` | Start the local production service |
-| `npm run dist:win` | Build a portable Windows x64 EXE |
-
-## Architecture
-
-```text
-Browser / Electron + React SPA
-             │ REST + WebSocket
-             ▼
-Express / ws ── validation / controller lease
-             │
-             ├─ MAVLink bridge ── PX4 / ArduPilot
-             └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
-```
-
-- `src/shared/` is the only frontend/backend shared boundary and contains protocol types, vehicle profiles, and ESC layouts.
-- `src/web/` contains the React workspaces, WebSocket dispatch, and Zustand stores.
-- `src/server/` owns connection lifecycle, MAVLink, log transfer, and ESC sessions.
-
-See the [architecture document](docs/ARCHITECTURE.md) for detailed design and constraints.
-
-## Documentation and license
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Flight-controller UI compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
-- [Vehicle configuration behavior and parameter sources](docs/VEHICLE-CONFIG-SOURCES.md)
-- [Parameter enum metadata](docs/PARAMETER-ENUM-METADATA.md)
-- [Structured flight logs](docs/STRUCTURED-FLIGHT-LOG.md)
-- [ESC compatibility](docs/ESC-COMPATIBILITY.md)
-- [ESC protocol sources](docs/ESC-PROTOCOL-SOURCES.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
-
-OpenConfigurator is licensed under the [MIT License](LICENSE). The project is not affiliated with PX4, ArduPilot, MAVLink, MicoAir, or QGroundControl.
+OpenConfigurator is licensed under the [MIT License](LICENSE).

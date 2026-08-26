@@ -1,4 +1,4 @@
-// Framework-agnostic vehicle profile classification shared by the backend and
+// Framework-agnostic vehicle profile classification shared by the Worker and
 // the React UI. The profile is selected exclusively from HEARTBEAT identity
 // (autopilot + type); parameters or STATUSTEXT strings are never authoritative
 // for stack selection because they may be stale or shared across stacks.

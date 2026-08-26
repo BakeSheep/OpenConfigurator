@@ -116,7 +116,6 @@ test('saved preset delete action is visible without hover and keyboard accessibl
       baudRate: 115200,
     }]))
   })
-  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')
   await expect(page.locator('main h1')).toHaveCount(1)
 
@@ -159,9 +158,10 @@ test('domain workspaces stack below a visible horizontal navigator at compact wi
     await expect(active).toBeVisible()
     await expect(frame).toBeVisible()
 
-    const geometry = await page.locator('.mc-domain-nav').evaluate((navElement) => {
+    const geometry = await page.locator('.mc-workspace-frame').evaluate((layout) => {
+      const navElement = layout.querySelector<HTMLElement>(':scope > .mc-domain-nav')!
       const activeElement = navElement.querySelector<HTMLElement>('[data-active="true"]')!
-      const frameElement = document.querySelector<HTMLElement>('.mc-section-frame')!
+      const frameElement = layout.querySelector<HTMLElement>(':scope > .mc-section-frame')!
       const navRect = navElement.getBoundingClientRect()
       const activeRect = activeElement.getBoundingClientRect()
       const frameRect = frameElement.getBoundingClientRect()

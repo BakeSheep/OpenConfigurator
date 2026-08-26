@@ -9,7 +9,7 @@ import {
 } from '../../shared/vehicleSetupProfiles'
 import { availableModes, vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { ConfigFieldControl, setupRequestId, SetupNotice } from '../components/setup/SetupControls'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -28,7 +28,7 @@ function ModeMaskControl({ field, label }: { field: VehicleConfigField; label: s
     const liveParam = useParameterStore.getState().params.get(field.id)
     const liveArmed = useTelemetryStore.getState().status?.armed
     if (!connection.vehicleReady || !connection.canControl || liveArmed !== false || !liveParam) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'vehicle_config_set',
       requestId: setupRequestId(`mask-${field.id}`),
       feature: 'flight_modes',

@@ -6,7 +6,7 @@ import {
   ARDUPILOT_SERIAL_PROTOCOLS,
   ARDUPILOT_SERIAL_BAUDS,
 } from '../utils/parameterProfiles'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -75,7 +75,7 @@ function ParamSelect({ id, options, writable = true }: { id: string; options: Re
   const { t } = useTranslation()
   const param = useParameterStore((state) => state.params.get(id))
   const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
 
@@ -100,7 +100,7 @@ function ParamSelect({ id, options, writable = true }: { id: string; options: Re
 function RateInput({ id, writable = true }: { id: string; writable?: boolean }) {
   const param = useParameterStore((state) => state.params.get(id))
   const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   return (
     <input
       key={`${id}-${param?.value ?? 'empty'}`}
@@ -198,7 +198,7 @@ function ArduPilotSerialSelect({ id, options, writable }: { id: string; options:
   const { t } = useTranslation()
   const param = useParameterStore((state) => state.params.get(id))
   const canWrite = useConnectionStore((state) => state.vehicleReady && state.canControl) && writable
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const value = param ? Math.round(param.value) : ''
   const known = options.some(([option]) => option === value)
   return (

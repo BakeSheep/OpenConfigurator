@@ -31,7 +31,7 @@ function isAfterBoundary(entry: TimedStatusText, boundary: StatusSessionBoundary
 }
 
 /**
- * Finds the newest target-selection marker emitted by useWebSocket. Status
+ * Finds the newest target-selection marker emitted by useLocalRuntime. Status
  * logs are retained across reconnects, so this boundary prevents a prior
  * vehicle's PreArm result from affecting the current target.
  */

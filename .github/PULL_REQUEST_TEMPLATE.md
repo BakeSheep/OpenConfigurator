@@ -9,7 +9,7 @@
 ## 验证
 
 - [ ] `npm run typecheck`
-- [ ] `npm run test:server`
+- [ ] `npm run test:runtime`
 - [ ] `npm run build`
 - [ ] 已完成真实硬件验证，或在下方明确说明未验证
 

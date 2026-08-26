@@ -38,18 +38,15 @@ class FakeClock {
 type Harness = {
   clock: FakeClock
   snapshots: CalibrationSnapshot[]
-  recoveries: Array<{ sessionId: string; recoveryToken: string }>
   demo: ReturnType<typeof createCalibrationDemo>
 }
 
 function makeDemo(family: 'px4' | 'ardupilot'): Harness {
   const clock = new FakeClock()
   const snapshots: CalibrationSnapshot[] = []
-  const recoveries: Array<{ sessionId: string; recoveryToken: string }> = []
   let id = 0
   const demo = createCalibrationDemo({
     applySnapshot: (snapshot) => snapshots.push(structuredClone(snapshot)),
-    setRecovery: (recovery) => recoveries.push(recovery),
     family: () => family,
     ownerClientId: () => 'demo-client',
     now: clock.now,
@@ -57,7 +54,7 @@ function makeDemo(family: 'px4' | 'ardupilot'): Harness {
     clearTimer: clock.clearTimer,
     makeId: () => `id-${id++}`,
   })
-  return { clock, snapshots, recoveries, demo }
+  return { clock, snapshots, demo }
 }
 
 function last(snapshots: CalibrationSnapshot[]): CalibrationSnapshot {
@@ -75,9 +72,8 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- PX4 six-side accel drives itself to a verified done ----------------------
 {
   const h = makeDemo('px4')
-  const handled = h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
+  const handled = h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
   assert.equal(handled, true)
-  assert.equal(h.recoveries.length, 1, 'owner recovery token issued')
   assert.equal(h.snapshots[0].phase, 'starting')
   assert.equal(h.snapshots[0].ownerClientId, 'demo-client')
   h.clock.advance(20_000)
@@ -93,7 +89,7 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- PX4 gyro one-shot -> verified done ---------------------------------------
 {
   const h = makeDemo('px4')
-  h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'gyro' } })
+  h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'gyro' } })
   h.clock.advance(5_000)
   assert.equal(last(h.snapshots).phase, 'done')
   assert.equal(last(h.snapshots).verification, 'verified')
@@ -102,14 +98,14 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- ArduPilot six-position accel waits for confirm at each step --------------
 {
   const h = makeDemo('ardupilot')
-  h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
+  h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
   const sessionId = h.snapshots[0].sessionId
   h.clock.advance(1_000)
   assert.equal(last(h.snapshots).phase, 'waiting_position')
   assert.equal(last(h.snapshots).requestedPosition, 1)
   // Confirm all six positions.
   for (let position = 1; position <= 6; position++) {
-    h.demo.handleClientMessage({
+    h.demo.handleRuntimeCommand({
       type: 'calibration_action',
       requestId: `a${position}`,
       data: { sessionId, action: 'confirm_position', position: position as 1 },
@@ -124,12 +120,12 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- ArduPilot mag: progress -> awaiting_accept -> accept -> done+reboot -------
 {
   const h = makeDemo('ardupilot')
-  h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'mag' } })
+  h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'mag' } })
   const sessionId = h.snapshots[0].sessionId
   h.clock.advance(10_000)
   assert.equal(last(h.snapshots).phase, 'awaiting_accept')
   assert.equal(last(h.snapshots).magInstances?.[0]?.report?.autosaved, false)
-  h.demo.handleClientMessage({ type: 'calibration_action', requestId: 'a', data: { sessionId, action: 'accept_mag' } })
+  h.demo.handleRuntimeCommand({ type: 'calibration_action', requestId: 'a', data: { sessionId, action: 'accept_mag' } })
   h.clock.advance(2_000)
   assert.equal(last(h.snapshots).phase, 'done')
   assert.equal(last(h.snapshots).rebootRequired, true)
@@ -139,10 +135,10 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- cancel produces a cancelled snapshot and clears timers -------------------
 {
   const h = makeDemo('px4')
-  h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
+  h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
   const sessionId = h.snapshots[0].sessionId
   h.clock.advance(1_000)
-  h.demo.handleClientMessage({ type: 'calibration_action', requestId: 'c', data: { sessionId, action: 'cancel' } })
+  h.demo.handleRuntimeCommand({ type: 'calibration_action', requestId: 'c', data: { sessionId, action: 'cancel' } })
   assert.equal(last(h.snapshots).phase, 'cancelled')
   assert.equal(h.clock.pending, 0, 'cancel clears pending script timers')
 }
@@ -150,7 +146,7 @@ function assertMonotonic(snapshots: CalibrationSnapshot[]): void {
 // -- stop() clears all timers and detaches --------------------------------------
 {
   const h = makeDemo('px4')
-  h.demo.handleClientMessage({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
+  h.demo.handleRuntimeCommand({ type: 'start_calibration', requestId: 'r1', data: { kind: 'accel' } })
   h.clock.advance(1_000)
   assert.ok(h.clock.pending > 0)
   h.demo.stop()

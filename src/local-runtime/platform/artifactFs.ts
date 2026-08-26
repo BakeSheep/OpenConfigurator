@@ -1,0 +1,295 @@
+const MEMORY_FILES = new Map<string, Uint8Array>()
+const ARTIFACT_DIR = 'openconfigurator-artifacts'
+let namespaceRoot: string | null = null
+
+type OpfsDirectory = FileSystemDirectoryHandle & {
+  values?: () => AsyncIterableIterator<FileSystemHandle>
+}
+
+async function directory(): Promise<OpfsDirectory | null> {
+  const storage = globalThis.navigator?.storage as (StorageManager & {
+    getDirectory?: () => Promise<FileSystemDirectoryHandle>
+  }) | undefined
+  if (!storage?.getDirectory) return null
+  const root = await storage.getDirectory()
+  return await root.getDirectoryHandle(ARTIFACT_DIR, { create: true }) as OpfsDirectory
+}
+
+function normalizePath(filePath: string): string {
+  const normalized = `/${filePath}`.replace(/\/{2,}/g, '/').replace(/\/$/, '')
+  return normalized || '/'
+}
+
+function scopedPath(filePath: string): string {
+  const normalized = normalizePath(filePath)
+  if (!namespaceRoot) return normalized
+  return normalized === '/' ? namespaceRoot : `${namespaceRoot}${normalized}`
+}
+
+function logicalPath(filePath: string): string | null {
+  const normalized = normalizePath(filePath)
+  if (!namespaceRoot) return normalized
+  if (normalized === namespaceRoot) return '/'
+  return normalized.startsWith(`${namespaceRoot}/`)
+    ? normalizePath(normalized.slice(namespaceRoot.length))
+    : null
+}
+
+function parentOf(filePath: string): string {
+  const normalized = normalizePath(filePath)
+  const separator = normalized.lastIndexOf('/')
+  return separator <= 0 ? '/' : normalized.slice(0, separator)
+}
+
+function baseName(filePath: string): string {
+  return normalizePath(filePath).split('/').filter(Boolean).pop() ?? ''
+}
+
+/** OPFS directory entries are flat, so encode the complete virtual path. */
+function storageName(filePath: string): string {
+  return encodeURIComponent(scopedPath(filePath))
+}
+
+function virtualPath(storageEntryName: string): string {
+  try {
+    return normalizePath(decodeURIComponent(storageEntryName))
+  } catch {
+    // Legacy entries from the first browser-local preview had bare names.
+    return normalizePath(storageEntryName)
+  }
+}
+
+export class ArtifactFileHandle {
+  private readonly filePath: string
+  private readonly mode: 'r' | 'w'
+  private writable: FileSystemWritableFileStream | null = null
+  private closed = false
+
+  constructor(filePath: string, mode: 'r' | 'w') {
+    this.filePath = filePath
+    this.mode = mode
+  }
+
+  async initialize(): Promise<this> {
+    if (this.mode === 'w') {
+      const dir = await directory()
+      if (dir) {
+        const handle = await dir.getFileHandle(storageName(this.filePath), { create: true })
+        this.writable = await handle.createWritable({ keepExistingData: false })
+      } else MEMORY_FILES.set(scopedPath(this.filePath), new Uint8Array())
+    }
+    return this
+  }
+
+  async write(
+    source: Uint8Array,
+    sourceOffset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesWritten: number; buffer: Uint8Array }> {
+    if (this.closed || this.mode !== 'w') throw new Error('artifact file is not writable')
+    const chunk = source.slice(sourceOffset, sourceOffset + length)
+    if (this.writable) {
+      await this.writable.write({ type: 'write', position, data: chunk })
+    } else {
+      const key = scopedPath(this.filePath)
+      const current = MEMORY_FILES.get(key) ?? new Uint8Array()
+      const next = current.length >= position + chunk.length
+        ? current.slice()
+        : new Uint8Array(position + chunk.length)
+      next.set(current)
+      next.set(chunk, position)
+      MEMORY_FILES.set(key, next)
+    }
+    return { bytesWritten: chunk.length, buffer: source }
+  }
+
+  async read(
+    target: Uint8Array,
+    targetOffset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesRead: number; buffer: Uint8Array }> {
+    if (this.closed) throw new Error('artifact file is closed')
+    const bytes = await artifactFs.readFile(this.filePath)
+    const chunk = bytes.subarray(position, Math.min(bytes.length, position + length))
+    target.set(chunk, targetOffset)
+    return { bytesRead: chunk.length, buffer: target }
+  }
+
+  async truncate(size: number): Promise<void> {
+    if (this.writable) await this.writable.truncate(size)
+    else {
+      const key = scopedPath(this.filePath)
+      MEMORY_FILES.set(key, (MEMORY_FILES.get(key) ?? new Uint8Array()).slice(0, size))
+    }
+  }
+
+  async sync(): Promise<void> {}
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    await this.writable?.close()
+    this.writable = null
+  }
+}
+
+export const artifactPath = {
+  join: (...parts: string[]) => parts.join('/').replace(/\/{2,}/g, '/'),
+}
+
+export const artifactOs = {
+  tmpdir: () => '/openconfigurator-artifacts',
+}
+
+export const artifactFs = {
+  /** Restrict all subsequent logical paths and cleanup to one Worker instance. */
+  setNamespace(namespaceId: string | null): void {
+    if (namespaceId === null) {
+      namespaceRoot = null
+      return
+    }
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(namespaceId)) {
+      throw new Error('invalid artifact namespace')
+    }
+    namespaceRoot = `/__runtime__/${namespaceId}`
+  },
+
+  async mkdtemp(prefix: string): Promise<string> {
+    // The caller owns cleanup of leftover directories (removeStaleInstanceDirs);
+    // purging here would destroy artifacts of concurrent live downloads.
+    return `${prefix}${crypto.randomUUID()}`
+  },
+
+  async mkdir(path: string, _options?: { recursive?: boolean }): Promise<void> {
+    await directory()
+    // Flat storage has no directories; a marker entry materializes an empty
+    // one so directory-oriented listings and sweeps can observe it. The
+    // marker name never matches download-artifact patterns.
+    const marker = `${normalizePath(path)}/.keep`
+    if (!(await this.exists(marker))) await this.writeFile(marker, '')
+  },
+
+  async readdir(filePath: string): Promise<string[]> {
+    const parent = normalizePath(filePath)
+    const names = new Set<string>()
+    const collect = (entryPath: string) => {
+      if (parentOf(entryPath) === parent) {
+        names.add(baseName(entryPath))
+        return
+      }
+      // Flat storage encodes full virtual paths; expose intermediate segments
+      // as virtual directories so directory-oriented callers can traverse.
+      if (parent !== '/' && !`${entryPath}/`.startsWith(`${parent}/`)) return
+      if (parent === '/' && entryPath === '/') return
+      const rest = parent === '/' ? entryPath.slice(1) : entryPath.startsWith(`${parent}/`) ? entryPath.slice(parent.length + 1) : null
+      if (rest === null || rest === '') return
+      const first = rest.split('/')[0]
+      if (first) names.add(first)
+    }
+    const dir = await directory()
+    if (!dir) {
+      for (const entry of MEMORY_FILES.keys()) {
+        const logical = logicalPath(entry)
+        if (logical) collect(logical)
+      }
+      return [...names].filter((name) => name !== '.keep')
+    }
+    if (!dir.values) return []
+    for await (const handle of dir.values()) {
+      const logical = logicalPath(virtualPath(handle.name))
+      if (logical) collect(logical)
+    }
+    return [...names].filter((name) => name !== '.keep')
+  },
+
+  async open(filePath: string, mode: 'r' | 'w'): Promise<ArtifactFileHandle> {
+    return new ArtifactFileHandle(filePath, mode).initialize()
+  },
+
+  async unlink(filePath: string): Promise<void> {
+    const dir = await directory()
+    if (dir) await dir.removeEntry(storageName(filePath)).catch(() => undefined)
+    MEMORY_FILES.delete(scopedPath(filePath))
+  },
+
+  async rename(from: string, to: string): Promise<void> {
+    const bytes = await this.readFile(from)
+    const target = await this.open(to, 'w')
+    await target.write(bytes, 0, bytes.length, 0)
+    await target.close()
+    await this.unlink(from)
+  },
+
+  async readFile(filePath: string): Promise<Uint8Array> {
+    const dir = await directory()
+    if (dir) {
+      const handle = await dir.getFileHandle(storageName(filePath))
+      return new Uint8Array(await (await handle.getFile()).arrayBuffer())
+    }
+    const value = MEMORY_FILES.get(scopedPath(filePath))
+    if (!value) throw new Error(`artifact not found: ${filePath}`)
+    return value.slice()
+  },
+
+  async writeFile(filePath: string, data: Uint8Array | string): Promise<void> {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
+    const handle = await this.open(filePath, 'w')
+    await handle.write(bytes, 0, bytes.length, 0)
+    await handle.close()
+  },
+
+  async exists(filePath: string): Promise<boolean> {
+    try {
+      await this.readFile(filePath)
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  async estimate(): Promise<{ quota: number; usage: number }> {
+    const estimate = await globalThis.navigator?.storage?.estimate?.()
+    return { quota: estimate?.quota ?? Number.MAX_SAFE_INTEGER, usage: estimate?.usage ?? 0 }
+  },
+
+  async purge(): Promise<void> {
+    const dir = await directory()
+    if (dir?.values) {
+      const names: string[] = []
+      for await (const handle of dir.values()) {
+        if (logicalPath(virtualPath(handle.name)) !== null) names.push(handle.name)
+      }
+      await Promise.all(names.map((name) => dir.removeEntry(name).catch(() => undefined)))
+    }
+    if (!namespaceRoot) MEMORY_FILES.clear()
+    else {
+      for (const key of [...MEMORY_FILES.keys()]) {
+        if (logicalPath(key) !== null) MEMORY_FILES.delete(key)
+      }
+    }
+  },
+
+  async rm(targetPath: string, _options?: { recursive?: boolean; force?: boolean }): Promise<void> {
+    const prefix = normalizePath(targetPath)
+    if (prefix === '/') {
+      await this.purge()
+      return
+    }
+    const under = (entryPath: string) => entryPath === prefix || entryPath.startsWith(`${prefix}/`)
+    const dir = await directory()
+    if (dir?.values) {
+      const doomed: string[] = []
+      for await (const handle of dir.values()) {
+        const logical = logicalPath(virtualPath(handle.name))
+        if (logical && under(logical)) doomed.push(handle.name)
+      }
+      await Promise.all(doomed.map((name) => dir.removeEntry(name).catch(() => undefined)))
+    }
+    for (const key of [...MEMORY_FILES.keys()]) {
+      const logical = logicalPath(key)
+      if (logical && under(logical)) MEMORY_FILES.delete(key)
+    }
+  },
+}

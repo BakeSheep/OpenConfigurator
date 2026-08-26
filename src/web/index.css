@@ -1078,6 +1078,11 @@ input[type="range"]:focus-visible {
   color: inherit;
 }
 
+.mc-sidebar__item > span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .mc-sidebar__item:hover {
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -1580,7 +1585,7 @@ input[type="range"]:focus-visible {
 .mc-mode-slot:last-child { border-right: 0; }
 .mc-mode-slot > span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: var(--bg-tertiary); color: var(--text-disabled); font: 9px var(--font-mono); }
 .mc-mode-slot strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.mc-mode-slot small { color: var(--text-disabled); font: 8px var(--font-mono); }
+.mc-mode-slot small { color: var(--text-secondary); font: 8px var(--font-mono); }
 .mc-mode-slot[data-active="true"] { background: var(--accent-dim); box-shadow: inset 0 -3px 0 var(--accent); }
 /* The accent-tint slot background fails AA for the 8px disabled-gray id label. */
 .mc-mode-slot[data-active="true"] small { color: var(--text-secondary); }

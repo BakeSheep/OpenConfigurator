@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  connectBackendIfEnabled,
+  startLocalRuntimeIfEnabled,
   isReadOnlyRuntime,
   resolveRuntimeMode,
-  shouldConnectBackend,
+  shouldStartLocalRuntime,
 } from './runtimeMode'
 
 test('VITE_APP_MODE=demo forces demo mode regardless of dev/query', () => {
@@ -26,41 +26,41 @@ test('default is live mode', () => {
   assert.equal(resolveRuntimeMode({ appMode: 'production', dev: false, search: '' }), 'live')
 })
 
-test('demo mode never connects to the backend, live mode does', () => {
-  assert.equal(shouldConnectBackend('demo'), false)
-  assert.equal(shouldConnectBackend('live'), true)
+test('demo mode never starts the local runtime, live mode does', () => {
+  assert.equal(shouldStartLocalRuntime('demo'), false)
+  assert.equal(shouldStartLocalRuntime('live'), true)
   assert.equal(isReadOnlyRuntime('demo'), true)
   assert.equal(isReadOnlyRuntime('live'), false)
 })
 
-test('disabled socket lifecycle never invokes the WebSocket connector', () => {
+test('disabled runtime lifecycle never invokes the local runtime connector', () => {
   let connectionAttempts = 0
-  const started = connectBackendIfEnabled(
-    shouldConnectBackend('demo'),
+  const started = startLocalRuntimeIfEnabled(
+    shouldStartLocalRuntime('demo'),
     () => { connectionAttempts += 1 },
   )
   assert.equal(started, false)
   assert.equal(connectionAttempts, 0)
 })
 
-test('enabled socket lifecycle invokes the connector once', () => {
+test('enabled runtime lifecycle invokes the connector once', () => {
   let connectionAttempts = 0
-  const started = connectBackendIfEnabled(
-    shouldConnectBackend('live'),
+  const started = startLocalRuntimeIfEnabled(
+    shouldStartLocalRuntime('live'),
     () => { connectionAttempts += 1 },
   )
   assert.equal(started, true)
   assert.equal(connectionAttempts, 1)
 })
 
-test('live runtime has no demo interceptor: sendClientMessage cannot fake delivery', async () => {
+test('live runtime has no demo interceptor: sendRuntimeCommand cannot fake delivery', async () => {
   // Without startDemoMode (never called in live builds), no client-message
-  // interceptor is registered and no socket exists, so every send fails
+  // interceptor is registered and no local runtime exists, so every send fails
   // rather than being silently absorbed as a fake success.
-  const { sendClientMessage } = await import('./hooks/useWebSocket')
+  const { sendRuntimeCommand } = await import('./hooks/useLocalRuntime')
   assert.equal(
-    sendClientMessage({ type: 'start_calibration', requestId: 'x', data: { kind: 'accel' } }),
+    sendRuntimeCommand({ type: 'start_calibration', requestId: 'x', data: { kind: 'accel' } }),
     false,
   )
-  assert.equal(sendClientMessage({ type: 'param_request_list' }), false)
+  assert.equal(sendRuntimeCommand({ type: 'param_request_list' }), false)
 })

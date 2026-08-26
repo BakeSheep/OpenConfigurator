@@ -7,12 +7,9 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-dist-electron
-release
-/release-*/
+node_modules/
+dist/
+dist-ssr/
 *.local
 .env
 .env.*
@@ -20,10 +17,7 @@ release
 coverage
 .nyc_output
 playwright-report
-test-results
-
-# Headless browser profile used by scripts/screenshot-demo.mjs
-.tmp-shot-profile
+test-results/
 
 # Top-level compiler/test scratch directories
 /.tmp-*/

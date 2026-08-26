@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { RcChannelsData } from '../../shared/types'
+import { LOCAL_RUNTIME_OWNER_ID } from '../../shared/localRuntime'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
 import { setupRequestId, SetupNotice } from '../components/setup/SetupControls'
 import ChannelBars from '../components/telemetry/ChannelBars'
@@ -9,7 +10,7 @@ import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Field from '../components/ui/Field'
 import { Notice } from '../components/ui/Feedback'
 import { PageHeader } from '../components/ui/PageFrame'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -33,7 +34,6 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
   const armed = useTelemetryStore((state) => state.status?.armed)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
-  const clientId = useConnectionStore((state) => state.clientId)
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const params = useParameterStore((state) => state.params)
@@ -43,7 +43,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
   const [contextError, setContextError] = useState<string | null>(null)
   const caps = vehicleCapabilities(identity)
   const sessionActive = Boolean(snapshot && !['done', 'failed', 'cancelled'].includes(snapshot.phase))
-  const isOwner = Boolean(snapshot && snapshot.ownerClientId === clientId)
+  const isOwner = Boolean(snapshot && snapshot.ownerClientId === LOCAL_RUNTIME_OWNER_ID)
   const rssi = rcChannels?.rssi ?? null
 
   const mappedFunctions = useMemo(() => {
@@ -107,7 +107,7 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
       setContextError(t('vehicleSetup.safetyContextChanged'))
       return
     }
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'radio_calibration_start',
       requestId: setupRequestId('radio-start'),
       data: { transmitterMode: confirmed.transmitterMode },
@@ -116,12 +116,12 @@ export default function ReceiverPage({ embedded = false }: { embedded?: boolean 
     })
     setCommitment(null)
   }
-  const advance = () => snapshot && sendClientMessage({
+  const advance = () => snapshot && sendRuntimeCommand({
     type: 'radio_calibration_advance',
     requestId: setupRequestId('radio-next'),
     data: { sessionId: snapshot.sessionId },
   })
-  const cancel = () => snapshot && sendClientMessage({
+  const cancel = () => snapshot && sendRuntimeCommand({
     type: 'radio_calibration_cancel',
     requestId: setupRequestId('radio-cancel'),
     data: { sessionId: snapshot.sessionId },

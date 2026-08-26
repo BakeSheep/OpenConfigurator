@@ -10,8 +10,8 @@ export interface LogDownloadTask {
   totalBytes: number
   rateBps: number
   status: 'active' | 'done' | 'error'
-  /** Set once the backend registered the finished file. */
-  downloadId?: string
+  /** Set once the local runtime registered the finished file. */
+  artifactId?: string
   fileName?: string
   advertisedSizeBytes?: number
   sizeAdjusted?: boolean
@@ -46,7 +46,7 @@ interface LogTransferState {
   setDownloadProgress: (logId: number, receivedBytes: number, totalBytes: number, rateBps: number) => void
   completeDownload: (
     logId: number,
-    downloadId: string,
+    artifactId: string,
     fileName: string,
     sizeBytes: number,
     advertisedSizeBytes: number,
@@ -102,7 +102,7 @@ export const useLogTransferStore = create<LogTransferState>((set) => ({
   })),
   completeDownload: (
     logId,
-    downloadId,
+    artifactId,
     fileName,
     sizeBytes,
     advertisedSizeBytes,
@@ -113,7 +113,7 @@ export const useLogTransferStore = create<LogTransferState>((set) => ({
       ? {
         ...state.download,
         status: 'done',
-        downloadId,
+        artifactId,
         fileName,
         advertisedSizeBytes,
         sizeAdjusted,

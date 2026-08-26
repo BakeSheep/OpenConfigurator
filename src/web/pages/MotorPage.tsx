@@ -5,7 +5,7 @@ import Icon from '../components/ui/Icon'
 import { PageTabs } from '../components/ui/PageFrame'
 import { TabPanel } from '../components/ui/Tabs'
 import { useQueryTab } from '../hooks/useQueryTab'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -92,7 +92,7 @@ function ArduPilotProtocolControl({ params, canWrite }: {
           title={t('motor.arduPilotProtocolTitle')}
           value={value}
           disabled={!canWrite}
-          onChange={(event) => sendClientMessage({
+          onChange={(event) => sendRuntimeCommand({
             type: 'param_set',
             data: { id: 'MOT_PWM_TYPE', value: Number(event.target.value), paramType: param.type },
           })}
@@ -151,7 +151,7 @@ function getFallbackRotor(index: number, count: number) {
 
 export default function MotorPage({ embedded = false, panel }: { embedded?: boolean; panel?: 'mapping' | 'test' }) {
   const { t } = useTranslation()
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
   const rawSessionActive = useConnectionStore((state) => state.rawSessionActive)

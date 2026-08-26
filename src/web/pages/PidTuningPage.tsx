@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Feedback'
 import { EmptyState } from '../components/ui/PageFrame'
 import Toolbar from '../components/ui/Toolbar'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -152,7 +152,7 @@ function ManualPidTuningPage() {
     if (!connectedAndControllable || loading) return
     useParameterStore.getState().clear()
     useParameterStore.getState().setLoading(true)
-    sendClientMessage({ type: 'param_request_list' })
+    sendRuntimeCommand({ type: 'param_request_list' })
   }
 
   const commit = (definition: PidDefinition, value: number) => {
@@ -182,7 +182,7 @@ function ManualPidTuningPage() {
     setPending({ requestId, id: definition.id, value: boundedValue, step: definition.step })
     setDrafts((current) => ({ ...current, [definition.id]: formatValue(boundedValue, definition.step) }))
     useParameterStore.getState().setWriteResult(null)
-    const sent = sendClientMessage({
+    const sent = sendRuntimeCommand({
       type: 'param_set',
       requestId,
       data: { id: definition.id, value: boundedValue, paramType: param.type },

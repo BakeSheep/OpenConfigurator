@@ -1,4 +1,4 @@
-// Shared ESC error vocabulary. Both the backend session/protocol layers and
+// Shared ESC error vocabulary. Both the local session/protocol layers and
 // the frontend store consume these codes; keep this module framework-agnostic
 // (no React, no Node-only imports).
 

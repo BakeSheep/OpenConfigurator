@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { useEscStore } from '../../stores/escStore'
 
-/** Scrolling console of server-side ESC log entries (max 500, newest last). */
+/** Scrolling console of local-runtime ESC log entries (max 500, newest last). */
 export default function EscLogConsole() {
   const { t } = useTranslation()
   const log = useEscStore((state) => state.log)

@@ -10,7 +10,7 @@ OpenConfigurator 采用 [MIT License](LICENSE)。ESC 协议实现基于公开协
 | ArduPilot AP_BLHeli / AP_MSP | GPLv3 | 核对 passthrough 行为与响应字段，不复制代码 |
 | AM32 firmware / configurator | GPLv3 或仓库声明 | 核对 EEPROM 字段语义，不复制实现 |
 | stylesuxx/esc-configurator | AGPL-3.0 | 仅作外部行为参考，代码不得合并 |
-| MAVLink definitions | MIT-compatible | 通过 `node-mavlink` 使用公开消息定义 |
+| MAVLink definitions | MIT-compatible | 通过 `mavlink-mappings` 使用公开消息定义 |
 
 逐项协议来源和验证状态见 [docs/ESC-PROTOCOL-SOURCES.md](docs/ESC-PROTOCOL-SOURCES.md)。npm 运行时依赖及版本见 [package.json](package.json)，其许可证以各依赖自身声明为准。
 
@@ -19,7 +19,7 @@ OpenConfigurator 采用 [MIT License](LICENSE)。ESC 协议实现基于公开协
 | 依赖 | 许可证 | 本项目用途 |
 |---|---|---|
 | `@noble/hashes` | MIT | 对源日志执行增量 SHA-256，写入导出清单 |
-| `@zip.js/zip.js` | BSD-3-Clause | 在浏览器或 Electron 中流式生成 ZIP64 结构化日志包 |
+| `@zip.js/zip.js` | BSD-3-Clause | 在浏览器中流式生成 ZIP64 结构化日志包 |
 
 具体版本固定于 [package-lock.json](package-lock.json)，许可证全文随 npm 包保存在各依赖目录中。
 

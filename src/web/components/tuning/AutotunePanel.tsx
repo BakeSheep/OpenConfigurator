@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { vehicleCapabilities } from '../../../shared/vehicleProfiles'
+import { LOCAL_RUNTIME_OWNER_ID } from '../../../shared/localRuntime'
 import type { AutotunePhase } from '../../../shared/types'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useAutotuneStore } from '../../stores/autotuneStore'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
@@ -27,7 +28,8 @@ export default function AutotunePanel() {
   const params = useParameterStore((state) => state.params)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
-  const clientId = useConnectionStore((state) => state.clientId)
+  // Single-client local runtime: this tab is always the session owner.
+  const clientId = LOCAL_RUNTIME_OWNER_ID
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const status = useTelemetryStore((state) => state.status)
@@ -69,7 +71,7 @@ export default function AutotunePanel() {
     const nextRequestId = `autotune-${Date.now().toString(36)}`
     setRequestId(nextRequestId)
     setConfirmed(false)
-    if (!sendClientMessage({
+    if (!sendRuntimeCommand({
       type: 'autotune_start',
       requestId: nextRequestId,
       safetyConfirmation: 'autotune_in_flight',
@@ -82,7 +84,7 @@ export default function AutotunePanel() {
     if (!snapshot || !isOwner) return
     const nextRequestId = `autotune-${value}-${Date.now().toString(36)}`
     setRequestId(nextRequestId)
-    if (!sendClientMessage({
+    if (!sendRuntimeCommand({
       type: 'autotune_action',
       requestId: nextRequestId,
       data: { sessionId: snapshot.sessionId, action: value },

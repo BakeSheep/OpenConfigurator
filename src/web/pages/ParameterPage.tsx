@@ -8,7 +8,7 @@ import { Notice } from '../components/ui/Feedback'
 import StatePanel from '../components/ui/StatePanel'
 import { TabPanel, Tabs } from '../components/ui/Tabs'
 import Toolbar from '../components/ui/Toolbar'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useParameterStore } from '../stores/parameterStore'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -77,7 +77,7 @@ function validateParamValue(value: number, type: number, t: TFunction): string |
 export default function ParameterPage({ embedded = false }: { embedded?: boolean }) {
   const { t } = useTranslation()
   const { params, loading, totalCount, receivedCount } = useParameterStore()
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const canAccess = useConnectionStore((state) => state.vehicleReady && state.canControl)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const setConnectDialogOpen = useConnectionStore((state) => state.setConnectDialogOpen)
@@ -91,7 +91,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
   const armed = useTelemetryStore((state) => state.status?.armed)
   const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
-  // OCSA-001: mirror the server gate — raw parameter writes require a
+  // OCSA-001: mirror the Worker gate — raw parameter writes require a
   // confirmed disarmed vehicle, not just a writable profile.
   const canWrite = canAccess && profileWritable && armed === false
   const [search, setSearch] = useState('')

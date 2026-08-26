@@ -1,42 +1,45 @@
 # AGENTS.md — OpenConfigurator
 
-Local-first Web GCS for PX4 and ArduPilot. The React SPA uses REST plus one WebSocket to a Node.js backend; the backend owns serial/Bluetooth connections, MAVLink, log transfer, and ESC sessions. Treat the current code and README as the feature inventory.
+Browser-local Web GCS for PX4 and ArduPilot. The static React SPA owns Web Serial on the main thread and runs MAVLink, log transfer, safety policy, and ESC sessions in a Dedicated Worker. The deployment host serves files only and must never receive vehicle data. Treat the current code and maintained docs as the feature inventory.
 
 ## Stack and layout
 
 - React 19, TypeScript, Vite 8, Tailwind CSS 4, Zustand, react-router, three.js, Recharts/uPlot
-- Node.js, Express 5, `ws`, `serialport`, `node-mavlink`
-- `src/shared/`: the only frontend/backend shared surface; framework-agnostic types, protocol unions, vehicle profiles, ESC layouts
-- `src/web/`: four routed workspaces, components, stores, `useWebSocket`
-- `src/server/`: HTTP/WS boundary, validation, connection manager, MAVLink bridge/log transfer, ESC service/transports
+- Web Serial, Dedicated Worker, OPFS, `mavlink-mappings`, `@noble/hashes`
+- `src/shared/`: the only main-thread/Worker shared surface; framework-agnostic types, runtime unions, vehicle profiles, ESC layouts
+- `src/web/`: routed workspaces, components, stores, root `useLocalRuntime`, and main-thread Web Serial transport
+- `src/local-runtime/`: Worker boundary, validation, MAVLink bridge/log transfer, artifact storage, ESC service/transports
 
 ## Commands
 
 ```bash
 npm run dev
 npm run typecheck
-npm run test:server
+npm run test:runtime
 npm run test:protocol
+npm run test:network
 npm run build
-npm start
+npm run test:ui
 ```
 
-Vite serves `:5173` and proxies `/api` and `/ws` to `:3000`. Production runs `tsx src/server/index.ts` and serves `dist/`.
+Vite serves `:5173`. Production is the static `dist/`; the included Nginx container serves static files only. Public deployments require HTTPS for Web Serial.
 
 ## Architecture rules
 
-- Never import `src/web/` from the server or `src/server/` from the frontend. Put shared, framework-free code in `src/shared/`.
-- `useWebSocket` is mounted once in `App.tsx`. Pages use stores and the shared send function; they never create sockets.
-- A new wire message normally requires the union in `src/shared/types.ts`, runtime validation, server handler/emit, `useWebSocket` dispatch, and tests.
-- MAVLink framing, CRC, dialect lookup, signing, parser state, sequence numbers, and serialization go only through `src/server/mavlink/codec.ts`.
-- `transportOpen` is not `vehicleReady`. Safety-critical writes additionally require a recognized target, supported vehicle capability, and controller lease.
+- Never import `src/web/` from the Worker runtime. Put shared, framework-free code in `src/shared/`.
+- `useLocalRuntime` is mounted once in `App.tsx`. Pages use stores and `sendRuntimeCommand`; they never create Workers or open serial ports.
+- `LocalRuntimeClient` owns the single Worker boundary on the main thread, and `WebSerialTransport` is the only native connection adapter. There is no runtime API, WebSocket service, or Electron shell.
+- Listing ports uses `navigator.serial.getPorts()` and never opens them; `navigator.serial.requestPort()` remains user-gesture initiated. Saved presets identify browser grants but never bypass browser permission.
+- A new cross-thread message normally requires the union in `src/shared/types.ts`, runtime validation, Worker handler/emit, `useLocalRuntime` dispatch, and tests.
+- MAVLink framing, CRC, dialect lookup, signing, parser state, sequence numbers, and serialization go only through `src/local-runtime/mavlink/codec.ts`.
+- `transportOpen` is not `vehicleReady`. Safety-critical writes additionally require a recognized target, supported vehicle capability, armed-state gate, and current local safety authority/epoch.
 - PX4/ArduPilot behavior comes from `src/shared/vehicleProfiles.ts`; never infer a stack from parameter names or send cross-stack parameters.
 - Unknown stacks and unimplemented ArduPilot vehicle classes stay read-only. Current ArduPilot write support targets ArduCopter.
 
 ## ESC rules
 
 - ESC configuration is settings-only: do not add firmware erase/flash or startup-tone claims without an explicit product decision and safety design.
-- ESC sessions are owned by `EscService`/`EscSessionManager`; they pin the controller lease and isolate incompatible MAVLink mutations.
+- ESC sessions are owned by `EscService`/`EscSessionManager`; they bind to the current local safety boundary and isolate incompatible MAVLink mutations.
 - Supported paths are ArduPilot raw passthrough, PX4 `SERIAL_CONTROL`, and direct 19200-baud serial. Do not reuse raw transports outside the session manager.
 - Parameter writes require a recognized AM32 MCU and layout, preserve unknown EEPROM bytes, and verify the complete written block by reading it back.
 - Update `docs/ESC-COMPATIBILITY.md` for hardware evidence and `docs/ESC-PROTOCOL-SOURCES.md` for new protocol facts.
@@ -79,9 +82,9 @@ The interface is a compact operational workspace, not a collection of independen
 
 ### State and safety implementation
 
-- Put WebSocket-driven persistent data in Zustand stores, not component-local mirrors. Clear or rebind target-specific drafts and confirmations when the server authority, safety epoch, selected target, readiness, or controller ownership changes.
+- Put Worker-driven persistent data in Zustand stores, not component-local mirrors. Clear or rebind target-specific drafts and confirmations when the local safety authority, safety epoch, selected target, readiness, or port ownership changes.
 - Keep RAF/interval callbacks stable and read changing values through refs. Derived telemetry must honor stale timestamps; offline placeholders must never present cached values as live.
-- A visible enabled control is not authorization. Every mutation re-reads live connection, target, capability, controller, and authority state immediately before sending; the server remains authoritative.
+- A visible enabled control is not authorization. Every mutation re-reads live connection, target, capability, armed state, and authority immediately before sending; the local Worker remains authoritative.
 - Preserve arming confirmation, props-removed gates, uninterrupted ESC power confirmation, manual RC override enablement, and target-bound destructive confirmations. Emergency disarm/stop paths must remain immediate.
 
 ### Frontend verification
@@ -99,8 +102,8 @@ The interface is a compact operational workspace, not a collection of independen
 
 ## Gotchas
 
-- Express 5 catch-all syntax is `/{*splat}`.
-- Windows Bluetooth SPP exposes incoming and outgoing COM ports; prefer the outgoing `_VID&.._PID&..` port and keep the current `pnpId` matching.
-- Web Serial requires Chrome/Edge 89+ and HTTPS or localhost.
+- Web Serial requires desktop Chromium and HTTPS or localhost; `requestPort()` must remain user-gesture initiated.
+- Bluetooth Classic SPP through Web Serial targets Chrome 117+ desktop and reconnects only within the active tab session.
+- Listing granted ports must never open or occupy them; identical VID/PID devices require explicit user selection.
 - MAVLink message 245 is `EXTENDED_SYS_STATE`; 148 is `AUTOPILOT_VERSION` from the `standard` dialect.
 - Before completion, run `npm run typecheck` and relevant tests. Hardware-free tests do not constitute HIL validation.

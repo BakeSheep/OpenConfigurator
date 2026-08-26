@@ -22,7 +22,7 @@ async function expectSelectedTab(tablist: Locator, id: string, label: string) {
   await expect(selected).toBeFocused()
 }
 
-test('Domain navigation switches the active task and resets page-scoped query state', async ({ page }) => {
+test('Domain navigation resets page-scoped query state and preserves unrelated state', async ({ page }) => {
   await openDemo(page, '/airframe/sensors?tab=mag&probe=keep')
   const airframeNav = page.getByRole('navigation', { name: '业务域页面' })
   await expect(airframeNav.getByRole('link', { name: '传感器' })).toHaveAttribute('aria-current', 'page')
@@ -31,22 +31,22 @@ test('Domain navigation switches the active task and resets page-scoped query st
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('电源')
   await expect(airframeNav.getByRole('link', { name: '电源', exact: true })).toHaveAttribute('aria-current', 'page')
   // Stale sensor-tab state must not leak into the new task's query.
-  await expectQuery(page, { tab: null, probe: null })
+  await expectQuery(page, { tab: null, probe: 'keep' })
 
   await airframeNav.getByRole('link', { name: '机架', exact: true }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('机架')
-  await expectQuery(page, { tab: null, probe: null })
+  await expectQuery(page, { tab: null, probe: 'keep' })
 
   await openDemo(page, '/flight-data?tab=status&probe=keep')
   const flightDataNav = page.getByRole('navigation', { name: '业务域页面' })
 
   await flightDataNav.getByRole('link', { name: '实时波形' }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('实时波形')
-  await expectQuery(page, { tab: null, probe: null })
+  await expectQuery(page, { tab: null, probe: 'keep' })
 
   await flightDataNav.getByRole('link', { name: 'MAVLink 消息' }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('MAVLink 消息')
-  await expectQuery(page, { tab: null, probe: null })
+  await expectQuery(page, { tab: null, probe: 'keep' })
 })
 
 test('explicit default and invalid tab queries are canonicalized without losing unrelated state', async ({ page }) => {
@@ -65,7 +65,8 @@ test('legacy EKF diagnostics deep link redirects to the EKF tuning task', async 
 
   await expect(page.locator('main h1')).toHaveText('调参与状态')
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('EKF')
-  await expect(page).toHaveURL(/#\/tuning\/ekf$/)
+  await expect(page).toHaveURL(/#\/tuning\/ekf\?probe=keep$/)
+  await expectQuery(page, { tab: null, probe: 'keep' })
 })
 
 test('Sensor calibration has its own top navigation page and keeps busy sessions visible', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ServerMessage } from '../../shared/types'
+import type { RuntimeEvent } from '../../shared/types'
 
 export const MAVLINK_MESSAGE_LIVE_MS = 4_000
 export const MAVLINK_RATE_WINDOW_MS = 5_000
@@ -19,7 +19,7 @@ interface MavlinkMessageState {
   reset: () => void
 }
 
-function observedMavlinkMessage(message: ServerMessage): { msgType: string; data: unknown } | null {
+function observedMavlinkMessage(message: RuntimeEvent): { msgType: string; data: unknown } | null {
   switch (message.type) {
     case 'telemetry':
     case 'sensor':
@@ -67,7 +67,7 @@ export const useMavlinkMessageStore = create<MavlinkMessageState>((set) => ({
   reset: () => set({ messages: {} }),
 }))
 
-export function recordMavlinkServerMessage(message: ServerMessage, nowMs?: number): void {
+export function recordMavlinkRuntimeEvent(message: RuntimeEvent, nowMs?: number): void {
   const observed = observedMavlinkMessage(message)
   if (!observed) return
   useMavlinkMessageStore.getState().record(observed.msgType, observed.data, nowMs)

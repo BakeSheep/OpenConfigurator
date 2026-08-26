@@ -21,6 +21,7 @@ const workspaces = [
   { name: 'airframe calibration', route: '/airframe/calibration', heading: '机体配置', section: '校准' },
   { name: 'airframe power', route: '/airframe/power', heading: '机体配置', section: '电源' },
   { name: 'airframe safety', route: '/airframe/safety', heading: '机体配置', section: '安全' },
+  { name: 'airframe ports', route: '/airframe/ports', heading: '机体配置', section: '端口' },
   { name: 'propulsion', route: '/propulsion', heading: '动力与输出', section: '输出映射' },
   { name: 'propulsion test', route: '/propulsion/test', heading: '动力与输出', section: '电机测试' },
   { name: 'propulsion esc', route: '/propulsion/esc', heading: '动力与输出', section: '电调' },
@@ -54,7 +55,7 @@ for (const workspace of workspaces) {
       await expect(domainNav.locator('[aria-current="page"]')).toHaveText(workspace.section)
     }
 
-    await expectSharedWorkspaceLayout(page, false)
+    await expectSharedWorkspaceLayout(page, 'section' in workspace)
     await expectNoPageOverflow(page)
   })
 
@@ -77,7 +78,7 @@ test('360 and 768 responsive smoke keeps every workspace inside the viewport', a
         if ('section' in workspace) {
           await expect(page.locator('.mc-section-frame__header h2')).toHaveText(workspace.section)
         }
-        await expectSharedWorkspaceLayout(page, false)
+        await expectSharedWorkspaceLayout(page, 'section' in workspace)
         await expectNoPageOverflow(page)
       })
     }

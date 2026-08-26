@@ -12,7 +12,7 @@ import './styles/flight.css'
 
 // Demo mode fills the stores with synthetic telemetry (static GitHub Pages
 // preview, README screenshots). Seeding must finish before the first render so
-// the UI never flashes a "disconnected" frame, and so the WS lifecycle in App
+// the UI never flashes a "disconnected" frame, and so the local runtime lifecycle in App
 // is decided against the final runtime mode.
 async function bootstrap() {
   const lang = getInitialLanguage()

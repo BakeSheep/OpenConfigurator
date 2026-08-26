@@ -8,7 +8,7 @@ import FlightControllerTerminal from '../components/telemetry/FlightControllerTe
 import { DEFAULT_MESSAGE_RATES, MESSAGE_RATE_OPTIONS } from '../../shared/constants'
 import type { MessageRateConfig } from '../../shared/types'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useQueryTab } from '../hooks/useQueryTab'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
@@ -156,7 +156,7 @@ export default function MessagesPage({ embedded = false, tab }: { embedded?: boo
 
   const applyRates = (next: MessageRateConfig) => {
     if (!canSetRates) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'message_rates_set',
       requestId: `message-rates-${Date.now().toString(36)}`,
       data: next,

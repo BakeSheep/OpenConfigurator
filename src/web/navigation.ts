@@ -24,6 +24,7 @@ export const navigationDomains: NavigationDomain[] = [
     { id: 'calibration', labelKey: 'settings.section.calibration.label', icon: 'refresh', path: '/airframe/calibration' },
     { id: 'power', labelKey: 'domain.airframe.power', icon: 'battery', path: '/airframe/power' },
     { id: 'safety', labelKey: 'domain.airframe.safety', icon: 'hardware', path: '/airframe/safety' },
+    { id: 'ports', labelKey: 'settings.section.ports.label', icon: 'plug', path: '/airframe/ports' },
   ] },
   { id: 'propulsion', labelKey: 'sidebar.propulsion', icon: 'actuator', defaultPath: '/propulsion', items: [
     { id: 'mapping', labelKey: 'motor.tabMapping', icon: 'actuator', path: '/propulsion' },

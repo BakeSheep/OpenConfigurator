@@ -1,4 +1,4 @@
-// Shared ESC domain types consumed by both the Node backend and the React
+// Shared ESC domain types consumed by both the local Worker and the React
 // SPA. Framework-agnostic: no React, no Node-only imports. Wire messages that
 // embed these types live in src/shared/types.ts.
 import type { EscOperationError } from './errors'
@@ -76,7 +76,7 @@ export type EscSettingsGroup =
   | 'servo'
 
 /**
- * Declarative descriptor for one EEPROM-backed setting. The backend uses
+ * Declarative descriptor for one EEPROM-backed setting. The local runtime uses
  * offset/size to encode bytes; the frontend renders the form from the same
  * metadata so both sides share a single source of truth.
  */
@@ -167,11 +167,11 @@ export interface EscJobResult {
 export interface EscLogEntry {
   level: 'info' | 'warn' | 'error'
   text: string
-  /** Epoch ms assigned by the server when the entry was produced. */
+  /** Epoch ms assigned by the local runtime when the entry was produced. */
   timestamp: number
 }
 
-/** Ring-buffer capacity shared by server and client log stores. */
+/** Ring-buffer capacity shared by the local runtime and UI log stores. */
 export const ESC_LOG_CAPACITY = 500
 
 /** Batch flush interval for `esc_log` broadcasts, in milliseconds. */

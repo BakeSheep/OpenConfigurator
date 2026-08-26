@@ -8,8 +8,8 @@ export interface DownloadTask {
   totalBytes: number
   rateBps: number
   status: 'active' | 'done' | 'error'
-  /** Set once the backend registered the finished file. */
-  downloadId?: string
+  /** Set once the local runtime registered the finished file. */
+  artifactId?: string
   fileName?: string
   /** Consumer hint: 'save' triggers a browser download, 'analyze' loads the analysis page. */
   intent: 'save' | 'analyze'
@@ -48,7 +48,7 @@ interface FileExplorerState {
   clearSelection: () => void
   beginDownload: (path: string, intent: 'save' | 'analyze') => void
   setDownloadProgress: (path: string, receivedBytes: number, totalBytes: number, rateBps: number) => void
-  completeDownload: (path: string, downloadId: string, fileName: string, sizeBytes: number) => void
+  completeDownload: (path: string, artifactId: string, fileName: string, sizeBytes: number) => void
   failDownload: (message: string) => void
   clearDownload: () => void
   beginDeletion: () => void
@@ -139,12 +139,12 @@ export const useFileExplorerStore = create<FileExplorerState>((set, get) => ({
       ? { ...state.download, receivedBytes, totalBytes, rateBps }
       : state.download,
   })),
-  completeDownload: (path, downloadId, fileName, sizeBytes) => set((state) => ({
+  completeDownload: (path, artifactId, fileName, sizeBytes) => set((state) => ({
     download: state.download && state.download.path === path
       ? {
         ...state.download,
         status: 'done',
-        downloadId,
+        artifactId,
         fileName,
         receivedBytes: sizeBytes,
         totalBytes: sizeBytes,
