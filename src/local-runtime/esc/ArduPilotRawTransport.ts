@@ -48,7 +48,7 @@ export interface ArduPilotRawTransportOptions {
   settleMs?: number
   /**
    * Operation-boundary safety re-check (OCSA-002). Evaluated before open and
-   * before every transact against the latest server-side armed/target/
+   * before every transact against the latest Worker-side armed/target/
    * connection snapshot. During passthrough MAVLink is paused, so this is the
    * only per-operation guard; a non-null error fails the operation and, once
    * open, aborts the session through onAborted.
@@ -114,7 +114,7 @@ export class ArduPilotRawTransport implements EscByteTransport {
     if (busy) {
       throw new EscError('busy', `链路正忙（${busy}），无法进入 ESC 直通`)
     }
-    // Latest server-side snapshot: armed/target/connection evidence must hold
+    // Latest Worker-side snapshot: armed/target/connection evidence must hold
     // at the moment the link is borrowed, not only at the session entry gate.
     const safetyError = this.checkSafety()
     if (safetyError) throw safetyError

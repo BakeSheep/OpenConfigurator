@@ -604,7 +604,7 @@ export function parseRuntimeCommand(value: unknown): BoundaryRuntimeCommand {
 
     case 'set_flight_mode': {
       const data = record(input.data, 'data')
-      // Only the profile mode id crosses the boundary; the server encodes the
+      // Only the profile mode id crosses the boundary; the Worker encodes the
       // stack-specific MAV_CMD_DO_SET_MODE parameters after capability checks.
       const modeId = finiteNumber(data.modeId, 'data.modeId', {
         min: 0,
@@ -1090,7 +1090,7 @@ export function parseConnectionConfig(value: unknown): ConnectionConfig {
       integer: true,
     })
 
-  // Discovery-v2 identity fields (connection compatibility plan §4.1/§4.3).
+  // Optional identity fields retained by saved browser connection presets.
   const identityTextOptions = {
     minBytes: 1,
     maxBytes: 256,

@@ -176,7 +176,7 @@ export default function Topbar() {
     saveConnectionPresets(updated)
   }
 
-  // Close the tab-local transport. No server or other browser is involved.
+  // Close the tab-local transport. No remote service or other browser is involved.
   const disconnectTransport = async () => {
     setConnectDropdown(false)
     try {
@@ -351,7 +351,7 @@ export default function Topbar() {
 
   const selectMode = (modeId: number) => {
     if (!vehicleReady || !canControl) return
-    // The server encodes stack-specific DO_SET_MODE parameters from the
+    // The Worker encodes stack-specific DO_SET_MODE parameters from the
     // selected vehicle profile; the browser only names the mode.
     sendRuntimeCommand({
       type: 'set_flight_mode',
@@ -652,7 +652,7 @@ export default function Topbar() {
         </Button>
         <div className="relative">
           {isDemo ? (
-            // Static preview: read-only badge, no REST scan/connect/disconnect.
+            // Static preview: read-only badge, no port scan/connect/disconnect.
             <span
               className="mc-topbar__connect is-connected"
               style={{ cursor: 'default' }}

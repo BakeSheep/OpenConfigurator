@@ -20,8 +20,8 @@ npm run generate:param-enums
 
 The generator removes all non-enum metadata, excludes bitmasks, and
 deduplicates repeated option sets. The framework-free runtime resolver lives in
-`src/shared/parameterEnumMetadata.ts`; the frontend keeps a compatibility
-re-export while the server uses the same catalog for its write whitelist. The
+`src/shared/parameterEnumMetadata.ts`; the frontend and local runtime use the
+same catalog for their write whitelist. The
 resolver selects a catalog only from the recognized HEARTBEAT firmware family.
 ArduPilot mappings are currently limited to ArduCopter, matching the project's
 write-support boundary.

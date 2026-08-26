@@ -1,5 +1,5 @@
 // Parameters whose raw write can disable a protection outright. Keep this
-// classification shared so the UI confirmation and server authorization can
+// classification shared so the UI confirmation and Worker authorization can
 // never drift apart.
 const SENSITIVE_PARAM_PATTERNS: readonly RegExp[] = [
   /^CBRK_/,

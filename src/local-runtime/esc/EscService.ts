@@ -30,14 +30,14 @@ export interface EscServiceOptions {
   connManager: BrowserConnectionManager
   bridge: MavlinkBridge
   emit: (message: RuntimeEvent) => void
-  /** Send owner credentials without broadcasting them to observer clients. */
+  /** Send owner credentials without broadcasting them to non-owner consumers. */
   emitToClient?: (clientId: string, message: RuntimeEvent) => void
-  /** Server-authoritative selected HEARTBEAT identity. */
+  /** Local-runtime-authoritative selected HEARTBEAT identity. */
   getVehicleIdentity?: () => VehicleIdentity | null
-  /** Latest server-validated vehicle parameter, or null when not synchronized. */
+  /** Latest Worker-validated vehicle parameter, or null when not synchronized. */
   getParameterValue?: (id: string) => number | null
   /**
-   * Server-authoritative armed/target/connection evidence for ESC safety
+   * Local-runtime-authoritative armed/target/connection evidence for ESC safety
    * (OCSA-002). Re-validated at every operation boundary; a snapshot that is
    * not strictly disarmed and generation-stable refuses or terminates the
    * session. Omitted only by legacy test harnesses.
@@ -540,7 +540,7 @@ export class EscService {
   }
 
   /**
-   * Push-based safety boundary (server observed an armed heartbeat or a
+   * Push-based safety boundary (the Worker observed an armed heartbeat or a
    * target reset). Terminates the active session and releases the borrowed
    * link; a no-op when no session is live.
    */

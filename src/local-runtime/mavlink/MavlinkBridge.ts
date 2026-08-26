@@ -7,7 +7,7 @@ import {
   ardupilotmega,
   decode,
   MavlinkCodecSession,
-  codecOptionsFromEnvironment,
+  defaultCodecOptions,
   type MavlinkCodecSessionOptions,
   type MavlinkMessage,
   type MavLinkData,
@@ -136,12 +136,12 @@ const MESSAGE_RATE_GROUP_BY_ID = new Map<number, MessageRateGroup>(
 
 /**
  * Where a PARAM_SET originates (OCSA-001). The write policy applies the
- * client-facing gates (armed, sensitive-parameter confirmation) only to
- * browser-issued writes; server-owned flows carry their own stronger gates and
+ * caller-facing gates (armed, sensitive-parameter confirmation) only to
+ * tab-issued writes; Worker-owned flows carry their own stronger gates and
  * must never be blocked by them mid-transaction.
  */
 export type ParamWriteIntent =
-  /** Raw write issued by a WS client (the generic `param_set` message). */
+  /** Raw write issued by the current tab (the generic `param_set` message). */
   | 'client_raw'
   /** A verified setup transaction (vehicle_config_set / airframe / radio commit). */
   | 'verified_setup'
@@ -153,7 +153,7 @@ export type ParamWriteIntent =
 /** Everything the policy needs to authorize one PARAM_SET. */
 export interface ParamWriteRequest {
   intent: ParamWriteIntent
-  /** Server-defined confirmation literal required for sensitive parameters. */
+  /** Runtime-defined confirmation literal required for sensitive parameters. */
   safetyConfirmation?: string
   /** Safety boundary the confirmation was captured at (client_raw only). */
   expectedSafetyEpoch?: number
@@ -164,7 +164,7 @@ export type ParamWriteDecision =
   | { ok: true; paramType: number; sensitive: boolean }
   | { ok: false; code: string; message: string }
 
-/** Server-authoritative safety boundary snapshot supplied by the WS layer. */
+/** Local-runtime-authoritative safety boundary snapshot. */
 export interface SafetyEpochSnapshot {
   epoch: number
   authorityId: string
@@ -309,7 +309,7 @@ export class MavlinkBridge extends EventEmitter {
   private paramIndices = new Set<number>()
   private paramDownloadActive = false
   // Monotonic id for each parameter download run. Stamped onto param lifecycle
-  // events so the server can drop late events from a superseded/cancelled run.
+  // events so the runtime can drop late events from a superseded/cancelled run.
   private paramRunId = 0
   private paramDownloadDeadlineAt = 0
   private paramReadRequests = 0
@@ -324,7 +324,7 @@ export class MavlinkBridge extends EventEmitter {
   private versionAttempt = 0
   private versionTimer: ReturnType<typeof setTimeout> | null = null
   // AUTOPILOT_VERSION is a one-shot handshake message; cache the last emitted
-  // snapshot so WS clients that (re)connect later can still receive it.
+  // snapshot so late runtime subscribers can still receive it.
   private lastAutopilotVersionMessage: RuntimeEvent | null = null
   private targetSysId: number | null = null
   private targetCompId: number | null = null
@@ -362,7 +362,7 @@ export class MavlinkBridge extends EventEmitter {
   private rejectedParamIdCount = 0
   private rejectedParamIdGrowthWarned = false
   private vehicleSafetyGeneration = 0
-  // Live safety boundary of the WebSocket layer. The parameter write policy
+  // Live safety boundary of the local runtime. The parameter write policy
   // re-reads it at every send so a stale confirmation can never cross a
   // target/authority change (OCSA-001).
   private safetyEpochProvider: (() => SafetyEpochSnapshot) | null = null
@@ -375,7 +375,7 @@ export class MavlinkBridge extends EventEmitter {
   // and clears the reference when the session reaches a terminal snapshot.
   private activeCalibration: CalibrationSession | null = null
   // In-flight autotune is independent from disarmed sensor calibration. The
-  // server manager owns authority; the bridge only supplies protocol evidence.
+  // runtime session manager owns authority; the bridge only supplies protocol evidence.
   private activeAutotune: AutotuneSession | null = null
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
@@ -388,8 +388,8 @@ export class MavlinkBridge extends EventEmitter {
   private shellActive = false
   private shellPending = false
   private shellProbeTimer: ReturnType<typeof setTimeout> | null = null
-  // OCSA-007: the WS client that owns the pending/active shell session. Output
-  // and status are delivered only to this client; other clients can neither
+  // OCSA-007: the tab that owns the pending/active shell session. Output and
+  // status are delivered only to this owner; other callers can neither
   // write nor close the session.
   private shellOwnerClientId: string | null = null
   private shellDelivery: ((clientId: string, message: RuntimeEvent) => void) | null = null
@@ -480,7 +480,7 @@ export class MavlinkBridge extends EventEmitter {
     return this.lastArmedState
   }
 
-  /** Target-bound context used by long-running server-side setup transactions. */
+  /** Target-bound context used by long-running local setup transactions. */
   getVehicleMutationSafetyContext(): VehicleMutationSafetyContext {
     return {
       fingerprint: this.vehicleMutationFingerprint(),
@@ -538,7 +538,7 @@ export class MavlinkBridge extends EventEmitter {
     super()
     this.connManager = connManager
     this.options = {
-      codec: { ...codecOptionsFromEnvironment(), ...options.codec },
+      codec: { ...defaultCodecOptions(), ...options.codec },
       commandTimeoutMs: options.commandTimeoutMs ?? 1500,
       paramSetTimeoutMs: options.paramSetTimeoutMs ?? 1500,
       versionRetryMs: options.versionRetryMs ?? 1800,
@@ -645,8 +645,8 @@ export class MavlinkBridge extends EventEmitter {
       : `${value.reason}:${value.candidates.map((candidate) => `${candidate.systemId}:${candidate.componentId}`).join(',')}`
     const changed = conflictKey(conflict) !== conflictKey(this.targetConflict)
     this.targetConflict = conflict
-    // Surface the transition immediately so clients can render it and the WS
-    // boundary can invalidate outstanding safety confirmations.
+    // Surface the transition immediately so the UI can render it and the local
+    // runtime boundary can invalidate outstanding safety confirmations.
     if (changed) {
       this.advanceVehicleSafetyGeneration()
       this.emitTarget(conflict ? 'discovered' : 'selected')
@@ -685,8 +685,8 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   /**
-   * Live safety boundary of the WebSocket layer, re-read before every
-   * client-issued sensitive parameter write.
+   * Live safety boundary of the local runtime, re-read before every
+   * caller-issued sensitive parameter write.
    */
   setSafetyEpochProvider(provider: (() => SafetyEpochSnapshot) | null): void {
     this.safetyEpochProvider = provider
@@ -1891,7 +1891,7 @@ export class MavlinkBridge extends EventEmitter {
     return this.writeMessage(message)
   }
 
-  /** Resolve a completed FTP or DataFlash download for the REST file endpoint. */
+  /** Resolve a completed FTP or DataFlash download for local artifact access. */
   getFtpDownload(artifactId: string): FtpDownloadRecord | null {
     return this.ftp.getDownload(artifactId) ?? this.logTransfer.getDownload(artifactId)
   }
@@ -2225,7 +2225,7 @@ export class MavlinkBridge extends EventEmitter {
     this.shellOwnerClientId = null
   }
 
-  /** OCSA-007: server-side close used by the WS layer's orphan grace timer. */
+  /** OCSA-007: local-runtime close used by the orphan grace timer. */
   closeShellSession(reason: string): void {
     this.closeShell(reason)
   }
@@ -2389,7 +2389,7 @@ export class MavlinkBridge extends EventEmitter {
     const id = actualIdBytes.toString('ascii')
     // OCSA-006: one admission decision governs both caches. An id that is not
     // admitted (cache full) must not grow parameterTypes nor be amplified to
-    // WebSocket clients - unless a write transaction is explicitly waiting for
+    // runtime subscribers - unless a write transaction is explicitly waiting for
     // exactly this echo.
     const admitted = this.cacheParameterValue(id, value)
     if (!admitted) this.noteRejectedParamId()
@@ -2556,13 +2556,13 @@ export class MavlinkBridge extends EventEmitter {
     this.cancelParamDownload(true)
   }
 
-  /** Current parameter download run id, read by the server to tag generations. */
+  /** Current parameter download run id, used to tag runtime generations. */
   get currentParamRunId(): number {
     return this.paramRunId
   }
 
-  // Send commands from frontend. `ownerMeta.clientId` identifies the requesting
-  // client so shell sessions can be pinned to an owner (OCSA-007).
+  // Send commands from the frontend. `ownerMeta.clientId` identifies the
+  // requesting tab so shell sessions can be pinned to an owner (OCSA-007).
   handleRuntimeCommand(msg: RuntimeCommand, ownerMeta?: { clientId?: string }): MavlinkBridgeClientResult {
     let vehicleRebootQueued = false
     if (this.targetConflict && !this.conflictAllowsMessage(msg)) {
@@ -2637,7 +2637,7 @@ export class MavlinkBridge extends EventEmitter {
         break
       }
       case 'start_calibration':
-        // Calibration is owned by the server's CalibrationSessionManager, which
+        // Calibration is owned by the local CalibrationSessionManager, which
         // calls createCalibrationSession() directly; start_calibration never
         // reaches the bridge through this path.
         this.emitOperationError(
@@ -2697,7 +2697,7 @@ export class MavlinkBridge extends EventEmitter {
           msg.requestId,
         )
         if (vehicleRebootQueued) {
-          // The connection manager is notified by the server immediately after
+          // The connection manager is notified by the Worker immediately after
           // this handler returns. Invalidate bridge readiness now so recovery
           // does not depend on receiving a final pre-reboot heartbeat.
           this.selectedHeartbeatReady = false
@@ -2855,7 +2855,7 @@ export class MavlinkBridge extends EventEmitter {
         break
       case 'log_erase':
         // LOG_ERASE wipes ALL logs on the FC; the runtime guard backs up the
-        // type-level literal for direct (test/raw WS) callers.
+        // type-level literal for direct test/runtime callers.
         if ((msg as { safetyConfirmation?: string }).safetyConfirmation !== 'erase_all_logs') {
           this.emitLogOpError(
             'erase',
@@ -3551,13 +3551,13 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   /**
-   * Server-authoritative parameter write policy (OCSA-001/005).
+   * Local-runtime-authoritative parameter write policy (OCSA-001/005).
    *
    * Every PARAM_SET passes through here immediately before transmission. The
    * decision is re-derived from live bridge state - selected target, identity
    * capability, armed flag and the authoritative parameter type cache - never
    * from client-supplied metadata. Only `client_raw` writes carry the
-   * browser-facing gates; server-owned flows (verified setup transactions,
+   * browser-facing gates; Worker-owned flows (verified setup transactions,
    * safety rollbacks, internal protocol writes) declare their intent and are
    * governed by their own transaction-level safety checks.
    */
@@ -3567,7 +3567,7 @@ export class MavlinkBridge extends EventEmitter {
     value: number,
   ): ParamWriteDecision {
     // The type always comes from the selected target's validated PARAM_VALUE
-    // stream. A parameter the server has never seen cannot be encoded safely.
+    // stream. A parameter the Worker has never seen cannot be encoded safely.
     const cachedType = this.parameterTypes.get(id)
     if (cachedType === undefined) {
       return {
@@ -3595,7 +3595,7 @@ export class MavlinkBridge extends EventEmitter {
           return {
             ok: false,
             code: 'safety_confirmation_required',
-            message: `参数 ${id} 属于安全敏感参数，需要服务端确认 sensitive_param 且绑定当前安全边界后才能写入`,
+            message: `参数 ${id} 属于安全敏感参数，需要本地运行时确认 sensitive_param 且绑定当前安全边界后才能写入`,
           }
         }
         break
@@ -3625,7 +3625,7 @@ export class MavlinkBridge extends EventEmitter {
     return { ok: true, paramType: cachedType, sensitive }
   }
 
-  /** Sensitive raw writes need the server literal plus a current safety epoch. */
+  /** Sensitive raw writes need the runtime literal plus a current safety epoch. */
   private sensitiveWriteConfirmationValid(request: ParamWriteRequest): boolean {
     if (request.safetyConfirmation !== 'sensitive_param') return false
     if (request.expectedSafetyEpoch === undefined || request.expectedSafetyAuthorityId === undefined) {
@@ -3857,8 +3857,8 @@ export class MavlinkBridge extends EventEmitter {
   }
 
   /**
-   * Last emitted autopilot_version snapshot for replay to late-joining WS
-   * clients (the FC only answers the version request once per link).
+   * Last emitted autopilot_version snapshot for replay to late runtime
+   * subscribers (the FC only answers the version request once per link).
    */
   getAutopilotVersionMessage(): RuntimeEvent | null {
     return this.lastAutopilotVersionMessage
@@ -4197,7 +4197,7 @@ export class MavlinkBridge extends EventEmitter {
   // Create (but do not start) a calibration session after bridge-side gates:
   // ready target, recognized identity, capability, per-kind support and
   // armed=false. Returns null after emitting an operation_error on rejection.
-  // The server's CalibrationSessionManager owns the returned session's
+  // The local CalibrationSessionManager owns the returned session's
   // lifecycle and ownership; the bridge only feeds it protocol inputs.
   createCalibrationSession(request: CalibrationStartRequest): CalibrationSession | null {
     if (!this.hasReadyTarget()) {

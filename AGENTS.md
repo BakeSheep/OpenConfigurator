@@ -1,6 +1,6 @@
 # AGENTS.md — OpenConfigurator
 
-Browser-local Web GCS for PX4 and ArduPilot. The static React SPA owns Web Serial on the main thread and runs MAVLink, log transfer, safety policy, and ESC sessions in a Dedicated Worker. The deployment host serves files only and must never receive vehicle data. Treat the current code and README as the feature inventory.
+Browser-local Web GCS for PX4 and ArduPilot. The static React SPA owns Web Serial on the main thread and runs MAVLink, log transfer, safety policy, and ESC sessions in a Dedicated Worker. The deployment host serves files only and must never receive vehicle data. Treat the current code and maintained docs as the feature inventory.
 
 ## Stack and layout
 
@@ -17,16 +17,19 @@ npm run dev
 npm run typecheck
 npm run test:runtime
 npm run test:protocol
+npm run test:network
 npm run build
 npm run test:ui
 ```
 
-Vite serves `:5173`. Production is the static `dist/`; the included Nginx container has no application API. Public deployments require HTTPS for Web Serial.
+Vite serves `:5173`. Production is the static `dist/`; the included Nginx container serves static files only. Public deployments require HTTPS for Web Serial.
 
 ## Architecture rules
 
 - Never import `src/web/` from the Worker runtime. Put shared, framework-free code in `src/shared/`.
 - `useLocalRuntime` is mounted once in `App.tsx`. Pages use stores and `sendRuntimeCommand`; they never create Workers or open serial ports.
+- `LocalRuntimeClient` owns the single Worker boundary on the main thread, and `WebSerialTransport` is the only native connection adapter. There is no runtime API, WebSocket service, or Electron shell.
+- Listing ports uses `navigator.serial.getPorts()` and never opens them; `navigator.serial.requestPort()` remains user-gesture initiated. Saved presets identify browser grants but never bypass browser permission.
 - A new cross-thread message normally requires the union in `src/shared/types.ts`, runtime validation, Worker handler/emit, `useLocalRuntime` dispatch, and tests.
 - MAVLink framing, CRC, dialect lookup, signing, parser state, sequence numbers, and serialization go only through `src/local-runtime/mavlink/codec.ts`.
 - `transportOpen` is not `vehicleReady`. Safety-critical writes additionally require a recognized target, supported vehicle capability, armed-state gate, and current local safety authority/epoch.

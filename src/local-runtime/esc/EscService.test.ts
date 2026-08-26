@@ -1,4 +1,4 @@
-// Boundary + orchestration tests for the ESC service and its WS message
+// Boundary + orchestration tests for the ESC service and its runtime message
 // validation: parse guards, ownership, ready-target policy, and the ArduPilot
 // scan path vs the not-yet-supported direct/PX4 detection.
 // Run directly: tsx src/local-runtime/esc/EscService.test.ts
@@ -642,7 +642,7 @@ async function orchestrationTests(): Promise<void> {
     await service.destroy()
   }
 
-  // Missing server-side passthrough parameters fail closed even for the right stack.
+  // Missing runtime passthrough parameters fail closed even for the right stack.
   {
     const emitted: RuntimeEvent[] = []
     const service = new EscService({

@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import type {
-  ConnectionDiscoveryWarning,
   ConnectionStatus,
   PortInfo,
   RuntimeEvent,
@@ -14,43 +13,12 @@ export interface ReconnectInfo {
   delayMs: number
 }
 
-/**
- * Per-kind scan state (connection compatibility plan §Phase 1). A failed
- * refresh keeps the previous candidates and flags them stale instead of
- * clearing the list; `scanGeneration` lets late responses be ignored.
- */
-export interface ConnectionScanState {
-  devices: PortInfo[]
-  loading: boolean
-  error: string | null
-  stale: boolean
-  scanGeneration: number
-  warnings: ConnectionDiscoveryWarning[]
-}
-
-const initialScanState: ConnectionScanState = {
-  devices: [],
-  loading: false,
-  error: null,
-  stale: false,
-  scanGeneration: 0,
-  warnings: [],
-}
-
-// Module-level request bookkeeping so concurrent scans of the same kind
-// resolve in issue order regardless of completion order.
-const scanRequestSeq: Record<'serial' | 'bluetooth', number> = {
-  serial: 0,
-  bluetooth: 0,
-}
-const scanAbortControllers = new Map<'serial' | 'bluetooth', AbortController>()
-
 export interface LinkStats {
   rxBps: number
   txBps: number
   crcErrors: number
   crcErrorsPerSec: number
-  // Optional counters mirrored from the server's link_stats payload.
+  // Optional counters mirrored from the local runtime link-stats event.
   rxPackets?: number
   txPackets?: number
   rxSequenceLost?: number
@@ -77,7 +45,7 @@ interface ConnectionState {
   clientId: string | null
   controllerClientId: string | null
   controllerExpiresAt: number | null
-  /** Server-authoritative safety-confirmation boundary. */
+  /** Local-runtime-authoritative safety-confirmation boundary. */
   safetyEpoch: number
   safetyAuthorityId: string | null
   canControl: boolean
@@ -88,9 +56,6 @@ interface ConnectionState {
   serialPorts: PortInfo[]
   bluetoothPorts: PortInfo[]
   scanning: boolean
-  serialScan: ConnectionScanState
-  bluetoothScan: ConnectionScanState
-  showAllSerialPorts: boolean
   connectDialogOpen: boolean
   connectionError: string | null
   activePresetId: string | null
@@ -125,15 +90,6 @@ interface ConnectionState {
   setLinkStats: (stats: LinkStats) => void
   setPorts: (serial: PortInfo[], bluetooth: PortInfo[]) => void
   setScanning: (scanning: boolean) => void
-  /**
-   * Request one transport kind. Serial honors the show-all toggle; bluetooth
-   * always uses the quick (cache-only) scope. Late/stale responses and
-   * cancellations never clobber newer results.
-   */
-  scanConnections: (kind: 'serial' | 'bluetooth') => Promise<void>
-  setShowAllSerialPorts: (showAll: boolean) => void
-  /** Abort in-flight scans (dialog closed); ignores their results. */
-  cancelConnectionScans: () => void
   setConnectDialogOpen: (open: boolean) => void
   setActivePresetId: (presetId: string | null) => void
 }
@@ -162,9 +118,6 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   serialPorts: [],
   bluetoothPorts: [],
   scanning: false,
-  serialScan: initialScanState,
-  bluetoothScan: initialScanState,
-  showAllSerialPorts: false,
   connectDialogOpen: false,
   connectionError: null,
   activePresetId: null,
@@ -258,78 +211,6 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   setLinkStats: (stats) => set({ linkStats: stats }),
   setPorts: (serial, bluetooth) => set({ serialPorts: serial, bluetoothPorts: bluetooth }),
   setScanning: (scanning) => set({ scanning }),
-  scanConnections: async (kind) => {
-    const state = useConnectionStore.getState()
-    const scope = kind === 'serial'
-      ? (state.showAllSerialPorts ? 'all' : 'recommended')
-      : 'quick'
-    const requestGeneration = ++scanRequestSeq[kind]
-    scanAbortControllers.get(kind)?.abort()
-    const controller = new AbortController()
-    scanAbortControllers.set(kind, controller)
-
-    const patch = (partial: Partial<ConnectionScanState>) => set((current) => ({
-      ...(kind === 'serial'
-        ? {
-          serialScan: { ...current.serialScan, ...partial },
-          // Mirror for legacy consumers (presets dropdown) until they migrate.
-          ...(partial.devices ? { serialPorts: partial.devices } : {}),
-        }
-        : {
-          bluetoothScan: { ...current.bluetoothScan, ...partial },
-          ...(partial.devices ? { bluetoothPorts: partial.devices } : {}),
-        }),
-    }))
-
-    patch({ loading: true, scanGeneration: requestGeneration })
-    try {
-      const response = await fetch(
-        `/api/connections/scan?kind=${kind}&scope=${scope}`,
-        { signal: controller.signal },
-      )
-      const json = await response.json()
-      if (scanRequestSeq[kind] !== requestGeneration) return
-      if (!response.ok || !json?.success) {
-        patch({
-          loading: false,
-          stale: true,
-          error: json?.error?.message ?? `HTTP ${response.status}`,
-        })
-        return
-      }
-      patch({
-        loading: false,
-        stale: false,
-        error: null,
-        devices: (json.data?.devices ?? []) as PortInfo[],
-        warnings: (json.data?.warnings ?? []) as ConnectionDiscoveryWarning[],
-      })
-    } catch (scanError) {
-      if (scanRequestSeq[kind] !== requestGeneration) return
-      if (scanError instanceof DOMException && scanError.name === 'AbortError') {
-        patch({ loading: false })
-        return
-      }
-      patch({
-        loading: false,
-        stale: true,
-        error: scanError instanceof Error ? scanError.message : String(scanError),
-      })
-    } finally {
-      if (scanAbortControllers.get(kind) === controller) {
-        scanAbortControllers.delete(kind)
-      }
-    }
-  },
-  setShowAllSerialPorts: (showAll) => set({ showAllSerialPorts: showAll }),
-  cancelConnectionScans: () => {
-    for (const controller of scanAbortControllers.values()) controller.abort()
-    scanAbortControllers.clear()
-    set((current) => ({
-      serialScan: { ...current.serialScan, loading: false },
-      bluetoothScan: { ...current.bluetoothScan, loading: false },
-    }))
-  },
   setConnectDialogOpen: (open) => set({ connectDialogOpen: open }),
   setActivePresetId: (activePresetId) => set({ activePresetId }),
 }))

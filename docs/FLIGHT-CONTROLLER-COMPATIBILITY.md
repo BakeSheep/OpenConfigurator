@@ -51,23 +51,17 @@ MAVLink 公共协议定义了 `SERIAL_CONTROL_DEV_SHELL=10`，但枚举存在不
 - [PX4 Consoles/Shells](https://docs.px4.io/main/en/debug/consoles.html)
 - [ArduPilot 旧 CLI 状态](https://ardupilot.org/dev/docs/using-the-command-line-interface.html)
 
-## 连接与链路（Windows / Linux）
+## 连接与链路（桌面 Chromium）
 
 连接兼容性状态按“软件实现 / 自动化测试 / 实机 HIL”区分：
 
 | 平台 / 链路 | 软件实现 | 自动化测试 | 实机 HIL |
 | --- | --- | --- | --- |
-| Windows USB CDC / USB-UART（COM + PnP 身份） | 已有 | 已有 | 已有（历史矩阵） |
-| Windows Bluetooth SPP（outgoing COM，排除 incoming） | 已有 | 已有 | 已有（历史矩阵） |
-| Linux USB 串口（by-id 稳定身份、ttyS 过滤、去重、`deviceId`） | 已实现 | discovery 单元测试通过 | 待验证 |
-| Linux BlueZ SPP quick 发现（无 SDP、离线保留）+ 定向 SDP 解析 | 已实现 | 单元测试通过（含工具缺失/超时/取消） | 待验证 |
-| 串口普通掉线有界自动重连 + 飞控重启统一状态机 | 已实现（flag `OPENCONF_SERIAL_AUTO_RECONNECT`，默认开启） | SerialWorker/ConnectionManager 测试通过 | 待验证 |
-| Linux 权限不足诊断（属主/组提示）与稳定错误码 | 已实现 | 单元测试通过 | 待验证 |
-| Linux 桌面 AppImage 打包 | 构建脚本已加（`npm run dist:linux`） | 未在干净 Ubuntu 上 smoke test | 未完成 |
-| Linux BLE GATT（MicoAir profile 等） | 未实现（experimental 保留） | 无 | 无；UUID 需厂商文档/抓包证据后才会实现 |
-
-2026-08 Linux 实测基线（环境相关，非跨机器门槛）：串口扫描约 0.56s；旧的完整 Bluetooth SPP 扫描约 7.5s 且离线 MicoAir 候选丢失——这正是拆分串口与蓝牙扫描所修复的问题。新的 quick 扫描不再执行 SDP，目标 P95 < 1.5s，待 HIL 采集数据。
+| 桌面 Chromium Web Serial USB CDC / USB-UART | 已实现：只列出已授权端口，用户选择后打开 | `WebSerialTransport` 与 UI 测试通过 | 待重新验证 |
+| 桌面 Chromium Web Serial Bluetooth Classic SPP | 已实现：标签页内有界重连 | `WebSerialTransport` 测试通过 | 待重新验证 |
+| 端口权限与生命周期 | 已实现：`getPorts()` 不打开端口，`requestPort()` 需要用户手势，显式断开关闭读写 | Web Serial 测试通过 | 待重新验证 |
+| Linux BLE GATT | 不在当前 Web Serial 路径 | 无 | 不支持 |
 
 ## 验证边界
 
-自动化测试覆盖 PX4/ArduPilot/未知参数命名、固定状态分组、飞控能力矩阵、配置字段可见性、机架目录、模式档位计算、参数事务、遥控器校准状态机、Shell 探测与输入输出、协议边界，以及连接发现（分类型扫描、稳定身份、重连状态机、错误码映射）。尚未列入实机矩阵的飞控板和固件版本不构成 HIL 兼容性承诺；发布前仍应在拆桨台架上验证目标组合。
+自动化测试覆盖 PX4/ArduPilot/未知参数命名、固定状态分组、飞控能力矩阵、配置字段可见性、机架目录、模式档位计算、参数事务、遥控器校准状态机、Shell 探测与输入输出、协议边界，以及 Web Serial 端口生命周期和 Bluetooth SPP 有界重连。尚未列入实机矩阵的飞控板、固件、浏览器和操作系统组合不构成 HIL 兼容性承诺；发布前仍应在拆桨台架上验证目标组合。

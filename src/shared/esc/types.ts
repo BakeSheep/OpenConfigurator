@@ -167,11 +167,11 @@ export interface EscJobResult {
 export interface EscLogEntry {
   level: 'info' | 'warn' | 'error'
   text: string
-  /** Epoch ms assigned by the server when the entry was produced. */
+  /** Epoch ms assigned by the local runtime when the entry was produced. */
   timestamp: number
 }
 
-/** Ring-buffer capacity shared by server and client log stores. */
+/** Ring-buffer capacity shared by the local runtime and UI log stores. */
 export const ESC_LOG_CAPACITY = 500
 
 /** Batch flush interval for `esc_log` broadcasts, in milliseconds. */

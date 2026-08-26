@@ -91,7 +91,7 @@ export default function ParameterPage({ embedded = false }: { embedded?: boolean
   const lastWriteResult = useParameterStore((state) => state.lastWriteResult)
   const armed = useTelemetryStore((state) => state.status?.armed)
   const profileWritable = vehicleCapabilities(vehicleIdentity).writeOperations
-  // OCSA-001: mirror the server gate — raw parameter writes require a
+  // OCSA-001: mirror the Worker gate — raw parameter writes require a
   // confirmed disarmed vehicle, not just a writable profile.
   const canWrite = canAccess && profileWritable && armed === false
   const [search, setSearch] = useState('')

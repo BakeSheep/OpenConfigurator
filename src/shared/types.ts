@@ -610,7 +610,7 @@ export type RuntimeEvent =
         systemId: number | null
         componentId: number | null
         ready: boolean
-        /** Added by the WS boundary; bridge-local target events may omit it. */
+        /** Added by the local runtime boundary; bridge-local events may omit it. */
         safetyEpoch?: number
         safetyAuthorityId?: string
         reason: 'discovered' | 'selected' | 'reset'
@@ -827,13 +827,13 @@ export type RuntimeCommand =
   | { type: 'manual_control'; requestId?: string; data: ManualControlData }
   | {
       // Semantic mode change: the browser sends only the profile mode id and
-      // the server encodes stack-specific MAV_CMD_DO_SET_MODE parameters.
+      // the Worker encodes stack-specific MAV_CMD_DO_SET_MODE parameters.
       type: 'set_flight_mode'
       requestId?: string
       data: { modeId: number }
     }
   | {
-      // Semantic calibration: the browser names the kind and the server maps
+      // Semantic calibration: the browser names the kind and the Worker maps
       // it to stack-specific MAV_CMD_PREFLIGHT_CALIBRATION parameters after
       // capability + armed checks.
       type: 'start_calibration'
@@ -890,7 +890,7 @@ export type RuntimeCommand =
       expectedSafetyAuthorityId?: string
     }
   | {
-      /** One WS operation that fans out to multiple 1-based motor instances. */
+      /** One runtime operation that fans out to multiple 1-based motor instances. */
       type: 'motor_test_batch'
       requestId?: string
       data: {
@@ -957,8 +957,8 @@ export type RuntimeCommand =
     }
 
 /**
- * Physical link technology behind a discovered device candidate. BLE GATT
- * candidates must never masquerade as serial/SPP entries.
+ * Physical link technology behind a browser-authorized port descriptor. BLE
+ * GATT remains reserved for a future adapter and cannot masquerade as SPP.
  */
 export type ConnectionTransport = 'serial' | 'bluetooth-spp' | 'bluetooth-ble'
 
@@ -975,8 +975,8 @@ export interface PortInfo {
   productId?: string
   vendorId?: string
   pnpId?: string
-  // Opaque per-process identifier from the discovery service. Preferred key
-  // for connect requests; the server re-verifies identity before opening.
+  // Opaque browser-local identifier for a granted port. It is only a UI key;
+  // the browser remains responsible for the actual port permission.
   deviceId?: string
   transport?: ConnectionTransport
   // Stable device path on Linux (/dev/serial/by-id/...); survives renumbering.
@@ -985,52 +985,12 @@ export interface PortInfo {
   displayName?: string
   serialNumber?: string
   usbLocationId?: string
-  // Quick Bluetooth discovery knows the device is paired but cannot prove it
-  // is currently reachable without a blocking SDP/GATT round trip.
+  // Browser-authorized Bluetooth ports may still be unavailable until the
+  // device is powered and the browser reopens the grant.
   availability?: DeviceAvailability
-  // Set when connecting requires the slow targeted resolution path (SDP
-  // channel lookup, GATT service discovery) for this specific device.
+  // Kept for compatibility with saved presets from older releases.
   requiresDeepResolution?: boolean
 }
-
-export type ConnectionScanKind = 'serial' | 'bluetooth'
-export type ConnectionScanScope = 'recommended' | 'all' | 'quick'
-
-export interface ConnectionDiscoveryWarning {
-  code: string
-  message: string
-}
-
-export interface ConnectionScanResult {
-  kind: ConnectionScanKind
-  scope: ConnectionScanScope
-  // Monotonic per-service counter; clients must ignore results from an older
-  // generation than the latest request they issued.
-  scanGeneration: number
-  cached: boolean
-  devices: PortInfo[]
-  warnings: ConnectionDiscoveryWarning[]
-}
-
-/**
- * Stable, localizable connection failure codes. The UI must map these instead
- * of matching native error strings (connection-compatibility plan §4.4).
- */
-export type ConnectionErrorCode =
-  | 'SERIAL_PERMISSION_DENIED'
-  | 'SERIAL_BUSY'
-  | 'SERIAL_NOT_FOUND'
-  | 'SERIAL_OPEN_TIMEOUT'
-  | 'IDENTITY_AMBIGUOUS'
-  | 'DEVICE_NOT_FOUND'
-  | 'BLUETOOTH_ADAPTER_UNAVAILABLE'
-  | 'BLUETOOTH_TOOL_MISSING'
-  | 'BLUETOOTH_DEVICE_NOT_PAIRED'
-  | 'BLUETOOTH_DEVICE_OFFLINE'
-  | 'BLUETOOTH_SPP_CHANNEL_UNRESOLVED'
-  | 'BLUETOOTH_GATT_PROFILE_UNSUPPORTED'
-  | 'BLUEZ_DBUS_RUNTIME_MISSING'
-  | 'VEHICLE_HEARTBEAT_TIMEOUT'
 
 export interface ConnectionConfig {
   type: 'serial' | 'bluetooth'
@@ -1043,8 +1003,8 @@ export interface ConnectionConfig {
   bluetoothAddress?: string
   bluetoothServiceClassId?: string
   bluetoothChannel?: number
-  // Discovery-v2 identity fields. When deviceId is present the server
-  // re-resolves the candidate and fails closed on mismatch/ambiguity.
+  // Optional identity fields retained by a saved preset. The browser picker
+  // remains the authority when a saved identity cannot be re-matched.
   deviceId?: string
   transport?: ConnectionTransport
   stablePath?: string

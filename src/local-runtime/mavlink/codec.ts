@@ -555,6 +555,6 @@ export class MavlinkCodecSession extends EventEmitter {
   }
 }
 
-export function codecOptionsFromEnvironment(): MavlinkCodecSessionOptions {
+export function defaultCodecOptions(): MavlinkCodecSessionOptions {
   return { protocol: 'auto' }
 }

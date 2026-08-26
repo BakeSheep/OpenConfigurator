@@ -1,4 +1,4 @@
-// Server-authoritative safety evidence for ESC sessions (OCSA-002). An ESC
+// Local-runtime-authoritative safety evidence for ESC sessions (OCSA-002). An ESC
 // session borrows the vehicle link (ArduPilot passthrough, PX4 SERIAL_CONTROL)
 // or a shared UART (direct), so every operation boundary must re-validate a
 // freshly pulled snapshot against the state the session was authorized under:
@@ -12,7 +12,7 @@
 // silently extending the pre-pause disarmed evidence.
 import { EscError, type EscSessionMode } from '../../shared/esc'
 
-/** Latest server-side vehicle/link evidence, pulled at validation time. */
+/** Latest local-runtime vehicle/link evidence, pulled at validation time. */
 export interface EscSafetySnapshot {
   /** Selected-target armed flag; null until a heartbeat classifies it. */
   armed: boolean | null

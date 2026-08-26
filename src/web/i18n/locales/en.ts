@@ -257,12 +257,10 @@ export const en = {
   connect: {
     title: 'Connect Flight Controller',
     subtitle: 'Select a port and establish connection',
-    scanFailed: 'Failed to scan ports',
     scanFailedReason: 'Failed to scan ports: {{reason}}',
     webSerialUnsupported: 'The current browser does not support the Web Serial API. Please use Chrome/Edge 89+ (HTTPS or localhost).',
     bluetoothSerialDevice: 'Bluetooth Serial Device',
     serialSelectFailed: 'Serial port selection failed: {{reason}}',
-    httpNoResponse: 'Local runtime did not return a response ({{status}})',
     connectFailed: 'Connection failed: {{reason}}',
     selectPairedBtOrBrowser: 'Please select a paired Bluetooth serial port, or use the browser picker',
     selectPort: 'Please select a port',
@@ -280,9 +278,6 @@ export const en = {
     pairedSppSerial: 'Paired SPP Serial Ports',
     noBtSppFound: 'No Bluetooth SPP serial port found',
     recommended: ' (Recommended)',
-    showAllPorts: 'Show all ports',
-    recommendedOnly: 'Recommended ports only',
-    scanStaleHint: 'Previous list may be outdated — refresh to retry',
     pairedDeviceHint: 'Paired · connect after powering on',
     compatModeHint: 'Use compatibility mode when not scanned',
     webSerialUnsupportedLong: 'The current browser does not support Web Serial. Please use Chrome/Edge 89+, and the page must be accessed via HTTPS or localhost.',
@@ -856,7 +851,7 @@ export const en = {
     wizard: {
       title: '{{name}} Calibration Wizard',
       processing: 'Processing',
-      observerMode: 'Another client is running this calibration. You are in observer mode.',
+      observerMode: 'This calibration is already running. Controls are read-only until it ends.',
       protocolDegraded: 'FC calibration protocol version unknown; orientation guidance unavailable, progress only.',
       ariaProcessing: 'Calibration processing, no percentage from FC',
       ariaProgress: 'Calibration progress {{progress}}%',
@@ -901,7 +896,7 @@ export const en = {
     startFailed: 'Cannot start {{name}} calibration: {{message}}',
     starting: 'Starting {{name}} calibration…',
     startTimeout: 'Timed out waiting for the FC response. Check the connection and retry.',
-    wsNotConnected: 'Local runtime not connected; calibration request not sent.',
+    runtimeNotConnected: 'Local runtime not connected; calibration request not sent.',
     cancelUnsupportedConfirm: 'Current ArduPilot calibration does not support remote cancellation. Exiting requires an FC reboot; keep the vehicle disarmed and powered during reboot. Confirm reboot and exit calibration?',
     confirmBoardOrientation: 'Confirm changing the FC mounting orientation? An incorrect orientation can cause loss of control immediately after takeoff (flight critical).',
     exit: {
@@ -1186,7 +1181,7 @@ export const en = {
     waitingForParams: 'Waiting for Parameters',
     unknown: 'Unknown',
   },
-  websocket: {
+  runtime: {
     command: {
       executing: 'Command #{{command}} executing{{progress}}',
       accepted: 'Command #{{command}} accepted',
@@ -1476,11 +1471,8 @@ export const en = {
         invalidLength: 'EEPROM data length is incorrect',
       },
     },
-    download_not_found: 'Download file not found or expired',
-    api_not_found: 'API path not found',
     not_found: 'Resource not found',
     payload_too_large: 'Request payload too large',
-    invalid_json: 'Invalid request format',
     unsupported_vehicle_profile: 'Unrecognized flight controller type; this operation is unavailable',
     unsupported_operation: 'This operation is not supported',
     unsupported_command: 'Unsupported MAVLink command',

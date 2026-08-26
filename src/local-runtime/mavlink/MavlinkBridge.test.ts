@@ -566,7 +566,7 @@ assert.equal(framePayload(customAttitudeInterval!).readFloatLE(4), 250_000)
 assert.equal(framePayload(customOpticalFlowInterval!).readFloatLE(4), 1_000_000)
 assert.equal(findLast(messages, (message) => message.type === 'message_rates')?.data.auxiliary, 1)
 
-// Semantic mode change: the server encodes PX4 Position (id 3) as packed
+// Semantic mode change: the Worker encodes PX4 Position (id 3) as packed
 // main/sub-mode parameters [1, 3, 0, ...] on MAV_CMD_DO_SET_MODE.
 bridge.handleRuntimeCommand({
   type: 'set_flight_mode',
@@ -838,7 +838,7 @@ const uncorrelatedMotorAck = findLast(
 )
 assert.equal(uncorrelatedMotorAck.data.requestId, undefined)
 
-// The browser's ALL slider crosses the WS boundary once, then the bridge
+// The browser's ALL slider crosses the runtime boundary once, then the bridge
 // fans out validated 1-based instances without command-ACK correlation.
 const batchActuatorStart = actuatorFrameCount()
 const cancelBeforeBatchStart = connection.cancelledQueueTags.length
@@ -964,7 +964,7 @@ assert.equal(
 
 // PARAM_SET validates inputs, waits through stale mismatched broadcasts for a
 // matching echo, and carries requestId through the final result.
-// OCSA-001/005: the write policy derives the encoded type from the server-side
+// OCSA-001/005: the write policy derives the encoded type from the runtime
 // PARAM_VALUE cache, so the parameter must be observed before a raw write.
 inject(bridge, 22, paramValuePayload('TEST_PARAM', 12.5))
 bridge.handleRuntimeCommand({
@@ -998,7 +998,7 @@ assert.equal(successfulParamSet.data.accepted, true)
 assert.equal(successfulParamSet.data.acceptedValue, 12.5)
 
 // Semantic vehicle configuration derives MAV_PARAM_TYPE from the validated
-// server cache and requires a matching PARAM_VALUE before accepting the write.
+// cache and requires a matching PARAM_VALUE before accepting the write.
 inject(bridge, 22, paramValuePayload('NAV_RCL_ACT', 1))
 const configFramesBefore = connection.frames.filter((frame) => frameMessageId(frame) === 23).length
 bridge.handleRuntimeCommand({
@@ -1593,7 +1593,7 @@ bridge.destroy()
   const progressBridge = new MavlinkBridge(progressConnection as never, {
     codec: { protocol: 'v2' },
     // Leave enough wall-clock margin for the interval to run when this file is
-    // executed in parallel with the full server suite on a busy CI runner.
+    // executed in parallel with the full protocol suite on a busy CI runner.
     commandTimeoutMs: 25,
     versionRetryMs: 20,
   })
@@ -2074,7 +2074,7 @@ bridge.destroy()
   assert.equal(apVersionData.boardName, 'MicoAir743v2')
   assert.equal(apVersionData.vendorId, 4660)
   assert.equal(apVersionData.productId, 22136)
-  // The one-shot version message is cached so late-joining WS clients can be
+  // The one-shot version message is cached so late runtime subscribers can be
   // replayed the firmware snapshot (page refresh after the FC handshake).
   const cachedVersion = apBridge.getAutopilotVersionMessage()
   assert.equal(cachedVersion?.type, 'autopilot_version')
@@ -2851,7 +2851,7 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 }
 
 // ---------------------------------------------------------------------------
-// OCSA-001/005: the raw param_set path is governed by a server-authoritative
+// OCSA-001/005: the raw param_set path is governed by a runtime-authoritative
 // write policy - armed gate, authoritative type, sensitive-parameter
 // confirmation bound to the live safety epoch.
 // ---------------------------------------------------------------------------
@@ -2907,7 +2907,7 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
   assert.equal(paramFrameCount(), framesWhileArmed)
   assert.equal(lastErrorCode(), 'arming_state_unknown')
 
-  // Back to disarmed: sensitive parameters need the server confirmation
+  // Back to disarmed: sensitive parameters need the runtime confirmation
   // literal plus the current safety epoch; the browser-side promise alone is
   // not trusted.
   inject(policyBridge, 0, heartbeatPayload(), 42, 1)
@@ -2958,7 +2958,7 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
   assert.equal(lastErrorCode(), 'safety_confirmation_required')
 
   // The client-declared paramType is ignored: range checks and encoding use
-  // the server-cached REAL32 type even when the client claims INT32.
+  // the runtime-cached REAL32 type even when the client claims INT32.
   policyBridge.handleRuntimeCommand({
     type: 'param_set',
     requestId: 'policy-type-authority',
@@ -3083,7 +3083,7 @@ console.log('MAVLink codec, transaction, target and telemetry checks passed')
 }
 
 // ---------------------------------------------------------------------------
-// OCSA-007: PX4 shell sessions are owned by the requesting WS client, keep
+// OCSA-007: PX4 shell sessions are owned by the requesting runtime caller, keep
 // their output private, and can only be driven by that client.
 // ---------------------------------------------------------------------------
 {

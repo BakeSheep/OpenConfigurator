@@ -6,7 +6,6 @@ import {
   ardupilotmega,
   common,
   minimal,
-  codecOptionsFromEnvironment,
   decode,
   MavlinkCodecSession,
   type MavlinkMessage,
@@ -178,7 +177,7 @@ function captureWarnings<T>(action: () => T): { result: T; warnings: string[] } 
   const { result: session, warnings } = captureWarnings(() => new MavlinkCodecSession({
     signing: { key: SIGNING_KEY, linkId: 0 },
   }))
-  // The browser-local runtime has no environment surface; the server-era
+  // The browser-local runtime has no environment surface; the legacy
   // MAVLINK_SIGNING_REQUIRE warning does not apply, so nothing must warn.
   assert.equal(warnings.length, 0, 'per-source enforcement must not warn at init')
   const { received, rejections } = attach(session)

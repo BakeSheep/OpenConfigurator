@@ -48,7 +48,7 @@ export interface Px4SerialControlTransportOptions {
   preflight?: () => EscError | null
   /**
    * Operation-boundary safety re-check (OCSA-002). Evaluated before open and
-   * before every transact against the latest server-side armed/target/
+   * before every transact against the latest Worker-side armed/target/
    * connection snapshot. MAVLink stays live in this mode, so an armed
    * heartbeat is caught at the next frame boundary; a non-null error aborts
    * the session through onAborted and releases the exclusive UART on close.
@@ -148,7 +148,7 @@ export class Px4SerialControlTransport implements EscByteTransport {
     }
     const preflightError = this.preflight()
     if (preflightError) throw preflightError
-    // Latest server-side snapshot: the vehicle must still be disarmed and
+    // Latest Worker-side snapshot: the vehicle must still be disarmed and
     // generation-stable at the moment the exclusive UART is claimed.
     const safetyError = this.checkSafety()
     if (safetyError) throw safetyError

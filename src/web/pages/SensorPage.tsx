@@ -448,7 +448,7 @@ function CalibrationTaskCard({
 }
 
 /**
- * Calibration wizard rendered entirely from the server snapshot. It carries no
+ * Calibration wizard rendered entirely from the local runtime snapshot. It carries no
  * protocol logic: sides, progress, verification and failure text come from the
  * idempotent CalibrationSnapshot so page remounts and reconnects are seamless.
  */
@@ -698,7 +698,7 @@ export default function SensorPage({
   const [activeTab, setActiveTab] = useQueryTab(SENSOR_TAB_IDS, 'imu')
   const [searchParams, setSearchParams] = useSearchParams()
   const [imuIndex, setImuIndex] = useState('imu1')
-  // Terminal results may be dismissed locally. A live server session must
+  // Terminal results may be dismissed locally. A live runtime session must
   // always remain visible so the page cannot enter a hidden-but-busy state.
   const [dismissedSessionId, setDismissedSessionId] = useState<string | null>(null)
   const [pendingStart, setPendingStart] = useState<{ requestId: string; kind: CalibrationKind } | null>(null)
@@ -779,13 +779,13 @@ export default function SensorPage({
     if (!canCalibrateKind(type) || calibrationBusy) return
     const requestId = `cal-${type}-${Date.now().toString(36)}`
     // Hide the previous terminal result immediately so it cannot masquerade
-    // as the newly requested calibration while the server creates a session.
+    // as the newly requested calibration while the Worker creates a session.
     setDismissedSessionId(snapshot?.sessionId ?? null)
     setStartFailure(null)
     setPendingStart({ requestId, kind: type })
     if (!send({ type: 'start_calibration', requestId, data: { kind: type } })) {
       setPendingStart(null)
-      setStartFailure({ kind: type, message: t('sensor.wsNotConnected') })
+      setStartFailure({ kind: type, message: t('sensor.runtimeNotConnected') })
     }
   }
 

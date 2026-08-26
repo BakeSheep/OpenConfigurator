@@ -250,7 +250,7 @@ export class EscSessionManager extends EventEmitter {
   }
 
   /**
-   * Push-based safety boundary (armed heartbeat observed by the server,
+   * Push-based safety boundary (armed heartbeat observed by the Worker,
    * target reset). Finalizes the active session exactly once; a no-op when
    * no session is live.
    */
@@ -362,7 +362,7 @@ export class EscSessionManager extends EventEmitter {
     this.emitSnapshot()
   }
 
-  /** WS close hook: owner loss decides between exit and orphaned wait. */
+  /** Runtime close hook: owner loss decides between exit and orphaned wait. */
   handleClientDisconnected(clientId: string): void {
     const session = this.session
     if (!session || session.ownerClientId !== clientId) return

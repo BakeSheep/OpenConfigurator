@@ -52,7 +52,7 @@ type TimerSlot = 'poll' | 'overall' | 'save' | 'action'
 
 /**
  * Protocol-only in-flight autotune state machine. It never arms, takes off,
- * lands or owns WebSockets. Browser ownership and controller leases live in
+ * lands or owns runtime sessions. Browser ownership and controller leases live in
  * AutotuneSessionManager.
  */
 export class AutotuneSession {

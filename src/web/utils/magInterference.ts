@@ -7,7 +7,7 @@
 // The displayed magnitude is never averaged. Only the good/high classification
 // is stabilized: a new state must persist for a short debounce interval, and a
 // small hysteresis band prevents a value on the threshold from toggling the UI.
-// This remains advisory and never blocks calibration on the server.
+// This remains advisory and never blocks calibration in the local runtime.
 
 /** Healthy total field magnitude band (Gauss). Earth's field is ~0.25-0.65 G. */
 export const MAG_FIELD_MIN_GAUSS = 0.25

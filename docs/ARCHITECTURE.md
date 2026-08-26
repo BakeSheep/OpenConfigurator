@@ -78,17 +78,13 @@ ULog 与 DataFlash 下载写入 OPFS 临时 artifact：
 
 不支持 OPFS 的测试或受限环境使用相同语义的内存回退，但生产支持边界仍是桌面 Chromium。
 
-## 设备发现与恢复（连接兼容性计划）
+## 设备发现与恢复
 
-`ConnectionDiscoveryService` 只负责发现、分类和身份解析，不拥有活动连接；`ConnectionManager` 仍是活动链路、物理代次与状态发布的唯一入口。
-
-- 扫描 API 按 transport 拆分：`GET /api/connections/scan?kind=serial&scope=recommended|all` 与 `kind=bluetooth&scope=quick`。一次扫描绝不等待另一种 transport；无参数的旧端点保留为 deprecated 组合响应。
-- Linux 串口发现合并 `/dev/serial/by-id` 与当前 tty 为单个设备（`stablePath`、`deviceId`），`ttyS*` 等平台 UART 只出现在 `scope=all`；Windows 保持 COM + PnP 行为并继续排除 incoming Bluetooth 端口。
-- Bluetooth quick discovery 只读本地缓存（`bluetoothctl devices Paired` + `bluetoothctl info`），绝不运行 `sdptool`；已配对但离线的设备保留在列表中并标记 `availability`。阻塞的 SDP 通道解析只对用户选中的一个地址执行（`resolveLinuxSppChannel`），带 TTL channel 缓存。
-- 连接请求携带 `deviceId` 时，服务端在打开端口前重新解析并核对身份；身份缺失或歧义分别返回 `DEVICE_NOT_FOUND` / `IDENTITY_AMBIGUOUS`，不会回退到"当前唯一端口"。仅路径的旧请求保留直接路径模式。
-- 原生打开失败映射为稳定错误码（`SERIAL_PERMISSION_DENIED` 附带设备属主/组、`SERIAL_BUSY`、`SERIAL_NOT_FOUND`、`SERIAL_OPEN_TIMEOUT` 等，见 `src/shared/types.ts` 的 `ConnectionErrorCode`）。
-- 串口自动重连（feature flag `serialAutoReconnect`，env `OPENCONF_SERIAL_AUTO_RECONNECT`）：`SerialWorker` 与 `BluetoothWorker` 暴露同一事件协议，普通 USB 掉线进入有界重试（默认 5 次：1/2/3/5/5s），每次重试都按稳定身份重新解析路径；已确认的飞控重启与普通掉线共享这一个状态机，并在默认 ~45s 宽限窗口内持续重试（至少 12 次）。`IDENTITY_AMBIGUOUS` 立即终止，不猜测。重开只代表 transport 恢复，`vehicleReady` 仍需新一代次的合法 autopilot HEARTBEAT；target-bound 确认、RC override、ESC raw 会话不会自动恢复。
-- Linux BLE GATT transport 未实现，保留 experimental/未完成状态，未经 HIL 证据不会宣称支持。
+- 端口列表只读取浏览器已经授权的 `navigator.serial.getPorts()`，不会在列举时打开或占用端口。
+- 新端口必须由用户手势触发 `navigator.serial.requestPort()`。保存的预设只保存设备描述和标签，不绕过浏览器权限；无法可靠匹配时必须重新选择。
+- 主线程 `WebSerialTransport` 管理原生串口的打开、读取、优先级写队列、背压和关闭；Worker 只接收 transferable 字节并负责协议与安全生命周期。
+- Bluetooth Classic SPP 仅在当前标签页活动会话内进行有界重连；显式断开会取消重连。重开只代表 transport 恢复，仍需新的合法 autopilot `HEARTBEAT` 才能进入 `vehicleReady`，旧的目标绑定确认和 ESC 会话不会自动恢复。
+- USB 串口不会静默自动重连。Linux BLE GATT 不属于当前 Web Serial 路径，未实现。
 
 ## ESC 会话
 
@@ -100,7 +96,7 @@ ULog 与 DataFlash 下载写入 OPFS 临时 artifact：
 
 ## 隐私和部署不变量
 
-- 生产构建不包含运行时 `/api`、`/ws`、第三方字体、地图图块、统计或后台同步。
+- 生产构建不包含应用 API、WebSocket 端点、第三方字体、地图图块、统计或后台同步。
 - 生产 CSP 是 `connect-src 'none'`，Worker、样式、图片和脚本均由同源静态资源提供。
 - 部署服务器只接受静态 GET/HEAD。公网入口必须提供 HTTPS，才能获得 Web Serial 所需的安全上下文。
 - 用户偏好和非敏感连接预设可保存在本机；遥测与参数仅属于当前页面会话。

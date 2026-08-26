@@ -440,16 +440,16 @@ export function handleMessage(msg: RuntimeEvent) {
       telemetryStore.addStatusLog(
         msg.data.result === 0 || msg.data.result === 5 ? 6 : 3,
         msg.data.result === 5
-          ? t('websocket.command.executing', { command: msg.data.command, progress: msg.data.progress == null ? '' : ` (${msg.data.progress}%)` })
+          ? t('runtime.command.executing', { command: msg.data.command, progress: msg.data.progress == null ? '' : ` (${msg.data.progress}%)` })
           : msg.data.result === 0
-          ? t('websocket.command.accepted', { command: msg.data.command })
-          : t('websocket.command.failed', { command: msg.data.command, result: msg.data.result })
+          ? t('runtime.command.accepted', { command: msg.data.command })
+          : t('runtime.command.failed', { command: msg.data.command, result: msg.data.result })
       )
       break
     case 'motor_test_status':
       telemetryStore.addStatusLog(
         5,
-        t('websocket.motorTest.sent', { instance: msg.data.instance, action: msg.data.action === 'stop' ? t('websocket.motorTest.stop') : t('websocket.motorTest.test') }),
+        t('runtime.motorTest.sent', { instance: msg.data.instance, action: msg.data.action === 'stop' ? t('runtime.motorTest.stop') : t('runtime.motorTest.test') }),
       )
       break
     case 'statustext':
@@ -497,7 +497,7 @@ export function handleMessage(msg: RuntimeEvent) {
       if (msg.data.operation === 'list') explorer.setListError(message)
       else if (msg.data.operation === 'download') explorer.failDownload(message)
       else explorer.failDeletion(message)
-      telemetryStore.addStatusLog(3, t('websocket.fileOpFailed', { message }))
+      telemetryStore.addStatusLog(3, t('runtime.fileOpFailed', { message }))
       break
     }
     case 'log_list':
@@ -522,7 +522,7 @@ export function handleMessage(msg: RuntimeEvent) {
         msg.data.integrity,
       )
       if (msg.data.sizeAdjusted) {
-        telemetryStore.addStatusLog(4, t('websocket.dataflashSizeAdjusted', {
+        telemetryStore.addStatusLog(4, t('runtime.dataflashSizeAdjusted', {
           advertised: msg.data.advertisedSizeBytes,
           final: msg.data.sizeBytes,
         }))
@@ -537,7 +537,7 @@ export function handleMessage(msg: RuntimeEvent) {
       if (msg.data.operation === 'list') transfer.setListError(message)
       else if (msg.data.operation === 'download') transfer.failDownload(message)
       else transfer.failErase(message)
-      telemetryStore.addStatusLog(3, t('websocket.logOpFailed', { message }))
+      telemetryStore.addStatusLog(3, t('runtime.logOpFailed', { message }))
       break
     }
     case 'client_error': {
@@ -546,7 +546,7 @@ export function handleMessage(msg: RuntimeEvent) {
       handleAutomaticRequestRejection(msg.data.requestId, msg.data.retryable)
       const message = translateRuntimeError(msg.data.code, msg.data.message)
       console.warn('[Runtime] Request rejected:', msg.data.code, msg.data.message)
-      telemetryStore.addStatusLog(3, t('websocket.requestDenied', { message, retryable: msg.data.retryable ? t('websocket.retryable') : '' }))
+      telemetryStore.addStatusLog(3, t('runtime.requestDenied', { message, retryable: msg.data.retryable ? t('runtime.retryable') : '' }))
       break
     }
     case 'operation_error': {
@@ -559,7 +559,7 @@ export function handleMessage(msg: RuntimeEvent) {
         autotuneReclaimAttempt = null
       }
       console.warn('[Runtime] Operation failed:', msg.data.operation, msg.data.code, msg.data.message)
-      telemetryStore.addStatusLog(3, t('websocket.opFailed', { operation: msg.data.operation, message }))
+      telemetryStore.addStatusLog(3, t('runtime.opFailed', { operation: msg.data.operation, message }))
       break
     }
     case 'param_sync':
@@ -590,7 +590,7 @@ export function handleMessage(msg: RuntimeEvent) {
         paramStore.setParamFailed(receivedCount, totalCount)
         telemetryStore.addStatusLog(
           4,
-          msg.data.status === 'failed' ? t('websocket.paramSyncFailed') : t('websocket.paramSyncCancelled')
+          msg.data.status === 'failed' ? t('runtime.paramSyncFailed') : t('runtime.paramSyncCancelled')
             + `${msg.data.reason ? `：${msg.data.reason}` : ''}`,
         )
       }
@@ -614,7 +614,7 @@ export function handleMessage(msg: RuntimeEvent) {
       if (msg.data.reason === 'selected' && msg.data.systemId !== null) {
         telemetryStore.addStatusLog(
           6,
-          t('websocket.targetSelected', { systemId: msg.data.systemId, componentId: msg.data.componentId }),
+          t('runtime.targetSelected', { systemId: msg.data.systemId, componentId: msg.data.componentId }),
         )
       } else {
         console.log('[Runtime] target update:', msg.data)

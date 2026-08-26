@@ -29,7 +29,7 @@ export const FTP_DOWNLOAD_FILE_PATTERN = /^[0-9a-f]{16}\.(?:part|ulg)$/
 export const DATAFLASH_DOWNLOAD_FILE_PATTERN = /^[0-9a-f]{16}\.(?:part|bin)$/
 
 /**
- * Instance directories left behind by a crashed server keep their downloads
+ * Instance directories left behind by a crashed Worker keep their downloads
  * until some later instance reclaims them. They are aged out by scanning the
  * shared parent for entries with our own prefix - deliberately separate from
  * the runtime download directory, which is never swept while in use. 24 h is

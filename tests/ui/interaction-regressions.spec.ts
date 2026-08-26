@@ -139,12 +139,15 @@ test('dashboard and flight keep their operational UI while disconnected', async 
 
 test('the connection menu hides a unique automatic target and asks only for an ambiguous target', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'The target-selection interaction is viewport-independent.')
-  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')
   await expect(page.locator('main h1')).toHaveCount(1)
 
   await page.evaluate(async () => {
-    const { useConnectionStore } = await import('/src/web/stores/connectionStore.ts')
+    const [{ useConnectionStore }, { localRuntime }] = await Promise.all([
+      import('/src/web/stores/connectionStore.ts'),
+      import('/src/web/runtime/LocalRuntimeClient.ts'),
+    ])
+    await localRuntime.stop()
     const store = useConnectionStore.getState()
     const authority = '00000000-0000-4000-8000-000000000042'
     store.setClientId('ui-target-test', 7, authority)

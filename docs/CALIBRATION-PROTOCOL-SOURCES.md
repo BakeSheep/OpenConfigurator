@@ -88,7 +88,7 @@ validation:
 | ArduCopter SITL | accel six-position | correct 42429 target, idempotent repeats, success/failure sentinel |
 | ArduCopter SITL | simple/level/gyro/baro | ACK-only shows accepted/ack_only |
 | ArduCopter SITL | mag single/multi compass | cal_mask, failure status, report, accept, autosaved, reboot prompt |
-| Two browsers | owner/observer | observer cannot act; owner reconnect reclaims; snapshot replays |
+| Same browser tab after runtime reconnect | local owner/recovery | stale confirmations do not survive; current snapshot replays before a new action |
 | Weak link | dropped ACK / duplicate 191/192/42429 | no start retransmit, recoverable follow-ups, seq idempotent |
 | Real PX4 | accel/mag/cancel | physical attitude matches UI; link drop terminates safely |
 | Real ArduCopter | accel/mag | multi-sensor save and post-reboot parameter/calibration state |

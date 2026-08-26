@@ -1080,7 +1080,7 @@ export class MavlinkFtp {
       throw new FtpError('delete_too_many', `单次删除不能超过 ${DELETE_MAX_ITEMS} 项`)
     }
     // OCSA-016 defense in depth: re-check the composed device path with the
-    // same rules as the WS boundary (devicePath()) before sending it to the
+    // same rules as the runtime boundary (devicePath()) before sending it to the
     // FC. Listing names are validated as single basenames below, so a joined
     // child can never escape `targetPath` - this also fail-closes any
     // unexpected caller input.
