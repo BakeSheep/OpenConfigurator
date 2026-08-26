@@ -45,6 +45,8 @@ OpenConfigurator 是静态 SPA。部署服务器只分发 HTML、JavaScript、CS
 
 要求 Node.js `>=22.12.0` 与 npm。Node 只用于开发、测试和构建，不参与生产运行。
 
+Linux 串口访问权限：普通用户需要加入串口设备属组（Debian/Ubuntu 为 `dialout`，Arch 为 `uucp`，以设备 `ls -l /dev/ttyACM0` 显示的组为准），加入后需重新登录。权限不足时连接错误会直接显示该设备的属主与组。BLE GATT 连接尚未实现。
+
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git
 cd OpenConfigurator
@@ -75,6 +77,7 @@ docker run --rm -p 8080:8080 openconfigurator
 ```
 
 `dist/` 可部署到任意静态站点。公网必须由反向代理、CDN 或托管平台提供 HTTPS；单纯 HTTP 公网地址无法使用 Web Serial。随仓库提供的 Nginx 镜像只提供静态文件和安全响应头，不含应用 API。
+
 
 ## 架构
 

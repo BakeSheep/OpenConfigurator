@@ -52,8 +52,11 @@ import {
 import { getPx4AirframeInfo, isSupportedArduCopterFrame } from '../../shared/airframes'
 import { parameterEnumOptions, parameterEnumValuesMatch } from '../../shared/parameterEnumMetadata'
 import { artifactFs } from '../platform/artifactFs'
+import { isSensitiveParameter } from '../../shared/parameterSafety'
 import { CalibrationSession } from './CalibrationSession'
 import type { CalibrationStartRequest } from './CalibrationSessionManager'
+import { AutotuneSession } from './AutotuneSession'
+import type { AutotuneStartRequest } from './AutotuneSessionManager'
 
 const SERIAL_PARAM_STALL_TIMEOUT_MS = 1800
 const BLUETOOTH_PARAM_STALL_TIMEOUT_MS = 3500
@@ -68,6 +71,15 @@ const BLUETOOTH_PARAM_RETRY_BATCH_SIZE = 8
 const PARAM_MAX_STALL_RETRIES = 12
 const PARAM_MAX_COUNT = 8192
 const PARAM_VALUE_CACHE_MAX_ENTRIES = PARAM_MAX_COUNT
+// A candidate that keeps announcing itself this many heartbeats is "stable";
+// single stray heartbeats (or a noisy companion) must never trigger the
+// multi-target conflict state.
+const TARGET_STABILITY_HEARTBEAT_MIN = 3
+const TARGET_HEARTBEAT_CONTINUITY_MS = 3_500
+const TARGET_DISCOVERY_STALE_MS = 6_000
+// Bounded anomaly warning threshold for unique parameter ids announced after
+// the cache admission limit was reached (OCSA-006).
+const PARAM_ID_GROWTH_WARN_THRESHOLD = 512
 const PARAM_MAX_READ_REQUESTS = 4096
 const SERIAL_PARAM_DEADLINE_MS = 60_000
 const BLUETOOTH_PARAM_DEADLINE_MS = 120_000
@@ -107,6 +119,8 @@ const ALL_MOTOR_TEST_INSTANCES = Object.freeze(
   Array.from({ length: 12 }, (_, index) => index + 1),
 )
 const HIGH_RISK_COMMANDS = new Set([22, 183, 209, 246, 310, 400])
+const PX4_AUTOTUNE_PARAMETER = /^(?:MC_(?:ROLL|PITCH|YAW)(?:RATE)?_[A-Z0-9_]+|MPC_THR_HOVER)$/
+const ARDUPILOT_AUTOTUNE_PARAMETER = /^ATC_(?:RAT_(?:RLL|PIT|YAW)_[A-Z0-9_]+|ANG_(?:RLL|PIT|YAW)_P|ACCEL_[RPY]_MAX)$/
 const HANDLED_MESSAGE_IDS = new Set([
   1, 22, 24, 26, 27, 29, 30, 33, 36, 65, 74, 76, 77, 100, 105, 106, 110, 116, 118,
   120, 126, 129, 132, 147, 148, 173, 191, 192, 230, 245, 253,
@@ -119,6 +133,52 @@ const MESSAGE_RATE_GROUP_BY_ID = new Map<number, MessageRateGroup>(
   (Object.entries(MESSAGE_RATE_GROUP_IDS) as Array<[MessageRateGroup, readonly number[]]>)
     .flatMap(([group, ids]) => ids.map((id) => [id, group] as const)),
 )
+
+/**
+ * Where a PARAM_SET originates (OCSA-001). The write policy applies the
+ * client-facing gates (armed, sensitive-parameter confirmation) only to
+ * browser-issued writes; server-owned flows carry their own stronger gates and
+ * must never be blocked by them mid-transaction.
+ */
+export type ParamWriteIntent =
+  /** Raw write issued by a WS client (the generic `param_set` message). */
+  | 'client_raw'
+  /** A verified setup transaction (vehicle_config_set / airframe / radio commit). */
+  | 'verified_setup'
+  /** Restoring previously confirmed values after a failed verified transaction. */
+  | 'safety_rollback'
+  /** Internal protocol writes owned by autotune/calibration sessions. */
+  | 'internal_protocol'
+
+/** Everything the policy needs to authorize one PARAM_SET. */
+export interface ParamWriteRequest {
+  intent: ParamWriteIntent
+  /** Server-defined confirmation literal required for sensitive parameters. */
+  safetyConfirmation?: string
+  /** Safety boundary the confirmation was captured at (client_raw only). */
+  expectedSafetyEpoch?: number
+  expectedSafetyAuthorityId?: string
+}
+
+export type ParamWriteDecision =
+  | { ok: true; paramType: number; sensitive: boolean }
+  | { ok: false; code: string; message: string }
+
+/** Server-authoritative safety boundary snapshot supplied by the WS layer. */
+export interface SafetyEpochSnapshot {
+  epoch: number
+  authorityId: string
+}
+
+interface TargetConflictState {
+  reason: 'multiple_stable_targets' | 'same_system_identity_conflict'
+  candidates: Array<{
+    systemId: number
+    componentId: number
+    autopilot: number
+    type: number
+  }>
+}
 
 export interface MavlinkBridgeOptions {
   codec?: MavlinkCodecSessionOptions
@@ -138,6 +198,8 @@ interface DiscoveredTarget {
   /** Raw MAV_TYPE from the discovery heartbeat. */
   type: number
   lastHeartbeatAt: number
+  /** Total heartbeats observed from this candidate (stability evidence). */
+  heartbeatCount: number
 }
 
 interface PendingCommand {
@@ -222,6 +284,13 @@ const BOARD_NAMES: Record<number, string> = {
   1179: 'MicoAir743v2',
 }
 
+const toCandidate = (target: DiscoveredTarget) => ({
+  systemId: target.systemId,
+  componentId: target.componentId,
+  autopilot: target.autopilot,
+  type: target.type,
+})
+
 export class MavlinkBridge extends EventEmitter {
   private connManager: BrowserConnectionManager
   private readonly options: Required<Omit<MavlinkBridgeOptions, 'codec'>> & { codec: MavlinkCodecSessionOptions }
@@ -260,6 +329,13 @@ export class MavlinkBridge extends EventEmitter {
   private targetSysId: number | null = null
   private targetCompId: number | null = null
   private selectedHeartbeatReady = false
+  // OCSA-004: set once a client explicitly resolves a multi-target link. A
+  // unique peer may be selected automatically after stable heartbeat proof.
+  private explicitTargetSelected = false
+  private targetSelectionSource: 'automatic' | 'explicit' | null = null
+  // Non-null while mutually conflicting stable autopilot candidates are on the
+  // bus; every write mutation fails closed until it clears.
+  private targetConflict: TargetConflictState | null = null
   // Classified from the selected target's HEARTBEAT (autopilot + type).
   // Cleared with the selected protocol state so a reconnected or switched
   // vehicle can never inherit a previous vehicle's profile.
@@ -267,6 +343,7 @@ export class MavlinkBridge extends EventEmitter {
   // Last armed flag from the selected heartbeat; null until known. Used to
   // refuse bench-only operations (motor test, calibration) while armed.
   private lastArmedState: boolean | null = null
+  private lastModeId: number | null = null
   private readonly discoveredTargets = new Map<string, DiscoveredTarget>()
   private statustextChunks = new Map<string, StatustextAssembly>()
   private telemetryProfile: TelemetryProfile | null = null
@@ -276,12 +353,19 @@ export class MavlinkBridge extends EventEmitter {
   private lastAttitudeBootMs: number | null = null
   private readonly pendingCommands = new Map<number, PendingCommand>()
   private readonly uncertainCommands = new Set<number>()
+  private readonly uncertainCommandUntil = new Map<number, number>()
   private readonly commandQuarantineUntil = new Map<number, number>()
   private readonly pendingParamSets = new Map<string, PendingParamSet>()
   private readonly parameterValues = new Map<string, number>()
   private readonly parameterTypes = new Map<string, number>()
   private parameterCacheLimitWarned = false
+  private rejectedParamIdCount = 0
+  private rejectedParamIdGrowthWarned = false
   private vehicleSafetyGeneration = 0
+  // Live safety boundary of the WebSocket layer. The parameter write policy
+  // re-reads it at every send so a stale confirmation can never cross a
+  // target/authority change (OCSA-001).
+  private safetyEpochProvider: (() => SafetyEpochSnapshot) | null = null
   private activeAirframeTransaction: ActiveAirframeTransaction | null = null
   private pendingManualControl: ManualControlData | null = null
   private manualControlFlushHandle: ReturnType<typeof setTimeout> | null = null
@@ -290,6 +374,9 @@ export class MavlinkBridge extends EventEmitter {
   // [cal] text, command ACKs, ACCELCAL_VEHICLE_POS and MAG_CAL_* messages)
   // and clears the reference when the session reaches a terminal snapshot.
   private activeCalibration: CalibrationSession | null = null
+  // In-flight autotune is independent from disarmed sensor calibration. The
+  // server manager owns authority; the bridge only supplies protocol evidence.
+  private activeAutotune: AutotuneSession | null = null
   private readonly ftp: MavlinkFtp
   private readonly logTransfer: MavlinkLogTransfer
   private destroyed = false
@@ -301,6 +388,11 @@ export class MavlinkBridge extends EventEmitter {
   private shellActive = false
   private shellPending = false
   private shellProbeTimer: ReturnType<typeof setTimeout> | null = null
+  // OCSA-007: the WS client that owns the pending/active shell session. Output
+  // and status are delivered only to this client; other clients can neither
+  // write nor close the session.
+  private shellOwnerClientId: string | null = null
+  private shellDelivery: ((clientId: string, message: RuntimeEvent) => void) | null = null
   // True while an ESC session has borrowed the link (ADR-003/005). The GCS
   // heartbeat and data intake are detached so MAVLink frames cannot pollute
   // the raw ESC byte stream.
@@ -366,6 +458,21 @@ export class MavlinkBridge extends EventEmitter {
     }
     this.parameterValues.set(id, value)
     return true
+  }
+
+  /**
+   * Bounded anomaly signal for a target that keeps inventing new parameter ids
+   * after the cache is full (OCSA-006). Warned once per protocol generation;
+   * it never grows with the attack.
+   */
+  private noteRejectedParamId(): void {
+    this.rejectedParamIdCount += 1
+    if (this.rejectedParamIdGrowthWarned || this.rejectedParamIdCount < PARAM_ID_GROWTH_WARN_THRESHOLD) return
+    this.rejectedParamIdGrowthWarned = true
+    console.warn(
+      `[MAVLink] selected target announced ${this.rejectedParamIdCount} unknown parameter ids after the `
+        + `${PARAM_VALUE_CACHE_MAX_ENTRIES}-entry cache limit; further ids are dropped and not broadcast`,
+    )
   }
 
   /** Last known armed flag of the selected autopilot; null until known. */
@@ -473,8 +580,13 @@ export class MavlinkBridge extends EventEmitter {
     this.vehicleSafetyGeneration += 1
   }
 
-  private rememberDiscoveredTarget(target: DiscoveredTarget): boolean {
+  private rememberDiscoveredTarget(target: Omit<DiscoveredTarget, 'heartbeatCount'>): boolean {
     const key = this.targetKey(target.systemId, target.componentId)
+    const existing = this.discoveredTargets.get(key)
+    const heartbeatCount = existing
+      && target.lastHeartbeatAt - existing.lastHeartbeatAt <= TARGET_HEARTBEAT_CONTINUITY_MS
+      ? existing.heartbeatCount + 1
+      : 1
     const existed = this.discoveredTargets.has(key)
     if (existed) this.discoveredTargets.delete(key)
     while (this.discoveredTargets.size >= MAX_DISCOVERED_TARGETS) {
@@ -484,8 +596,109 @@ export class MavlinkBridge extends EventEmitter {
       if (!oldestNonSelected) break
       this.discoveredTargets.delete(oldestNonSelected)
     }
-    this.discoveredTargets.set(key, target)
+    this.discoveredTargets.set(key, { ...target, heartbeatCount })
     return !existed
+  }
+
+  private stableDiscoveredTargets(now = performance.now()): DiscoveredTarget[] {
+    return [...this.discoveredTargets.values()]
+      .filter((candidate) =>
+        candidate.heartbeatCount >= TARGET_STABILITY_HEARTBEAT_MIN
+        && now - candidate.lastHeartbeatAt <= TARGET_DISCOVERY_STALE_MS
+      )
+      .sort((a, b) => a.systemId - b.systemId || a.componentId - b.componentId)
+  }
+
+  /**
+   * OCSA-004: fail closed when the bus carries mutually conflicting autopilot
+   * candidates. Two stable candidates on an automatically selected link
+   * require an explicit choice; two candidates sharing one system id remain a
+   * conflict because their identity is ambiguous on the wire.
+   */
+  private refreshTargetConflict(): boolean {
+    const now = performance.now()
+    for (const [key, candidate] of this.discoveredTargets) {
+      if (
+        now - candidate.lastHeartbeatAt > TARGET_DISCOVERY_STALE_MS
+        && key !== this.targetKey(this.targetSysId ?? -1, this.targetCompId ?? -1)
+      ) this.discoveredTargets.delete(key)
+    }
+    const stable = this.stableDiscoveredTargets(now)
+    let conflict: TargetConflictState | null = null
+    const bySystem = new Map<number, DiscoveredTarget[]>()
+    for (const candidate of stable) {
+      const group = bySystem.get(candidate.systemId) ?? []
+      group.push(candidate)
+      bySystem.set(candidate.systemId, group)
+    }
+    for (const group of bySystem.values()) {
+      if (group.length >= 2) {
+        conflict = { reason: 'same_system_identity_conflict', candidates: group.map(toCandidate) }
+        break
+      }
+    }
+    if (!conflict && !this.explicitTargetSelected && stable.length >= 2) {
+      conflict = { reason: 'multiple_stable_targets', candidates: stable.map(toCandidate) }
+    }
+    const conflictKey = (value: TargetConflictState | null) => value === null
+      ? ''
+      : `${value.reason}:${value.candidates.map((candidate) => `${candidate.systemId}:${candidate.componentId}`).join(',')}`
+    const changed = conflictKey(conflict) !== conflictKey(this.targetConflict)
+    this.targetConflict = conflict
+    // Surface the transition immediately so clients can render it and the WS
+    // boundary can invalidate outstanding safety confirmations.
+    if (changed) {
+      this.advanceVehicleSafetyGeneration()
+      this.emitTarget(conflict ? 'discovered' : 'selected')
+    }
+    return changed
+  }
+
+  /** True while mutually conflicting stable targets force writes to fail closed. */
+  hasTargetConflict(): boolean {
+    return this.targetConflict !== null
+  }
+
+  getTargetConflictReason(): string | null {
+    return this.targetConflict?.reason ?? null
+  }
+
+  private conflictAllowsMessage(msg: RuntimeCommand): boolean {
+    if (msg.type === 'select_target') return true
+    if (msg.type === 'shell_close' || msg.type === 'fs_download_cancel' || msg.type === 'log_download_cancel') return true
+    if (msg.type === 'command') {
+      return msg.cmd === 'MAV_CMD_COMPONENT_ARM_DISARM' && (msg.params[0] ?? 0) < 0.5
+    }
+    if (msg.type === 'motor_test' || msg.type === 'motor_test_batch') return msg.data.throttle <= 0
+    return false
+  }
+
+  private requireNoTargetConflict(operation: string, requestId?: string): boolean {
+    if (!this.targetConflict) return true
+    this.emitOperationError(
+      operation,
+      'target_conflict',
+      '检测到多个稳定飞控目标，已拒绝写入操作；请显式选择唯一飞控后再试',
+      requestId,
+    )
+    return false
+  }
+
+  /**
+   * Live safety boundary of the WebSocket layer, re-read before every
+   * client-issued sensitive parameter write.
+   */
+  setSafetyEpochProvider(provider: (() => SafetyEpochSnapshot) | null): void {
+    this.safetyEpochProvider = provider
+  }
+
+  /**
+   * OCSA-007: owner-scoped delivery channel for shell output/status. When set,
+   * shell traffic goes to the owning client only; without it (legacy test
+   * harnesses) shell traffic falls back to the broadcast 'message' event.
+   */
+  setShellDelivery(delivery: ((clientId: string, message: RuntimeEvent) => void) | null): void {
+    this.shellDelivery = delivery
   }
 
   private isSelectedSource(msg: Pick<MavlinkMessage, 'sysId' | 'compId'>): boolean {
@@ -518,6 +731,13 @@ export class MavlinkBridge extends EventEmitter {
         componentId: this.targetCompId,
         ready: this.hasReadyTarget(),
         reason,
+        selectionSource: this.targetSelectionSource,
+        conflict: this.targetConflict
+          ? {
+              reason: this.targetConflict.reason,
+              candidates: this.targetConflict.candidates.map((candidate) => ({ ...candidate })),
+            }
+          : null,
         identity: this.selectedIdentity,
         discovered: [...this.discoveredTargets.values()].map((target) => ({
           systemId: target.systemId,
@@ -537,7 +757,7 @@ export class MavlinkBridge extends EventEmitter {
    */
   getTargetMessage(): Extract<RuntimeEvent, { type: 'target' }> {
     const reason: 'discovered' | 'selected' | 'reset' = this.targetSysId === null
-      ? 'reset'
+      ? (this.discoveredTargets.size > 0 ? 'discovered' : 'reset')
       : this.hasReadyTarget()
         ? 'selected'
         : 'discovered'
@@ -724,10 +944,20 @@ export class MavlinkBridge extends EventEmitter {
       this.activeCalibration = null
       session.terminate('target_reset', '已选飞控目标已变更或复位，校准会话终止')
     }
+    if (this.activeAutotune) {
+      const session = this.activeAutotune
+      this.activeAutotune = null
+      session.terminate('target_reset', '已选飞控目标已变更或复位，自动调参会话终止')
+    }
     this.targetSysId = null
     this.targetCompId = null
     this.selectedHeartbeatReady = false
-    if (clearDiscovery) this.discoveredTargets.clear()
+    this.explicitTargetSelected = false
+    this.targetSelectionSource = null
+    if (clearDiscovery) {
+      this.discoveredTargets.clear()
+      if (this.targetConflict) this.targetConflict = null
+    }
     this.resetSelectedProtocolState()
     this.emitTarget('reset')
   }
@@ -739,7 +969,10 @@ export class MavlinkBridge extends EventEmitter {
     this.parameterValues.clear()
     this.parameterTypes.clear()
     this.parameterCacheLimitWarned = false
+    this.rejectedParamIdCount = 0
+    this.rejectedParamIdGrowthWarned = false
     this.lastArmedState = null
+    this.lastModeId = null
     this.messageIntervalSupport = 'unknown'
     this.messageIntervalAttempts = 0
     this.lastAttitudeBootMs = null
@@ -774,6 +1007,9 @@ export class MavlinkBridge extends EventEmitter {
       this.shellProbeTimer = null
       this.shellActive = false
       this.shellPending = false
+      // Link-level reset invalidates ownership; announce to every client so
+      // no UI keeps a dead terminal open.
+      this.shellOwnerClientId = null
       this.emit('message', { type: 'shell_status', data: { active: false, reason } } as RuntimeEvent)
     }
     this.cancelParamDownload(restoreTelemetry, reason)
@@ -791,6 +1027,7 @@ export class MavlinkBridge extends EventEmitter {
     }
     this.pendingCommands.clear()
     this.uncertainCommands.clear()
+    this.uncertainCommandUntil.clear()
     this.commandQuarantineUntil.clear()
     for (const pending of this.pendingParamSets.values()) {
       if (pending.timeout) clearTimeout(pending.timeout)
@@ -810,6 +1047,24 @@ export class MavlinkBridge extends EventEmitter {
     this.pendingParamSets.clear()
   }
 
+  private activateTarget(
+    discovered: DiscoveredTarget,
+    source: 'automatic' | 'explicit',
+  ): void {
+    // Invalidate transaction fingerprints before pending callbacks are
+    // completed by cancelProtocolOperations(). No rollback may be sent while
+    // a target switch is already in progress.
+    this.advanceVehicleSafetyGeneration()
+    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
+    this.cancelProtocolOperations(false, 'target_switched')
+    this.targetSysId = discovered.systemId
+    this.targetCompId = discovered.componentId
+    this.selectedHeartbeatReady = false
+    this.targetSelectionSource = source
+    this.resetSelectedProtocolState()
+    this.emitTarget('selected')
+  }
+
   private selectTarget(systemId: number, componentId: number, requestId?: string): void {
     const discovered = this.discoveredTargets.get(this.targetKey(systemId, componentId))
     if (!discovered) {
@@ -821,21 +1076,16 @@ export class MavlinkBridge extends EventEmitter {
       )
       return
     }
+    // An explicit client choice resolves the multi-target ambiguity (OCSA-004);
+    // re-evaluate the conflict state with that fact.
+    this.explicitTargetSelected = true
+    this.targetSelectionSource = 'explicit'
+    const conflictChanged = this.refreshTargetConflict()
     if (this.targetSysId === systemId && this.targetCompId === componentId) {
-      this.emitTarget('selected')
+      if (!conflictChanged) this.emitTarget('selected')
       return
     }
-    // Invalidate transaction fingerprints before pending callbacks are
-    // completed by cancelProtocolOperations(). No rollback may be sent while
-    // a target switch is already in progress.
-    this.advanceVehicleSafetyGeneration()
-    this.cancelQueuedMotorTestStarts(ALL_MOTOR_TEST_INSTANCES)
-    this.cancelProtocolOperations(false, 'target_switched')
-    this.targetSysId = systemId
-    this.targetCompId = componentId
-    this.selectedHeartbeatReady = false
-    this.resetSelectedProtocolState()
-    this.emitTarget('selected')
+    this.activateTarget(discovered, 'explicit')
   }
 
   private startHeartbeat() {
@@ -1040,14 +1290,23 @@ export class MavlinkBridge extends EventEmitter {
       type: hb.type,
       lastHeartbeatAt: performance.now(),
     })
-    if (this.targetSysId === null) {
-      this.targetSysId = msg.sysId
-      this.targetCompId = msg.compId
-      this.resetSelectedProtocolState()
-      this.emitTarget('discovered')
-    } else if (newlyDiscovered && !this.isSelectedSource(msg)) {
+    if (newlyDiscovered && !this.isSelectedSource(msg)) {
       this.emitTarget('discovered')
     }
+    // Stability evidence changed: re-evaluate the multi-target conflict state
+    // before any state derived from the selected target is updated.
+    this.refreshTargetConflict()
+    // A single stable peer is the ordinary one-port/one-flight-controller
+    // case: bind it automatically. Ambiguous stable peers remain fail-closed
+    // and must be resolved through select_target.
+    if (this.targetSysId === null && this.targetConflict === null) {
+      const stable = this.stableDiscoveredTargets()
+      if (stable.length === 1) {
+        this.explicitTargetSelected = false
+        this.activateTarget(stable[0], 'automatic')
+      }
+    }
+    if (this.targetSysId === null) return
     if (!this.isSelectedSource(msg)) return
 
     // Preserve both HEARTBEAT identity fields for every selected heartbeat so
@@ -1064,6 +1323,17 @@ export class MavlinkBridge extends EventEmitter {
     if (identityChanged) {
       this.advanceVehicleSafetyGeneration()
       this.abortAirframeTransaction('safety_context_changed_no_rollback:identity_changed')
+      this.activeAutotune?.terminate(
+        'identity_changed',
+        '飞控身份已变更，自动调参会话终止',
+      )
+      // OCSA-015: a session must never consume [cal] STATUSTEXT or MAG_CAL
+      // evidence produced under a different vehicle identity.
+      if (this.activeCalibration) {
+        const session = this.activeCalibration
+        this.activeCalibration = null
+        session.terminate('identity_changed', '飞控身份已变更，校准会话终止')
+      }
     }
     if (becameArmed) {
       this.abortAirframeTransaction('safety_context_changed_no_rollback:vehicle_armed')
@@ -1111,6 +1381,8 @@ export class MavlinkBridge extends EventEmitter {
 
     this.lastArmedState = armed
     const mode = decodeFlightMode(identity.family, identity.vehicleClass, hb.customMode)
+    this.lastModeId = mode.id
+    this.activeAutotune?.handleVehicleStatus({ armed, modeId: mode.id })
     this.emit('message', {
       type: 'status',
       data: {
@@ -1461,6 +1733,7 @@ export class MavlinkBridge extends EventEmitter {
     // logic below would otherwise treat them as orphaned). The session only
     // reacts to its own command id.
     this.activeCalibration?.handleCommandAck(d.command as number, d.result)
+    this.activeAutotune?.handleCommandAck(d.command as number, d.result, d.progress)
     if (d.command === (MAVLINK_COMMANDS as Record<string, number>).MAV_CMD_SET_MESSAGE_INTERVAL) {
       if (d.result === MAV_RESULT_ACCEPTED) {
         // Requests for different message ids share one command id. Some ids
@@ -1480,7 +1753,7 @@ export class MavlinkBridge extends EventEmitter {
     const commandId = d.command as number
     const pending = this.pendingCommands.get(commandId)
     const orphanedTransaction = !pending && (
-      this.uncertainCommands.has(commandId)
+      this.isCommandUncertain(commandId)
       || this.isCommandQuarantined(commandId)
     )
     const progress = (hasExtensions || msg.payload.length >= 4)
@@ -1509,6 +1782,7 @@ export class MavlinkBridge extends EventEmitter {
     if (!pending) {
       if (orphanedTransaction && d.result !== MAV_RESULT_IN_PROGRESS) {
         this.uncertainCommands.delete(commandId)
+        this.uncertainCommandUntil.delete(commandId)
         this.quarantineCommand(commandId)
       }
       return
@@ -1801,7 +2075,7 @@ export class MavlinkBridge extends EventEmitter {
         this.emitShellStatus(true)
       }
       const bytes = ByteBuffer.from(decoded.data as unknown as number[]).subarray(0, decoded.count)
-      this.emit('message', {
+      this.deliverShellMessage({
         type: 'shell_output',
         data: { text: bytes.toString('utf8') },
       } as RuntimeEvent)
@@ -1815,22 +2089,35 @@ export class MavlinkBridge extends EventEmitter {
     }
   }
 
+  /** OCSA-007: route shell traffic to the owner when owned, else broadcast. */
+  private deliverShellMessage(message: RuntimeEvent): void {
+    if (this.shellOwnerClientId && this.shellDelivery) {
+      this.shellDelivery(this.shellOwnerClientId, message)
+      return
+    }
+    this.emit('message', message)
+  }
+
   private emitShellStatus(active: boolean, reason?: string): void {
-    this.emit('message', {
+    this.deliverShellMessage({
       type: 'shell_status',
       data: { active, ...(reason ? { reason } : {}) },
     } as RuntimeEvent)
   }
 
-  private openShell(requestId?: string): void {
-    if (this.shellActive) {
-      this.emitShellStatus(true)
+  private openShell(requestId?: string, ownerClientId?: string | null): void {
+    if (this.shellActive || this.shellPending) {
+      if (ownerClientId && ownerClientId === this.shellOwnerClientId) {
+        // Idempotent re-open from the owner: just resync its UI state.
+        this.emitShellStatus(this.shellActive, this.shellActive ? undefined : 'probing')
+        return
+      }
+      this.emitOperationError('shell', 'shell_busy', 'PX4 终端已被其他客户端占用，请等待其关闭', requestId)
       return
     }
-    if (this.shellPending) {
-      this.emitShellStatus(false, 'probing')
-      return
-    }
+    // The owner is recorded before probing so probe status/output already stay
+    // private; a null owner (no meta) keeps the legacy broadcast behaviour.
+    this.shellOwnerClientId = ownerClientId ?? null
     if (vehicleCapabilities(this.selectedIdentity).mavlinkShell !== 'px4-nsh') {
       this.emitOperationError('shell', 'unsupported_vehicle_profile', '当前固件未提供已验证的 MAVLink 交互 Shell', requestId)
       this.emitShellStatus(false, 'unsupported_vehicle_profile')
@@ -1862,15 +2149,7 @@ export class MavlinkBridge extends EventEmitter {
     this.shellProbeTimer = setTimeout(() => {
       this.shellProbeTimer = null
       if (!this.shellPending || this.destroyed) return
-      this.shellPending = false
-      this.sendSerialControl({
-        device: PX4_SHELL_SERIAL_CONTROL_DEVICE,
-        flags: 0,
-        timeout: 0,
-        baudrate: 0,
-        count: 0,
-        data: new Uint8Array(),
-      })
+      this.closeShell('shell_probe_timeout')
       this.emitOperationError(
         'shell',
         'shell_probe_timeout',
@@ -1878,7 +2157,6 @@ export class MavlinkBridge extends EventEmitter {
         requestId,
         true,
       )
-      this.emitShellStatus(false, 'shell_probe_timeout')
     }, SHELL_PROBE_TIMEOUT_MS)
   }
 
@@ -1899,7 +2177,11 @@ export class MavlinkBridge extends EventEmitter {
     return true
   }
 
-  private writeShell(text: string, requestId?: string): void {
+  private writeShell(text: string, requestId?: string, ownerClientId?: string | null): void {
+    if (this.shellOwnerClientId && ownerClientId !== this.shellOwnerClientId) {
+      this.emitOperationError('shell', 'not_shell_owner', 'PX4 终端由其他客户端持有，无法写入', requestId)
+      return
+    }
     if (!this.shellActive) {
       const message = this.shellPending ? '正在确认飞控 Shell 能力' : 'PX4 终端尚未打开'
       this.emitOperationError('shell', 'shell_not_open', message, requestId, true)
@@ -1910,7 +2192,11 @@ export class MavlinkBridge extends EventEmitter {
     }
   }
 
-  private closeShell(reason = 'closed'): void {
+  private closeShell(reason = 'closed', ownerClientId?: string | null): void {
+    if (ownerClientId != null && this.shellOwnerClientId && ownerClientId !== this.shellOwnerClientId) {
+      this.emitOperationError('shell', 'not_shell_owner', 'PX4 终端由其他客户端持有，无法关闭')
+      return
+    }
     if (!this.shellActive && !this.shellPending) {
       this.emitShellStatus(false, reason)
       return
@@ -1925,9 +2211,23 @@ export class MavlinkBridge extends EventEmitter {
       count: 0,
       data: new Uint8Array(),
     })
+    const owner = this.shellOwnerClientId
     this.shellActive = false
     this.shellPending = false
+    if (reason === 'owner_lost' || !owner) {
+      // The owning socket is gone (or there never was one): announce to every
+      // client so no UI keeps a dead terminal open.
+      this.shellOwnerClientId = null
+      this.emit('message', { type: 'shell_status', data: { active: false, reason } } as RuntimeEvent)
+      return
+    }
     this.emitShellStatus(false, reason)
+    this.shellOwnerClientId = null
+  }
+
+  /** OCSA-007: server-side close used by the WS layer's orphan grace timer. */
+  closeShellSession(reason: string): void {
+    this.closeShell(reason)
   }
 
   private emitFsOpError(
@@ -2087,14 +2387,21 @@ export class MavlinkBridge extends EventEmitter {
       || [...actualIdBytes].some((byte) => byte < 0x20 || byte > 0x7e)
     ) return
     const id = actualIdBytes.toString('ascii')
-    this.cacheParameterValue(id, value)
-    this.parameterTypes.set(id, paramType)
+    // OCSA-006: one admission decision governs both caches. An id that is not
+    // admitted (cache full) must not grow parameterTypes nor be amplified to
+    // WebSocket clients - unless a write transaction is explicitly waiting for
+    // exactly this echo.
+    const admitted = this.cacheParameterValue(id, value)
+    if (!admitted) this.noteRejectedParamId()
+    if (admitted) this.parameterTypes.set(id, paramType)
 
-    this.emit('message', {
-      type: 'param',
-      data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
-      ...(this.paramDownloadActive ? { paramRunId: this.paramRunId } : {}),
-    } as RuntimeEvent)
+    if (admitted || this.pendingParamSets.has(id)) {
+      this.emit('message', {
+        type: 'param',
+        data: { id, value, type: paramType, param_count: paramCount, param_index: paramIndex },
+        ...(this.paramDownloadActive ? { paramRunId: this.paramRunId } : {}),
+      } as RuntimeEvent)
+    }
 
     const pendingSet = this.pendingParamSets.get(id)
     if (pendingSet) {
@@ -2233,6 +2540,7 @@ export class MavlinkBridge extends EventEmitter {
     // the PX4 [cal] protocol lives entirely in STATUSTEXT. statustext
     // broadcasting is unchanged so MessagesPage stays compatible.
     this.activeCalibration?.handleStatustext(text)
+    this.activeAutotune?.handleStatustext(text)
   }
 
   private pruneStatustextAssemblies(): void {
@@ -2253,9 +2561,19 @@ export class MavlinkBridge extends EventEmitter {
     return this.paramRunId
   }
 
-  // Send commands from frontend
-  handleRuntimeCommand(msg: RuntimeCommand): MavlinkBridgeClientResult {
+  // Send commands from frontend. `ownerMeta.clientId` identifies the requesting
+  // client so shell sessions can be pinned to an owner (OCSA-007).
+  handleRuntimeCommand(msg: RuntimeCommand, ownerMeta?: { clientId?: string }): MavlinkBridgeClientResult {
     let vehicleRebootQueued = false
+    if (this.targetConflict && !this.conflictAllowsMessage(msg)) {
+      this.emitOperationError(
+        msg.type,
+        'target_conflict',
+        '检测到多个稳定飞控目标，已拒绝目标相关操作；请显式选择唯一飞控后再试',
+        'requestId' in msg ? msg.requestId : undefined,
+      )
+      return { vehicleRebootQueued }
+    }
     const isShellMessage = msg.type === 'shell_open' || msg.type === 'shell_write' || msg.type === 'shell_close'
     if ((this.shellActive || this.shellPending) && !isShellMessage) {
       this.emitOperationError(msg.type, 'shell_active', 'PX4 终端会话进行中，请先关闭终端', 'requestId' in msg ? msg.requestId : undefined, true)
@@ -2263,7 +2581,14 @@ export class MavlinkBridge extends EventEmitter {
     }
     switch (msg.type) {
       case 'command': {
-        if (this.requireReadyTarget('command', msg.requestId)) {
+        // An emergency disarm must stay available as a safety exit even while
+        // the multi-target conflict state blocks every other write.
+        const emergencyDisarm = msg.cmd === 'MAV_CMD_COMPONENT_ARM_DISARM'
+          && (msg.params[0] ?? 0) < 0.5
+        if (
+          this.requireReadyTarget('command', msg.requestId)
+          && (emergencyDisarm || this.requireNoTargetConflict('command', msg.requestId))
+        ) {
           // Capability gate: safety-critical commands are rejected before
           // serialization when the selected profile does not support them.
           const capabilityError = this.commandCapabilityError(msg.cmd)
@@ -2286,7 +2611,10 @@ export class MavlinkBridge extends EventEmitter {
         break
       }
       case 'set_flight_mode': {
-        if (this.requireReadyTarget('set_flight_mode', msg.requestId)) {
+        if (
+          this.requireReadyTarget('set_flight_mode', msg.requestId)
+          && this.requireNoTargetConflict('set_flight_mode', msg.requestId)
+        ) {
           if (!vehicleCapabilities(this.selectedIdentity).setMode) {
             this.emitOperationError(
               'set_flight_mode',
@@ -2319,17 +2647,41 @@ export class MavlinkBridge extends EventEmitter {
           msg.requestId,
         )
         break
+      case 'autotune_start':
+      case 'autotune_action':
+      case 'autotune_reclaim':
+        this.emitOperationError(
+          msg.type,
+          'unsupported_operation',
+          '自动调参请求必须经由会话管理器处理',
+          msg.requestId,
+        )
+        break
       case 'param_set':
         if (
           this.requireReadyTarget('param_set', msg.requestId)
           && this.requireWritableVehicle('param_set', msg.requestId)
+          && this.requireNoTargetConflict('param_set', msg.requestId)
         ) {
-          this.sendParamSet(msg.data.id, msg.data.value, msg.data.paramType, msg.requestId)
+          // Raw client write: the policy supplies the authoritative type and
+          // enforces the armed/sensitive gates (OCSA-001/005).
+          this.sendParamSet(
+            {
+              intent: 'client_raw',
+              safetyConfirmation: msg.safetyConfirmation,
+              expectedSafetyEpoch: msg.expectedSafetyEpoch,
+              expectedSafetyAuthorityId: msg.expectedSafetyAuthorityId,
+            },
+            msg.data.id,
+            msg.data.value,
+            msg.requestId,
+          )
         }
         break
       case 'reboot_vehicle':
         if (!this.requireReadyTarget('reboot_vehicle', msg.requestId)) break
         if (!this.requireWritableVehicle('reboot_vehicle', msg.requestId)) break
+        if (!this.requireNoTargetConflict('reboot_vehicle', msg.requestId)) break
         if (this.lastArmedState !== false) {
           this.emitOperationError(
             'reboot_vehicle',
@@ -2372,12 +2724,16 @@ export class MavlinkBridge extends EventEmitter {
         if (
           this.requireReadyTarget('manual_control', msg.requestId)
           && this.requireWritableVehicle('manual_control', msg.requestId)
+          && this.requireNoTargetConflict('manual_control', msg.requestId)
         ) {
           this.sendManualControl(msg.data)
         }
         break
       case 'motor_test':
-        if (this.requireReadyTarget('motor_test', msg.requestId)) {
+        if (
+          this.requireReadyTarget('motor_test', msg.requestId)
+          && this.requireNoTargetConflict('motor_test', msg.requestId)
+        ) {
           this.sendMotorTest(
             msg.data.instance,
             msg.data.throttle,
@@ -2412,16 +2768,23 @@ export class MavlinkBridge extends EventEmitter {
         this.emitOperationError(msg.type, 'unsupported_operation', '遥控器校准请求必须经由会话管理器发起', msg.requestId)
         break
       case 'shell_open':
-        if (this.requireReadyTarget('shell', msg.requestId)) this.openShell(msg.requestId)
+        if (this.requireReadyTarget('shell', msg.requestId)) {
+          this.openShell(msg.requestId, ownerMeta?.clientId ?? null)
+        }
         break
       case 'shell_write':
-        if (this.requireReadyTarget('shell', msg.requestId)) this.writeShell(msg.data.text, msg.requestId)
+        if (this.requireReadyTarget('shell', msg.requestId)) {
+          this.writeShell(msg.data.text, msg.requestId, ownerMeta?.clientId ?? null)
+        }
         break
       case 'shell_close':
-        this.closeShell('closed')
+        this.closeShell('closed', ownerMeta?.clientId ?? null)
         break
       case 'motor_test_batch':
-        if (this.requireReadyTarget('motor_test_batch', msg.requestId)) {
+        if (
+          this.requireReadyTarget('motor_test_batch', msg.requestId)
+          && this.requireNoTargetConflict('motor_test_batch', msg.requestId)
+        ) {
           this.sendMotorTestBatch(
             msg.data.instances,
             msg.data.throttle,
@@ -2553,7 +2916,7 @@ export class MavlinkBridge extends EventEmitter {
       emergencyDisarm
       && (
         this.pendingCommands.has(cmdId)
-        || this.uncertainCommands.has(cmdId)
+        || this.isCommandUncertain(cmdId)
         || this.isCommandQuarantined(cmdId)
       )
     ) {
@@ -2568,7 +2931,7 @@ export class MavlinkBridge extends EventEmitter {
           superseded.requestId,
         )
       }
-      this.uncertainCommands.add(cmdId)
+      this.markCommandUncertain(cmdId)
       this.commandQuarantineUntil.delete(cmdId)
       const accepted = this.writeMessage(
         this.buildCommand(cmdId, params.slice(0, 7)),
@@ -2670,11 +3033,11 @@ export class MavlinkBridge extends EventEmitter {
       )
       return false
     }
-    if (this.uncertainCommands.has(pending.command)) {
+    if (this.isCommandUncertain(pending.command)) {
       this.emitOperationError(
         'command',
         'command_result_uncertain',
-        `命令 ${pending.command} 的旧事务已超时且可能仍有迟到 ACK；请重新连接后再试`,
+        `命令 ${pending.command} 的旧事务已超时且可能仍有迟到 ACK；请等待安全隔离窗口结束后再试`,
         pending.requestId,
         true,
       )
@@ -2706,6 +3069,26 @@ export class MavlinkBridge extends EventEmitter {
     )
   }
 
+  private markCommandUncertain(commandId: number): void {
+    this.uncertainCommands.add(commandId)
+    // A late ACK cannot be correlated safely, so keep a substantially longer
+    // quarantine than the ordinary post-ACK settling window. It is finite,
+    // however: one dropped ACK must not disable this command until reconnect.
+    this.uncertainCommandUntil.set(
+      commandId,
+      performance.now() + Math.max(30_000, this.commandDeadlineForLink() * 4),
+    )
+  }
+
+  private isCommandUncertain(commandId: number): boolean {
+    if (!this.uncertainCommands.has(commandId)) return false
+    const deadline = this.uncertainCommandUntil.get(commandId)
+    if (deadline !== undefined && performance.now() < deadline) return true
+    this.uncertainCommands.delete(commandId)
+    this.uncertainCommandUntil.delete(commandId)
+    return false
+  }
+
   private isCommandQuarantined(commandId: number): boolean {
     const deadline = this.commandQuarantineUntil.get(commandId)
     if (deadline === undefined) return false
@@ -2728,7 +3111,7 @@ export class MavlinkBridge extends EventEmitter {
     }
     this.pendingCommands.delete(commandId)
     this.commandQuarantineUntil.delete(commandId)
-    this.uncertainCommands.add(commandId)
+    this.markCommandUncertain(commandId)
     this.emitOperationError(
       'command',
       'command_timeout',
@@ -2880,10 +3263,16 @@ export class MavlinkBridge extends EventEmitter {
         return
       }
       const id = confirmed[index]
-      this.sendParamSet(id, previous.get(id)!, this.parameterTypes.get(id)!, `${requestId}-rc-rollback-${index}`, (accepted) => {
-        if (!accepted) rollbackFailures.push(id)
-        rollback(index - 1, reason)
-      })
+      this.sendParamSet(
+        { intent: 'safety_rollback' },
+        id,
+        previous.get(id)!,
+        `${requestId}-rc-rollback-${index}`,
+        (accepted) => {
+          if (!accepted) rollbackFailures.push(id)
+          rollback(index - 1, reason)
+        },
+      )
     }
     const writeNext = (index: number): void => {
       if (!contextIsSafe()) {
@@ -2895,18 +3284,24 @@ export class MavlinkBridge extends EventEmitter {
         return
       }
       const entry = entries[index]
-      this.sendParamSet(entry.id, entry.value, this.parameterTypes.get(entry.id)!, `${requestId}-rc-${index}`, (accepted, _value, reason) => {
-        if (!contextIsSafe()) {
-          completion(false, 'safety_context_changed_no_rollback')
-          return
-        }
-        if (!accepted) {
-          rollback(confirmed.length - 1, reason ?? 'write_failed')
-          return
-        }
-        confirmed.push(entry.id)
-        writeNext(index + 1)
-      })
+      this.sendParamSet(
+        { intent: 'verified_setup' },
+        entry.id,
+        entry.value,
+        `${requestId}-rc-${index}`,
+        (accepted, _value, reason) => {
+          if (!contextIsSafe()) {
+            completion(false, 'safety_context_changed_no_rollback')
+            return
+          }
+          if (!accepted) {
+            rollback(confirmed.length - 1, reason ?? 'write_failed')
+            return
+          }
+          confirmed.push(entry.id)
+          writeNext(index + 1)
+        },
+      )
     }
     writeNext(0)
   }
@@ -2963,9 +3358,15 @@ export class MavlinkBridge extends EventEmitter {
       this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, false, oldValue, 'safety_confirmation_required')
       return
     }
-    this.sendParamSet(msg.data.id, msg.data.value, paramType, msg.requestId, (accepted, acceptedValue, reason) => {
-      this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, accepted, acceptedValue, reason)
-    })
+    this.sendParamSet(
+      { intent: 'verified_setup' },
+      msg.data.id,
+      msg.data.value,
+      msg.requestId,
+      (accepted, acceptedValue, reason) => {
+        this.emitVehicleConfigResult(msg.requestId, msg.feature, msg.data.id, accepted, acceptedValue, reason)
+      },
+    )
   }
 
   private emitAirframeStatus(
@@ -3082,14 +3483,20 @@ export class MavlinkBridge extends EventEmitter {
           return
         }
         const id = transaction.confirmed[index]
-        this.sendParamSet(id, previous.get(id)!, this.parameterTypes.get(id)!, `${msg.requestId}-rollback-${index}`, (accepted) => {
-          if (!this.airframeContextIsSafe(transaction)) {
-            this.abortAirframeTransaction(`safety_context_changed_no_rollback:${reason}`)
-            return
-          }
-          if (!accepted) rollbackFailures.push(id)
-          rollback(index - 1)
-        })
+        this.sendParamSet(
+          { intent: 'safety_rollback' },
+          id,
+          previous.get(id)!,
+          `${msg.requestId}-rollback-${index}`,
+          (accepted) => {
+            if (!this.airframeContextIsSafe(transaction)) {
+              this.abortAirframeTransaction(`safety_context_changed_no_rollback:${reason}`)
+              return
+            }
+            if (!accepted) rollbackFailures.push(id)
+            rollback(index - 1)
+          },
+        )
       }
       rollback(transaction.confirmed.length - 1)
     }
@@ -3123,7 +3530,7 @@ export class MavlinkBridge extends EventEmitter {
       }
       const entry = entries[index]
       this.emitAirframeStatus(msg.requestId, 'writing', index, total, entry.id)
-      this.sendParamSet(entry.id, entry.value, this.parameterTypes.get(entry.id)!, `${msg.requestId}-${entry.id}`, (accepted, _value, reason) => {
+      this.sendParamSet({ intent: 'verified_setup' }, entry.id, entry.value, `${msg.requestId}-${entry.id}`, (accepted, _value, reason) => {
         if (!this.airframeContextIsSafe(transaction)) {
           this.abortAirframeTransaction('safety_context_changed_no_rollback')
           return
@@ -3143,19 +3550,107 @@ export class MavlinkBridge extends EventEmitter {
     this.writeMessage(this.buildCommand(commandId, params, 0, targetComponent))
   }
 
-  private sendParamSet(
+  /**
+   * Server-authoritative parameter write policy (OCSA-001/005).
+   *
+   * Every PARAM_SET passes through here immediately before transmission. The
+   * decision is re-derived from live bridge state - selected target, identity
+   * capability, armed flag and the authoritative parameter type cache - never
+   * from client-supplied metadata. Only `client_raw` writes carry the
+   * browser-facing gates; server-owned flows (verified setup transactions,
+   * safety rollbacks, internal protocol writes) declare their intent and are
+   * governed by their own transaction-level safety checks.
+   */
+  private evaluateParamWritePolicy(
+    request: ParamWriteRequest,
     id: string,
     value: number,
-    paramType: number,
+  ): ParamWriteDecision {
+    // The type always comes from the selected target's validated PARAM_VALUE
+    // stream. A parameter the server has never seen cannot be encoded safely.
+    const cachedType = this.parameterTypes.get(id)
+    if (cachedType === undefined) {
+      return {
+        ok: false,
+        code: 'parameter_type_unknown',
+        message: `参数 ${id} 尚未从飞控读取到权威类型，请先完成参数同步后再写入`,
+      }
+    }
+    const sensitive = isSensitiveParameter(id)
+    switch (request.intent) {
+      case 'client_raw': {
+        if (this.lastArmedState !== false) {
+          return {
+            ok: false,
+            code: this.lastArmedState === true ? 'vehicle_armed' : 'arming_state_unknown',
+            message: this.lastArmedState === true
+              ? '飞行器已解锁，拒绝写入参数'
+              : '飞行器解锁状态未知，拒绝写入参数',
+          }
+        }
+        if (
+          sensitive
+          && !this.sensitiveWriteConfirmationValid(request)
+        ) {
+          return {
+            ok: false,
+            code: 'safety_confirmation_required',
+            message: `参数 ${id} 属于安全敏感参数，需要服务端确认 sensitive_param 且绑定当前安全边界后才能写入`,
+          }
+        }
+        break
+      }
+      case 'verified_setup':
+        // Defense in depth: every verified flow already gates on disarmed
+        // state before its first write; re-check at the wire boundary too.
+        if (this.lastArmedState !== false) {
+          return {
+            ok: false,
+            code: this.lastArmedState === true ? 'vehicle_armed' : 'arming_state_unknown',
+            message: '飞行器已解锁或解锁状态未知，拒绝写入配置参数',
+          }
+        }
+        break
+      case 'safety_rollback':
+      case 'internal_protocol':
+        // Rollbacks restore previously confirmed values and internal protocol
+        // writes are owned by sessions with their own safety exits; they must
+        // not be blocked by the generic client gates.
+        break
+    }
+    const validationError = this.validateParamSet(id, value, cachedType)
+    if (validationError) {
+      return { ok: false, code: 'invalid_param', message: validationError }
+    }
+    return { ok: true, paramType: cachedType, sensitive }
+  }
+
+  /** Sensitive raw writes need the server literal plus a current safety epoch. */
+  private sensitiveWriteConfirmationValid(request: ParamWriteRequest): boolean {
+    if (request.safetyConfirmation !== 'sensitive_param') return false
+    if (request.expectedSafetyEpoch === undefined || request.expectedSafetyAuthorityId === undefined) {
+      return false
+    }
+    const snapshot = this.safetyEpochProvider?.()
+    if (!snapshot) return false
+    return request.expectedSafetyEpoch === snapshot.epoch
+      && request.expectedSafetyAuthorityId === snapshot.authorityId
+  }
+
+  private sendParamSet(
+    request: ParamWriteRequest,
+    id: string,
+    value: number,
     requestId?: string,
     completion?: (accepted: boolean, acceptedValue?: number, reason?: string) => void,
   ): boolean {
-    const validationError = this.validateParamSet(id, value, paramType)
-    if (validationError) {
-      this.emitOperationError('param_set', 'invalid_param', validationError, requestId)
-      completion?.(false, undefined, validationError)
+    const decision = this.evaluateParamWritePolicy(request, id, value)
+    if (!decision.ok) {
+      this.emitOperationError('param_set', decision.code, decision.message, requestId)
+      completion?.(false, undefined, decision.code)
       return false
     }
+    const paramType = decision.paramType
     if (this.pendingParamSets.has(id)) {
       this.emitOperationError(
         'param_set',
@@ -3774,6 +4269,94 @@ export class MavlinkBridge extends EventEmitter {
       : 0b111111
   }
 
+  /** Create an in-flight autotune session after stack, target and armed gates. */
+  createAutotuneSession(request: AutotuneStartRequest): AutotuneSession | null {
+    if (!this.hasReadyTarget()) {
+      this.emitOperationError(
+        'autotune_start', 'target_not_ready',
+        '尚未收到已选飞控的有效心跳', request.requestId, true,
+      )
+      return null
+    }
+    const identity = this.selectedIdentity
+    const capability = identity ? vehicleCapabilities(identity).autotune : 'none'
+    if (!identity || (identity.family !== 'px4' && identity.family !== 'ardupilot')
+      || capability === 'none') {
+      this.emitOperationError(
+        'autotune_start', 'unsupported_vehicle_profile',
+        '当前飞控或机型尚未适配自动调参', request.requestId,
+      )
+      return null
+    }
+    if (this.lastArmedState !== true) {
+      this.emitOperationError(
+        'autotune_start',
+        this.lastArmedState === false ? 'vehicle_disarmed' : 'arming_state_unknown',
+        this.lastArmedState === false
+          ? '自动调参只能在已解锁飞行中开始'
+          : '尚未确认飞行器解锁状态',
+        request.requestId,
+      )
+      return null
+    }
+    if (this.lastModeId === null) {
+      this.emitOperationError(
+        'autotune_start', 'mode_unknown', '尚未确认当前飞行模式', request.requestId,
+      )
+      return null
+    }
+    if (identity.family === 'ardupilot' && this.lastModeId === 15) {
+      this.emitOperationError(
+        'autotune_start', 'already_in_autotune_mode', '飞控已处于 AutoTune 模式', request.requestId,
+      )
+      return null
+    }
+
+    const parameterPattern = identity.family === 'px4'
+      ? PX4_AUTOTUNE_PARAMETER
+      : ARDUPILOT_AUTOTUNE_PARAMETER
+    const baselineParameters: Record<string, number> = {}
+    for (const [id, value] of this.parameterValues) {
+      if (parameterPattern.test(id)) baselineParameters[id] = value
+    }
+    if (Object.keys(baselineParameters).length === 0) {
+      this.emitOperationError(
+        'autotune_start', 'parameters_not_ready',
+        '请先完成参数同步，以便记录调参前基线', request.requestId, true,
+      )
+      return null
+    }
+    const initialModeId = this.lastModeId
+    const session = new AutotuneSession({
+      sessionId: request.sessionId,
+      requestId: request.requestId,
+      family: identity.family,
+      initialModeId,
+      baselineParameters,
+      sendCommand: (commandId, params) =>
+        this.writeMessage(this.buildCommand(commandId, params.slice(0, 7)), 'high'),
+      setMode: (modeId) => {
+        const encoded = encodeModeCommand(identity, modeId)
+        return encoded.ok
+          && this.writeMessage(
+            this.buildCommand(MAVLINK_COMMANDS.MAV_CMD_DO_SET_MODE, encoded.params),
+            'high',
+          )
+      },
+      emitSnapshot: (snapshot) => {
+        request.emitSnapshot(snapshot)
+        const terminal = snapshot.phase === 'saved'
+          || snapshot.phase === 'discarded'
+          || snapshot.phase === 'failed'
+          || snapshot.phase === 'interrupted'
+          || (snapshot.family === 'px4' && snapshot.phase === 'completed')
+        if (terminal && this.activeAutotune === session) this.activeAutotune = null
+      },
+    })
+    this.activeAutotune = session
+    return session
+  }
+
   // FC -> GCS COMMAND_LONG. The only inbound COMMAND_LONG this GCS acts on is
   // ACCELCAL_VEHICLE_POS (42429) during ArduPilot six-position accel
   // calibration; forward its param1 to the active session.
@@ -4049,6 +4632,11 @@ export class MavlinkBridge extends EventEmitter {
       const session = this.activeCalibration
       this.activeCalibration = null
       session.terminate('bridge_destroyed', '服务正在关闭，校准会话终止')
+    }
+    if (this.activeAutotune) {
+      const session = this.activeAutotune
+      this.activeAutotune = null
+      session.terminate('bridge_destroyed', '服务正在关闭，自动调参会话终止')
     }
     if (this.manualControlFlushHandle) {
       clearTimeout(this.manualControlFlushHandle)

@@ -8,10 +8,17 @@ import {
   EscError,
   toEscError,
   type EscJobKind,
+  type EscSessionMode,
   type EscSessionSnapshot,
   type EscTransportCapabilities,
 } from '../../shared/esc'
 import type { EscByteTransport, EscTransportTarget } from './EscByteTransport'
+import {
+  escSafetyViolation,
+  type EscSafetyBaseline,
+  type EscSafetySnapshot,
+  type EscSafetySnapshotProvider,
+} from './EscSafetyContext'
 
 export interface EscSessionManagerOptions {
   /** Factory for the mode-specific transport. May throw EscError. */
@@ -30,6 +37,13 @@ export interface EscSessionManagerOptions {
   idleTimeoutMs?: number
   /** How long an orphaned session waits for the owner to reclaim it. */
   orphanGraceMs?: number
+  /**
+   * Server-authoritative vehicle/link safety evidence (OCSA-002). When
+   * provided, session start and every exclusive job re-validate the latest
+   * snapshot against the baseline bound at start; any violation finalizes
+   * the session. Omitted only by legacy test harnesses.
+   */
+  getSafetyContext?: EscSafetySnapshotProvider
   logger?: Pick<Console, 'log' | 'warn' | 'error'>
 }
 
@@ -53,6 +67,8 @@ interface InternalSession {
   recoverUntil: number | null
   /** Set when the orphan grace elapsed while a job was still running. */
   orphanExpired: boolean
+  /** Safety evidence this session was authorized under; null when untracked. */
+  safetyBaseline: EscSafetyBaseline | null
   offAborted: () => void
   idleTimer: ReturnType<typeof setTimeout> | null
   orphanTimer: ReturnType<typeof setTimeout> | null
@@ -183,6 +199,67 @@ export class EscSessionManager extends EventEmitter {
     this.armIdleTimer(session)
   }
 
+  // -- Safety context (OCSA-002) --------------------------------------------
+
+  /**
+   * Entry gate for a new session. Returns the validated snapshot that will be
+   * bound as the session baseline, or null when no provider is configured.
+   * Throws before any transport is created, so a refused start leaves nothing
+   * to tear down.
+   */
+  private requireSafeEnter(mode: EscSessionMode): EscSafetySnapshot | null {
+    const provider = this.options.getSafetyContext
+    if (!provider) return null
+    const snapshot = provider()
+    const violation = escSafetyViolation({ snapshot, baseline: null, mode, now: Date.now() })
+    if (violation) throw violation
+    return snapshot
+  }
+
+  /**
+   * Re-validate the live safety context against the baseline bound at start.
+   * Any armed, target-identity or connection-epoch change finalizes the
+   * session (releasing the borrowed link) and throws the violation.
+   */
+  private assertSessionSafety(session: InternalSession): void {
+    const provider = this.options.getSafetyContext
+    if (!provider || !session.safetyBaseline) return
+    const violation = escSafetyViolation({
+      snapshot: provider(),
+      baseline: session.safetyBaseline,
+      mode: session.target.mode,
+      now: Date.now(),
+    })
+    if (violation) {
+      void this.finalizeSession(session, violation.code)
+      throw violation
+    }
+  }
+
+  /** Owner-bound re-validation for operation boundaries inside a running job. */
+  assertSafetyCurrent(clientId: string, sessionId: string): void {
+    this.assertOwner(clientId, sessionId)
+    const session = this.session
+    if (!session || session.sessionId !== sessionId) return
+    this.assertSessionSafety(session)
+  }
+
+  /** Baseline of the current session, or null when untracked/absent. */
+  safetyBaseline(): EscSafetyBaseline | null {
+    return this.session?.safetyBaseline ?? null
+  }
+
+  /**
+   * Push-based safety boundary (armed heartbeat observed by the server,
+   * target reset). Finalizes the active session exactly once; a no-op when
+   * no session is live.
+   */
+  handleVehicleSafetyBoundary(reason: string): void {
+    const session = this.session
+    if (!session || session.state === 'exiting') return
+    void this.finalizeSession(session, reason)
+  }
+
   // -- Lifecycle ------------------------------------------------------------
 
   async start(
@@ -193,6 +270,9 @@ export class EscSessionManager extends EventEmitter {
     if (this.destroyed) throw new EscError('invalid_state', 'ESC 服务已关闭')
     if (this.session) throw new EscError('session_exists', '已存在活动的 ESC 会话')
 
+    // Entry gate: strict disarmed evidence before anything touches the link.
+    // The same snapshot is bound as the session baseline once open succeeds.
+    const safetySnapshot = this.requireSafeEnter(target.mode)
     const sessionId = randomUUID()
     const generation = ++this.generationCounter
     const transport = this.options.createTransport(target)
@@ -210,6 +290,7 @@ export class EscSessionManager extends EventEmitter {
       activeJob: null,
       recoverUntil: null,
       orphanExpired: false,
+      safetyBaseline: null,
       offAborted: () => {},
       idleTimer: null,
       orphanTimer: null,
@@ -233,6 +314,12 @@ export class EscSessionManager extends EventEmitter {
         throw new EscError('cancelled', 'ESC 会话在建立期间被终止')
       }
       session.state = 'active'
+      if (safetySnapshot) {
+        session.safetyBaseline = {
+          fingerprint: safetySnapshot.fingerprint,
+          connectionKey: safetySnapshot.connectionKey,
+        }
+      }
       this.armIdleTimer(session)
       this.emitSnapshot()
       return { sessionId, recoveryToken: session.recoveryToken }
@@ -327,6 +414,9 @@ export class EscSessionManager extends EventEmitter {
       throw new EscError('invalid_state', `ESC 会话状态 ${session.state} 不接受任务`)
     }
     if (session.activeJob) throw new EscError('busy', '已有 ESC 任务正在执行')
+    // Operation boundary: the disarmed/target/connection evidence must still
+    // hold before any byte goes to an ESC.
+    this.assertSessionSafety(session)
 
     const job: ActiveJob = { jobId: randomUUID(), kind }
     session.activeJob = job

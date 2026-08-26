@@ -169,6 +169,73 @@ async function run(): Promise<void> {
     assert.equal(bridge.pauseCalls.length, 0)
   }
 
+  // Safety-context violations (OCSA-002) refuse the open before the link is
+  // borrowed, even when the bridge-side armed flag still reads disarmed.
+  {
+    const conn = new FakeRawSession()
+    const bridge = new FakeBridge()
+    const t = new ArduPilotRawTransport({
+      connManager: conn,
+      bridge,
+      settleMs: 0,
+      checkSafety: () => new EscError('arming_state_unknown', '飞控解锁状态快照已过期'),
+    })
+    await expectEscError(
+      t.open(AP_TARGET, new AbortController().signal),
+      'arming_state_unknown',
+      'stale safety snapshot at open',
+    )
+    assert.equal(bridge.pauseCalls.length, 0, 'must not pause on a violated context')
+    assert.equal(conn.beginCalls, 0)
+  }
+  {
+    // Same gate for direct mode: an FC-active connection may not be
+    // repurposed in place for a directly attached ESC.
+    const conn = new FakeRawSession()
+    const bridge = new FakeBridge()
+    const t = new ArduPilotRawTransport({
+      connManager: conn,
+      bridge,
+      targetMode: 'direct',
+      checkSafety: () => new EscError('precondition_failed', '当前连接曾观测到飞控活动'),
+    })
+    await expectEscError(
+      t.open({ mode: 'direct', port: 'COM9', baudRate: 19200 }, new AbortController().signal),
+      'precondition_failed',
+      'direct open with FC history',
+    )
+    assert.equal(conn.beginCalls, 0)
+  }
+
+  // A violation appearing mid-session fails the transaction and aborts the
+  // session through onAborted so the owner tears down and MAVLink resumes.
+  {
+    const conn = new FakeRawSession()
+    const bridge = new FakeBridge()
+    let violation: EscError | null = null
+    const t = new ArduPilotRawTransport({
+      connManager: conn,
+      bridge,
+      settleMs: 0,
+      checkSafety: () => violation,
+    })
+    await t.open(AP_TARGET, new AbortController().signal)
+    const aborts: EscError[] = []
+    t.onAborted((error) => aborts.push(error))
+    violation = new EscError('armed', '检测到飞控已解锁，ESC 会话已中止')
+    await expectEscError(
+      t.transact(Uint8Array.of(0x2f), { timeoutMs: 200, frameLength: fixedFrame(3) }, new AbortController().signal),
+      'armed',
+      'transact while armed',
+    )
+    assert.equal(aborts.length, 1, 'violation must abort the session')
+    assert.equal(aborts[0].code, 'armed')
+    assert.equal(conn.writes.length, 0, 'violated request must not reach the link')
+    await t.close('done')
+    assert.equal(conn.released, 1)
+    assert.equal(bridge.resumeCalls, 1)
+  }
+
   // Happy path: pause precedes beginRawSession; close resumes exactly once.
   {
     const conn = new FakeRawSession()

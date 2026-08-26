@@ -584,7 +584,14 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                 </>
               )}
               {download.status === 'done' && download.intent === 'save' && (
-                <span style={{ color: 'var(--success)' }}>{t('flightLogs.downloadDone')}</span>
+                <span style={{ color: download.sizeAdjusted ? 'var(--warning-foreground)' : 'var(--success)' }}>
+                  {download.sizeAdjusted
+                    ? t('flightLogs.df.sizeAdjusted', {
+                        advertised: formatBytes(download.advertisedSizeBytes ?? 0),
+                        final: formatBytes(download.receivedBytes),
+                      })
+                    : t('flightLogs.downloadDone')}
+                </span>
               )}
               {download.status === 'done' && download.intent === 'analyze' && (
                 <span>{t('flightLogs.downloadDoneAnalyze')}</span>

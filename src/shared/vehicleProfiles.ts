@@ -258,6 +258,8 @@ export interface VehicleCapabilities {
   frameConfig: boolean
   actuatorConfig: boolean
   pidConfig: boolean
+  /** Stack-specific in-flight automatic controller tuning workflow. */
+  autotune: 'px4-multicopter' | 'arducopter-multicopter' | 'none'
   ekfConfig: boolean
   serialConfig: boolean
   gpsConfig: boolean
@@ -281,6 +283,7 @@ const READ_ONLY_CAPABILITIES: VehicleCapabilities = {
   frameConfig: false,
   actuatorConfig: false,
   pidConfig: false,
+  autotune: 'none',
   ekfConfig: false,
   serialConfig: false,
   gpsConfig: false,
@@ -307,6 +310,11 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
       frameConfig: true,
       actuatorConfig: true,
       pidConfig: true,
+      // PX4 fixed-wing/VTOL use different apply and flight-regime semantics;
+      // the first supported workflow is deliberately limited to multirotors.
+      autotune: identity.vehicleClass === 'copter' && identity.vehicleTypeId !== 4
+        ? 'px4-multicopter'
+        : 'none',
       ekfConfig: true,
       serialConfig: true,
       gpsConfig: true,
@@ -331,6 +339,9 @@ export function vehicleCapabilities(identity: VehicleIdentity | null): VehicleCa
         frameConfig: true,
         actuatorConfig: true,
         pidConfig: true,
+        // MAV_TYPE_HELICOPTER shares the coarse copter class but ArduPilot's
+        // traditional-heli autotune is a different algorithm and workflow.
+        autotune: identity.vehicleTypeId === 4 ? 'none' : 'arducopter-multicopter',
         ekfConfig: true,
         serialConfig: true,
         gpsConfig: true,

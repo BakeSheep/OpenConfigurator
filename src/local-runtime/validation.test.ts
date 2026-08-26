@@ -20,6 +20,7 @@ function expectFail(value: unknown, code: string, label: string): void {
 
 const SESSION_ID = 'a1b2c3d4-e5f6-4711-8123-456789abcdef'
 const SAFETY_AUTHORITY_ID = '123e4567-e89b-42d3-a456-426614174000'
+const RECOVERY_TOKEN = 'reclaim-token-a1b2c3d4e5f6'
 
 // Calibration protocol commands are session-manager-only. The generic
 // command surface must not bypass stack, armed-state or owner gates.
@@ -28,6 +29,7 @@ for (const cmd of [
   'MAV_CMD_DO_ACCEPT_MAG_CAL',
   'MAV_CMD_DO_CANCEL_MAG_CAL',
   'MAV_CMD_ACCELCAL_VEHICLE_POS',
+  'MAV_CMD_DO_AUTOTUNE_ENABLE',
 ]) {
   expectFail(
     { type: 'command', cmd, params: [0, 0, 0, 0, 0, 0, 0] },
@@ -292,6 +294,78 @@ expectFail(
   { type: 'radio_calibration_start', requestId: 'radio-x', data: { transmitterMode: 2 } },
   'safety_epoch_required',
   'radio calibration without authority context',
+)
+
+const autotuneStart = parseRuntimeCommand({
+  type: 'autotune_start',
+  requestId: 'autotune-1',
+  safetyConfirmation: 'autotune_in_flight',
+  expectedSafetyEpoch: 7,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+})
+assert.equal(autotuneStart.type, 'autotune_start')
+expectFail(
+  {
+    type: 'autotune_start', requestId: 'autotune-x',
+    expectedSafetyEpoch: 7, expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  },
+  'safety_confirmation_required',
+  'autotune without explicit in-flight confirmation',
+)
+for (const action of ['abort', 'test_gains', 'restore_gains']) {
+  const parsed = parseRuntimeCommand({
+    type: 'autotune_action', requestId: `autotune-${action}`,
+    data: { sessionId: SESSION_ID, action },
+  })
+  assert.equal(parsed.type, 'autotune_action')
+}
+expectFail(
+  {
+    type: 'autotune_action', requestId: 'autotune-x',
+    data: { sessionId: SESSION_ID, action: 'save' },
+  },
+  'invalid_autotune_action',
+  'unknown autotune action',
+)
+assert.equal(parseRuntimeCommand({
+  type: 'autotune_reclaim', requestId: 'autotune-reclaim',
+  data: { sessionId: SESSION_ID, recoveryToken: RECOVERY_TOKEN },
+}).type, 'autotune_reclaim')
+
+// Sensitive param_set confirmations must survive the runtime boundary; bridge
+// unit tests alone do not exercise this reconstruction step.
+const sensitiveParam = parseRuntimeCommand({
+  type: 'param_set',
+  requestId: 'param-sensitive',
+  safetyConfirmation: 'sensitive_param',
+  expectedSafetyEpoch: 7,
+  expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+  data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+})
+assert.equal(sensitiveParam.type, 'param_set')
+if (sensitiveParam.type === 'param_set') {
+  assert.equal(sensitiveParam.safetyConfirmation, 'sensitive_param')
+  assert.equal(sensitiveParam.expectedSafetyEpoch, 7)
+  assert.equal(sensitiveParam.expectedSafetyAuthorityId, SAFETY_AUTHORITY_ID)
+}
+expectFail(
+  {
+    type: 'param_set',
+    safetyConfirmation: 'sensitive_param',
+    data: { id: 'CBRK_IO_SAFETY', value: 1, paramType: 5 },
+  },
+  'safety_epoch_required',
+  'sensitive param without epoch',
+)
+expectFail(
+  {
+    type: 'param_set',
+    expectedSafetyEpoch: 7,
+    expectedSafetyAuthorityId: SAFETY_AUTHORITY_ID,
+    data: { id: 'PLAIN_PARAM', value: 1, paramType: 9 },
+  },
+  'unexpected_safety_context',
+  'unconfirmed param with safety context',
 )
 
 console.log('calibration boundary validation checks passed')

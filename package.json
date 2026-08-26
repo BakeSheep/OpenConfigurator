@@ -3,7 +3,7 @@
   "description": "Browser-local Web Serial GCS for PX4 and ArduPilot",
   "author": "BakeSheep",
   "private": true,
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "generate:px4-airframes": "node scripts/generate-px4-airframes.mjs",
     "test:runtime": "tsx --test src/local-runtime/*.test.ts src/local-runtime/mavlink/*.test.ts src/local-runtime/esc/*.test.ts src/local-runtime/artifacts/*.test.ts src/web/runtime/*.test.ts",
-    "test:protocol": "tsx src/local-runtime/mavlink/MavlinkBridge.test.ts && tsx src/local-runtime/mavlink/codec.test.ts && tsx src/local-runtime/mavlink/calProtocol.test.ts && tsx src/local-runtime/mavlink/CalibrationSession.test.ts && tsx src/local-runtime/mavlink/CalibrationSessionManager.test.ts && tsx src/local-runtime/mavlink/RadioCalibrationSessionManager.test.ts && tsx src/local-runtime/validation.test.ts && tsx src/local-runtime/mavlink/MavlinkFtp.test.ts && tsx src/local-runtime/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/vehicleSetupProfiles.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/shared/esc/layouts/am32.test.ts && tsx src/local-runtime/esc/Am32SettingsService.test.ts && tsx src/local-runtime/esc/EscSessionManager.test.ts && tsx src/local-runtime/esc/ArduPilotRawTransport.test.ts && tsx src/local-runtime/esc/Px4SerialControlTransport.test.ts && tsx src/local-runtime/esc/msp.test.ts && tsx src/local-runtime/esc/fourWay.test.ts && tsx src/local-runtime/esc/EscDetector.test.ts && tsx src/local-runtime/esc/EscService.test.ts",
+    "test:protocol": "tsx src/local-runtime/mavlink/MavlinkBridge.test.ts && tsx src/local-runtime/mavlink/codec.test.ts && tsx src/local-runtime/mavlink/calProtocol.test.ts && tsx src/local-runtime/mavlink/CalibrationSession.test.ts && tsx src/local-runtime/mavlink/CalibrationSessionManager.test.ts && tsx src/local-runtime/mavlink/AutotuneSession.test.ts && tsx src/local-runtime/mavlink/AutotuneSessionManager.test.ts && tsx src/local-runtime/mavlink/RadioCalibrationSessionManager.test.ts && tsx src/local-runtime/validation.test.ts && tsx src/local-runtime/mavlink/MavlinkFtp.test.ts && tsx src/local-runtime/mavlink/MavlinkLogTransfer.test.ts && tsx src/shared/vehicleSetupProfiles.test.ts && tsx src/shared/esc/crc.test.ts && tsx src/shared/esc/layouts/am32.test.ts && tsx src/local-runtime/esc/Am32SettingsService.test.ts && tsx src/local-runtime/esc/EscSessionManager.test.ts && tsx src/local-runtime/esc/ArduPilotRawTransport.test.ts && tsx src/local-runtime/esc/Px4SerialControlTransport.test.ts && tsx src/local-runtime/esc/msp.test.ts && tsx src/local-runtime/esc/fourWay.test.ts && tsx src/local-runtime/esc/EscDetector.test.ts && tsx src/local-runtime/esc/EscService.test.ts",
     "test:ftp": "tsx src/local-runtime/mavlink/MavlinkFtp.test.ts",
     "test:ulog": "tsx src/web/utils/ulogAnalysis.test.ts",
     "test:dataflash": "tsx src/web/utils/dataflashAnalysis.test.ts",

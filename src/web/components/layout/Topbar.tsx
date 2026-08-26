@@ -52,7 +52,23 @@ function serialEndpointLabel(port: string | null, fallback: string): string {
 
 export default function Topbar() {
   const { t } = useTranslation()
-  const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, bluetoothPorts, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
+  const {
+    status,
+    transportOpen,
+    vehicleReady,
+    canControl,
+    port,
+    type,
+    reconnect,
+    bluetoothPorts,
+    targetSystemId,
+    targetComponentId,
+    targetConflict,
+    setConnectDialogOpen,
+    setStatus,
+    setConnectionError,
+    setActivePresetId,
+  } = useConnectionStore()
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const { theme, toggleTheme } = useThemeStore()
@@ -71,6 +87,9 @@ export default function Topbar() {
     : reconnecting
       ? `${t('topbar.connection.reconnecting')}${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? t('topbar.connection.connecting') : t('topbar.connection.disconnected')
+  const targetChoices = targetConflict?.reason === 'multiple_stable_targets'
+    ? targetConflict.candidates
+    : []
 
   // Presets for QGC-style connection dropdown
   const [presets, setPresets] = useState(loadConnectionPresets)
@@ -117,6 +136,10 @@ export default function Topbar() {
           resolved.port !== preset.port
           || resolved.vendorId !== preset.vendorId
           || resolved.productId !== preset.productId
+          || resolved.deviceId !== preset.deviceId
+          || resolved.transport !== preset.transport
+          || resolved.stablePath !== preset.stablePath
+          || resolved.serialNumber !== preset.serialNumber
           || resolved.bluetoothAddress !== preset.bluetoothAddress
           || resolved.bluetoothChannel !== preset.bluetoothChannel
           || resolved.bluetoothServiceClassId !== preset.bluetoothServiceClassId
@@ -229,6 +252,15 @@ export default function Topbar() {
       expectedSafetyAuthorityId: connection.safetyAuthorityId,
     })
     setActiveStatusMenu(null)
+  }
+
+  const selectTarget = (systemId: number, componentId: number) => {
+    if (!transportOpen || !canControl) return
+    sendRuntimeCommand({
+      type: 'select_target',
+      requestId: `target-${Date.now().toString(36)}`,
+      data: { systemId, componentId },
+    })
   }
 
   useEffect(() => () => {
@@ -654,6 +686,41 @@ export default function Topbar() {
                 <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{type === 'bluetooth' ? t('topbar.connect.bluetoothSPP') : t('topbar.connect.usbSerial')}</span>
                 <span className="ml-1.5 mc-mono text-[11px]" style={{ color: 'var(--text-secondary)' }}>{port ?? '—'}</span>
               </div>
+              {targetConflict && (
+                <p className="mb-2 rounded-md px-2 py-1.5 text-[11px]" style={{ background: 'var(--warning-tint)', color: 'var(--warning-foreground)' }}>
+                  {t(targetConflict.reason === 'same_system_identity_conflict'
+                    ? 'topbar.connect.targetIdentityConflict'
+                    : 'topbar.connect.targetConflict')}
+                </p>
+              )}
+              {targetChoices.length > 0 && (
+                <div className="mb-2">
+                  <p className="mb-1 text-[11px] font-bold" style={{ color: 'var(--text-primary)' }}>
+                    {t('topbar.connect.flightControllers')}
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {targetChoices.map((target) => {
+                      const selected = target.systemId === targetSystemId && target.componentId === targetComponentId
+                      return (
+                        <button
+                          key={`${target.systemId}:${target.componentId}`}
+                          type="button"
+                          className={`mc-btn mc-btn--compact w-full ${selected ? 'mc-btn-primary' : 'mc-btn-ghost'}`}
+                          disabled={!canControl || selected}
+                          onClick={() => selectTarget(target.systemId, target.componentId)}
+                        >
+                          <span className="mc-mono">SYS {target.systemId} / COMP {target.componentId}</span>
+                          {selected && (
+                            <span className="ml-1">
+                              · {t('topbar.connect.selected')}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <button type="button" className="mc-btn mc-btn-danger mc-btn--compact w-full" onClick={disconnectTransport}>{t('topbar.connect.disconnect')}</button>
               <button type="button" className="mc-btn mc-btn-ghost mc-btn--compact mt-1.5 w-full" onClick={() => { setConnectDropdown(false); setConnectDialogOpen(true) }}>{t('topbar.connect.manage')}</button>
             </div>

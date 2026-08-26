@@ -345,7 +345,7 @@ async function analyze(blob: Blob): Promise<UlogAnalysisDataset> {
   }
 
   const schemas = new Map<string, StructuredLogStreamSchema>()
-  const parameterValues = new Map<string, number>()
+  const parameterValues = new Map<string, { value: number; type?: number }>()
   for await (const envelope of new StructuredUlogDecoder().decode(
     new BlobLogSource('analysis.ulg', blob),
   )) {
@@ -376,7 +376,12 @@ async function analyze(blob: Blob): Promise<UlogAnalysisDataset> {
       if (envelope.event.type === 'dropout') droppedMessages++
     } else if (envelope.kind === 'parameter' && envelope.parameter.kind !== 'default') {
       const value = num(envelope.parameter.value)
-      if (Number.isFinite(value)) parameterValues.set(envelope.parameter.name, value)
+      if (Number.isFinite(value)) {
+        parameterValues.set(envelope.parameter.name, {
+          value,
+          type: envelope.parameter.mavParamType,
+        })
+      }
     } else if (envelope.kind === 'complete') {
       information = envelope.metadata.information
       if (envelope.metadata.firstTimeUs !== null && envelope.metadata.lastTimeUs !== null) {
@@ -396,7 +401,7 @@ async function analyze(blob: Blob): Promise<UlogAnalysisDataset> {
   )
 
   const params = [...parameterValues.entries()]
-    .map(([name, value]) => ({ name, value }))
+    .map(([name, entry]) => ({ name, value: entry.value, type: entry.type }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
   const startTimeUtcMs = gpsUtcRef.value

@@ -33,8 +33,9 @@ export const navigationDomains: NavigationDomain[] = [
   ] },
   { id: 'control-input', labelKey: 'sidebar.controlInput', icon: 'receiver', defaultPath: '/control-input', items: [
     { id: 'receiver', labelKey: 'settings.section.receiver.label', icon: 'receiver', path: '/control-input' },
+    { id: 'receiver-config', labelKey: 'domain.controlInput.receiverConfig', icon: 'tune', path: '/control-input/receiver-config' },
     { id: 'joystick', labelKey: 'settings.section.joystick.label', icon: 'gamepad', path: '/control-input/joystick' },
-    { id: 'flight-modes', labelKey: 'domain.controlInput.flightModes', icon: 'flight', path: '/control-input/flight-modes' },
+    { id: 'joystick-config', labelKey: 'domain.controlInput.joystickConfig', icon: 'parameters', path: '/control-input/joystick-config' },
   ] },
   { id: 'tuning', labelKey: 'sidebar.tuning', icon: 'tune', defaultPath: '/tuning', items: [
     { id: 'parameters', labelKey: 'diagnostics.section.parameters.label', icon: 'parameters', path: '/tuning' },

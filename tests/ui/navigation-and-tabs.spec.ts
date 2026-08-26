@@ -22,29 +22,31 @@ async function expectSelectedTab(tablist: Locator, id: string, label: string) {
   await expect(selected).toBeFocused()
 }
 
-test('domain links preserve unrelated query state and clear task-local state', async ({ page }) => {
-  await openDemo(page, '/airframe/sensors?tab=mag&mode=calibrate&probe=keep')
+test('Domain navigation switches the active task and resets page-scoped query state', async ({ page }) => {
+  await openDemo(page, '/airframe/sensors?tab=mag&probe=keep')
   const airframeNav = page.getByRole('navigation', { name: '业务域页面' })
+  await expect(airframeNav.getByRole('link', { name: '传感器' })).toHaveAttribute('aria-current', 'page')
 
-  await airframeNav.getByRole('link', { name: '电源' }).click()
+  await airframeNav.getByRole('link', { name: '电源', exact: true }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('电源')
-  await expect(page).toHaveURL(/#\/airframe\/power\?probe=keep$/)
-  await expectQuery(page, { tab: null, mode: null, probe: 'keep' })
+  await expect(airframeNav.getByRole('link', { name: '电源', exact: true })).toHaveAttribute('aria-current', 'page')
+  // Stale sensor-tab state must not leak into the new task's query.
+  await expectQuery(page, { tab: null, probe: null })
 
-  await airframeNav.getByRole('link', { name: '机架' }).click()
+  await airframeNav.getByRole('link', { name: '机架', exact: true }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('机架')
-  await expectQuery(page, { tab: null, mode: null, probe: 'keep' })
+  await expectQuery(page, { tab: null, probe: null })
 
-  await openDemo(page, '/flight-data/status?tab=status&probe=keep')
-  const dataNav = page.getByRole('navigation', { name: '业务域页面' })
+  await openDemo(page, '/flight-data?tab=status&probe=keep')
+  const flightDataNav = page.getByRole('navigation', { name: '业务域页面' })
 
-  await dataNav.getByRole('link', { name: '实时波形' }).click()
+  await flightDataNav.getByRole('link', { name: '实时波形' }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('实时波形')
-  await expectQuery(page, { tab: null, probe: 'keep' })
+  await expectQuery(page, { tab: null, probe: null })
 
-  await dataNav.getByRole('link', { name: 'MAVLink 消息' }).click()
+  await flightDataNav.getByRole('link', { name: 'MAVLink 消息' }).click()
   await expect(page.locator('.mc-section-frame__header h2')).toHaveText('MAVLink 消息')
-  await expectQuery(page, { tab: null, probe: 'keep' })
+  await expectQuery(page, { tab: null, probe: null })
 })
 
 test('explicit default and invalid tab queries are canonicalized without losing unrelated state', async ({ page }) => {
@@ -53,13 +55,12 @@ test('explicit default and invalid tab queries are canonicalized without losing 
   await expect(sensorTabs.getByRole('tab', { selected: true })).toHaveText('IMU')
   await expectQuery(page, { tab: null, probe: 'keep' })
 
-  await openDemo(page, '/control-input/joystick?tab=retired-tab&probe=keep')
-  const joystickTabs = page.getByRole('tablist', { name: '游戏手柄' })
-  await expect(joystickTabs.getByRole('tab', { selected: true })).toHaveText('手柄状态')
+  await openDemo(page, '/airframe/sensors?tab=retired-tab&probe=keep')
+  await expect(sensorTabs.getByRole('tab', { selected: true })).toHaveText('IMU')
   await expectQuery(page, { tab: null, probe: 'keep' })
 })
 
-test('legacy EKF diagnostics deep link redirects to Other Settings EKF task', async ({ page }) => {
+test('legacy EKF diagnostics deep link redirects to the EKF tuning task', async ({ page }) => {
   await openDemo(page, '/diagnostics?section=ekf&probe=keep')
 
   await expect(page.locator('main h1')).toHaveText('调参与状态')
@@ -124,7 +125,7 @@ test('Sensor calibration navigation and cards fit supported viewport widths', as
 })
 
 test('Terminal quick commands return keyboard focus to the terminal', async ({ page }) => {
-  await openDemo(page, '/flight-data/terminal?tab=terminal')
+  await openDemo(page, '/flight-data/terminal')
   await page.evaluate(async () => {
     const { useShellStore } = await import('/src/web/stores/shellStore.ts')
     useShellStore.getState().setStatus(true)
@@ -146,14 +147,6 @@ const tabCases = [
     first: { id: 'imu', label: 'IMU' },
     second: { id: 'mag', label: '罗盘' },
     last: { id: 'rangefinder', label: '测距仪' },
-  },
-  {
-    name: 'Joystick tasks',
-    route: '/control-input/joystick',
-    tablistName: '游戏手柄',
-    first: { id: 'overview', label: '手柄状态' },
-    second: { id: 'buttons', label: '按钮分配' },
-    last: { id: 'buttons', label: '按钮分配' },
   },
 ] as const
 

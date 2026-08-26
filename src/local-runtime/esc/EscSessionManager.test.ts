@@ -10,6 +10,8 @@ import type {
   EscTransactionOptions,
   EscTransportTarget,
 } from './EscByteTransport'
+import type { EscSafetySnapshot } from './EscSafetyContext'
+import { ESC_SAFETY_SNAPSHOT_MAX_AGE_MS } from './EscSafetyContext'
 import { EscSessionManager } from './EscSessionManager'
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -73,7 +75,12 @@ interface Harness {
 }
 
 function createHarness(
-  options: { idleTimeoutMs?: number; orphanGraceMs?: number; failOpen?: boolean } = {},
+  options: {
+    idleTimeoutMs?: number
+    orphanGraceMs?: number
+    failOpen?: boolean
+    safetyContext?: () => EscSafetySnapshot | null
+  } = {},
 ): Harness {
   const transports: FakeTransport[] = []
   const snapshots: EscSessionSnapshot[] = []
@@ -88,6 +95,7 @@ function createHarness(
     },
     pinController: (clientId, sessionId) => pins.push({ clientId, sessionId }),
     releaseController: (sessionId) => releases.push(sessionId),
+    ...(options.safetyContext ? { getSafetyContext: options.safetyContext } : {}),
     idleTimeoutMs: options.idleTimeoutMs ?? 60_000,
     orphanGraceMs: options.orphanGraceMs ?? 60_000,
   })
@@ -95,7 +103,20 @@ function createHarness(
   return { manager, transports, snapshots, pins, releases }
 }
 
+function safetySnapshot(overrides: Partial<EscSafetySnapshot> = {}): EscSafetySnapshot {
+  return {
+    armed: false,
+    ready: true,
+    fingerprint: 'gen-1',
+    observedAt: Date.now(),
+    fcActivityObserved: true,
+    connectionKey: '["connected",true]',
+    ...overrides,
+  }
+}
+
 const DIRECT_TARGET: EscTransportTarget = { mode: 'direct', port: 'COM9', baudRate: 19200 }
+const AP_TARGET: EscTransportTarget = { mode: 'ardupilot_passthrough' }
 
 async function expectEscError(
   promise: Promise<unknown>,
@@ -399,6 +420,81 @@ async function run(): Promise<void> {
     await wait(20)
     assert.equal(h.manager.snapshot().state, 'active')
     assert.equal(h.transports[1].closeCalls, 0)
+    await h.manager.destroy()
+  }
+
+  // -------------------------------------------------------------------------
+  // Safety context (OCSA-002): start gates, job-boundary re-validation and
+  // the push-based vehicle safety boundary.
+  // -------------------------------------------------------------------------
+  {
+    let snapshot: EscSafetySnapshot | null = safetySnapshot()
+    const h = createHarness({ safetyContext: () => (snapshot === null ? null : { ...snapshot }) })
+
+    // Armed / unknown / stale snapshots refuse the start before any transport
+    // is created.
+    for (const [overrides, expectedCode] of [
+      [{ armed: true }, 'armed'],
+      [{ armed: null }, 'arming_state_unknown'],
+      [
+        { observedAt: Date.now() - ESC_SAFETY_SNAPSHOT_MAX_AGE_MS - 1000 },
+        'arming_state_unknown',
+      ],
+      [{ ready: false }, 'precondition_failed'],
+    ] as const) {
+      snapshot = safetySnapshot(overrides)
+      await expectEscError(
+        h.manager.start('client-a', AP_TARGET, true),
+        expectedCode,
+        `start with ${JSON.stringify(overrides)}`,
+      )
+      assert.equal(h.transports.length, 0, 'refused start must not create a transport')
+    }
+
+    // A clean disarmed snapshot starts and binds the baseline.
+    snapshot = safetySnapshot()
+    await h.manager.start('client-a', AP_TARGET, true)
+    assert.ok(h.manager.safetyBaseline(), 'baseline bound after open')
+
+    // Job boundary: an armed transition refuses the job and finalizes.
+    snapshot = safetySnapshot({ armed: true })
+    await expectEscError(
+      h.manager.runExclusiveJob('client-a', 'scan', async () => null),
+      'armed',
+      'job while armed',
+    )
+    await waitFor(() => h.manager.snapshot().state === 'idle')
+    assert.equal(h.transports[0].closeCalls, 1)
+    assert.equal(h.snapshots[h.snapshots.length - 1]?.reason, 'armed')
+
+    // Push-based boundary finalizes a live session exactly once.
+    snapshot = safetySnapshot()
+    await h.manager.start('client-a', AP_TARGET, true)
+    h.manager.handleVehicleSafetyBoundary('vehicle_armed')
+    await waitFor(() => h.manager.snapshot().state === 'idle')
+    assert.equal(h.transports[1].closeCalls, 1)
+    assert.equal(h.snapshots[h.snapshots.length - 1]?.reason, 'vehicle_armed')
+    // A second push is a no-op.
+    h.manager.handleVehicleSafetyBoundary('vehicle_armed')
+    assert.equal(h.transports[1].closeCalls, 1)
+
+    // Owner-bound re-validation helper throws without duplicating teardown.
+    snapshot = safetySnapshot()
+    const started = await h.manager.start('client-a', AP_TARGET, true)
+    snapshot = safetySnapshot({ fingerprint: 'gen-2' })
+    assert.throws(
+      () => h.manager.assertSafetyCurrent('client-a', started.sessionId),
+      (error: unknown) => error instanceof EscError && error.code === 'target_mismatch',
+    )
+    await waitFor(() => h.manager.snapshot().state === 'idle')
+    assert.equal(h.transports[2].closeCalls, 1)
+    // Non-owner calls stay ownership errors even with a violated context.
+    snapshot = safetySnapshot()
+    const other = await h.manager.start('client-a', AP_TARGET, true)
+    assert.throws(
+      () => h.manager.assertSafetyCurrent('client-b', other.sessionId),
+      (error: unknown) => error instanceof EscError && error.code === 'not_owner',
+    )
     await h.manager.destroy()
   }
 

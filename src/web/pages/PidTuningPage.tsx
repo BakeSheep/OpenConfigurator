@@ -27,7 +27,6 @@ type PidDefinition = ParameterFieldDefinition
 type PidGroup = ParameterGroupDefinition
 
 const pidLikePattern = /(?:RATE_[PID]$|_(?:P|I|D)$|ATC_RAT_)/
-
 function formatValue(value: number, step: number) {
   return formatParameterValue(value, step)
 }
@@ -46,6 +45,10 @@ function updateFades(element: HTMLDivElement | null) {
 }
 
 export default function PidTuningPage() {
+  return <ManualPidTuningPage />
+}
+
+function ManualPidTuningPage() {
   const { t, i18n } = useTranslation()
   const params = useParameterStore((state) => state.params)
   const loading = useParameterStore((state) => state.loading)

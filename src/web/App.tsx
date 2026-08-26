@@ -20,7 +20,7 @@ function LegacySettingsRedirect() {
   const section = params.get('section')
   const target: Record<string, string> = {
     sensors: '/airframe/sensors', actuators: '/propulsion', esc: '/propulsion/esc',
-    receiver: '/control-input', joystick: '/control-input/joystick', other: '/tuning/ekf',
+    receiver: '/control-input', joystick: params.get('tab') === 'buttons' ? '/control-input/joystick-config' : '/control-input/joystick', other: '/tuning/ekf',
     airframe: '/airframe', power: '/airframe/power', safety: '/airframe/safety', ports: '/airframe/ports',
   }
   const pathname = target[section ?? ''] ?? '/airframe'
@@ -32,9 +32,11 @@ function LegacySettingsRedirect() {
 function LegacyDiagnosticsRedirect() {
   const [params] = useSearchParams()
   const section = params.get('section')
+  const tab = params.get('tab')
   const target: Record<string, string> = {
     parameters: '/tuning', pid: '/tuning/pid', waveforms: '/flight-data/waveforms',
-    messages: '/flight-data', logs: '/flight-logs', 'log-analysis': '/flight-logs/analysis', ekf: '/tuning/ekf',
+    messages: tab === 'terminal' ? '/flight-data/terminal' : tab === 'status' ? '/flight-data/status' : '/flight-data',
+    logs: '/flight-logs', 'log-analysis': '/flight-logs/analysis', ekf: '/tuning/ekf',
   }
   const pathname = target[section ?? ''] ?? '/tuning'
   const search = new URLSearchParams(params)
@@ -83,6 +85,7 @@ export default function App() {
                   <Route path="/flight" element={<FlightControlPage />} />
                   <Route path="/airframe/*" element={<DomainPage domainId="airframe" />} />
                   <Route path="/propulsion/*" element={<DomainPage domainId="propulsion" />} />
+                  <Route path="/control-input/flight-modes" element={<Navigate to="/control-input/receiver-config" replace />} />
                   <Route path="/control-input/*" element={<DomainPage domainId="control-input" />} />
                   <Route path="/tuning/*" element={<DomainPage domainId="tuning" />} />
                   <Route path="/flight-data/*" element={<DomainPage domainId="flight-data" />} />

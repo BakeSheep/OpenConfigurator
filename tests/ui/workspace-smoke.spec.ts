@@ -22,21 +22,22 @@ const workspaces = [
   { name: 'airframe power', route: '/airframe/power', heading: '机体配置', section: '电源' },
   { name: 'airframe safety', route: '/airframe/safety', heading: '机体配置', section: '安全' },
   { name: 'airframe ports', route: '/airframe/ports', heading: '机体配置', section: '端口' },
-  { name: 'propulsion mapping', route: '/propulsion', heading: '动力与输出', section: '输出映射' },
-  { name: 'propulsion test', route: '/propulsion/test?tab=test', heading: '动力与输出', section: '电机测试' },
+  { name: 'propulsion', route: '/propulsion', heading: '动力与输出', section: '输出映射' },
+  { name: 'propulsion test', route: '/propulsion/test', heading: '动力与输出', section: '电机测试' },
   { name: 'propulsion esc', route: '/propulsion/esc', heading: '动力与输出', section: '电调' },
-  { name: 'control receiver', route: '/control-input', heading: '遥控输入', section: '遥控器' },
-  { name: 'control joystick', route: '/control-input/joystick', heading: '遥控输入', section: '游戏手柄' },
-  { name: 'control flight modes', route: '/control-input/flight-modes', heading: '遥控输入', section: '飞行模式' },
-  { name: 'tuning parameters', route: '/tuning', heading: '调参与状态', section: '完整参数' },
+  { name: 'control input', route: '/control-input', heading: '遥控输入', section: '遥控器' },
+  { name: 'receiver config', route: '/control-input/receiver-config', heading: '遥控输入', section: '遥控器配置' },
+  { name: 'joystick', route: '/control-input/joystick', heading: '遥控输入', section: '游戏手柄' },
+  { name: 'joystick config', route: '/control-input/joystick-config', heading: '遥控输入', section: '手柄配置' },
+  { name: 'tuning', route: '/tuning', heading: '调参与状态', section: '完整参数' },
   { name: 'tuning pid', route: '/tuning/pid', heading: '调参与状态', section: 'PID 调参' },
   { name: 'tuning ekf', route: '/tuning/ekf', heading: '调参与状态', section: 'EKF' },
-  { name: 'flight data messages', route: '/flight-data', heading: '日志与链路', section: 'MAVLink 消息' },
-  { name: 'flight data status', route: '/flight-data/status?tab=status', heading: '日志与链路', section: '状态' },
-  { name: 'flight data terminal', route: '/flight-data/terminal?tab=terminal', heading: '日志与链路', section: '终端' },
+  { name: 'flight data', route: '/flight-data', heading: '日志与链路', section: 'MAVLink 消息' },
+  { name: 'flight data status', route: '/flight-data/status', heading: '日志与链路', section: '状态' },
+  { name: 'flight data terminal', route: '/flight-data/terminal', heading: '日志与链路', section: '终端' },
   { name: 'flight data waveforms', route: '/flight-data/waveforms', heading: '日志与链路', section: '实时波形' },
   { name: 'flight logs', route: '/flight-logs', heading: '日志与分析', section: '飞行日志' },
-  { name: 'flight log analysis', route: '/flight-logs/analysis', heading: '日志与分析', section: '日志分析' },
+  { name: 'log analysis', route: '/flight-logs/analysis', heading: '日志与分析', section: '日志分析' },
 ] as const
 
 for (const workspace of workspaces) {
@@ -49,9 +50,12 @@ for (const workspace of workspaces) {
       const sectionHeading = page.locator('.mc-section-frame__header h2')
       await expect(sectionHeading).toHaveCount(1)
       await expect(sectionHeading).toHaveText(workspace.section)
+      // Domain workspaces expose the task navigation above the content frame.
+      const domainNav = page.getByRole('navigation', { name: '业务域页面' })
+      await expect(domainNav.locator('[aria-current="page"]')).toHaveText(workspace.section)
     }
 
-    await expectSharedWorkspaceLayout(page, 'section' in workspace)
+    await expectSharedWorkspaceLayout(page, false)
     await expectNoPageOverflow(page)
   })
 
@@ -74,7 +78,7 @@ test('360 and 768 responsive smoke keeps every workspace inside the viewport', a
         if ('section' in workspace) {
           await expect(page.locator('.mc-section-frame__header h2')).toHaveText(workspace.section)
         }
-        await expectSharedWorkspaceLayout(page, 'section' in workspace)
+        await expectSharedWorkspaceLayout(page, false)
         await expectNoPageOverflow(page)
       })
     }
@@ -90,15 +94,16 @@ test('360px core workspaces have no serious or critical axe violations', async (
     'dashboard',
     'flight',
     'airframe sensors',
-    'propulsion mapping',
+    'airframe calibration',
+    'propulsion',
     'propulsion esc',
-    'control receiver',
-    'airframe ports',
+    'control input',
+    'joystick',
     'tuning pid',
     'tuning ekf',
-    'flight data messages',
+    'flight data',
     'flight logs',
-    'flight log analysis',
+    'log analysis',
   ].includes(name))) {
     await test.step(workspace.name, async () => {
       await openDemo(page, workspace.route)

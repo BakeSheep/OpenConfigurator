@@ -13,7 +13,12 @@ import {
 import { randomHex } from '../platform/crypto'
 import { subtractInterval } from './MavlinkFtp'
 import type { DataflashLogEntry, RuntimeEvent } from '../../shared/types'
-import { assertDownloadCapacity, DownloadCapacityError } from './downloadLimits'
+import {
+  assertDownloadCapacity,
+  DATAFLASH_DOWNLOAD_DIR_PREFIX,
+  DATAFLASH_DOWNLOAD_FILE_PATTERN,
+  DownloadCapacityError,
+} from './downloadLimits'
 
 // LOG_DATA carries at most 90 payload bytes; a shorter chunk marks the end of
 // the log (count === 0 is an explicit end-of-log marker).
@@ -28,6 +33,25 @@ const BLUETOOTH_STREAM_QUIET_MS = 3200
 // after this many consecutive futile passes.
 const MAX_NO_PROGRESS_PASSES = 5
 const MAX_LIST_ENTRIES = 2000
+// OCSA-009: LOG_ENTRY replies reset the quiet timer even when they add nothing,
+// so the list collector is bounded by total frames (4x the entry cap: real FCs
+// send one entry per log, plus protocol noise) and by frames that never add a
+// new in-window id (duplicates or out-of-window entries; 512 is far above any
+// legitimate retransmission burst).
+const LIST_MAX_FRAMES = MAX_LIST_ENTRIES * 4
+const LIST_MAX_NO_PROGRESS_FRAMES = 512
+// OCSA-009: data-pass termination budgets. The quiet timer alone is reset by
+// every same-log frame, so each pass also runs a traffic-independent hard
+// deadline (10 min exceeds any legitimate inter-chunk silence - Bluetooth
+// quiet is 3.2 s - by orders of magnitude), a frame budget derived from the
+// requested interval (2x the theoretical minimum chunk count plus slack for
+// reordering/duplicates) and a no-progress frame budget for chunks that fill
+// no missing byte.
+const DATA_PASS_HARD_DEADLINE_MS = 10 * 60 * 1000
+const DATA_PASS_FRAME_SLACK = 64
+const DATA_PASS_NO_PROGRESS_FRAMES = 256
+const DATA_MAX_MISSING_INTERVALS = 1024
+const MAX_QUEUED_FILE_WRITES = 2048
 const MAX_RETAINED_DOWNLOADS = 5
 const PROGRESS_INTERVAL_MS = 500
 const DOWNLOAD_ID_BYTES = 8
@@ -83,6 +107,8 @@ export interface LogTransferTimings {
   requestTimeoutMs?: number
   streamQuietMs?: number
   eraseVerifyDelayMs?: number
+  /** Hard per-download-pass deadline, independent of traffic (OCSA-009). */
+  passDeadlineMs?: number
 }
 
 export class LogTransferError extends Error {
@@ -129,7 +155,10 @@ interface DataSink {
 
 export class MavlinkLogTransfer {
   private readonly transport: LogTransferTransport
-  private readonly downloadDir: string
+  /** Explicitly configured directory; null means "create a private one". */
+  private readonly explicitDownloadDir: string | null
+  /** Resolved download directory, set once ensureDownloadDir() succeeds. */
+  private downloadDir: string | null = null
   private readonly timings: LogTransferTimings
   private state: 'idle' | LogTransferOperation = 'idle'
   private cancelRequested = false
@@ -137,18 +166,14 @@ export class MavlinkLogTransfer {
   private listSink: ListSink | null = null
   private dataSink: DataSink | null = null
   private readonly downloads = new Map<string, LogDownloadRecord>()
-  private downloadDirReady: Promise<void> | null = null
+  private downloadDirReady: Promise<string> | null = null
 
   constructor(
     transport: LogTransferTransport,
     options: { downloadDir?: string; timings?: LogTransferTimings } = {},
   ) {
     this.transport = transport
-    // Separate directory from the FTP downloads: both services wipe stale
-    // files from their directory on first use, so sharing one directory could
-    // delete the other service's registered downloads.
-    this.downloadDir = options.downloadDir
-      ?? path.join(os.tmpdir(), 'openconfigurator-dataflash-logs')
+    this.explicitDownloadDir = options.downloadDir ?? null
     this.timings = options.timings ?? {}
   }
 
@@ -156,8 +181,16 @@ export class MavlinkLogTransfer {
     return this.state !== 'idle'
   }
 
-  getDownload(artifactId: string): LogDownloadRecord | null {
-    return this.downloads.get(artifactId) ?? null
+  /**
+   * Directory holding this instance's downloads once prepared (diagnostics and
+   * tests); null until the first operation created it.
+   */
+  get activeDownloadDir(): string | null {
+    return this.downloadDir
+  }
+
+  getDownload(downloadId: string): LogDownloadRecord | null {
+    return this.downloads.get(downloadId) ?? null
   }
 
   /** Route a decoded LOG_ENTRY from the selected FC. */
@@ -314,6 +347,10 @@ export class MavlinkLogTransfer {
       let attempts = 0
       let quietTimer: ReturnType<typeof setTimeout> | null = null
       let finished = false
+      // OCSA-009: every reply resets the quiet timer, so total frames and
+      // frames that add no new in-window id bound a hostile peer as well.
+      let frames = 0
+      let noProgressFrames = 0
 
       const finish = (error: Error | null) => {
         if (finished) return
@@ -376,14 +413,23 @@ export class MavlinkLogTransfer {
             finish(new LogTransferError('cancelled', '日志列表已取消', true))
             return
           }
+          frames++
+          if (frames > LIST_MAX_FRAMES || noProgressFrames >= LIST_MAX_NO_PROGRESS_FRAMES) {
+            finish(new LogTransferError('log_list_overflow', '日志列表回复超出上限', false))
+            return
+          }
           numLogs = reply.numLogs
           lastLogNum = reply.lastLogNum
           if (reply.numLogs > 0 && reply.id >= start && reply.id <= end) {
-            entriesById.set(reply.id, toDataflashEntry(reply))
+            if (!entriesById.has(reply.id)) entriesById.set(reply.id, toDataflashEntry(reply))
+            else noProgressFrames++
             if (entriesById.size > MAX_LIST_ENTRIES) {
               finish(new LogTransferError('log_list_overflow', '日志数量超出上限', false))
               return
             }
+          } else {
+            // Out-of-window or empty replies carry no usable entry.
+            noProgressFrames++
           }
           if (isComplete()) {
             finish(null)
@@ -413,19 +459,63 @@ export class MavlinkLogTransfer {
   // Download
   // ------------------------------------------------------------------
 
-  private async ensureDownloadDir(): Promise<void> {
-    if (!this.downloadDirReady) {
-      this.downloadDirReady = (async () => {
-        await fsp.mkdir(this.downloadDir, { recursive: true })
-        // Stale files from a previous server run are unreachable (their ids
-        // died with the process), so clear them out.
-        const names = await fsp.readdir(this.downloadDir).catch(() => [] as string[])
-        await Promise.allSettled(
-          names.map((name) => fsp.unlink(path.join(this.downloadDir, name))),
-        )
-      })()
+  /**
+   * Prepare the download directory and return its path. The ready promise is
+   * cached, but a failure resets it (synchronously with the rejection) so the
+   * next call retries instead of replaying the cached error forever (OCSA-014).
+   */
+  private async ensureDownloadDir(): Promise<string> {
+    if (this.downloadDirReady) return this.downloadDirReady
+    const ready = this.prepareDownloadDir()
+    this.downloadDirReady = ready
+    try {
+      return await ready
+    } catch (error) {
+      if (this.downloadDirReady === ready) this.downloadDirReady = null
+      throw error
     }
-    await this.downloadDirReady
+  }
+
+  private async prepareDownloadDir(): Promise<string> {
+    let dir: string
+    if (this.explicitDownloadDir !== null) {
+      // Explicitly configured directory (tests / embedded deployments): keep
+      // using it directly, but never widen it beyond mkdir.
+      await fsp.mkdir(this.explicitDownloadDir, { recursive: true })
+      dir = this.explicitDownloadDir
+    } else {
+      // OCSA-008: fixed predictable names under os.tmpdir() could be
+      // pre-created or symlinked by any local process before the service, and
+      // multiple instances shared one wipe-everything cleanup. mkdtemp()
+      // creates an atomically unique private directory per service instance,
+      // separate from the FTP service's directory by construction.
+      dir = await fsp.mkdtemp(path.join(os.tmpdir(), DATAFLASH_DOWNLOAD_DIR_PREFIX))
+      // Never sweep sibling instance directories based only on age. Graceful
+      // Runtime and crash leftovers are delegated to the operating system's
+      // tmp cleanup policy so teardown cannot race an in-flight file write.
+    }
+    this.downloadDir = dir
+    await this.removeStaleArtifacts(dir)
+    return dir
+  }
+
+  /**
+   * Remove artifacts of previous runs. Only names matching this instance's own
+   * random `<16 hex>.part|bin` format are unlinked - never arbitrary top-level
+   * entries, which may belong to another instance or to whoever configured the
+   * directory (OCSA-008).
+   */
+  private async removeStaleArtifacts(dir: string): Promise<void> {
+    const names = await fsp.readdir(dir).catch(() => [] as string[])
+    await Promise.allSettled(
+      names
+        .filter((name) => DATAFLASH_DOWNLOAD_FILE_PATTERN.test(name))
+        .map((name) => fsp.unlink(path.join(dir, name))),
+    )
+  }
+
+  private dataPassDeadlineMs(): number {
+    return this.timings.passDeadlineMs ?? DATA_PASS_HARD_DEADLINE_MS
   }
 
   private async runDownload(logId: number, requestId?: string): Promise<void> {
@@ -434,12 +524,16 @@ export class MavlinkLogTransfer {
       logId: number
       artifactId: string
       sizeBytes: number
+      advertisedSizeBytes: number
+      sizeAdjusted: boolean
+      integrity: 'unverified'
       fileName: string
     } | null = null
     const artifactId = randomHex(DOWNLOAD_ID_BYTES)
-    const partPath = path.join(this.downloadDir, `${artifactId}.part`)
+    let partPath: string | null = null
     try {
-      await this.ensureDownloadDir()
+      const downloadDir = await this.ensureDownloadDir()
+      partPath = path.join(downloadDir, `${artifactId}.part`)
 
       // Size the log with a targeted single-id list request. LOG_ENTRY sizes
       // may be approximate for the newest (still-open) log; the end-of-log
@@ -452,7 +546,7 @@ export class MavlinkLogTransfer {
       const fileSize = entry.sizeBytes
 
       try {
-        await assertDownloadCapacity(this.downloadDir, fileSize)
+        await assertDownloadCapacity(downloadDir, fileSize)
       } catch (error) {
         if (error instanceof DownloadCapacityError) {
           throw new LogTransferError(error.code, error.message)
@@ -466,6 +560,8 @@ export class MavlinkLogTransfer {
       let totalSize = fileSize
       let missing: Array<[number, number]> = fileSize > 0 ? [[0, fileSize]] : []
       let writeChain: Promise<unknown> = Promise.resolve()
+      let queuedFileWrites = 0
+      let resourceLimitError: LogTransferError | null = null
       let lastProgressAt = 0
       let lastProgressBytes = 0
 
@@ -485,14 +581,40 @@ export class MavlinkLogTransfer {
         })
       }
 
-      const writeChunk = (offset: number, data: ByteBuffer) => {
+      // Returns the number of bytes this chunk newly covered, so a download
+      // pass can tell progress from duplicate/noise frames (OCSA-009).
+      const writeChunk = (offset: number, data: ByteBuffer): number => {
+        if (resourceLimitError) return -1
         const end = Math.min(totalSize, offset + data.length)
-        if (end <= offset) return
+        if (end <= offset) return 0
+        const before = remainingBytes(missing)
         const slice = data.subarray(0, end - offset)
-        missing = subtractInterval(missing, offset, end)
+        const nextMissing = subtractInterval(missing, offset, end)
+        if (nextMissing.length > DATA_MAX_MISSING_INTERVALS) {
+          resourceLimitError = new LogTransferError(
+            'download_gap_overflow',
+            `下载缺口数量超过 ${DATA_MAX_MISSING_INTERVALS}，已终止本次传输`,
+            true,
+          )
+          return -1
+        }
+        if (queuedFileWrites >= MAX_QUEUED_FILE_WRITES) {
+          resourceLimitError = new LogTransferError(
+            'download_write_backlog',
+            '本地文件写入积压超过安全上限，已终止本次传输',
+            true,
+          )
+          return -1
+        }
+        missing = nextMissing
+        const added = before - remainingBytes(missing)
         const target = handle!
-        writeChain = writeChain.then(() => target.write(slice, 0, slice.length, offset))
+        queuedFileWrites++
+        writeChain = writeChain.then(
+          () => target.write(slice, 0, slice.length, offset),
+        ).finally(() => { queuedFileWrites-- })
         emitProgress()
+        return added
       }
 
       // The FC reported the true end of the log below the advertised size:
@@ -509,6 +631,7 @@ export class MavlinkLogTransfer {
         const before = remainingBytes(missing)
         await this.dataPass(logId, () => missing, writeChunk, truncateTo)
         await writeChain
+        if (resourceLimitError) throw resourceLimitError
         const after = remainingBytes(missing)
         if (after < before) {
           noProgressPasses = 0
@@ -522,16 +645,26 @@ export class MavlinkLogTransfer {
       await handle.close()
       handle = null
 
-      const finalPath = path.join(this.downloadDir, `${artifactId}.bin`)
+      const finalPath = path.join(downloadDir, `${artifactId}.bin`)
       await fsp.rename(partPath, finalPath)
       const fileName = formatLogFileName(logId, entry.timeUtcMs)
       this.registerDownload(artifactId, { filePath: finalPath, fileName, sizeBytes: totalSize })
       emitProgress(true)
-      completedDownload = { logId, artifactId, sizeBytes: totalSize, fileName }
+      completedDownload = {
+        logId,
+        artifactId,
+        sizeBytes: totalSize,
+        advertisedSizeBytes: fileSize,
+        sizeAdjusted: totalSize !== fileSize,
+        // MAVLink LOG_DATA has no CRC/hash response comparable to MAVLink FTP
+        // CalcFileCRC32. Do not present transport completion as integrity proof.
+        integrity: 'unverified',
+        fileName,
+      }
     } catch (error) {
       await handle?.close().catch(() => undefined)
       handle = null
-      await fsp.unlink(partPath).catch(() => undefined)
+      if (partPath !== null) await fsp.unlink(partPath).catch(() => undefined)
       this.reportFailure('download', error, requestId)
     } finally {
       // Stop the FC-side streaming and resume normal logging even on failure.
@@ -552,11 +685,16 @@ export class MavlinkLogTransfer {
    * until that interval is filled, an end-of-log marker arrives, or the link
    * goes quiet. The outer loop re-checks the interval tracker and either
    * requests the next gap or gives up after repeated futile passes.
+   *
+   * The quiet timer alone is reset by every same-log frame, so the pass is
+   * additionally bounded by a traffic-independent hard deadline, a frame
+   * budget derived from the requested interval and a no-progress frame budget
+   * (OCSA-009). The short-chunk end-of-log semantics are unchanged.
    */
   private dataPass(
     logId: number,
     getMissing: () => Array<[number, number]>,
-    writeChunk: (offset: number, data: ByteBuffer) => void,
+    writeChunk: (offset: number, data: ByteBuffer) => number,
     truncateTo: (endOffset: number) => void,
   ): Promise<void> {
     return new Promise((resolve) => {
@@ -568,10 +706,18 @@ export class MavlinkLogTransfer {
       const [reqStart, reqEnd] = missing[0]
       let finished = false
       let quietTimer: ReturnType<typeof setTimeout> | null = null
+      let frames = 0
+      let noProgressFrames = 0
+      // Frame budget: a legitimate stream needs at most one frame per
+      // LOG_DATA_CHUNK_SIZE bytes of the requested interval; 2x plus slack
+      // absorbs reordering and retransmissions.
+      const maxFrames =
+        Math.ceil((reqEnd - reqStart) / LOG_DATA_CHUNK_SIZE) * 2 + DATA_PASS_FRAME_SLACK
       const finish = () => {
         if (finished) return
         finished = true
         if (quietTimer) clearTimeout(quietTimer)
+        if (deadlineTimer) clearTimeout(deadlineTimer)
         this.dataSink = null
         resolve()
       }
@@ -579,15 +725,34 @@ export class MavlinkLogTransfer {
         if (quietTimer) clearTimeout(quietTimer)
         quietTimer = setTimeout(finish, this.streamQuietMs())
       }
+      // Hard deadline: never extended by incoming traffic.
+      const deadlineTimer = setTimeout(finish, this.dataPassDeadlineMs())
       const requestedIntervalDone = () =>
         !getMissing().some(([a, b]) => a < reqEnd && b > reqStart)
       this.dataSink = {
         onChunk: (chunk) => {
           if (chunk.id !== logId) return
+          frames++
           armQuietTimer()
-          if (chunk.count > 0) {
-            writeChunk(chunk.ofs, chunk.data.subarray(0, chunk.count))
+          if (frames > maxFrames || noProgressFrames >= DATA_PASS_NO_PROGRESS_FRAMES) {
+            // Hostile or broken peer: end the pass and let the outer
+            // no-progress accounting decide between retry and failure.
+            finish()
+            return
           }
+          let added = 0
+          if (chunk.count > 0) {
+            added = writeChunk(chunk.ofs, chunk.data.subarray(0, chunk.count))
+          }
+          if (added < 0) {
+            finish()
+            return
+          }
+          // A legitimate stream may reorder or duplicate a frame now and
+          // then, but never hundreds in a row; total frames stay bounded by
+          // maxFrames.
+          if (added > 0) noProgressFrames = 0
+          else noProgressFrames++
           // A short/zero chunk BELOW the requested end is the end-of-log
           // marker (LOG_ENTRY sizes are approximate for the newest log):
           // shrink the tracked size. A short chunk AT the requested end is

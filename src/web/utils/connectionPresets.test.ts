@@ -23,13 +23,7 @@ const currentUsb = {
   productId: '0036',
 }
 
-assert.deepEqual(resolveSerialPreset(legacy, [currentUsb]), {
-  ...legacy,
-  name: 'COM11 (Microsoft)',
-  port: 'COM11',
-  vendorId: '1B8C',
-  productId: '0036',
-})
+assert.equal(resolveSerialPreset(legacy, [currentUsb]), null)
 assert.equal(resolveSerialPreset(legacy, [
   currentUsb,
   { path: 'COM12', vendorId: '0483', productId: '5740' },
@@ -39,11 +33,11 @@ const identified = { ...legacy, vendorId: '0x1b8c', productId: '36' }
 assert.equal(resolveSerialPreset(identified, [
   currentUsb,
   { path: 'COM12', vendorId: '0483', productId: '5740' },
-])?.port, 'COM11')
+]), null, 'VID/PID-only presets must not follow a renumbered device')
 assert.equal(resolveSerialPreset(identified, [
-  { path: 'COM10', vendorId: '0483', productId: '5740' },
+  { ...currentUsb, path: 'COM10' },
   currentUsb,
-])?.port, 'COM11', 'VID/PID identity must win when the saved COM path is reused')
+])?.port, 'COM10', 'a VID/PID-only preset remains usable on its saved path')
 assert.equal(resolveSerialPreset(identified, [
   { path: 'COM10', vendorId: '0483', productId: '5740' },
 ]), null, 'an occupied saved path with the wrong identity must fail closed')
@@ -53,6 +47,33 @@ assert.ok(samePresetDevice(identified, {
   vendorId: '1B8C',
   productId: '0036',
 }))
+
+const stableSerialPreset: ConnectionPreset = {
+  ...identified,
+  deviceId: 'serial:stable-1',
+  stablePath: '/dev/serial/by-id/usb-Pixhawk_1-if00',
+  serialNumber: 'PX4-001',
+  transport: 'serial',
+}
+const renumberedStablePort = {
+  ...currentUsb,
+  path: 'COM27',
+  deviceId: 'serial:stable-1',
+  serialNumber: 'PX4-001',
+  transport: 'serial' as const,
+}
+assert.equal(resolveSerialPreset(stableSerialPreset, [renumberedStablePort])?.port, 'COM27')
+assert.deepEqual(connectionConfigFromPreset(stableSerialPreset), {
+  type: 'serial',
+  port: 'COM10',
+  baudRate: 57600,
+  vendorId: '0x1b8c',
+  productId: '36',
+  deviceId: 'serial:stable-1',
+  transport: 'serial',
+  stablePath: '/dev/serial/by-id/usb-Pixhawk_1-if00',
+  serialNumber: 'PX4-001',
+})
 assert.equal(connectionPresetEnablesGamepad(legacy), false)
 assert.equal(connectionPresetEnablesGamepad({ ...legacy, enableGamepad: true }), true)
 assert.equal(connectionPresetEnablesGamepad({ ...legacy, enableGamepad: 'yes' } as unknown as ConnectionPreset), false)

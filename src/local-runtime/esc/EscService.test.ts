@@ -16,11 +16,21 @@ import { buildVehicleIdentity } from '../../shared/vehicleProfiles'
 import type { BrowserConnectionManager } from '../connection/BrowserConnectionManager'
 import type { MavlinkBridge } from '../mavlink/MavlinkBridge'
 import { EscService } from './EscService'
+import { ESC_SAFETY_SNAPSHOT_MAX_AGE_MS, type EscSafetySnapshot } from './EscSafetyContext'
 import type { EscByteTransport, EscTransactionOptions, EscTransportTarget } from './EscByteTransport'
 import { FOUR_WAY_ACK, FOUR_WAY_COMMANDS, FOUR_WAY_RESPONSE_START } from './fourWay'
 import { mspChecksum, MSP_COMMANDS } from './msp'
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail('timed out waiting for asynchronous condition')
+    await wait(5)
+  }
+}
+
 const TEST_SAFETY_EXPECTATION = {
   expectedSafetyEpoch: 1,
   expectedSafetyAuthorityId: '00000000-0000-4000-8000-000000000001',
@@ -143,7 +153,9 @@ class ScriptedTransport implements EscByteTransport {
   readonly initChannels: number[] = []
   readonly writeChannels: number[] = []
   readonly capabilities = { read: true, write: true }
+  closeCalls = 0
   disconnectAfterFirstWrite: (() => void) | null = null
+  afterFirstWrite: (() => void) | null = null
   private selectedChannel = 0
   private readonly eepromByChannel = new Map<number, Uint8Array>()
   constructor(readonly kind: EscByteTransport['kind']) {}
@@ -182,7 +194,10 @@ class ScriptedTransport implements EscByteTransport {
         const length = request[4] === 0 ? 256 : request[4]
         this.eepromByChannel.set(this.selectedChannel, request.slice(5, 5 + length))
         this.writeChannels.push(this.selectedChannel)
-        if (this.writeChannels.length === 1) this.disconnectAfterFirstWrite?.()
+        if (this.writeChannels.length === 1) {
+          this.disconnectAfterFirstWrite?.()
+          this.afterFirstWrite?.()
+        }
         reply = fourWayResponse(command, [0], FOUR_WAY_ACK.OK, address)
       } else {
         reply = fourWayResponse(command, [0], FOUR_WAY_ACK.OK, address)
@@ -192,7 +207,9 @@ class ScriptedTransport implements EscByteTransport {
     if (length === null) throw new EscError('timeout', 'partial frame')
     return reply.subarray(0, length)
   }
-  async close(_reason: string): Promise<void> {}
+  async close(_reason: string): Promise<void> {
+    this.closeCalls += 1
+  }
   onAborted(_listener: (error: EscError) => void): () => void {
     return () => {}
   }
@@ -242,6 +259,257 @@ function lastSession(emitted: RuntimeEvent[]): EscSessionSnapshot | undefined {
     if (emitted[i].type === 'esc_session') return (emitted[i] as { data: EscSessionSnapshot }).data
   }
   return undefined
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative safety context (OCSA-002): armed/unknown/stale
+// snapshots and generation changes refuse or terminate every operation.
+// ---------------------------------------------------------------------------
+type SafetyMode = 'ardupilot_passthrough' | 'px4_serial_control' | 'direct'
+
+function disarmedSnapshot(overrides: Partial<EscSafetySnapshot> = {}): EscSafetySnapshot {
+  return {
+    armed: false,
+    ready: true,
+    fingerprint: 'gen-1',
+    observedAt: Date.now(),
+    fcActivityObserved: true,
+    connectionKey: '["connected",true]',
+    ...overrides,
+  }
+}
+
+function createSafetyService(
+  mode: SafetyMode,
+  initial: EscSafetySnapshot | null = disarmedSnapshot(),
+) {
+  let snapshot: EscSafetySnapshot | null = initial === null ? null : { ...initial }
+  const emitted: RuntimeEvent[] = []
+  const targeted: Array<{ clientId: string; message: RuntimeEvent }> = []
+  const transport = new ScriptedTransport(
+    mode === 'direct' ? 'direct' : mode === 'px4_serial_control' ? 'px4_serial_control' : 'ardupilot_raw',
+  )
+  const service = new EscService({
+    connManager: {
+      status: 'connected',
+      config: { type: 'serial', port: 'COM9', baudRate: 19200 },
+    } as unknown as BrowserConnectionManager,
+    bridge: {} as unknown as MavlinkBridge,
+    emit: (message) => emitted.push(message),
+    emitToClient: (clientId, message) => targeted.push({ clientId, message }),
+    getVehicleIdentity: () => mode === 'px4_serial_control'
+      ? buildVehicleIdentity(12, 2)
+      : buildVehicleIdentity(3, 2),
+    getParameterValue: (id) => {
+      if (id === 'SERVO_BLH_AUTO') return 1
+      if (id === 'MOT_PWM_TYPE') return 5
+      if (id === 'PASSTHRU_EN') return 1
+      return null
+    },
+    pinController: () => undefined,
+    releaseController: () => undefined,
+    getSafetyContext: () => (snapshot === null ? null : { ...snapshot }),
+    transportFactory: () => transport,
+    idleTimeoutMs: 60_000,
+    orphanGraceMs: 60_000,
+  })
+  return {
+    service,
+    emitted,
+    targeted,
+    transport,
+    setSnapshot(next: EscSafetySnapshot | null): void {
+      snapshot = next === null ? null : { ...next }
+    },
+  }
+}
+
+function startMessage(mode: SafetyMode): Extract<Parameters<EscService['handleRuntimeCommand']>[1], { type: 'esc_session_start' }> {
+  return {
+    type: 'esc_session_start',
+    safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
+    ...TEST_SAFETY_EXPECTATION,
+    data: mode === 'px4_serial_control'
+      ? { mode, channels: [20, 21] }
+      : { mode },
+  } as Extract<Parameters<EscService['handleRuntimeCommand']>[1], { type: 'esc_session_start' }>
+}
+
+function lastOpErrorCode(emitted: RuntimeEvent[]): string | undefined {
+  for (let i = emitted.length - 1; i >= 0; i--) {
+    if (emitted[i].type === 'esc_op_error') {
+      return (emitted[i] as { data: { code: string } }).data.code
+    }
+  }
+  return undefined
+}
+
+async function startSession(
+  harness: ReturnType<typeof createSafetyService>,
+  mode: SafetyMode,
+  clientId = 'client-a',
+): Promise<string> {
+  await harness.service.handleRuntimeCommand(clientId, startMessage(mode))
+  await wait(10)
+  const session = harness.service.snapshot()
+  assert.equal(session.state, 'active', `session must start for ${mode}`)
+  return session.sessionId!
+}
+
+async function safetyContextTests(): Promise<void> {
+  // Entry gates: armed / unknown / stale snapshots refuse the start and leave
+  // no session behind, for both MAVLink-backed modes.
+  for (const mode of ['ardupilot_passthrough', 'px4_serial_control'] as const) {
+    for (const [label, overrides, expectedCode] of [
+      ['armed', { armed: true }, 'armed'],
+      ['unknown', { armed: null }, 'arming_state_unknown'],
+      [
+        'stale',
+        { observedAt: Date.now() - ESC_SAFETY_SNAPSHOT_MAX_AGE_MS - 1000 },
+        'arming_state_unknown',
+      ],
+      ['not-ready', { ready: false }, 'precondition_failed'],
+    ] as const) {
+      const harness = createSafetyService(mode, disarmedSnapshot(overrides))
+      await harness.service.handleRuntimeCommand('client-a', startMessage(mode))
+      assert.equal(lastOpErrorCode(harness.emitted), expectedCode, `${mode}/${label} entry code`)
+      assert.equal(harness.service.snapshot().state, 'idle', `${mode}/${label} leaves no session`)
+      assert.equal(harness.transport.closeCalls, 0, `${mode}/${label} never opened a transport`)
+      await harness.service.destroy()
+    }
+  }
+
+  // A missing snapshot fails closed as well.
+  {
+    const harness = createSafetyService('ardupilot_passthrough', null)
+    await harness.service.handleRuntimeCommand('client-a', startMessage('ardupilot_passthrough'))
+    assert.equal(lastOpErrorCode(harness.emitted), 'arming_state_unknown')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    await harness.service.destroy()
+  }
+
+  // Mid-session arming: the next operation is refused and the whole session
+  // is terminated, releasing the borrowed transport.
+  {
+    const harness = createSafetyService('ardupilot_passthrough')
+    const sessionId = await startSession(harness, 'ardupilot_passthrough')
+    harness.setSnapshot(disarmedSnapshot({ armed: true }))
+    await harness.service.handleRuntimeCommand('client-a', {
+      type: 'esc_devices_scan',
+      requestId: 'scan-while-armed',
+      data: { sessionId },
+    })
+    assert.equal(lastOpErrorCode(harness.emitted), 'armed', 'scan refused while armed')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle', 'session terminated while armed')
+    assert.equal(lastSession(harness.emitted)?.reason, 'armed')
+    assert.equal(harness.transport.closeCalls, 1, 'transport released exactly once')
+    await harness.service.destroy()
+  }
+
+  // Read refuses with the same fail-closed behaviour.
+  {
+    const harness = createSafetyService('ardupilot_passthrough')
+    const sessionId = await startSession(harness, 'ardupilot_passthrough')
+    harness.setSnapshot(disarmedSnapshot({ armed: null }))
+    await harness.service.handleRuntimeCommand('client-a', {
+      type: 'esc_settings_read',
+      data: { sessionId, targets: [0] },
+    })
+    assert.equal(lastOpErrorCode(harness.emitted), 'arming_state_unknown')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    await harness.service.destroy()
+  }
+
+  // A write batch stops at the next target boundary once the snapshot turns
+  // armed: target #0 may finish its atomic unit, target #1 is never entered.
+  {
+    const harness = createSafetyService('ardupilot_passthrough')
+    const sessionId = await startSession(harness, 'ardupilot_passthrough')
+    assert.ok(harness.transport.initChannels.length >= 2, 'auto-scan detected both ESCs')
+    harness.transport.afterFirstWrite = () => harness.setSnapshot(disarmedSnapshot({ armed: true }))
+    await harness.service.handleRuntimeCommand('client-a', {
+      type: 'esc_settings_write',
+      requestId: 'write-while-arming',
+      data: { sessionId, targets: [0, 1], values: { motorDirection: 1 } },
+    })
+    assert.deepEqual(
+      harness.transport.writeChannels,
+      [0],
+      'target #1 must not be written after the armed transition',
+    )
+    assert.equal(lastOpErrorCode(harness.emitted), 'armed')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    await harness.service.destroy()
+  }
+
+  // Target-identity generation changes terminate the operation.
+  {
+    const harness = createSafetyService('px4_serial_control')
+    const sessionId = await startSession(harness, 'px4_serial_control')
+    harness.setSnapshot(disarmedSnapshot({ fingerprint: 'gen-2' }))
+    await harness.service.handleRuntimeCommand('client-a', {
+      type: 'esc_devices_scan',
+      data: { sessionId },
+    })
+    assert.equal(lastOpErrorCode(harness.emitted), 'target_mismatch')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    assert.equal(harness.transport.closeCalls, 1)
+    await harness.service.destroy()
+  }
+
+  // Connection-epoch changes terminate the operation.
+  {
+    const harness = createSafetyService('ardupilot_passthrough')
+    const sessionId = await startSession(harness, 'ardupilot_passthrough')
+    harness.setSnapshot(disarmedSnapshot({ connectionKey: '["connected",false]' }))
+    await harness.service.handleRuntimeCommand('client-a', {
+      type: 'esc_settings_read',
+      data: { sessionId, targets: [0] },
+    })
+    assert.equal(lastOpErrorCode(harness.emitted), 'link_unavailable')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    await harness.service.destroy()
+  }
+
+  // The push-based boundary terminates a live PX4 session immediately.
+  {
+    const harness = createSafetyService('px4_serial_control')
+    await startSession(harness, 'px4_serial_control')
+    harness.service.handleVehicleSafetyBoundary('vehicle_armed')
+    await waitFor(() => harness.service.snapshot().state === 'idle')
+    assert.equal(harness.service.snapshot().state, 'idle')
+    assert.equal(lastSession(harness.emitted)?.reason, 'vehicle_armed')
+    assert.equal(harness.transport.closeCalls, 1)
+    await harness.service.destroy()
+  }
+
+  // Direct mode: a connection that ever showed FC activity is refused in
+  // place; an explicit reconnect (fresh connection history) may enter.
+  {
+    const harness = createSafetyService('direct')
+    await harness.service.handleRuntimeCommand('client-a', startMessage('direct'))
+    assert.equal(lastOpErrorCode(harness.emitted), 'precondition_failed')
+    assert.equal(harness.service.snapshot().state, 'idle')
+
+    // Explicit reconnect: new connection, no FC heartbeat ever observed.
+    harness.setSnapshot(disarmedSnapshot({
+      armed: null,
+      ready: false,
+      fcActivityObserved: false,
+      fingerprint: 'unavailable',
+      observedAt: 0,
+    }))
+    await harness.service.handleRuntimeCommand('client-a', startMessage('direct'))
+    assert.equal(harness.service.snapshot().state, 'active', 'clean direct-ESC link may enter')
+    await harness.service.destroy()
+  }
+
+  console.log('ESC safety context checks passed')
 }
 
 async function orchestrationTests(): Promise<void> {
@@ -471,6 +739,7 @@ async function orchestrationTests(): Promise<void> {
 async function run(): Promise<void> {
   validationTests()
   await orchestrationTests()
+  await safetyContextTests()
 }
 
 run().catch((error) => {

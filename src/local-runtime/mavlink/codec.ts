@@ -91,6 +91,13 @@ function x25crc(buffer: Uint8Array, start = 0, trim = 0, magic: number | null = 
   return crc
 }
 const SIGNATURE_MAX_AGE_TICKS = 6_000_000
+// First contact from a (sysid, compid, linkId) must fall inside the window
+// [now - SIGNATURE_MAX_AGE_TICKS, now + SIGNATURE_MAX_FUTURE_TICKS]. The
+// future bound exists so one far-future timestamp cannot be stored as the
+// replay watermark, which would silently reject every legitimate follow-up
+// frame from that source as a replay (OCSA-013). Tens of seconds absorbs
+// ordinary clock skew without weakening replay protection.
+const SIGNATURE_MAX_FUTURE_TICKS = 3_000_000 // 30 s
 const SIGNATURE_START_TIME = Date.UTC(2015, 0, 1)
 
 function serializeField(field: MavLinkPacketField, value: unknown, buffer: ByteBuffer, base: number): void {
@@ -305,6 +312,8 @@ export class MavlinkCodecSession extends EventEmitter {
   private lastSigningTimestampMs = 0
   private readonly lastRxSeq = new Map<string, number>()
   private readonly replayTimestamps = new Map<string, number>()
+  /** Sources (sysid:compid) observed producing at least one valid signature. */
+  private readonly signedSources = new Set<string>()
   private counters = { rxPackets: 0, txPackets: 0, rxSequenceLost: 0, rxDuplicates: 0, rxOutOfOrder: 0, crcErrors: 0, garbageBytes: 0, rejectedPackets: 0, parserRebuilds: 0 }
 
   constructor(options: MavlinkCodecSessionOptions = {}) {
@@ -438,9 +447,17 @@ export class MavlinkCodecSession extends EventEmitter {
     const signing = this.options.signing
     if (signing) {
       if (!signed) {
-        if (signing.requireSigned) {
+        const sourceKey = `${header.sysId}:${header.compId}`
+        // Global enforcement, or graceful per-source enforcement: once a
+        // source has proven it signs its frames, a signature-less frame from
+        // it is a downgrade attempt (signature stripping plus injection), not
+        // legacy traffic, and is refused.
+        if (signing.requireSigned || this.signedSources.has(sourceKey)) {
           this.counters.rejectedPackets++
-          this.emit('packetRejected', 'unsigned_packet')
+          this.emit(
+            'packetRejected',
+            signing.requireSigned ? 'unsigned_packet' : 'unsigned_packet_downgrade',
+          )
           return
         }
       } else {
@@ -450,12 +467,24 @@ export class MavlinkCodecSession extends EventEmitter {
           this.emit('packetRejected', 'invalid_signature')
           return
         }
+        // The signature is cryptographically valid, so an active attacker
+        // cannot have forged this observation: arm per-source enforcement even
+        // if the timestamp checks below still reject the frame itself.
+        this.learnSignedSource(`${header.sysId}:${header.compId}`)
         const replayKey = `${header.sysId}:${header.compId}:${signature.linkId}`
         const previous = this.replayTimestamps.get(replayKey)
         const localTimestamp = signingTimestamp(Date.now())
         if (previous === undefined && !signing.allowStaleFirstPacket && signature.timestamp < localTimestamp - SIGNATURE_MAX_AGE_TICKS) {
           this.counters.rejectedPackets++
           this.emit('packetRejected', 'signature_stale')
+          return
+        }
+        // Apply the future bound to every accepted packet, not only first
+        // contact. Otherwise a source can establish a normal watermark and
+        // poison it with a later far-future signed timestamp.
+        if (signature.timestamp > localTimestamp + SIGNATURE_MAX_FUTURE_TICKS) {
+          this.counters.rejectedPackets++
+          this.emit('packetRejected', 'signature_future')
           return
         }
         if (previous !== undefined && signature.timestamp <= previous) {
@@ -476,6 +505,21 @@ export class MavlinkCodecSession extends EventEmitter {
     this.accountSequence(header.sysId, header.compId, header.seq)
     this.counters.rxPackets++
     this.emit('message', { msgId: header.msgId, payload: frame.subarray(payloadOffset, crcOffset), seq: header.seq, sysId: header.sysId, compId: header.compId, version: header.version, incompatibilityFlags: header.incompatibilityFlags, compatibilityFlags: header.compatibilityFlags, signed } satisfies MavlinkMessage)
+  }
+
+  /**
+   * Eviction merely returns that source to lenient handling until it signs
+   * again. Like the replay watermarks this is security state and survives
+   * reset().
+   */
+  private learnSignedSource(sourceKey: string): void {
+    if (this.signedSources.has(sourceKey)) return
+    while (this.signedSources.size >= MAX_TRACKED_SOURCES) {
+      const oldest = this.signedSources.values().next().value as string | undefined
+      if (oldest === undefined) break
+      this.signedSources.delete(oldest)
+    }
+    this.signedSources.add(sourceKey)
   }
 
   private accountSequence(sysId: number, compId: number, sequence: number): void {

@@ -28,6 +28,9 @@ export default function DomainPage({ domainId }: { domainId: string }) {
   if (!domain) return <Navigate to="/dashboard" replace />
   const item = domain.items.find((candidate) => candidate.path.split('?')[0] === location.pathname)
   if (!item) return <Navigate to={domain.defaultPath} replace />
+  if (item.id === 'joystick' && new URLSearchParams(location.search).get('tab') === 'buttons') {
+    return <Navigate to="/control-input/joystick-config" replace />
+  }
   const content = (() => {
     switch (item.id) {
       case 'dashboard': return <Navigate to="/dashboard" replace />
@@ -42,8 +45,9 @@ export default function DomainPage({ domainId }: { domainId: string }) {
       case 'motor-test': return <MotorPage embedded panel="test" />
       case 'esc': return <EscPage embedded />
       case 'receiver': return <ReceiverPage embedded />
-      case 'joystick': return <JoystickPage embedded />
-      case 'flight-modes': return <FlightModeSetupPage />
+      case 'receiver-config': return <FlightModeSetupPage />
+      case 'joystick': return <JoystickPage embedded panel="overview" />
+      case 'joystick-config': return <JoystickPage embedded panel="buttons" />
       case 'parameters': return <ParameterPage embedded />
       case 'pid': return <PidTuningPage />
       case 'ekf': return <EkfFusionPanel />

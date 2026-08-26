@@ -241,7 +241,7 @@ function buildLog(): Buffer {
   assert.ok(error && error.values.some((value) => Math.abs(value - 0.5) < 1e-4))
 
   // Parameter captured.
-  assert.deepEqual(dataset.params, [{ name: 'FRAME_CLASS', value: 1 }])
+  assert.deepEqual(dataset.params, [{ name: 'FRAME_CLASS', value: 1, type: 9 }])
 }
 
 // Truncation tolerance: a cut mid-final-frame must not throw and must retain

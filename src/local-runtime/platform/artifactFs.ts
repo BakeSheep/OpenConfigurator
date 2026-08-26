@@ -129,27 +129,47 @@ export const artifactOs = {
 
 export const artifactFs = {
   async mkdtemp(prefix: string): Promise<string> {
-    await this.purge()
+    // The caller owns cleanup of leftover directories (removeStaleInstanceDirs);
+    // purging here would destroy artifacts of concurrent live downloads.
     return `${prefix}${crypto.randomUUID()}`
   },
 
-  async mkdir(_path: string, _options?: { recursive?: boolean }): Promise<void> {
+  async mkdir(path: string, _options?: { recursive?: boolean }): Promise<void> {
     await directory()
+    // Flat storage has no directories; a marker entry materializes an empty
+    // one so directory-oriented listings and sweeps can observe it. The
+    // marker name never matches download-artifact patterns.
+    const marker = `${normalizePath(path)}/.keep`
+    if (!(await this.exists(marker))) await this.writeFile(marker, '')
   },
 
   async readdir(filePath: string): Promise<string[]> {
     const parent = normalizePath(filePath)
-    const dir = await directory()
-    if (!dir) return [...MEMORY_FILES.keys()]
-      .filter((entry) => parentOf(entry) === parent)
-      .map(baseName)
-    if (!dir.values) return []
-    const names: string[] = []
-    for await (const handle of dir.values()) {
-      const entryPath = virtualPath(handle.name)
-      if (parentOf(entryPath) === parent) names.push(baseName(entryPath))
+    const names = new Set<string>()
+    const collect = (entryPath: string) => {
+      if (parentOf(entryPath) === parent) {
+        names.add(baseName(entryPath))
+        return
+      }
+      // Flat storage encodes full virtual paths; expose intermediate segments
+      // as virtual directories so directory-oriented callers can traverse.
+      if (parent !== '/' && !`${entryPath}/`.startsWith(`${parent}/`)) return
+      if (parent === '/' && entryPath === '/') return
+      const rest = parent === '/' ? entryPath.slice(1) : entryPath.startsWith(`${parent}/`) ? entryPath.slice(parent.length + 1) : null
+      if (rest === null || rest === '') return
+      const first = rest.split('/')[0]
+      if (first) names.add(first)
     }
-    return names
+    const dir = await directory()
+    if (!dir) {
+      for (const entry of MEMORY_FILES.keys()) collect(entry)
+      return [...names].filter((name) => name !== '.keep')
+    }
+    if (!dir.values) return []
+    for await (const handle of dir.values()) {
+      collect(virtualPath(handle.name))
+    }
+    return [...names].filter((name) => name !== '.keep')
   },
 
   async open(filePath: string, mode: 'r' | 'w'): Promise<ArtifactFileHandle> {
@@ -181,6 +201,22 @@ export const artifactFs = {
     return value.slice()
   },
 
+  async writeFile(filePath: string, data: Uint8Array | string): Promise<void> {
+    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
+    const handle = await this.open(filePath, 'w')
+    await handle.write(bytes, 0, bytes.length, 0)
+    await handle.close()
+  },
+
+  async exists(filePath: string): Promise<boolean> {
+    try {
+      await this.readFile(filePath)
+      return true
+    } catch {
+      return false
+    }
+  },
+
   async estimate(): Promise<{ quota: number; usage: number }> {
     const estimate = await globalThis.navigator?.storage?.estimate?.()
     return { quota: estimate?.quota ?? Number.MAX_SAFE_INTEGER, usage: estimate?.usage ?? 0 }
@@ -196,7 +232,23 @@ export const artifactFs = {
     MEMORY_FILES.clear()
   },
 
-  async rm(_path: string, _options?: { recursive?: boolean; force?: boolean }): Promise<void> {
-    await this.purge()
+  async rm(targetPath: string, _options?: { recursive?: boolean; force?: boolean }): Promise<void> {
+    const prefix = normalizePath(targetPath)
+    if (prefix === '/') {
+      await this.purge()
+      return
+    }
+    const under = (entryPath: string) => entryPath === prefix || entryPath.startsWith(`${prefix}/`)
+    const dir = await directory()
+    if (dir?.values) {
+      const doomed: string[] = []
+      for await (const handle of dir.values()) {
+        if (under(virtualPath(handle.name))) doomed.push(handle.name)
+      }
+      await Promise.all(doomed.map((name) => dir.removeEntry(name).catch(() => undefined)))
+    }
+    for (const key of [...MEMORY_FILES.keys()]) {
+      if (under(key)) MEMORY_FILES.delete(key)
+    }
   },
 }

@@ -116,6 +116,53 @@ async function run(): Promise<void> {
     assert.equal(bridge.sent.length, 0)
   }
 
+  // Safety-context violations (OCSA-002) refuse the open before the exclusive
+  // UART is claimed, even when PASSTHRU_EN and the channel range are fine.
+  {
+    const bridge = new FakeSerialControlBridge()
+    const t = new Px4SerialControlTransport({
+      bridge,
+      waitFn: noWait,
+      checkSafety: () => new EscError('armed', '飞控已解锁，拒绝进入 ESC 直通'),
+    })
+    await expectEscError(
+      t.open({ mode: 'px4_serial_control', channels: [20, 21] }, new AbortController().signal),
+      'armed',
+      'armed at open',
+    )
+    assert.equal(bridge.sent.length, 0, 'violated open must not claim any UART')
+  }
+
+  // An armed transition mid-session fails the transaction, aborts the session
+  // via onAborted, and close() releases every claimed exclusive UART.
+  {
+    const bridge = new FakeSerialControlBridge()
+    let violation: EscError | null = null
+    const t = new Px4SerialControlTransport({
+      bridge,
+      waitFn: noWait,
+      initSettleMs: 0,
+      checkSafety: () => violation,
+    })
+    await t.open({ mode: 'px4_serial_control', channels: [20, 21] }, new AbortController().signal)
+    bridge.sent = []
+    const aborts: EscError[] = []
+    t.onAborted((error) => aborts.push(error))
+    violation = new EscError('armed', '检测到飞控已解锁，ESC 会话已中止')
+    await expectEscError(
+      t.transact(Uint8Array.of(1), { timeoutMs: 200, frameLength: fixedFrame(1) }, new AbortController().signal),
+      'armed',
+      'transact while armed',
+    )
+    assert.equal(aborts.length, 1, 'violation must abort the session')
+    assert.equal(aborts[0].code, 'armed')
+    assert.equal(bridge.sent.length, 0, 'violated request must not reach the UART')
+    await t.close('vehicle_armed')
+    const releases = bridge.sent.slice()
+    assert.deepEqual(releases.map((frame) => frame.device), [20, 21], 'both channels released')
+    assert.ok(releases.every((frame) => frame.flags === 0 && frame.count === 0), 'exclusive flag cleared')
+  }
+
   // Happy open: init frame uses count=0, ESC baud, RESPOND|EXCLUSIVE.
   {
     const bridge = new FakeSerialControlBridge()
