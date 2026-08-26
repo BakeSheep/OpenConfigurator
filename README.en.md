@@ -62,4 +62,4 @@ See [flight-controller compatibility](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md), 
 
 Environment requirements, setup, common commands, architecture, and deployment instructions live in [CONTRIBUTING.md](CONTRIBUTING.md). See [Architecture](docs/ARCHITECTURE.md) for detailed constraints.
 
-OpenConfigurator is licensed under the [MIT License](LICENSE) and is not affiliated with PX4, ArduPilot, MAVLink, MicoAir, or QGroundControl.
+OpenConfigurator is licensed under the [MIT License](LICENSE).

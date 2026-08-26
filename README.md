@@ -44,4 +44,4 @@
 
 环境要求、启动方式、常用命令、架构与部署说明见 [CONTRIBUTING.md](CONTRIBUTING.md)，详细设计约束见 [架构文档](docs/ARCHITECTURE.md)。
 
-OpenConfigurator 采用 [MIT License](LICENSE)，与 PX4、ArduPilot、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系。
+OpenConfigurator 采用 [MIT License](LICENSE)。
