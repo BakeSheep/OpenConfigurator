@@ -2,7 +2,7 @@
 
 OpenConfigurator 的飞行器设置以 QGroundControl 提交
 `f4d5cb0bc975294b51d050fc8878e5600e93b907` 为行为核对基线，但使用本项目自己的
-React、Zustand、WebSocket 协议和视觉组件实现。项目不运行 QML，不引入 QGC 表达式
+React、Zustand、本地 Worker 协议和视觉组件实现。项目不运行 QML，不引入 QGC 表达式
 解释器，也不把 QGC 控制器代码移植到服务端。
 
 ## 固定来源

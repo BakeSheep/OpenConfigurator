@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import {
   isMavlinkMessageLive,
   measuredMavlinkHz,
-  recordMavlinkServerMessage,
+  recordMavlinkRuntimeEvent,
   useMavlinkMessageStore,
 } from './mavlinkMessageStore'
 
 useMavlinkMessageStore.getState().reset()
 
 for (const now of [10_000, 10_500, 11_000]) {
-  recordMavlinkServerMessage({
+  recordMavlinkRuntimeEvent({
     type: 'sensor',
     msgType: 'RAW_IMU',
     data: { units: 'raw', xmag: now },
@@ -24,7 +24,7 @@ assert.equal(measuredMavlinkHz(raw, 11_100), 2)
 assert.equal(isMavlinkMessageLive(raw, 15_000), false)
 assert.equal(measuredMavlinkHz(raw, 15_000), null)
 
-recordMavlinkServerMessage({
+recordMavlinkRuntimeEvent({
   type: 'status',
   data: {
     armed: false,
@@ -42,13 +42,13 @@ recordMavlinkServerMessage({
 }, 20_000)
 assert.equal(useMavlinkMessageStore.getState().messages.HEARTBEAT.totalCount, 1)
 
-recordMavlinkServerMessage({
+recordMavlinkRuntimeEvent({
   type: 'motor_outputs',
   data: { time_usec: 1, port: 0, outputs: [1_000, 1_100] },
 }, 20_100)
 assert.equal(useMavlinkMessageStore.getState().messages.SERVO_OUTPUT_RAW.totalCount, 1)
 
-recordMavlinkServerMessage({ type: 'message_rates', data: {
+recordMavlinkRuntimeEvent({ type: 'message_rates', data: {
   attitude: 8,
   position: 2,
   sensors: 2,

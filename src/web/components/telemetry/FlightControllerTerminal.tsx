@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { vehicleCapabilities } from '../../../shared/vehicleProfiles'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useShellStore } from '../../stores/shellStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
@@ -45,9 +45,9 @@ export default function FlightControllerTerminal() {
 
   useEffect(() => {
     if (!available) return
-    sendClientMessage({ type: 'shell_open', requestId: `shell-open-${Date.now().toString(36)}` })
+    sendRuntimeCommand({ type: 'shell_open', requestId: `shell-open-${Date.now().toString(36)}` })
     return () => {
-      sendClientMessage({ type: 'shell_close', requestId: `shell-close-${Date.now().toString(36)}` })
+      sendRuntimeCommand({ type: 'shell_close', requestId: `shell-close-${Date.now().toString(36)}` })
     }
   }, [available])
 
@@ -80,7 +80,7 @@ export default function FlightControllerTerminal() {
 
   const sendText = (text: string) => {
     if (!active || text.length === 0) return
-    sendClientMessage({ type: 'shell_write', data: { text } })
+    sendRuntimeCommand({ type: 'shell_write', data: { text } })
   }
 
   const writeReferenceCommand = (command: string) => {
@@ -134,7 +134,7 @@ export default function FlightControllerTerminal() {
         <p>{t('terminal.toolbar.hint')}</p>
         <button type="button" className="mc-icon-btn mc-icon-btn--bordered" aria-label={t('terminal.aria.clear')} onClick={clear}><Icon name="trash" size={14} /></button>
         {!active && available && !connecting && (
-          <button type="button" className="mc-btn mc-btn-ghost" onClick={() => sendClientMessage({ type: 'shell_open', requestId: `shell-reopen-${Date.now().toString(36)}` })}>{t('terminal.reconnect')}</button>
+          <button type="button" className="mc-btn mc-btn-ghost" onClick={() => sendRuntimeCommand({ type: 'shell_open', requestId: `shell-reopen-${Date.now().toString(36)}` })}>{t('terminal.reconnect')}</button>
         )}
       </header>
       <div className="mc-shell__notice"><Icon name="warning" size={14} /><span>{t('terminal.notice.safety')}</span></div>
@@ -187,7 +187,12 @@ export default function FlightControllerTerminal() {
                 {t('terminal.reference.apNote')}
               </p>
             )}
-            <div className="mc-shell-reference__scroll">
+            <div
+              className="mc-shell-reference__scroll"
+              tabIndex={0}
+              role="region"
+              aria-label={t('terminal.aria.commandReference')}
+            >
               {categories.map((category) => (
                 <section key={category.title}>
                   <h3>{category.title}</h3>

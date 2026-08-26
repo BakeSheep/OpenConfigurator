@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button'
 import Dialog from '../components/ui/Dialog'
 import Field from '../components/ui/Field'
 import { PageTabs } from '../components/ui/PageFrame'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -101,7 +101,7 @@ export default function PowerSetupPage() {
       return
     }
     const requestId = setupRequestId(`power-cal-${calibrationId}`)
-    if (sendClientMessage({
+    if (sendRuntimeCommand({
       type: 'vehicle_config_set',
       requestId,
       feature: 'power',

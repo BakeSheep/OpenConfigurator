@@ -12,24 +12,27 @@ test('armed demo disarm buttons send exactly one explicitly confirmed command', 
   await openDemo(page, '/flight')
 
   await page.evaluate(async () => {
-    const [{ useConnectionStore }, { setDemoClientMessageInterceptor }, { startDemoMode }] = await Promise.all([
+    const [{ useConnectionStore }, { setDemoRuntimeCommandInterceptor }, { startDemoMode }] = await Promise.all([
       import('/src/web/stores/connectionStore.ts'),
-      import('/src/web/hooks/useWebSocket.ts'),
+      import('/src/web/hooks/useLocalRuntime.ts'),
       import('/src/web/demo/demoMode.ts'),
     ])
     // Freeze the seeded demo state so its 500 ms read-only snapshot cannot
-    // overwrite this controller-owned emergency-disarm fixture under load.
+    // overwrite this locally-owned emergency-disarm fixture under load.
     startDemoMode()()
     const connection = useConnectionStore.getState()
-    useConnectionStore.getState().setController(
-      'demo-client',
-      Date.now() + 60_000,
-      connection.safetyEpoch,
-      connection.safetyAuthorityId!,
-    )
+    connection.setConnectionSnapshot({
+      status: 'connected',
+      transportOpen: true,
+      vehicleReady: true,
+      rawSessionActive: false,
+      safetyEpoch: connection.safetyEpoch,
+      safetyAuthorityId: connection.safetyAuthorityId!,
+      canControl: true,
+    })
     const sentMessages: unknown[] = []
-    ;(globalThis as typeof globalThis & { __uiSentClientMessages?: unknown[] }).__uiSentClientMessages = sentMessages
-    setDemoClientMessageInterceptor((message) => {
+    ;(globalThis as typeof globalThis & { __uiSentRuntimeCommands?: unknown[] }).__uiSentRuntimeCommands = sentMessages
+    setDemoRuntimeCommandInterceptor((message) => {
       sentMessages.push(message)
       return true
     })
@@ -43,7 +46,7 @@ test('armed demo disarm buttons send exactly one explicitly confirmed command', 
   await flightDisarm.click()
 
   const flightMessages = await page.evaluate(() => (
-    (globalThis as typeof globalThis & { __uiSentClientMessages?: unknown[] }).__uiSentClientMessages ?? []
+    (globalThis as typeof globalThis & { __uiSentRuntimeCommands?: unknown[] }).__uiSentRuntimeCommands ?? []
   ))
   expect(flightMessages).toEqual([{
     type: 'command',
@@ -53,7 +56,7 @@ test('armed demo disarm buttons send exactly one explicitly confirmed command', 
   }])
 
   await page.evaluate(() => {
-    const capture = (globalThis as typeof globalThis & { __uiSentClientMessages?: unknown[] }).__uiSentClientMessages
+    const capture = (globalThis as typeof globalThis & { __uiSentRuntimeCommands?: unknown[] }).__uiSentRuntimeCommands
     if (capture) capture.length = 0
   })
 
@@ -67,7 +70,7 @@ test('armed demo disarm buttons send exactly one explicitly confirmed command', 
   await topbarDisarm.click()
 
   const topbarMessages = await page.evaluate(() => (
-    (globalThis as typeof globalThis & { __uiSentClientMessages?: unknown[] }).__uiSentClientMessages ?? []
+    (globalThis as typeof globalThis & { __uiSentRuntimeCommands?: unknown[] }).__uiSentRuntimeCommands ?? []
   )) as Array<Record<string, unknown>>
   expect(topbarMessages).toHaveLength(1)
   expect(topbarMessages[0]).toMatchObject({
@@ -121,8 +124,6 @@ test('reboot stays beside connection and CPU plus average temperature stay visib
 })
 
 test('dashboard and flight keep their operational UI while disconnected', async ({ page }) => {
-  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
-
   await page.goto('/#/dashboard')
   await expect(page.locator('main h1')).toHaveCount(1)
   await expect(page.locator('main .mc-dashboard-primary-grid')).toBeVisible()
@@ -137,7 +138,6 @@ test('dashboard and flight keep their operational UI while disconnected', async 
 })
 
 async function openLivePx4LogFixture(page: Page) {
-  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')
   await expect(page.locator('main h1')).toHaveCount(1)
 
@@ -145,12 +145,14 @@ async function openLivePx4LogFixture(page: Page) {
   // the fixture at the public browser/UI boundary while avoiding hardware and
   // makes the component's target epoch start on the intended synthetic FC.
   await page.evaluate(async () => {
-    const [{ useConnectionStore }, { useTelemetryStore }] = await Promise.all([
+    const [{ useConnectionStore }, { useTelemetryStore }, { localRuntime }] = await Promise.all([
       import('/src/web/stores/connectionStore.ts'),
       import('/src/web/stores/telemetryStore.ts'),
+      import('/src/web/runtime/LocalRuntimeClient.ts'),
     ])
+    await localRuntime.stop()
     const connection = useConnectionStore.getState()
-    connection.setClientId('ui-log-test')
+    const authorityId = crypto.randomUUID()
     connection.setConnectionSnapshot({
       status: 'connected',
       transportOpen: true,
@@ -159,9 +161,11 @@ async function openLivePx4LogFixture(page: Page) {
       port: 'TEST',
       type: 'synthetic',
       baudRate: 57600,
+      safetyEpoch: 1,
+      safetyAuthorityId: authorityId,
+      canControl: true,
     })
-    connection.setController(null, null)
-    connection.setTarget(1, 1)
+    connection.setTarget(1, 1, 1, authorityId)
     useTelemetryStore.getState().setVehicleIdentity({
       autopilotId: 12,
       vehicleTypeId: 2,
@@ -170,7 +174,7 @@ async function openLivePx4LogFixture(page: Page) {
     })
   })
 
-  await page.evaluate(() => { window.location.hash = '/diagnostics?section=logs' })
+  await page.evaluate(() => { window.location.hash = '/flight-logs' })
   await expect(page.locator('.mc-explorer')).toBeVisible()
 
   await page.evaluate(async () => {

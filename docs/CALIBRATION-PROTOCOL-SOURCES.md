@@ -4,7 +4,7 @@ This document records the authoritative sources behind OpenConfigurator's
 sensor calibration implementation and the date each fact was verified. It is
 the calibration counterpart to `docs/ESC-PROTOCOL-SOURCES.md`.
 
-Verified: 2026-07-31 (against node-mavlink@2.3.0 / mavlink-mappings@1.0.22-20260311).
+Verified: 2026-08-26 against the browser-local codec and `mavlink-mappings` message definitions.
 
 ## PX4 `[cal]` STATUSTEXT protocol
 
@@ -21,8 +21,8 @@ Verified: 2026-07-31 (against node-mavlink@2.3.0 / mavlink-mappings@1.0.22-20260
 - Start command: `MAV_CMD_PREFLIGHT_CALIBRATION (241)` with
   gyro=param1, mag=param2, groundPressure=param3, accel=param5=1, level=param5=2.
   Cancel: the same command with all parameters 0.
-- Implemented in `src/server/mavlink/calProtocol.ts` (pure parser) and
-  `src/server/mavlink/CalibrationSession.ts` (state machine).
+- Implemented in `src/local-runtime/mavlink/calProtocol.ts` (pure parser) and
+  `src/local-runtime/mavlink/CalibrationSession.ts` (state machine).
 
 ## ArduPilot interactive accelerometer calibration
 
@@ -58,7 +58,7 @@ Verified: 2026-07-31 (against node-mavlink@2.3.0 / mavlink-mappings@1.0.22-20260
   6 = BAD_ORIENTATION, 7 = BAD_RADIUS.
 - Sources: MAVLink `ardupilotmega.xml` / `common.xml`; ArduPilot
   `AP_Compass_Calibration.cpp`; ArduPilot compass calibration wiki.
-- Dialect registration (`src/server/mavlink/codec.ts`): only message 191 is
+- Dialect registration (`src/local-runtime/mavlink/codec.ts`): only message 191 is
   merged from `ardupilotmega.REGISTRY`; 192 stays `common.MagCalReport` so
   every shared id keeps its `common` definition.
 

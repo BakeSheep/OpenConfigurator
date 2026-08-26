@@ -23,7 +23,7 @@ import { TabPanel } from '../components/ui/Tabs'
 import AccelOrientationVisual from '../components/sensors/AccelOrientationVisual'
 import GpsConfigurationPanel from '../components/sensors/GpsConfigurationPanel'
 import GpsTrackPlot from '../components/sensors/GpsTrackPlot'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useQueryTab } from '../hooks/useQueryTab'
 import { useCalibrationStore } from '../stores/calibrationStore'
 import { useConnectionStore } from '../stores/connectionStore'
@@ -703,10 +703,9 @@ export default function SensorPage({
   const [dismissedSessionId, setDismissedSessionId] = useState<string | null>(null)
   const [pendingStart, setPendingStart] = useState<{ requestId: string; kind: CalibrationKind } | null>(null)
   const [startFailure, setStartFailure] = useState<{ kind: CalibrationKind; message: string } | null>(null)
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const hasCalibrationControl = useConnectionStore((state) => state.vehicleReady && state.canControl)
-  const clientId = useConnectionStore((state) => state.clientId)
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
   const safetyAuthorityId = useConnectionStore((state) => state.safetyAuthorityId)
   const snapshot = useCalibrationStore((state) => state.snapshot)
@@ -739,7 +738,7 @@ export default function SensorPage({
   const sessionActive = isCalibrationSessionActive(snapshot)
   const calibrationBusy = sessionActive || pendingStart !== null
   const wizardVisible = shouldShowCalibrationWizard(snapshot, dismissedSessionId)
-  const isOwner = useMemo(() => Boolean(clientId && snapshot && snapshot.ownerClientId === clientId), [clientId, snapshot])
+  const isOwner = useMemo(() => Boolean(snapshot && snapshot.ownerClientId === 'local-browser'), [snapshot])
   useEffect(() => {
     if (!searchParams.has('mode')) return
     setSearchParams((current) => {

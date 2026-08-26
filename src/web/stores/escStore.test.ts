@@ -25,11 +25,6 @@ function run(): void {
   const store = useEscStore.getState()
   store.reset()
 
-  // Recovery credentials survive transient WebSocket-store resets.
-  store.setRecovery({ sessionId: 's1', recoveryToken: '0123456789abcdef' })
-  store.reset()
-  assert.equal(useEscStore.getState().recovery?.sessionId, 's1')
-
   // Session snapshot replaces prior state.
   store.applySession(session())
   assert.equal(useEscStore.getState().session?.sessionId, 's1')
@@ -103,7 +98,6 @@ function run(): void {
   store.applySession(session({ sessionId: 's2', state: 'idle', activeJobId: null, ownerClientId: null }))
   assert.equal(useEscStore.getState().activeJob, null, 'idle clears active job')
   assert.equal(useEscStore.getState().devices.length, 0)
-  assert.equal(useEscStore.getState().recovery, null, 'idle clears recovery credential')
 
   // reset() returns to the pristine state.
   store.reset()

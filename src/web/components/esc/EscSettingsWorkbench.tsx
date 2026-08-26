@@ -7,7 +7,7 @@ import {
   type EscSettingsField,
   type EscSettingsValues,
 } from '../../../shared/esc'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useEscStore } from '../../stores/escStore'
 import Icon from '../ui/Icon'
 
@@ -88,7 +88,7 @@ export default function EscSettingsWorkbench() {
     dirty.forEach((key) => {
       if (draft[key] !== undefined) values[key] = draft[key]
     })
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'esc_settings_write',
       data: { sessionId: session.sessionId, targets: selectedWritable, values },
     })
@@ -96,7 +96,7 @@ export default function EscSettingsWorkbench() {
 
   const reread = () => {
     if (!session?.sessionId) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'esc_settings_read',
       data: { sessionId: session.sessionId, targets: activeIndex === null ? 'all' : [activeIndex] },
     })

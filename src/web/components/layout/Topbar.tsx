@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
-import i18next from 'i18next'
 import { availableModes, vehicleCapabilities } from '../../../shared/vehicleProfiles'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
 import { useThemeStore } from '../../stores/themeStore'
 import { useLanguageStore } from '../../stores/languageStore'
-import { getRestControlHeaders, sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
+import { localRuntime } from '../../runtime/LocalRuntimeClient'
 import { appRuntimeMode } from '../../runtime'
 import {
   connectionPresetEnablesGamepad,
-  connectionConfigFromPreset,
   loadConnectionPresets,
   resolveBluetoothPreset,
   resolveSerialPreset,
@@ -46,6 +45,11 @@ function bluetoothEndpointLabel(port: string | null, ports: Array<{ path: string
   return 'BT · SPP'
 }
 
+function serialEndpointLabel(port: string | null, fallback: string): string {
+  if (!port) return `USB · ${fallback}`
+  return port.startsWith('USB ') ? port : `USB · ${port}`
+}
+
 export default function Topbar() {
   const { t } = useTranslation()
   const { status, transportOpen, vehicleReady, canControl, port, type, reconnect, bluetoothPorts, setConnectDialogOpen, setStatus, setConnectionError, setActivePresetId } = useConnectionStore()
@@ -59,9 +63,11 @@ export default function Topbar() {
   const connectionLabel = vehicleReady
     ? type === 'bluetooth'
       ? bluetoothEndpointLabel(port, bluetoothPorts)
-      : `USB · ${port ?? t('topbar.connection.ready')}`
+      : serialEndpointLabel(port, t('topbar.connection.ready'))
     : transportOpen
-      ? t('topbar.connection.notConnected')
+      ? `${type === 'bluetooth'
+        ? bluetoothEndpointLabel(port, bluetoothPorts)
+        : serialEndpointLabel(port, t('topbar.connection.ready'))} · ${t('topbar.connection.notConnected')}`
     : reconnecting
       ? `${t('topbar.connection.reconnecting')}${reconnect ? ` (${reconnect.attempt}/${reconnect.maxAttempts})` : ''}`
       : status === 'connecting' ? t('topbar.connection.connecting') : t('topbar.connection.disconnected')
@@ -85,13 +91,21 @@ export default function Topbar() {
     try {
       let resolved = preset
       if (preset.type === 'serial' || preset.type === 'bluetooth') {
-        const scanResponse = await fetch('/api/connections/scan')
-        const scan = await scanResponse.json()
-        if (!scanResponse.ok || !scan.success) throw new Error('connection scan failed')
-        useConnectionStore.getState().setPorts(scan.data.serial ?? [], scan.data.bluetooth ?? [])
+        const descriptors = await localRuntime.listPorts()
+        const listed = descriptors.map((item) => ({
+          path: item.id,
+          friendlyName: item.label,
+          manufacturer: item.label,
+          vendorId: item.usbVendorId?.toString(16).toUpperCase().padStart(4, '0'),
+          productId: item.usbProductId?.toString(16).toUpperCase().padStart(4, '0'),
+          bluetoothServiceClassId: item.bluetoothServiceClassId,
+        }))
+        const serial = listed.filter((item) => !item.bluetoothServiceClassId)
+        const bluetooth = listed.filter((item) => Boolean(item.bluetoothServiceClassId))
+        useConnectionStore.getState().setPorts(serial, bluetooth)
         const matched = preset.type === 'serial'
-          ? resolveSerialPreset(preset, scan.data.serial ?? [])
-          : resolveBluetoothPreset(preset, scan.data.bluetooth ?? [])
+          ? resolveSerialPreset(preset, serial)
+          : resolveBluetoothPreset(preset, bluetooth)
         if (!matched) {
           setConnectionError(t('topbar.connection.presetNotFound'))
           setStatus('error')
@@ -114,30 +128,14 @@ export default function Topbar() {
           saveConnectionPresets(updated)
         }
       }
-      const res = await fetch('/api/connections/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getRestControlHeaders() },
-        body: JSON.stringify(connectionConfigFromPreset(resolved)),
+      await localRuntime.connect({
+        portId: resolved.port,
+        type: resolved.type,
+        baudRate: resolved.baudRate,
+        protocol: resolved.protocol ?? 'auto',
       })
-      const text = await res.text()
-      let json: { success?: boolean; error?: { code?: string; message?: string } } | null = null
-      if (text) {
-        try { json = JSON.parse(text) } catch { /* not JSON */ }
-      }
-      // A 200 with success=false is still a failure; never report it silently.
-      if (!res.ok || !json?.success) {
-        const raw = json?.error?.message ?? (text || `HTTP ${res.status}`)
-        const code = json?.error?.code
-        const reason = code && i18next.exists(`errors.${code}`) ? i18next.t(`errors.${code}`) : raw
-        console.error('[Connect] preset connect failed:', reason)
-        setConnectionError(t('topbar.connection.presetFailed', { reason }))
-        setStatus('error')
-        setConnectDialogOpen(true)
-        setGamepadEnabled(false)
-      } else {
-        setActivePresetId(resolved.id)
-        setGamepadEnabled(connectionPresetEnablesGamepad(resolved))
-      }
+      setActivePresetId(resolved.id)
+      setGamepadEnabled(connectionPresetEnablesGamepad(resolved))
     } catch (error) {
       console.error('[Connect] preset connect failed:', error)
       setConnectionError(t('topbar.connection.presetFailed', { reason: error instanceof Error ? error.message : String(error) }))
@@ -154,13 +152,12 @@ export default function Topbar() {
     saveConnectionPresets(updated)
   }
 
-  // Close the transport from the topbar dropdown; connection state updates
-  // arrive over the WebSocket, so no local status juggling is needed here.
+  // Close the tab-local transport. No server or other browser is involved.
   const disconnectTransport = async () => {
     setConnectDropdown(false)
     try {
-      await fetch('/api/connections/disconnect', { method: 'POST', headers: getRestControlHeaders() })
-    } catch { /* ignore - WS will report the real state */ }
+      await localRuntime.disconnect()
+    } catch { /* local runtime reports the real state */ }
   }
 
   // Telemetry data
@@ -224,7 +221,7 @@ export default function Topbar() {
       || telemetry.status?.armed === true
     ) return
     rebootSafetyKeyRef.current = null
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'reboot_vehicle',
       requestId: `reboot-${Date.now().toString(36)}`,
       safetyConfirmation: 'reboot_flight_controller',
@@ -323,7 +320,7 @@ export default function Topbar() {
     if (!vehicleReady || !canControl) return
     // The server encodes stack-specific DO_SET_MODE parameters from the
     // selected vehicle profile; the browser only names the mode.
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'set_flight_mode',
       requestId: `mode-${Date.now().toString(36)}`,
       data: { modeId },
@@ -348,7 +345,7 @@ export default function Topbar() {
       || telemetry.preflightCheck === false
       || telemetry.sensorsHealthy === false
     ) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'command',
       requestId: `arm-${Date.now().toString(36)}`,
       cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',
@@ -362,7 +359,7 @@ export default function Topbar() {
 
   const requestDisarm = () => {
     if (!canChangeArmState) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'command',
       requestId: `disarm-${Date.now().toString(36)}`,
       cmd: 'MAV_CMD_COMPONENT_ARM_DISARM',

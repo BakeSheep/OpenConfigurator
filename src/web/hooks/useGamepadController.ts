@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import i18next from 'i18next'
 import { vehicleCapabilities } from '../../shared/vehicleProfiles'
-import type { ClientMessage } from '../../shared/types'
+import type { RuntimeCommand } from '../../shared/types'
 import { useConnectionStore } from '../stores/connectionStore'
 import {
   useGamepadStore,
@@ -22,7 +22,7 @@ import { smoothGamepadThrottle } from './gamepadThrottle'
  * Keeping this at App level prevents manual-control input from stopping when
  * the user leaves the gamepad settings tab to arm or monitor the vehicle.
  */
-export function useGamepadController(send: (message: ClientMessage) => boolean) {
+export function useGamepadController(send: (message: RuntimeCommand) => boolean) {
   const t = i18next.t.bind(i18next)
   const rafRef = useRef(0)
   const lastAxisSendRef = useRef(0)
@@ -239,7 +239,7 @@ export function useGamepadController(send: (message: ClientMessage) => boolean) 
             }
           }
         } else {
-          // A disable or loss of the FC controller lease ends this input
+          // A disable or loss of the local port authority ends this input
           // stream. Re-enabling must initialize from the then-current stick.
           smoothedThrottleRef.current = null
           armHoldStartRef.current = {}

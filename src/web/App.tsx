@@ -7,9 +7,9 @@ import DemoBanner from './components/layout/DemoBanner'
 import Sidebar from './components/layout/Sidebar'
 import StatusBar from './components/layout/StatusBar'
 import Topbar from './components/layout/Topbar'
-import { useWebSocket } from './hooks/useWebSocket'
+import { useLocalRuntime } from './hooks/useLocalRuntime'
 import { useGamepadController } from './hooks/useGamepadController'
-import { backendEnabled } from './runtime'
+import { localRuntimeEnabled } from './runtime'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
 const FlightControlPage = lazy(() => import('./pages/FlightControlPage'))
@@ -21,9 +21,12 @@ function LegacySettingsRedirect() {
   const target: Record<string, string> = {
     sensors: '/airframe/sensors', actuators: '/propulsion', esc: '/propulsion/esc',
     receiver: '/control-input', joystick: '/control-input/joystick', other: '/tuning/ekf',
-    airframe: '/airframe', power: '/airframe/power', safety: '/airframe/safety',
+    airframe: '/airframe', power: '/airframe/power', safety: '/airframe/safety', ports: '/airframe/ports',
   }
-  return <Navigate to={target[section ?? ''] ?? '/airframe'} replace />
+  const pathname = target[section ?? ''] ?? '/airframe'
+  const search = new URLSearchParams(params)
+  search.delete('section')
+  return <Navigate to={search.size ? `${pathname}?${search}` : pathname} replace />
 }
 
 function LegacyDiagnosticsRedirect() {
@@ -33,7 +36,10 @@ function LegacyDiagnosticsRedirect() {
     parameters: '/tuning', pid: '/tuning/pid', waveforms: '/flight-data/waveforms',
     messages: '/flight-data', logs: '/flight-logs', 'log-analysis': '/flight-logs/analysis', ekf: '/tuning/ekf',
   }
-  return <Navigate to={target[section ?? ''] ?? '/tuning'} replace />
+  const pathname = target[section ?? ''] ?? '/tuning'
+  const search = new URLSearchParams(params)
+  search.delete('section')
+  return <Navigate to={search.size ? `${pathname}?${search}` : pathname} replace />
 }
 
 function WorkspaceViewport({ children }: { children: ReactNode }) {
@@ -58,7 +64,7 @@ function WorkspaceViewport({ children }: { children: ReactNode }) {
 
 export default function App() {
   const { t } = useTranslation()
-  const { send } = useWebSocket(backendEnabled)
+  const { send } = useLocalRuntime(localRuntimeEnabled)
   useGamepadController(send)
 
   return (

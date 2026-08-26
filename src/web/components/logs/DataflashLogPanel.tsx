@@ -8,7 +8,8 @@ import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import Icon from '../ui/Icon'
 import ConfirmDialog from '../ui/ConfirmDialog'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
+import { localRuntime } from '../../runtime/LocalRuntimeClient'
 import { useLogTransferStore } from '../../stores/logTransferStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import { useConnectionStore } from '../../stores/connectionStore'
@@ -111,7 +112,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
 
   const requestList = useCallback(() => {
     useLogTransferStore.getState().setLoading(true)
-    sendClientMessage({ type: 'log_list' })
+    sendRuntimeCommand({ type: 'log_list' })
   }, [])
 
   // List once the link is ready and the automatic parameter sync has yielded
@@ -129,7 +130,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     requestList()
   }, [parameterSyncActive, requestList, targetComponentId, targetSystemId, vehicleReady])
 
-  // Erase finished: the backend already pushed the fresh (empty) list;
+  // Erase finished: the local runtime already pushed the fresh (empty) list;
   // dismiss the task shortly after.
   useEffect(() => {
     if (erase?.status !== 'done') return
@@ -139,27 +140,26 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
 
   // Download finished: hand the file to the browser or to the analysis page.
   useEffect(() => {
-    if (download?.status !== 'done' || !download.downloadId) return
-    if (handledDownloadRef.current === download.downloadId) return
-    handledDownloadRef.current = download.downloadId
-    const url = `/api/logs/downloads/${download.downloadId}`
-    if (download.intent === 'save') {
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = download.fileName ?? 'log.bin'
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      const timer = setTimeout(() => useLogTransferStore.getState().clearDownload(), 2500)
-      return () => clearTimeout(timer)
-    }
+    if (download?.status !== 'done' || !download.artifactId) return
+    if (handledDownloadRef.current === download.artifactId) return
+    handledDownloadRef.current = download.artifactId
     let cancelled = false
     void (async () => {
       try {
-        const response = await fetch(url)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        const { blob, fileName } = await localRuntime.readArtifact(download.artifactId!, true)
         if (cancelled) return
+        if (download.intent === 'save') {
+          const url = URL.createObjectURL(blob)
+          const anchor = document.createElement('a')
+          anchor.href = url
+          anchor.download = download.fileName ?? fileName
+          document.body.appendChild(anchor)
+          anchor.click()
+          anchor.remove()
+          URL.revokeObjectURL(url)
+          useLogTransferStore.getState().clearDownload()
+          return
+        }
         stashLogBlob(download.fileName ?? 'log.bin', blob)
         useLogTransferStore.getState().clearDownload()
         navigate('/log-analysis')
@@ -268,7 +268,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     if (busy) return
     handledDownloadRef.current = null
     useLogTransferStore.getState().beginDownload(entry.id, intent)
-    sendClientMessage({ type: 'log_download', data: { logId: entry.id } })
+    sendRuntimeCommand({ type: 'log_download', data: { logId: entry.id } })
   }, [busy])
 
   const openContextMenu = (
@@ -411,7 +411,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
     }
     setEraseDialogOpen(false)
     useLogTransferStore.getState().beginErase()
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'log_erase',
       safetyConfirmation: 'erase_all_logs',
       expectedSafetyEpoch: connection.safetyEpoch,
@@ -577,7 +577,7 @@ export default function DataflashLogPanel({ vehicleReady }: { vehicleReady: bool
                     type="button"
                     className="mc-icon-btn"
                     aria-label={t('flightLogs.cancelDownload')}
-                    onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
+                    onClick={() => sendRuntimeCommand({ type: 'log_download_cancel' })}
                   >
                     <Icon name="close" size={13} />
                   </button>

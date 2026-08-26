@@ -1,4 +1,4 @@
-name: Deploy demo to GitHub Pages
+name: Deploy browser GCS to GitHub Pages
 
 on:
   push:
@@ -18,7 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      VITE_APP_MODE: demo
       VITE_BASE_PATH: /OpenConfigurator/
     steps:
       - name: Check out repository
@@ -30,9 +29,9 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Run server tests
-        run: npm run test:server
-      - name: Build static demo
+      - name: Run local runtime tests
+        run: npm run test:runtime
+      - name: Build static browser application
         run: npm run build:pages
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

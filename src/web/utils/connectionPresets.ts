@@ -6,6 +6,7 @@ export interface ConnectionPreset {
   type: 'serial' | 'bluetooth'
   port: string
   baudRate: number
+  protocol?: 'auto' | 'v1' | 'v2'
   vendorId?: string
   productId?: string
   bluetoothAddress?: string
@@ -126,14 +127,9 @@ export function resolveSerialPreset(
       canonicalUsbId(port.vendorId) === presetVendorId
       && canonicalUsbId(port.productId) === presetProductId
     )
-    if (matches.length === 1) return enrichSerialPreset(preset, matches[0])
-
-    // Identical adapters cannot be distinguished by VID/PID alone. Retain the
-    // saved path only when the device currently on it has the expected identity.
-    const matchingPath = matches.find((port) =>
-      port.path.toUpperCase() === preset.port.toUpperCase()
-    )
-    return matchingPath ? enrichSerialPreset(preset, matchingPath) : null
+    // Web Serial does not expose a stable serial number. Identical VID/PID
+    // adapters therefore require the native chooser on every new page load.
+    return matches.length === 1 ? enrichSerialPreset(preset, matches[0]) : null
   }
 
   // Legacy presets have no identity. Keep an existing path, or migrate only

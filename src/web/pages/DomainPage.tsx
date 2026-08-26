@@ -7,6 +7,7 @@ import AirframeSetupPage from './AirframeSetupPage'
 import SensorPage from './SensorPage'
 import PowerSetupPage from './PowerSetupPage'
 import SafetySetupPage from './SafetySetupPage'
+import PortSettingsPage from './PortSettingsPage'
 import MotorPage from './MotorPage'
 import EscPage from './EscPage'
 import ReceiverPage from './ReceiverPage'
@@ -36,6 +37,7 @@ export default function DomainPage({ domainId }: { domainId: string }) {
       case 'calibration': return <SensorPage embedded view="calibration" />
       case 'power': return <PowerSetupPage />
       case 'safety': return <SafetySetupPage />
+      case 'ports': return <PortSettingsPage />
       case 'mapping': return <MotorPage embedded panel="mapping" />
       case 'motor-test': return <MotorPage embedded panel="test" />
       case 'esc': return <EscPage embedded />

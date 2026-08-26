@@ -6,7 +6,7 @@ import {
   type VehicleConfigField,
 } from '../../../shared/vehicleSetupProfiles'
 import type { ParameterEnumOption } from '../../utils/parameterEnumMetadata'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import { useTelemetryStore } from '../../stores/telemetryStore'
@@ -128,7 +128,7 @@ export function ConfigFieldControl({
     }
 
     const requestId = setupRequestId(`cfg-${field.id}`)
-    const sent = sendClientMessage({
+    const sent = sendRuntimeCommand({
       type: 'vehicle_config_set',
       requestId,
       feature,

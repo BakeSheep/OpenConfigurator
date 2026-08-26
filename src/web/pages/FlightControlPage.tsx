@@ -6,7 +6,7 @@ import { WorkspaceFrame } from '../components/ui/PageFrame'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { Notice } from '../components/ui/Feedback'
 import ArmSafetyControl from '../components/safety/ArmSafetyControl'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useSensorStore } from '../stores/sensorStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -18,7 +18,7 @@ import {
 
 export default function FlightControlPage() {
   const { t } = useTranslation()
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const vehicle = useTelemetryStore((state) => state.status)
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   const battery = useTelemetryStore((state) => state.battery)

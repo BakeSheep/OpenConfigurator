@@ -22,7 +22,16 @@ export default function DomainNav({ items, ariaLabel }: { items: NavigationItem[
   return <nav ref={ref} className="mc-domain-nav" aria-label={ariaLabel}>
     {items.map((item) => {
       const active = location.pathname === item.path.split('?')[0]
-      return <Link key={item.id} to={item.path} className="mc-domain-nav__link" data-active={active} aria-current={active ? 'page' : undefined}>
+      const [pathname, itemSearch = ''] = item.path.split('?')
+      const nextSearch = new URLSearchParams(location.search)
+      // Task-local state cannot leak into another page. Preserve unrelated
+      // state (for example test/deep-link probes) and apply the destination's
+      // canonical query values.
+      for (const key of ['section', 'tab', 'mode']) nextSearch.delete(key)
+      new URLSearchParams(itemSearch).forEach((value, key) => nextSearch.set(key, value))
+      const search = nextSearch.toString()
+      const to = search ? `${pathname}?${search}` : pathname
+      return <Link key={item.id} to={to} className="mc-domain-nav__link" data-active={active} aria-current={active ? 'page' : undefined}>
         <Icon name={item.icon} size={17} /><span>{t(item.labelKey)}</span>
       </Link>
     })}

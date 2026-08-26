@@ -48,7 +48,7 @@ test('battery instance discovery follows PX4 and ArduPilot prefixes', () => {
   assert.deepEqual(discoverBatteryConfigs(copter, apParams).map((item) => item.prefix), ['BATT_', 'BATT2_', 'BATTA_'])
 })
 
-test('server whitelist is firmware scoped and safety reductions require confirmation', () => {
+test('runtime whitelist is firmware scoped and safety reductions require confirmation', () => {
   assert.equal(isAllowedVehicleConfigParameter(px4, 'flight_modes', 'RC_MAP_FLTMODE'), true)
   assert.equal(isAllowedVehicleConfigParameter(px4, 'flight_modes', 'FLTMODE_CH'), false)
   assert.equal(isAllowedVehicleConfigParameter(copter, 'power', 'BATTA_VOLT_MULT'), true)

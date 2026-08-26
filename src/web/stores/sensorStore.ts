@@ -7,7 +7,7 @@ import {
 } from '../utils/magInterference'
 
 // A Zustand store is a module singleton. Replacing this module through Vite
-// HMR can temporarily leave long-lived WebSocket code writing one instance
+// HMR can temporarily leave long-lived local runtime code writing one instance
 // while mounted components still subscribe to another. Force a clean reload
 // after store edits in development; production builds never enter this path.
 if (import.meta.hot) {

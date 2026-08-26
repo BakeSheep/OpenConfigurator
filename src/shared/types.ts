@@ -1,4 +1,4 @@
-// MAVLink message types and shared interfaces between frontend and backend
+// MAVLink message types and shared interfaces between the page and local Worker
 
 import type { VehicleIdentity, AutopilotFamily, VehicleClass, CalibrationKind } from './vehicleProfiles'
 import type { VehicleConfigFeature } from './vehicleSetupProfiles'
@@ -400,21 +400,16 @@ export interface MessageRateConfig {
   auxiliary: number
 }
 
-// WebSocket message types (server -> client)
-export type ServerMessage =
+// Dedicated Worker events (local runtime -> page)
+export type RuntimeEvent =
   | {
       type: 'hello'
       data: {
         protocolVersion: number
-        clientId: string
-        /** Per-WebSocket secret used to authorize REST connect/disconnect while this client owns the lease. */
-        restControlToken: string
         capabilities: string[]
-        maxPayload: number
-        controllerLeaseMs: number
-        /** Server-authoritative boundary for safety confirmations. */
+        /** Worker-authoritative boundary for safety confirmations. */
         safetyEpoch: number
-        /** Unique per backend process; prevents epoch reuse after restart. */
+        /** Unique per local runtime; prevents epoch reuse after reconnect. */
         safetyAuthorityId: string
       }
     }
@@ -429,22 +424,14 @@ export type ServerMessage =
       }
     }
   | {
-      type: 'controller'
+      type: 'safety_authority'
       data: {
-        clientId: string | null
-        expiresAt: number | null
-        /** Advances on target/readiness/transport/controller authority changes. */
+        /** Advances on target, readiness, transport and local authority changes. */
         safetyEpoch: number
         safetyAuthorityId: string
         reason:
-          | 'claimed'
-          | 'renewed'
-          | 'released'
-          | 'expired'
-          | 'disconnected'
           | 'connection_changed'
           | 'safety_changed'
-          | 'snapshot'
       }
     }
   | {
@@ -497,7 +484,7 @@ export type ServerMessage =
           timestamp: number
           retryable?: boolean
         }
-        // Present while the backend is auto-reconnecting a dropped Bluetooth
+        // Present while the tab-local transport is auto-reconnecting Bluetooth
         // link (status === 'reconnecting'). Lets the UI show retry progress
         // instead of a bare "disconnected".
         reconnect?: { attempt: number; maxAttempts: number; delayMs: number; lastError?: string }
@@ -619,8 +606,8 @@ export type ServerMessage =
       type: 'fs_download_complete'
       data: {
         path: string
-        /** Opaque id used by GET /api/logs/downloads/:downloadId. */
-        downloadId: string
+        /** Opaque id of a temporary browser-local artifact. */
+        artifactId: string
         sizeBytes: number
         fileName: string
       }
@@ -655,8 +642,8 @@ export type ServerMessage =
       type: 'log_download_complete'
       data: {
         logId: number
-        /** Opaque id used by GET /api/logs/downloads/:downloadId. */
-        downloadId: string
+        /** Opaque id of a temporary browser-local artifact. */
+        artifactId: string
         sizeBytes: number
         fileName: string
       }
@@ -693,7 +680,7 @@ export type ServerMessage =
     }
   // -- ESC configuration (see src/shared/esc) --------------------------------
   | { type: 'esc_session'; data: EscSessionSnapshot }
-  | { type: 'esc_session_started'; data: { sessionId: string; recoveryToken: string } }
+  | { type: 'esc_session_started'; data: { sessionId: string } }
   | { type: 'esc_devices'; data: { sessionId: string; escs: EscDeviceInfo[] } }
   | { type: 'esc_settings'; data: EscSettingsSnapshot }
   | { type: 'esc_job_progress'; data: EscJobProgressSnapshot }
@@ -703,19 +690,17 @@ export type ServerMessage =
   // -- Sensor calibration sessions -------------------------------------------
   | { type: 'calibration_update'; data: CalibrationSnapshot }
   | {
-      // Sent only to the session owner; recoveryToken must never be
-      // broadcast or logged.
       type: 'calibration_session_started'
-      data: { sessionId: string; requestId: string; recoveryToken: string }
+      data: { sessionId: string; requestId: string }
     }
   | { type: 'radio_calibration_snapshot'; data: RadioCalibrationSnapshot }
   | {
       type: 'radio_calibration_started'
-      data: { sessionId: string; requestId: string; recoveryToken: string }
+      data: { sessionId: string; requestId: string }
     }
 
-// WebSocket message types (client -> server)
-export type ClientMessage =
+// Dedicated Worker commands (page -> local runtime)
+export type RuntimeCommand =
   | {
       type: 'command'
       requestId?: string
@@ -755,11 +740,6 @@ export type ClientMessage =
     }
   | { type: 'radio_calibration_advance'; requestId: string; data: { sessionId: string } }
   | { type: 'radio_calibration_cancel'; requestId: string; data: { sessionId: string } }
-  | {
-      type: 'radio_calibration_reclaim'
-      requestId: string
-      data: { sessionId: string; recoveryToken: string }
-    }
   | { type: 'param_request_list'; requestId?: string }
   | { type: 'message_rates_set'; requestId?: string; data: MessageRateConfig }
   | { type: 'shell_open'; requestId?: string }
@@ -800,12 +780,6 @@ export type ClientMessage =
         | { sessionId: string; action: 'accept_mag' }
     }
   | {
-      // Reattach a disconnected owner to its running calibration session.
-      type: 'calibration_reclaim'
-      requestId: string
-      data: { sessionId: string; recoveryToken: string }
-    }
-  | {
       type: 'motor_test'
       requestId?: string
       data: {
@@ -835,7 +809,6 @@ export type ClientMessage =
       requestId?: string
       data: { systemId: number; componentId: number }
     }
-  | { type: 'release_control'; requestId?: string }
   | { type: 'fs_list'; requestId?: string; data: { path: string } }
   | { type: 'fs_download'; requestId?: string; data: { path: string } }
   | { type: 'fs_download_cancel'; requestId?: string }
@@ -847,6 +820,7 @@ export type ClientMessage =
       expectedSafetyEpoch: number
       expectedSafetyAuthorityId: string
     }
+
   | { type: 'log_list'; requestId?: string }
   | { type: 'log_download'; requestId?: string; data: { logId: number } }
   | { type: 'log_download_cancel'; requestId?: string }
@@ -871,7 +845,6 @@ export type ClientMessage =
         | { mode: 'px4_serial_control'; channels: number[] }
         | { mode: 'direct' }
     }
-  | { type: 'esc_session_reclaim'; requestId?: string; data: { sessionId: string; recoveryToken: string } }
   | { type: 'esc_session_exit'; requestId?: string; data: { sessionId: string } }
   | { type: 'esc_devices_scan'; requestId?: string; data: { sessionId: string } }
   | {
@@ -902,8 +875,8 @@ export interface ConnectionConfig {
   type: 'serial' | 'bluetooth'
   port: string
   baudRate: number
-  // Optional identifiers from the Web Serial chooser - used to match the
-  // browser-selected device back to a Windows SPP COM port on the backend.
+  // Optional identifiers from the Web Serial chooser, used only to label and
+  // re-identify a grant inside this browser profile.
   vendorId?: string
   productId?: string
   bluetoothAddress?: string

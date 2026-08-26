@@ -8,7 +8,7 @@ export function resolveRuntimeMode(input: {
   dev: boolean
   search: string
 }): AppRuntimeMode {
-  // Dedicated demo builds (GitHub Pages) bake the mode in at build time.
+  // Dedicated screenshot and UI-test builds bake the mode in at build time.
   if (input.appMode === 'demo') return 'demo'
   // `?demo=1` is a dev-only showcase switch; production builds must ignore it
   // so a stray query parameter can never fake a connection on a real deploy.
@@ -16,7 +16,7 @@ export function resolveRuntimeMode(input: {
   return 'live'
 }
 
-export function shouldConnectBackend(mode: AppRuntimeMode): boolean {
+export function shouldStartLocalRuntime(mode: AppRuntimeMode): boolean {
   return mode === 'live'
 }
 
@@ -25,10 +25,10 @@ export function isReadOnlyRuntime(mode: AppRuntimeMode): boolean {
 }
 
 /**
- * Starts the socket lifecycle only when the runtime allows backend access.
+ * Starts the local Worker lifecycle only when the runtime allows local runtime access.
  * Kept pure so the demo isolation boundary is covered without a browser.
  */
-export function connectBackendIfEnabled(enabled: boolean, connect: () => void): boolean {
+export function startLocalRuntimeIfEnabled(enabled: boolean, connect: () => void): boolean {
   if (!enabled) return false
   connect()
   return true

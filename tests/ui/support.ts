@@ -84,9 +84,15 @@ export async function expectSharedWorkspaceLayout(page: Page, hasSectionNav: boo
     const workspaceRect = element.getBoundingClientRect()
     const sectionLayout = element.querySelector<HTMLElement>(':scope > .mc-section-layout')
     const sectionNav = sectionLayout?.querySelector<HTMLElement>(':scope > .mc-section-nav') ?? null
-    const sectionFrame = sectionLayout?.querySelector<HTMLElement>(':scope > .mc-section-frame') ?? null
-    const navItems = sectionNav?.querySelector<HTMLElement>(':scope > .mc-section-nav__items') ?? null
-    const navRect = sectionNav?.getBoundingClientRect() ?? null
+    const domainNav = element.querySelector<HTMLElement>(':scope > .mc-domain-nav')
+    const navigation = domainNav ?? sectionNav
+    const sectionFrame = element.querySelector<HTMLElement>(':scope > .mc-section-frame')
+      ?? sectionLayout?.querySelector<HTMLElement>(':scope > .mc-section-frame')
+      ?? null
+    const navItems = domainNav
+      ?? sectionNav?.querySelector<HTMLElement>(':scope > .mc-section-nav__items')
+      ?? null
+    const navRect = navigation?.getBoundingClientRect() ?? null
     const sectionRect = sectionFrame?.getBoundingClientRect() ?? null
 
     return {
@@ -98,8 +104,9 @@ export async function expectSharedWorkspaceLayout(page: Page, hasSectionNav: boo
         right: workspaceRect.right,
         width: workspaceRect.width,
       },
-      sectionLayoutFound: Boolean(sectionLayout),
-      navFound: Boolean(sectionNav),
+      sectionLayoutFound: Boolean(sectionLayout || domainNav),
+      domainNavFound: Boolean(domainNav),
+      navFound: Boolean(navigation),
       sectionFound: Boolean(sectionFrame),
       layoutColumns: sectionLayout ? window.getComputedStyle(sectionLayout).gridTemplateColumns : null,
       navWidth: navRect?.width ?? null,
@@ -140,6 +147,21 @@ export async function expectSharedWorkspaceLayout(page: Page, hasSectionNav: boo
   expect(nav.right).toBeLessThanOrEqual(geometry.workspace.right + 1)
   expect(section.left).toBeGreaterThanOrEqual(geometry.workspace.left - 1)
   expect(section.right).toBeLessThanOrEqual(geometry.workspace.right + 1)
+
+  if (geometry.domainNavFound) {
+    expect(geometry.navFlexDirection).toBe('row')
+    expect(nav.bottom, `DomainNav overlaps content at ${page.url()}`).toBeLessThanOrEqual(section.top + 1)
+    const domainNav = workspace.locator(':scope > .mc-domain-nav')
+    const activeLink = domainNav.locator('.mc-domain-nav__link[aria-current="page"]')
+    await expect(activeLink).toHaveCount(1)
+    await expect.poll(async () => {
+      const [navBox, activeBox] = await Promise.all([domainNav.boundingBox(), activeLink.boundingBox()])
+      if (!navBox || !activeBox) return false
+      return activeBox.x >= navBox.x - 1
+        && activeBox.x + activeBox.width <= navBox.x + navBox.width + 1
+    }, { message: `Active DomainNav link must be fully visible at ${page.url()}` }).toBe(true)
+    return
+  }
 
   if (geometry.compact) {
     expect(geometry.layoutColumns).not.toContain('176px')

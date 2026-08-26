@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ESC_SESSION_SAFETY_CONFIRMATION } from '../../../shared/esc'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { LOCAL_RUNTIME_OWNER_ID } from '../../../shared/localRuntime'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useEscStore } from '../../stores/escStore'
 import { useParameterStore } from '../../stores/parameterStore'
@@ -46,7 +47,6 @@ export default function EscConnectPanel() {
   const linkType = useConnectionStore((state) => state.type)
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const canControl = useConnectionStore((state) => state.canControl)
-  const clientId = useConnectionStore((state) => state.clientId)
   const targetSystemId = useConnectionStore((state) => state.targetSystemId)
   const targetComponentId = useConnectionStore((state) => state.targetComponentId)
   const safetyEpoch = useConnectionStore((state) => state.safetyEpoch)
@@ -65,7 +65,7 @@ export default function EscConnectPanel() {
 
   const active = session !== null && session.state !== 'idle'
   const busy = session?.state === 'entering' || session?.state === 'exiting' || session?.activeJobId != null
-  const ownsSession = session?.ownerClientId === clientId
+  const ownsSession = session?.ownerClientId === LOCAL_RUNTIME_OWNER_ID
   const isBluetooth = linkType === 'bluetooth'
   const effectiveMode = active && session?.mode ? session.mode : 'ardupilot_passthrough'
   const effectiveModeLabel = t(`escConnect.sessionMode.${effectiveMode}`)
@@ -149,7 +149,7 @@ export default function EscConnectPanel() {
     const value = restoring ? (restorePoint?.value ?? 0) : 1
     setWriteMessage(null)
     setPendingWrite({ requestId, restoring })
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'param_set',
       requestId,
       data: { id: setupParamId, value, paramType: restorePoint?.paramType ?? setupParam.type },
@@ -174,7 +174,7 @@ export default function EscConnectPanel() {
       || connection.targetComponentId !== targetComponentId
       || !escModeAllowedForProfile(identity, 'ardupilot_passthrough')
     ) return
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'esc_session_start',
       safetyConfirmation: ESC_SESSION_SAFETY_CONFIRMATION,
       expectedSafetyEpoch: connection.safetyEpoch,
@@ -188,11 +188,11 @@ export default function EscConnectPanel() {
   }
 
   const exitSession = () => {
-    if (session?.sessionId) sendClientMessage({ type: 'esc_session_exit', data: { sessionId: session.sessionId } })
+    if (session?.sessionId) sendRuntimeCommand({ type: 'esc_session_exit', data: { sessionId: session.sessionId } })
   }
 
   const rescan = () => {
-    if (session?.sessionId) sendClientMessage({ type: 'esc_devices_scan', data: { sessionId: session.sessionId } })
+    if (session?.sessionId) sendRuntimeCommand({ type: 'esc_devices_scan', data: { sessionId: session.sessionId } })
   }
 
   const ardupilotBlocked = isBluetooth

@@ -116,7 +116,6 @@ test('saved preset delete action is visible without hover and keyboard accessibl
       baudRate: 115200,
     }]))
   })
-  await page.routeWebSocket('ws://127.0.0.1:3000/ws', () => {})
   await page.goto('/#/dashboard')
   await expect(page.locator('main h1')).toHaveCount(1)
 
@@ -146,23 +145,23 @@ test('saved preset delete action is visible without hover and keyboard accessibl
   await expect(deletePreset).toBeVisible()
 })
 
-test('section workspaces stack below a visible horizontal navigator at compact widths', async ({ page }, testInfo) => {
+test('domain workspaces stack below a visible horizontal navigator at compact widths', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop', 'This regression sets the two boundary viewports explicitly.')
 
   for (const width of [1024, 1180]) {
     await page.setViewportSize({ width, height: 768 })
-    await openDemo(page, '/diagnostics?section=log-analysis')
+    await openDemo(page, '/flight-logs/analysis')
 
-    const nav = page.getByRole('navigation', { name: '调参与诊断子页面' })
+    const nav = page.getByRole('navigation', { name: '业务域页面' })
     const active = nav.getByRole('link', { name: '日志分析' })
     const frame = page.locator('.mc-section-frame')
     await expect(active).toBeVisible()
     await expect(frame).toBeVisible()
 
-    const geometry = await page.locator('.mc-section-layout').evaluate((layout) => {
-      const navElement = layout.querySelector<HTMLElement>('.mc-section-nav')!
+    const geometry = await page.locator('.mc-workspace-frame').evaluate((layout) => {
+      const navElement = layout.querySelector<HTMLElement>(':scope > .mc-domain-nav')!
       const activeElement = navElement.querySelector<HTMLElement>('[data-active="true"]')!
-      const frameElement = layout.querySelector<HTMLElement>('.mc-section-frame')!
+      const frameElement = layout.querySelector<HTMLElement>(':scope > .mc-section-frame')!
       const navRect = navElement.getBoundingClientRect()
       const activeRect = activeElement.getBoundingClientRect()
       const frameRect = frameElement.getBoundingClientRect()

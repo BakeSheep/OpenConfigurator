@@ -1,12 +1,12 @@
 import { useTranslation } from 'react-i18next'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useConnectionStore } from '../../stores/connectionStore'
 import { useParameterStore } from '../../stores/parameterStore'
 import Icon from '../ui/Icon'
 
 export default function ParameterProgressBar() {
   const { t } = useTranslation()
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const vehicleReady = useConnectionStore((state) => state.vehicleReady)
   const connectionType = useConnectionStore((state) => state.type)
   const {

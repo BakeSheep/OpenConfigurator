@@ -1,6 +1,6 @@
 // Binds the pure runtime-mode rules to the real browser/Vite environment.
 // Evaluated once at module load, before React renders anything.
-import { isReadOnlyRuntime, resolveRuntimeMode, shouldConnectBackend } from './runtimeMode'
+import { isReadOnlyRuntime, resolveRuntimeMode, shouldStartLocalRuntime } from './runtimeMode'
 
 export const appRuntimeMode = resolveRuntimeMode({
   appMode: import.meta.env.VITE_APP_MODE,
@@ -8,7 +8,7 @@ export const appRuntimeMode = resolveRuntimeMode({
   search: window.location.search,
 })
 
-export const backendEnabled = shouldConnectBackend(appRuntimeMode)
+export const localRuntimeEnabled = shouldStartLocalRuntime(appRuntimeMode)
 export const readOnlyRuntime = isReadOnlyRuntime(appRuntimeMode)
 export const dashboardCustomVarsStorageKey = appRuntimeMode === 'demo'
   ? 'oc-demo-dashboard-custom-vars'

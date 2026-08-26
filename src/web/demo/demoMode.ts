@@ -1,8 +1,7 @@
 // Demo mode: feeds every zustand store with realistic synthetic telemetry so
 // the UI can be showcased without a flight controller. Active in two places:
-// the dev-only `?demo=1` query parameter, and the dedicated static demo build
-// (`VITE_APP_MODE=demo`, GitHub Pages). Demo builds never open a WebSocket or
-// call REST (see runtime.ts / useWebSocket), so the faked `vehicleReady` can
+// the dev-only `?demo=1` query parameter, and dedicated screenshot/UI tests.
+// Demo mode never opens a local serial port, so the faked `vehicleReady` can
 // never coexist with a real flight controller link, and no device write can
 // ever be reported as successful.
 import { useConnectionStore } from '../stores/connectionStore'
@@ -11,7 +10,7 @@ import { useSensorStore } from '../stores/sensorStore'
 import { useParameterStore } from '../stores/parameterStore'
 import { useEscStore } from '../stores/escStore'
 import { useCalibrationStore } from '../stores/calibrationStore'
-import { setDemoClientMessageInterceptor } from '../hooks/useWebSocket'
+import { setDemoRuntimeCommandInterceptor } from '../hooks/useLocalRuntime'
 import { createCalibrationDemo } from './calibrationDemo'
 import type { ParamData } from '../../shared/types'
 import { dashboardCustomVarsStorageKey } from '../runtime'
@@ -309,11 +308,10 @@ function pushSlowTelemetry() {
   conn.setConnectionSnapshot({
     status: 'connected', transportOpen: true, vehicleReady: true, rawSessionActive: false,
     safetyEpoch: 1, safetyAuthorityId: '00000000-0000-4000-8000-000000000001',
-    port: 'DEMO', type: 'synthetic', baudRate: 57600,
+    port: 'DEMO', type: 'synthetic', baudRate: 57600, canControl: false,
   })
   // Keep the synthetic vehicle fully populated for preview while making every
   // normal control gate resolve to read-only.
-  conn.setController('demo-readonly-owner', null, 1, '00000000-0000-4000-8000-000000000001')
   conn.setLinkStats({
     rxBps: Math.round(11840 + 900 * Math.sin(time * 0.5)),
     txBps: Math.round(486 + 60 * Math.sin(time * 0.8)),
@@ -428,24 +426,15 @@ export function startDemoMode(): () => void {
   if (activeCleanup) return activeCleanup
   started = true
   console.log('[Demo] Synthetic telemetry enabled - no flight controller is connected')
-  // Give the demo a stable client id so calibration ownership resolves; the
-  // read-only controller lease (armed, phantom owner) is unchanged.
-  useConnectionStore.getState().setClientId(
-    'demo-client',
-    1,
-    '00000000-0000-4000-8000-000000000001',
-  )
   // Local calibration simulation: intercept calibration client messages so
-  // they drive the calibrationStore without a socket. Registered ONLY here,
-  // so live builds never gain a handler and keep the no-socket safety.
+  // they drive the calibrationStore without a Worker. Registered only here.
   const calibrationDemo = createCalibrationDemo({
     applySnapshot: (snapshot) => useCalibrationStore.getState().applySnapshot(snapshot),
-    setRecovery: (recovery) => useCalibrationStore.getState().setRecovery(recovery),
     family: () =>
       useTelemetryStore.getState().vehicleIdentity?.family === 'ardupilot' ? 'ardupilot' : 'px4',
-    ownerClientId: () => useConnectionStore.getState().clientId ?? 'demo-client',
+    ownerClientId: () => 'demo-client',
   })
-  setDemoClientMessageInterceptor((msg) => calibrationDemo.handleClientMessage(msg))
+  setDemoRuntimeCommandInterceptor((msg) => calibrationDemo.handleRuntimeCommand(msg))
   seedParams()
   seedStatics()
   seedEscConfigurator()
@@ -458,7 +447,7 @@ export function startDemoMode(): () => void {
     window.clearInterval(fastInterval)
     window.clearInterval(slowInterval)
     calibrationDemo.stop()
-    setDemoClientMessageInterceptor(null)
+    setDemoRuntimeCommandInterceptor(null)
     started = false
     activeCleanup = null
   }

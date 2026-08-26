@@ -1,10 +1,9 @@
 // Demo-mode calibration driver.
 //
-// In demo runtime there is no WebSocket, so this module fully simulates a
-// calibration session locally: it consumes the same ClientMessage shapes the
+// In demo runtime there is no local Worker connection, so this module simulates a
+// calibration session locally: it consumes the same RuntimeCommand shapes the
 // live UI sends and produces valid (sessionId, seq) CalibrationSnapshots plus
-// an owner-only session-started signal (recovery token) - it does NOT clone a
-// second UI state machine, it drives the same calibrationStore the live path
+// snapshots. It does NOT clone a second UI state machine; it drives the same calibrationStore the live path
 // feeds. All timers are injectable and tracked so they can be cleared.
 import type {
   AccelCalibrationPosition,
@@ -12,7 +11,7 @@ import type {
   CalibrationSide,
   CalibrationSnapshot,
   CalibrationVerification,
-  ClientMessage,
+  RuntimeCommand,
 } from '../../shared/types'
 
 const SIDE_ORDER: CalibrationSide[] = ['down', 'left', 'right', 'front', 'back', 'up']
@@ -22,7 +21,6 @@ const POSITION_SIDE: Record<AccelCalibrationPosition, CalibrationSide> = {
 
 export interface CalibrationDemoDeps {
   applySnapshot: (snapshot: CalibrationSnapshot) => void
-  setRecovery: (recovery: { sessionId: string; recoveryToken: string }) => void
   family: () => 'px4' | 'ardupilot'
   ownerClientId: () => string
   now?: () => number
@@ -33,7 +31,7 @@ export interface CalibrationDemoDeps {
 }
 
 export interface CalibrationDemo {
-  handleClientMessage: (msg: ClientMessage) => boolean
+  handleRuntimeCommand: (msg: RuntimeCommand) => boolean
   stop: () => void
 }
 
@@ -159,7 +157,7 @@ export function createCalibrationDemo(deps: CalibrationDemoDeps): CalibrationDem
     schedule(() => runMagProgress(pct + 20), STEP_MS)
   }
 
-  const startSession = (msg: Extract<ClientMessage, { type: 'start_calibration' }>): void => {
+  const startSession = (msg: Extract<RuntimeCommand, { type: 'start_calibration' }>): void => {
     clearAllTimers()
     const sessionId = makeId()
     session = {
@@ -169,7 +167,6 @@ export function createCalibrationDemo(deps: CalibrationDemoDeps): CalibrationDem
       family: deps.family(),
       seq: 0,
     }
-    deps.setRecovery({ sessionId, recoveryToken: makeId() })
     emit({ phase: 'starting' })
 
     const { kind, family } = session
@@ -190,7 +187,7 @@ export function createCalibrationDemo(deps: CalibrationDemoDeps): CalibrationDem
     }
   }
 
-  const handleAction = (msg: Extract<ClientMessage, { type: 'calibration_action' }>): void => {
+  const handleAction = (msg: Extract<RuntimeCommand, { type: 'calibration_action' }>): void => {
     if (!session || msg.data.sessionId !== session.sessionId) return
     if (msg.data.action === 'cancel') {
       clearAllTimers()
@@ -222,16 +219,13 @@ export function createCalibrationDemo(deps: CalibrationDemoDeps): CalibrationDem
   }
 
   return {
-    handleClientMessage(msg) {
+    handleRuntimeCommand(msg) {
       switch (msg.type) {
         case 'start_calibration':
           startSession(msg)
           return true
         case 'calibration_action':
           handleAction(msg)
-          return true
-        case 'calibration_reclaim':
-          // The demo owner never really disconnects; acknowledge and continue.
           return true
         default:
           return false

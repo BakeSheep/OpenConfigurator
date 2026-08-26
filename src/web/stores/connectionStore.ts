@@ -33,9 +33,6 @@ interface ConnectionState {
   baudRate: number | null
   targetSystemId: number | null
   targetComponentId: number | null
-  clientId: string | null
-  controllerClientId: string | null
-  controllerExpiresAt: number | null
   /** Server-authoritative safety-confirmation boundary. */
   safetyEpoch: number
   safetyAuthorityId: string | null
@@ -62,9 +59,9 @@ interface ConnectionState {
     port?: string
     type?: string
     baudRate?: number
+    canControl?: boolean
   }) => void
-  setClientId: (clientId: string, safetyEpoch: number, safetyAuthorityId: string) => void
-  setController: (clientId: string | null, expiresAt: number | null, safetyEpoch: number, safetyAuthorityId: string) => void
+  setSafetyBoundary: (safetyEpoch: number, safetyAuthorityId: string) => void
   setTarget: (systemId: number | null, componentId: number | null, safetyEpoch?: number, safetyAuthorityId?: string) => void
   setReconnecting: (info: ReconnectInfo) => void
   setDisconnected: () => void
@@ -85,12 +82,9 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   baudRate: null,
   targetSystemId: null,
   targetComponentId: null,
-  clientId: null,
-  controllerClientId: null,
-  controllerExpiresAt: null,
   safetyEpoch: 0,
   safetyAuthorityId: null,
-  canControl: true,
+  canControl: false,
   reconnect: null,
   linkStats: null,
   serialPorts: [],
@@ -116,20 +110,12 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     connectionError: snapshot.transportOpen ? null : state.connectionError,
     safetyEpoch: snapshot.safetyEpoch,
     safetyAuthorityId: snapshot.safetyAuthorityId,
+    canControl: snapshot.canControl ?? snapshot.transportOpen,
   })),
-  setClientId: (clientId, safetyEpoch, safetyAuthorityId) => set((state) => ({
-    clientId,
+  setSafetyBoundary: (safetyEpoch, safetyAuthorityId) => set({
     safetyEpoch,
     safetyAuthorityId,
-    canControl: state.controllerClientId === null || state.controllerClientId === clientId,
-  })),
-  setController: (controllerClientId, controllerExpiresAt, safetyEpoch, safetyAuthorityId) => set((state) => ({
-    controllerClientId,
-    controllerExpiresAt,
-    safetyEpoch,
-    safetyAuthorityId,
-    canControl: controllerClientId === null || controllerClientId === state.clientId,
-  })),
+  }),
   setTarget: (targetSystemId, targetComponentId, safetyEpoch, safetyAuthorityId) => set((state) => {
     const normalizedComponentId = targetSystemId === null ? null : targetComponentId
     return {
@@ -161,9 +147,7 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
     targetComponentId: null,
     reconnect: null,
     linkStats: null,
-    controllerClientId: null,
-    controllerExpiresAt: null,
-    canControl: true,
+    canControl: false,
     activePresetId: null,
   })),
   setLinkStats: (stats) => set({ linkStats: stats }),

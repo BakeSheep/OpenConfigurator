@@ -24,7 +24,8 @@ import Field from '../components/ui/Field'
 import { PageHeader } from '../components/ui/PageFrame'
 import Toolbar from '../components/ui/Toolbar'
 import UPlotChart, { seriesColor } from '../components/logs/UPlotChart'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
+import { localRuntime } from '../runtime/LocalRuntimeClient'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useLogTransferStore } from '../stores/logTransferStore'
@@ -36,7 +37,7 @@ import { takeStashedLog } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
 import { parameterGroupKey, parameterGroupLabel } from '../utils/parameterMetadata'
 import { localizeLogSeries, logLoopLabel } from '../utils/logSeriesLabels'
-import { backendEnabled } from '../runtime'
+import { localRuntimeEnabled } from '../runtime'
 import { roundedDurationParts } from '../utils/duration'
 import {
   buildChartCsv,
@@ -567,7 +568,7 @@ function FcImportDialog({
 
   useEffect(() => {
     useFileExplorerStore.getState().setLoading(true)
-    sendClientMessage({ type: 'fs_list', data: { path: currentPath } })
+    sendRuntimeCommand({ type: 'fs_list', data: { path: currentPath } })
   }, [currentPath])
 
   const visible = useMemo(
@@ -588,7 +589,7 @@ function FcImportDialog({
     if (download?.status === 'active') return
     const path = currentPath.endsWith('/') ? `${currentPath}${entry.name}` : `${currentPath}/${entry.name}`
     store.beginDownload(path, 'analyze')
-    sendClientMessage({ type: 'fs_download', data: { path } })
+    sendRuntimeCommand({ type: 'fs_download', data: { path } })
   }
 
   const goUp = () => {
@@ -630,7 +631,7 @@ function FcImportDialog({
             </span>
             <Button
               tone="quiet"
-              onClick={() => sendClientMessage({ type: 'fs_download_cancel' })}
+              onClick={() => sendRuntimeCommand({ type: 'fs_download_cancel' })}
             >
               {t('common.cancel')}
             </Button>
@@ -699,7 +700,7 @@ function FcDataflashImportDialog({
 
   useEffect(() => {
     useLogTransferStore.getState().setLoading(true)
-    sendClientMessage({ type: 'log_list' })
+    sendRuntimeCommand({ type: 'log_list' })
   }, [])
 
   const newestFirst = useMemo(
@@ -710,7 +711,7 @@ function FcDataflashImportDialog({
   const open = (entry: DataflashLogEntry) => {
     if (download?.status === 'active') return
     useLogTransferStore.getState().beginDownload(entry.id, 'analyze')
-    sendClientMessage({ type: 'log_download', data: { logId: entry.id } })
+    sendRuntimeCommand({ type: 'log_download', data: { logId: entry.id } })
   }
 
   return (
@@ -732,7 +733,7 @@ function FcDataflashImportDialog({
             </span>
             <Button
               tone="quiet"
-              onClick={() => sendClientMessage({ type: 'log_download_cancel' })}
+              onClick={() => sendRuntimeCommand({ type: 'log_download_cancel' })}
             >
               {t('common.cancel')}
             </Button>
@@ -884,18 +885,16 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
   // FC import completed while this page is open: fetch and analyze in place.
   useEffect(() => {
-    if (download?.status !== 'done' || !download.downloadId) return
+    if (download?.status !== 'done' || !download.artifactId) return
     if (download.intent !== 'analyze') return
-    if (handledDownloadRef.current === download.downloadId) return
-    const downloadId = download.downloadId
+    if (handledDownloadRef.current === download.artifactId) return
+    const artifactId = download.artifactId
     let cancelled = false
     void (async () => {
       try {
-        const response = await fetch(`/api/logs/downloads/${downloadId}`)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        const { blob } = await localRuntime.readArtifact(artifactId, true)
         if (cancelled) return
-        handledDownloadRef.current = downloadId
+        handledDownloadRef.current = artifactId
         useFileExplorerStore.getState().clearDownload()
         setImportOpen(false)
         analyzeBlob(download.fileName ?? 'log.ulg', blob)
@@ -913,18 +912,16 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
 
   // ArduPilot DataFlash FC import completed: fetch and analyze in place.
   useEffect(() => {
-    if (logDownload?.status !== 'done' || !logDownload.downloadId) return
+    if (logDownload?.status !== 'done' || !logDownload.artifactId) return
     if (logDownload.intent !== 'analyze') return
-    if (handledDownloadRef.current === logDownload.downloadId) return
-    const downloadId = logDownload.downloadId
+    if (handledDownloadRef.current === logDownload.artifactId) return
+    const artifactId = logDownload.artifactId
     let cancelled = false
     void (async () => {
       try {
-        const response = await fetch(`/api/logs/downloads/${downloadId}`)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        const { blob } = await localRuntime.readArtifact(artifactId, true)
         if (cancelled) return
-        handledDownloadRef.current = downloadId
+        handledDownloadRef.current = artifactId
         useLogTransferStore.getState().clearDownload()
         setImportOpen(false)
         analyzeBlob(logDownload.fileName ?? 'log.bin', blob)
@@ -1152,8 +1149,8 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
       <button
         type="button"
         className="mc-btn mc-btn-primary"
-        disabled={!backendEnabled || !vehicleReady}
-        title={!backendEnabled
+        disabled={!localRuntimeEnabled || !vehicleReady}
+        title={!localRuntimeEnabled
           ? t('logAnalysis.demoModeHint')
           : vehicleReady ? undefined : t('logAnalysis.connectToImport')}
         onClick={() => setImportOpen(true)}
@@ -1219,7 +1216,7 @@ export default function LogAnalysisPage({ embedded = false }: { embedded?: boole
           </p>
           <p style={{ margin: 0, fontSize: 12.5 }}>
             {t('logAnalysis.dropzoneSupports')}
-            {backendEnabled && t('logAnalysis.dropzoneFcHint')}
+            {localRuntimeEnabled && t('logAnalysis.dropzoneFcHint')}
           </p>
         </div>
       )}

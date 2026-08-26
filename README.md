@@ -5,70 +5,45 @@
 </p>
 
 <p align="center">
-  面向 PX4 与 ArduPilot 的本地优先桌面与 Web 地面站。
+  面向 PX4 与 ArduPilot 的纯浏览器、本地数据飞控配置与地面站。
 </p>
 
 <p align="center">
-  <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线预览</b></a> ·
+  <a href="https://bakesheep.github.io/OpenConfigurator/"><b>在线使用</b></a> ·
   <a href="README.en.md">English</a> ·
-  <a href="docs/ARCHITECTURE.md">架构</a> ·
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/dashboard.zh.jpg" alt="使用演示数据的飞行总览" width="860" />
+  <a href="docs/ARCHITECTURE.md">架构</a>
 </p>
 
 > [!WARNING]
 > OpenConfigurator 仍处于预发布阶段，不是经过认证的航空安全系统。连接电机或 ESC 控制前必须拆除全部螺旋桨，并在受控环境中完成实机验证。
 
-## 项目概览
+## 隐私与部署模型
 
-OpenConfigurator 由 React 单页应用、本机 Node.js 服务和可选的 Electron 桌面壳组成。前端通过 REST 与单一 WebSocket 访问服务；服务负责串口、Windows Bluetooth SPP、Linux BlueZ SPP、MAVLink、日志传输和 ESC 会话。默认服务仅监听 `127.0.0.1`，设备数据无需经过云端。
+OpenConfigurator 是静态 SPA。部署服务器只分发 HTML、JavaScript、CSS 和本地资源；浏览器通过 Web Serial 直接连接当前电脑上的飞控。MAVLink 字节、遥测、参数、校准状态、日志和分析结果均在当前浏览器标签页中处理，不会上传到部署服务器。
 
-飞控类型只根据 HEARTBEAT 识别。PX4 与 ArduPilot 使用各自的 vehicle profile、参数和指令路径；未识别或尚未适配的机型保持只读。
+- 每个标签页独立拥有一个本机串口和本地 Dedicated Worker，不提供账号、共享控制或跨浏览器会话。
+- 串口选择必须由用户点击触发。刷新后只列出浏览器已经授权的设备，不会自动打开或占用端口。
+- 日志下载先写入本机 OPFS 临时区，用户主动保存或分析后即消费；断开、淘汰或下次启动清理遗留 artifact。
+- MAVLink signing 密钥只保存在当前连接的内存中，断开或刷新即清除，不写入浏览器存储。
+- 生产 CSP 使用 `connect-src 'none'`。项目不加载第三方字体、地图图块、统计、遥测、REST 或 WebSocket。
 
-界面按八个任务域组织，桌面与移动端共用同一套路由。浏览器重连后会恢复连接、控制权和当前 MAVLink 目标状态，并在目标与权限就绪后自动继续参数同步。
+多人可同时访问同一个 HTTPS 部署地址，各自连接本机飞控；服务器只能看到普通静态资源 GET。
 
-## 主要功能
+## 支持范围
 
-- USB 串口、Windows Bluetooth SPP 与 Linux BlueZ SPP 连接，支持连接预设、硬件身份重新匹配、MAVLink v1/v2、链路诊断和可选的 MAVLink 2 signing
-- 姿态、定位、电池、传感器、RC、执行器、EKF 和 MAVLink 消息实时监控
-- 参数自动同步与进度显示、搜索、QGC 参数文件导入/导出、机架选择、遥控器校准、飞行模式、电源/电池、安全保护、PID/EKF 调整与独立传感器校准页
-- PID 参数写入会实时复核飞控就绪、已上锁、机型支持与当前客户端控制权，并等待参数回显后确认写入
-- 带安全门控的解锁/上锁、模式切换、起飞、降落、返航、电机测试和手柄 RC override
-- PX4 ULog 与 ArduPilot DataFlash 日志浏览、下载、离线分析、可用时基于 GPS 的绝对起飞时间、图表 CSV/PNG 与完整结构化 ZIP 导出
-- 通过 ArduPilot passthrough、PX4 `SERIAL_CONTROL` 或 19200 波特直连配置 AM32 ESC 参数
-- 同一套前端支持本地 Web 运行和 Windows x64 Electron 免安装包
+- 桌面 Chromium 浏览器；Web Serial 需要 HTTPS 安全上下文或 localhost。
+- PX4：连接、遥测、参数、调参、校准、飞行操作、ULog、NSH 终端与 ESC 路径。
+- ArduPilot：ArduCopter 是安全关键写操作的适配目标；其他已识别机型保留通用显示与 DataFlash 日志，未适配写操作保持关闭。
+- AM32 ESC 参数：ArduPilot raw passthrough、PX4 `SERIAL_CONTROL`、19200 波特直连三条路径；不提供固件刷写。
+- Firefox、Safari、移动浏览器、自动连接和 Electron 桌面包不在本次支持范围。
 
-ESC 页面只配置参数，不提供固件刷写或启动音编辑。写入会保留未知 EEPROM 字节并执行完整读回校验；实际使用前请核对 [ESC 兼容性矩阵](docs/ESC-COMPATIBILITY.md)。
+飞控类型只根据 HEARTBEAT 识别。安全关键操作会在本地 Worker 中重新检查连接、目标、机型能力、armed 状态和 safety epoch；`COMMAND_ACK` 本身不被视为物理状态成功。
 
-## 支持边界
+详细边界见 [飞控配置兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)、[ESC 兼容性](docs/ESC-COMPATIBILITY.md) 和 [HIL 清单](docs/HIL-CHECKLIST.md)。
 
-- PX4：覆盖当前已有的连接、监控、参数、调参、校准、飞行操作、ULog 和 NSH 终端路径。
-- ArduPilot：ArduCopter 是当前安全关键写操作的适配与验收目标；Plane、Rover、Sub 和 Tracker 可识别并查看通用数据与 DataFlash 日志，但保持只读。
-- 当前不提供任务、围栏、集结点、相机/云台配置、PX4 ESC PWM 校准或 UAVCAN 执行器分配。
-- 软件路径和自动化测试不等于具体飞控、ESC、固件组合已通过 HIL 或飞行验证。
+## 本地开发
 
-详细边界见 [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md) 和 [ESC 兼容性矩阵](docs/ESC-COMPATIBILITY.md)。
-
-## 工作区
-
-| 工作区 | 主要内容 |
-|---|---|
-| 总览 | 姿态、关键遥测、系统健康与自定义数据板 |
-| 飞行操作 | 预检、模式切换与带安全门控的飞行指令 |
-| 机体配置 | 机架、传感器实时诊断、独立校准、电源/电池与安全保护 |
-| 动力与输出 | 执行器映射、无桨电机测试与 AM32 ESC 参数配置 |
-| 遥控输入 | 遥控器校准、手柄输入与飞行模式分配 |
-| 调参与状态 | 完整参数、PID 调参与 EKF 融合状态 |
-| 日志与链路 | MAVLink 消息、消息频率、飞控终端与实时波形 |
-| 日志与分析 | 飞行日志列表、下载、离线分析与结构化导出 |
-
-## 快速开始
-
-要求 Node.js `>=22.12.0` 与 npm。Web Serial 设备选择器需要 Chrome / Edge 89+，且页面通过 HTTPS 或 localhost 访问。
-
-Linux 蓝牙直连使用 BlueZ Profile API，不需要创建 `/dev/rfcomm*` 或执行 `sudo rfcomm`；系统需安装 `bluez`、Python 3、`dbus-python` 与 PyGObject，并先在系统蓝牙设置中完成 SPP 设备配对。
+要求 Node.js `>=22.12.0` 与 npm。Node 只用于开发、测试和构建，不参与生产运行。
 
 ```bash
 git clone https://github.com/BakeSheep/OpenConfigurator.git
@@ -77,56 +52,47 @@ npm install
 npm run dev
 ```
 
-打开 <http://localhost:5173>。Vite 会将 `/api` 与 `/ws` 代理到本机 `3000` 端口。
-
-本地生产模式：
-
-```bash
-npm run build
-npm start
-```
-
-打开 <http://localhost:3000>。只查看合成数据演示时，可运行 `npm run dev:web` 并访问 <http://localhost:5173/?demo=1>。
+打开 <http://localhost:5173>，点击连接按钮后由浏览器显示原生设备选择器。开发环境可用 <http://localhost:5173/?demo=1> 查看只读合成数据。
 
 常用命令：
 
 | 命令 | 用途 |
 |---|---|
-| `npm run dev` | 同时启动前端与后端开发服务 |
-| `npm run typecheck` | 运行 TypeScript 类型检查 |
-| `npm run test:server` | 运行硬件无关回归测试 |
-| `npm run test:protocol` | 运行 MAVLink 与 ESC 协议专项测试 |
-| `npm run build` | 检查类型并构建生产前端 |
-| `npm start` | 启动本地生产服务 |
-| `npm run dist:win` | 构建 Windows x64 portable EXE |
+| `npm run dev` | 启动 Vite 开发服务器 |
+| `npm run typecheck` | TypeScript 类型检查 |
+| `npm run test:runtime` | 本地 Worker、Web Serial、artifact 与协议测试 |
+| `npm run test:protocol` | MAVLink、日志传输、校准和 ESC 协议测试 |
+| `npm run test:ui` | Playwright UI 与无障碍回归 |
+| `npm run build` | 生成通用静态 `dist/` |
+| `npm start` | 本地预览生产构建 |
+
+## 生产部署
+
+```bash
+npm run build
+docker build -t openconfigurator .
+docker run --rm -p 8080:8080 openconfigurator
+```
+
+`dist/` 可部署到任意静态站点。公网必须由反向代理、CDN 或托管平台提供 HTTPS；单纯 HTTP 公网地址无法使用 Web Serial。随仓库提供的 Nginx 镜像只提供静态文件和安全响应头，不含应用 API。
 
 ## 架构
 
 ```text
-Browser / Electron + React SPA
-             │ REST + WebSocket
-             ▼
-Express / ws ── validation / controller lease
-             │
-             ├─ MAVLink bridge ── PX4 / ArduPilot
-             └─ ESC service ───── passthrough / SERIAL_CONTROL / direct serial
+HTTPS static host
+        │ static GET only
+        ▼
+React SPA ── Web Serial ── local flight controller
+    │
+    └─ Dedicated Worker
+       ├─ MAVLink codec / signing / target and safety gates
+       ├─ parameters / calibration / terminal / flight commands
+       ├─ FTP / DataFlash ── OPFS temporary artifacts
+       └─ AM32 ESC sessions
 ```
 
-- `src/shared/`：前后端唯一共享边界，包含协议类型、vehicle profile 与 ESC 布局
-- `src/web/`：React 工作区、WebSocket 分发和 Zustand stores
-- `src/server/`：连接生命周期、MAVLink、日志传输和 ESC 会话
+- `src/shared/`：框架无关的 RuntimeCommand/RuntimeEvent、vehicle profile、协议常量和 ESC layout。
+- `src/web/`：React 工作区、Web Serial 主线程传输、根级 `useLocalRuntime` 和 Zustand stores。
+- `src/local-runtime/`：Dedicated Worker、MAVLink、日志传输、校准、终端和 ESC 服务。
 
-详细设计与约束见 [架构文档](docs/ARCHITECTURE.md)。
-
-## 文档与许可
-
-- [架构](docs/ARCHITECTURE.md)
-- [飞控配置界面兼容性](docs/FLIGHT-CONTROLLER-COMPATIBILITY.md)
-- [飞行器配置行为与参数来源](docs/VEHICLE-CONFIG-SOURCES.md)
-- [参数枚举元数据](docs/PARAMETER-ENUM-METADATA.md)
-- [结构化飞行日志](docs/STRUCTURED-FLIGHT-LOG.md)
-- [ESC 兼容性](docs/ESC-COMPATIBILITY.md)
-- [ESC 协议来源](docs/ESC-PROTOCOL-SOURCES.md)
-- [第三方说明](THIRD_PARTY_NOTICES.md)
-
-OpenConfigurator 采用 [MIT License](LICENSE)。项目与 PX4、ArduPilot、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系。
+更多设计约束见 [架构文档](docs/ARCHITECTURE.md)。OpenConfigurator 采用 [MIT License](LICENSE)，与 PX4、ArduPilot、MAVLink、MicoAir 或 QGroundControl 官方项目没有隶属关系。

@@ -146,7 +146,7 @@ export const MESSAGE_RATE_GROUP_IDS = Object.freeze({
 })
 
 // MAVLink FTP (FILE_TRANSFER_PROTOCOL, msg #110) protocol constants shared by
-// the backend client implementation and its protocol tests.
+// the local runtime implementation and its protocol tests.
 export const FTP_MESSAGE_ID = 110
 
 export const FTP_OPCODES = {
@@ -231,4 +231,3 @@ export const PX4_ESC_SERIAL_CONTROL_DEVICE_MAX = 27
 
 // ESC bootloader / passthrough baud rate (AM32 half-duplex and PX4 UART).
 export const ESC_SERIAL_BAUD_RATE = 19200
-

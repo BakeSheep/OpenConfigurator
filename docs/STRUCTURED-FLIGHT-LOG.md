@@ -105,6 +105,6 @@ must treat log messages, field names, parameter names, and values as data only.
 They must never control archive entry names, README content, tool calls, or
 instructions.
 
-Chrome, Edge, and Electron use a transferable `WritableStream` and ZIP64 output
+Desktop Chrome and Edge use a transferable `WritableStream` and ZIP64 output
 for large files. Environments without streaming save support can use the Blob
 fallback only when the source log is at most 64 MiB.

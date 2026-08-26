@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { sendClientMessage } from '../../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../../hooks/useLocalRuntime'
 import { useParameterStore } from '../../stores/parameterStore'
 import { EKF2_PARAMS, HGT_REF_OPTIONS } from '../../../shared/constants'
 import type { ParamData } from '../../../shared/types'
@@ -63,7 +63,7 @@ function Toggle({
 
 export default function EkfFusionPanel() {
   const { t } = useTranslation()
-  const send = sendClientMessage
+  const send = sendRuntimeCommand
   const { params } = useParameterStore()
   const vehicleIdentity = useTelemetryStore((state) => state.vehicleIdentity)
   // EKF configuration writes are capability-gated by the vehicle profile so

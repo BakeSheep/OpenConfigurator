@@ -9,7 +9,8 @@ import Icon from '../components/ui/Icon'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import { EmptyState, PageHeader } from '../components/ui/PageFrame'
 import DataflashLogPanel from '../components/logs/DataflashLogPanel'
-import { sendClientMessage } from '../hooks/useWebSocket'
+import { sendRuntimeCommand } from '../hooks/useLocalRuntime'
+import { localRuntime } from '../runtime/LocalRuntimeClient'
 import { useConnectionStore } from '../stores/connectionStore'
 import { useFileExplorerStore } from '../stores/fileExplorerStore'
 import { useTelemetryStore } from '../stores/telemetryStore'
@@ -18,7 +19,7 @@ import { logSupport } from '../utils/logProfiles'
 import { parsePx4DirectoryDate, parsePx4FileDate } from '../utils/ulogAnalysis'
 import { stashLogBlob } from '../utils/logAnalysisSession'
 import { formatBytes } from '../utils/formatBytes'
-import { backendEnabled } from '../runtime'
+import { localRuntimeEnabled } from '../runtime'
 import type { FsEntry } from '../../shared/types'
 
 type SortKey = 'name' | 'date' | 'type' | 'size'
@@ -142,7 +143,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     contextTriggerRef.current = null
     handledDownloadRef.current = null
     setFocusedEntryName(null)
-    if (backendEnabled) useFileExplorerStore.getState().reset()
+    if (localRuntimeEnabled) useFileExplorerStore.getState().reset()
   }, [closeContextMenu, targetKey, vehicleReady])
 
   // A destructive commitment also belongs to the current controller-lease
@@ -155,9 +156,9 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   }, [canControl, closeContextMenu, safetyAuthorityId, safetyEpoch])
 
   const requestListing = useCallback((path: string) => {
-    if (!backendEnabled) return
+    if (!localRuntimeEnabled) return
     useFileExplorerStore.getState().setLoading(true)
-    sendClientMessage({ type: 'fs_list', data: { path } })
+    sendRuntimeCommand({ type: 'fs_list', data: { path } })
   }, [])
 
   // (Re-)list whenever the target directory or the link readiness changes.
@@ -165,7 +166,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
   // DataFlash panel issues its own log_list requests.
   useEffect(() => {
     if (
-      backendEnabled
+      localRuntimeEnabled
       && vehicleReady
       && targetSystemId !== null
       && targetComponentId !== null
@@ -183,27 +184,26 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
 
   // Download finished: hand the file to the browser or to the analysis page.
   useEffect(() => {
-    if (download?.status !== 'done' || !download.downloadId) return
-    if (handledDownloadRef.current === download.downloadId) return
-    handledDownloadRef.current = download.downloadId
-    const url = `/api/logs/downloads/${download.downloadId}`
-    if (download.intent === 'save') {
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = download.fileName ?? 'log.ulg'
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      const timer = setTimeout(() => useFileExplorerStore.getState().clearDownload(), 2500)
-      return () => clearTimeout(timer)
-    }
+    if (download?.status !== 'done' || !download.artifactId) return
+    if (handledDownloadRef.current === download.artifactId) return
+    handledDownloadRef.current = download.artifactId
     let cancelled = false
     void (async () => {
       try {
-        const response = await fetch(url)
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const blob = await response.blob()
+        const { blob, fileName } = await localRuntime.readArtifact(download.artifactId!, true)
         if (cancelled) return
+        if (download.intent === 'save') {
+          const url = URL.createObjectURL(blob)
+          const anchor = document.createElement('a')
+          anchor.href = url
+          anchor.download = download.fileName ?? fileName
+          document.body.appendChild(anchor)
+          anchor.click()
+          anchor.remove()
+          URL.revokeObjectURL(url)
+          useFileExplorerStore.getState().clearDownload()
+          return
+        }
         stashLogBlob(download.fileName ?? 'log.ulg', blob, download.path)
         useFileExplorerStore.getState().clearDownload()
         navigate('/log-analysis')
@@ -323,7 +323,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     const path = joinPath(useFileExplorerStore.getState().currentPath, entry.name)
     handledDownloadRef.current = null
     useFileExplorerStore.getState().beginDownload(path, intent)
-    sendClientMessage({ type: 'fs_download', data: { path } })
+    sendRuntimeCommand({ type: 'fs_download', data: { path } })
   }, [busy])
 
   const handleRowDoubleClick = (entry: FsEntry) => {
@@ -481,7 +481,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
     if (targets.length === 0) return
     setDeleteDialogOpen(false)
     store.beginDeletion()
-    sendClientMessage({
+    sendRuntimeCommand({
       type: 'fs_delete',
       data: { entries: targets },
       safetyConfirmation: 'delete_files',
@@ -522,7 +522,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
         }
       />}
 
-      {!backendEnabled ? (
+      {!localRuntimeEnabled ? (
         <EmptyState
           title={t('flightLogs.demoMode')}
           description={t('flightLogs.demoModeDesc')}
@@ -754,7 +754,7 @@ export default function FlightLogsPage({ embedded = false }: { embedded?: boolea
                       type="button"
                       className="mc-icon-btn"
                       aria-label={t('flightLogs.cancelDownload')}
-                      onClick={() => sendClientMessage({ type: 'fs_download_cancel' })}
+                      onClick={() => sendRuntimeCommand({ type: 'fs_download_cancel' })}
                     >
                       <Icon name="close" size={13} />
                     </button>

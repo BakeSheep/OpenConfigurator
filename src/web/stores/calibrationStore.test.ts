@@ -4,8 +4,7 @@ import { useCalibrationStore } from './calibrationStore'
 
 // ---------------------------------------------------------------------------
 // Idempotent calibration snapshot store: (sessionId, seq) monotonicity, cross
-// session reset, terminal retention and disconnect clearing. Recovery token is
-// tracked separately and never overwritten by broadcast snapshots.
+// session reset, terminal retention and disconnect clearing.
 // ---------------------------------------------------------------------------
 
 function snapshot(overrides: Partial<CalibrationSnapshot> = {}): CalibrationSnapshot {
@@ -49,36 +48,12 @@ useCalibrationStore.getState().applySnapshot(snapshot({ sessionId: 'sess-2', seq
 assert.equal(useCalibrationStore.getState().snapshot?.sessionId, 'sess-2')
 assert.equal(useCalibrationStore.getState().snapshot?.seq, 1)
 
-// -- terminal snapshot is retained and permanently clears recovery ------------
+// -- terminal snapshot is retained -------------------------------------------
 reset()
-useCalibrationStore.getState().setRecovery({ sessionId: 'sess-1', recoveryToken: 'terminal-token' })
 useCalibrationStore.getState().applySnapshot(snapshot({ seq: 1 }))
 useCalibrationStore.getState().applySnapshot(snapshot({ seq: 2, phase: 'done', verification: 'verified' }))
 assert.equal(useCalibrationStore.getState().snapshot?.phase, 'done')
 assert.equal(useCalibrationStore.getState().isTerminal(), true)
-assert.equal(useCalibrationStore.getState().recovery, null)
-
-// -- recovery token lifecycle -------------------------------------------------
-reset()
-useCalibrationStore.getState().setRecovery({ sessionId: 'sess-1', recoveryToken: 'tok-abc' })
-assert.deepEqual(useCalibrationStore.getState().recovery, { sessionId: 'sess-1', recoveryToken: 'tok-abc' })
-// Applying snapshots must not clobber the recovery token.
-useCalibrationStore.getState().applySnapshot(snapshot({ seq: 5 }))
-assert.equal(useCalibrationStore.getState().recovery?.recoveryToken, 'tok-abc')
-useCalibrationStore.getState().clearRecovery()
-assert.equal(useCalibrationStore.getState().recovery, null)
-
-// -- reset clears live state but preserves recovery for transient WS drops -----
-reset()
-useCalibrationStore.getState().applySnapshot(snapshot({ seq: 9 }))
-useCalibrationStore.getState().setRecovery({ sessionId: 'sess-1', recoveryToken: 'tok-xyz' })
-useCalibrationStore.getState().reset()
-assert.equal(useCalibrationStore.getState().snapshot, null)
-assert.equal(useCalibrationStore.getState().recovery?.recoveryToken, 'tok-xyz')
-assert.equal(useCalibrationStore.getState().isTerminal(), false)
-// A confirmed permanent loss explicitly clears the preserved token.
-useCalibrationStore.getState().clearRecovery()
-assert.equal(useCalibrationStore.getState().recovery, null)
 
 // -- isOwner reflects the snapshot owner vs current client --------------------
 reset()

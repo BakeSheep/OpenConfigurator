@@ -41,16 +41,16 @@ test('language and theme controls update the document and persist', async ({ pag
   for (const route of [
     '/dashboard',
     '/flight',
-    '/settings?section=sensors',
-    '/settings?section=actuators',
-    '/settings?section=esc',
-    '/settings?section=receiver',
-    '/settings?section=ports',
-    '/diagnostics?section=pid',
-    '/diagnostics?section=ekf',
-    '/diagnostics?section=messages',
-    '/diagnostics?section=logs',
-    '/diagnostics?section=log-analysis',
+    '/airframe/sensors',
+    '/propulsion',
+    '/propulsion/esc',
+    '/control-input',
+    '/airframe/ports',
+    '/tuning/pid',
+    '/tuning/ekf',
+    '/flight-data',
+    '/flight-logs',
+    '/flight-logs/analysis',
   ]) {
     await test.step(`dark English ${route}`, async () => {
       await openDemo(page, route)
