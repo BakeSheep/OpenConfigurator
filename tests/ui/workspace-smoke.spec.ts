@@ -55,7 +55,7 @@ for (const workspace of workspaces) {
       await expect(domainNav.locator('[aria-current="page"]')).toHaveText(workspace.section)
     }
 
-    await expectSharedWorkspaceLayout(page, false)
+    await expectSharedWorkspaceLayout(page, 'section' in workspace)
     await expectNoPageOverflow(page)
   })
 
@@ -78,7 +78,7 @@ test('360 and 768 responsive smoke keeps every workspace inside the viewport', a
         if ('section' in workspace) {
           await expect(page.locator('.mc-section-frame__header h2')).toHaveText(workspace.section)
         }
-        await expectSharedWorkspaceLayout(page, false)
+        await expectSharedWorkspaceLayout(page, 'section' in workspace)
         await expectNoPageOverflow(page)
       })
     }

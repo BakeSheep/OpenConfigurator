@@ -122,6 +122,10 @@ export class LocalRuntimeClient {
       this.serial.cancelQueued(message.queueTag)
       return
     }
+    if (message.type === 'transport_abort') {
+      void this.serial.close(false)
+      return
+    }
     if (message.type === 'artifact_data' || message.type === 'artifact_error') {
       const pending = this.artifactRequests.get(message.requestId)
       if (!pending) return

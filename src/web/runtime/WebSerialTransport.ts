@@ -22,6 +22,7 @@ function bluetoothId(info: SerialPortInfo): string | undefined {
 }
 
 export class WebSerialTransport {
+  private readonly descriptorNamespace = crypto.randomUUID()
   private readonly ports = new Map<string, SerialPort>()
   private readonly ids = new WeakMap<SerialPort, string>()
   private nextPortId = 0
@@ -114,8 +115,7 @@ export class WebSerialTransport {
   async close(notify = true): Promise<void> {
     if (this.closing) return
     this.closing = true
-    for (const entry of this.queue.splice(0)) entry.resolve(false)
-    this.queuedBytes = 0
+    this.rejectQueuedWrites()
     this.reconnecting = false
     await this.closeStreams()
     const notifyClosed = this.onClosed
@@ -141,6 +141,7 @@ export class WebSerialTransport {
       : `USB ${info.usbVendorId.toString(16).toUpperCase().padStart(4, '0')}:${(info.usbProductId ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
     return {
       id,
+      deviceId: `webserial:${this.descriptorNamespace}:${id}`,
       granted,
       usbVendorId: info.usbVendorId,
       usbProductId: info.usbProductId,
@@ -202,6 +203,9 @@ export class WebSerialTransport {
     const port = this.port
     const options = this.activeOptions
     const notify = this.onClosed
+    // Queued bytes belong to the failed link generation. Replaying them after
+    // an in-tab Bluetooth reconnect could execute stale vehicle commands.
+    this.rejectQueuedWrites()
     await this.closeStreams()
     notify?.(reason)
     if (!port || options?.type !== 'bluetooth' || this.closing || this.reconnecting) return
@@ -240,5 +244,10 @@ export class WebSerialTransport {
     try { reader?.releaseLock() } catch { /* A timed-out stream still owns its lock. */ }
     try { writer?.releaseLock() } catch { /* A timed-out stream still owns its lock. */ }
     await settleWithin(port?.close())
+  }
+
+  private rejectQueuedWrites(): void {
+    for (const entry of this.queue.splice(0)) entry.resolve(false)
+    this.queuedBytes = 0
   }
 }

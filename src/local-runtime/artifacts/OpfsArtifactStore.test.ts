@@ -81,3 +81,25 @@ test('virtual artifact directories are isolated during stale-file cleanup', asyn
     await artifactFs.purge()
   }
 })
+
+test('artifact cleanup is isolated to the active Worker namespace', async () => {
+  const path = '/openconfigurator-artifacts/shared-name.artifact'
+  try {
+    artifactFs.setNamespace('worker-a')
+    await artifactFs.writeFile(path, Uint8Array.of(1))
+
+    artifactFs.setNamespace('worker-b')
+    await artifactFs.writeFile(path, Uint8Array.of(2))
+    await artifactFs.purge()
+    await assert.rejects(() => artifactFs.readFile(path), /not found/)
+
+    artifactFs.setNamespace('worker-a')
+    assert.deepEqual(await artifactFs.readFile(path), Uint8Array.of(1))
+  } finally {
+    artifactFs.setNamespace('worker-a')
+    await artifactFs.purge()
+    artifactFs.setNamespace('worker-b')
+    await artifactFs.purge()
+    artifactFs.setNamespace(null)
+  }
+})

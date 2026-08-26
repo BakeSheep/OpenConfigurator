@@ -6,6 +6,8 @@ export const LOCAL_RUNTIME_OWNER_ID = 'local-browser'
 export interface BrowserPortDescriptor {
   /** Ephemeral id valid only for the current page lifecycle. */
   id: string
+  /** Opaque identity valid only for this Web Serial transport instance. */
+  deviceId: string
   label: string
   usbVendorId?: number
   usbProductId?: number
@@ -52,6 +54,7 @@ export type WorkerOutboundMessage =
   | { type: 'runtime_event'; event: RuntimeEvent }
   | { type: 'transport_write'; writeId: number; data: ArrayBuffer; priority: 'normal' | 'high' | 'critical'; queueTag?: string }
   | { type: 'transport_cancel'; queueTag: string }
+  | { type: 'transport_abort'; reason: string }
   | { type: 'runtime_ready' }
   | { type: 'runtime_error'; message: string }
   | { type: 'artifact_data'; requestId: string; artifactId: string; fileName: string; data: ArrayBuffer }

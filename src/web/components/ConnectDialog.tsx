@@ -100,6 +100,7 @@ export default function ConnectDialog() {
       const descriptors = await localRuntime.listPorts()
       const ports = descriptors.map((descriptor) => ({
         path: descriptor.id,
+        deviceId: descriptor.deviceId,
         friendlyName: descriptor.label,
         manufacturer: descriptor.label,
         vendorId: descriptor.usbVendorId === undefined ? undefined : toHexId(descriptor.usbVendorId),
@@ -233,8 +234,14 @@ export default function ConnectDialog() {
       protocol,
       ...(selectedSerial?.vendorId ? { vendorId: selectedSerial.vendorId } : {}),
       ...(selectedSerial?.productId ? { productId: selectedSerial.productId } : {}),
+      ...(selectedSerial?.deviceId ? { deviceId: selectedSerial.deviceId } : {}),
       ...(selectedBluetooth?.vendorId ? { vendorId: selectedBluetooth.vendorId } : {}),
       ...(selectedBluetooth?.productId ? { productId: selectedBluetooth.productId } : {}),
+      ...(selectedBluetooth?.deviceId
+        ? { deviceId: selectedBluetooth.deviceId }
+        : pickedBt?.deviceId
+          ? { deviceId: pickedBt.deviceId }
+          : {}),
       ...(selectedBluetooth?.bluetoothAddress
         ? { bluetoothAddress: selectedBluetooth.bluetoothAddress }
         : {}),

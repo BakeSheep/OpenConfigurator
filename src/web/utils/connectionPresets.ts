@@ -120,6 +120,7 @@ function enrichBluetoothPreset(preset: ConnectionPreset, port: PortInfo): Connec
       : {}),
     ...(port.vendorId ? { vendorId: canonicalUsbId(port.vendorId) ?? port.vendorId } : {}),
     ...(port.productId ? { productId: canonicalUsbId(port.productId) ?? port.productId } : {}),
+    ...(port.deviceId ? { deviceId: port.deviceId } : {}),
   }
 }
 
@@ -129,6 +130,11 @@ export function resolveSerialPreset(
   ports: PortInfo[],
 ): ConnectionPreset | null {
   if (preset.type !== 'serial') return preset
+
+  // Browser-local ids from older previews were persisted without a lifecycle
+  // identity and can silently refer to a different identical VID/PID device
+  // after reload. Force an explicit browser picker for those legacy presets.
+  if (/^local-port-\d+$/.test(preset.port) && !preset.deviceId) return null
 
   if (preset.deviceId) {
     const matches = ports.filter((port) => port.deviceId === preset.deviceId)
@@ -185,6 +191,18 @@ export function resolveBluetoothPreset(
 ): ConnectionPreset | null {
   if (preset.type !== 'bluetooth') return preset
 
+  if (/^local-port-\d+$/.test(preset.port) && !preset.deviceId) return null
+
+  if (preset.deviceId) {
+    const matches = ports.filter((port) => port.deviceId === preset.deviceId)
+    if (matches.length === 1) return enrichBluetoothPreset(preset, matches[0])
+    if (matches.length > 1) return null
+    // Web Serial does not expose a stable Bluetooth address. A descriptor
+    // from a previous page lifecycle must not fall back to its reused path or
+    // generic SPP service class.
+    if (!preset.bluetoothAddress) return null
+  }
+
   const requestedAddress = normalizeBluetoothAddress(preset.bluetoothAddress)
   if (requestedAddress) {
     const matches = ports.filter((port) =>
@@ -207,6 +225,7 @@ export function resolveBluetoothPreset(
 export function samePresetDevice(a: ConnectionPreset, b: ConnectionPreset): boolean {
   if (a.type !== b.type) return false
   if (a.type === 'bluetooth') {
+    if (a.deviceId && b.deviceId) return a.deviceId === b.deviceId
     const aAddress = normalizeBluetoothAddress(a.bluetoothAddress)
     const bAddress = normalizeBluetoothAddress(b.bluetoothAddress)
     if (aAddress && bAddress) return aAddress === bAddress

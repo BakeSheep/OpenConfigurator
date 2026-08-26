@@ -48,6 +48,21 @@ assert.ok(samePresetDevice(identified, {
   productId: '0036',
 }))
 
+assert.equal(resolveSerialPreset({ ...identified, port: 'local-port-1' }, [
+  { ...currentUsb, path: 'local-port-1' },
+]), null, 'legacy browser-local paths require an explicit picker after reload')
+
+const browserSessionPreset: ConnectionPreset = {
+  ...identified,
+  port: 'local-port-1',
+  deviceId: 'webserial:session-a:local-port-1',
+}
+assert.equal(resolveSerialPreset(browserSessionPreset, [{
+  ...currentUsb,
+  path: 'local-port-1',
+  deviceId: 'webserial:session-b:local-port-1',
+}]), null, 'a reused browser-local path must not match a previous page lifecycle')
+
 const stableSerialPreset: ConnectionPreset = {
   ...identified,
   deviceId: 'serial:stable-1',
@@ -111,6 +126,15 @@ assert.equal(resolveBluetoothPreset(bluetoothPreset, [
   pairedBluetooth,
   { ...pairedBluetooth, path: 'bt-rfcomm://001122334455/1', bluetoothAddress: '00:11:22:33:44:55' },
 ]), null, 'a service-only preset must not guess between multiple paired devices')
+assert.equal(resolveBluetoothPreset({
+  ...bluetoothPreset,
+  port: 'local-port-1',
+  deviceId: 'webserial:session-a:local-port-1',
+}, [{
+  ...pairedBluetooth,
+  path: 'local-port-1',
+  deviceId: 'webserial:session-b:local-port-1',
+}]), null, 'Bluetooth Web Serial presets must not cross page lifecycles')
 assert.ok(samePresetDevice(
   { ...bluetoothPreset, bluetoothAddress: '08:fa:d1:17:69:49' },
   { ...bluetoothPreset, port: pairedBluetooth.path, bluetoothAddress: '08FAD1176949' },

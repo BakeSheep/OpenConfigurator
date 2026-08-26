@@ -2,6 +2,7 @@ import type { RuntimeCommand, ConnectionConfig, ParamData, RuntimeEvent } from '
 import { LOCAL_RUNTIME_OWNER_ID, type BrowserConnectionOptions } from '../shared/localRuntime'
 import { BrowserConnectionManager } from './connection/BrowserConnectionManager'
 import { EscService } from './esc/EscService'
+import type { EscSafetySnapshot } from './esc/EscSafetyContext'
 import { CalibrationSessionManager } from './mavlink/CalibrationSessionManager'
 import { MavlinkBridge } from './mavlink/MavlinkBridge'
 import { RadioCalibrationSessionManager } from './mavlink/RadioCalibrationSessionManager'
@@ -62,6 +63,13 @@ export class LocalRuntimeCoordinator {
   private safetyEpoch = 1
   private safetyAuthorityId = randomUUID()
   private lastTargetFingerprint = ''
+  private escSafetySnapshot: Omit<EscSafetySnapshot, 'connectionKey'> = {
+    armed: null,
+    ready: false,
+    fingerprint: 'unavailable',
+    observedAt: 0,
+    fcActivityObserved: false,
+  }
   private parameterGeneration = 0
   private activeParameterGeneration: number | null = null
   private activeParameterRunId: number | undefined
@@ -95,6 +103,13 @@ export class LocalRuntimeCoordinator {
     this.safetyAuthorityId = randomUUID()
     this.safetyEpoch = 1
     this.lastTargetFingerprint = ''
+    this.escSafetySnapshot = {
+      armed: null,
+      ready: false,
+      fingerprint: 'unavailable',
+      observedAt: 0,
+      fcActivityObserved: false,
+    }
     const codec = {
       protocol: options.protocol,
       ...(options.signing ? {
@@ -107,6 +122,10 @@ export class LocalRuntimeCoordinator {
       } : {}),
     }
     const bridge = new MavlinkBridge(this.connection, { codec })
+    bridge.setSafetyEpochProvider(() => ({
+      epoch: this.safetyEpoch,
+      authorityId: this.safetyAuthorityId,
+    }))
     this.bridge = bridge
 
     let radio!: RadioCalibrationSessionManager
@@ -117,6 +136,10 @@ export class LocalRuntimeCoordinator {
       emitToClient: (_clientId, event) => this.emit(event),
       getVehicleIdentity: () => bridge.vehicleIdentity,
       getParameterValue: (id) => bridge.getParameterValue(id),
+      getSafetyContext: () => ({
+        ...this.escSafetySnapshot,
+        connectionKey: JSON.stringify([this.connection.status, this.connection.transportOpen]),
+      }),
       pinController: () => undefined,
       releaseController: () => undefined,
       isLinkBusy: () => this.activeParameterGeneration !== null
@@ -174,7 +197,8 @@ export class LocalRuntimeCoordinator {
 
   close(reason = 'disconnected'): void {
     this.destroyServices()
-    this.connection.detach(reason)
+    const expected = reason === 'disconnected' || reason === 'user_disconnect' || reason === 'runtime_shutdown'
+    this.connection.detach(reason, expected ? undefined : reason)
     this.advanceSafety('connection_changed')
   }
 
@@ -305,8 +329,34 @@ export class LocalRuntimeCoordinator {
 
   private onBridgeEvent(event: RuntimeEvent & { paramRunId?: number }): void {
     if (event.type === 'rc_channels') this.radio?.handleRcChannels(event.data)
-    if (event.type === 'status' && event.data.armed) this.radio?.handleVehicleSafetyBoundary('vehicle_armed')
+    if (event.type === 'status') {
+      if (event.data.armed) {
+        this.radio?.handleVehicleSafetyBoundary('vehicle_armed')
+        this.esc?.handleVehicleSafetyBoundary('vehicle_armed')
+      }
+      const context = this.bridge?.getVehicleMutationSafetyContext()
+      if (context) {
+        this.escSafetySnapshot = {
+          ...context,
+          observedAt: Date.now(),
+          fcActivityObserved: true,
+        }
+      }
+    }
     if (event.type === 'target') {
+      // Raw ArduPilot passthrough deliberately resets the bridge target after
+      // MAVLink is paused. Preserve the last live heartbeat evidence so the
+      // session can validate it until the bounded snapshot TTL expires.
+      if (!this.bridge?.isProtocolPaused) {
+        const context = this.bridge?.getVehicleMutationSafetyContext()
+        if (context) {
+          this.escSafetySnapshot = {
+            ...context,
+            observedAt: this.escSafetySnapshot.observedAt,
+            fcActivityObserved: this.escSafetySnapshot.fcActivityObserved || context.ready,
+          }
+        }
+      }
       const fingerprint = JSON.stringify([event.data.systemId, event.data.componentId, event.data.ready, event.data.identity])
       if (fingerprint !== this.lastTargetFingerprint) {
         this.lastTargetFingerprint = fingerprint
@@ -385,6 +435,11 @@ export class LocalRuntimeCoordinator {
   }
 
   private onVehicleReady(ready: boolean): void {
+    if (ready) this.escSafetySnapshot.fcActivityObserved = true
+    if (!this.bridge?.isProtocolPaused) {
+      const context = this.bridge?.getVehicleMutationSafetyContext()
+      if (context) this.escSafetySnapshot = { ...this.escSafetySnapshot, ...context }
+    }
     if (!ready && !this.connection.rawSessionActive) {
       this.radio?.handleVehicleSafetyBoundary('vehicle_not_ready')
       if (this.activeParameterGeneration !== null) this.finishParameterSync('cancelled', 'vehicle_not_ready')

@@ -113,6 +113,7 @@ export default function Topbar() {
         const descriptors = await localRuntime.listPorts()
         const listed = descriptors.map((item) => ({
           path: item.id,
+          deviceId: item.deviceId,
           friendlyName: item.label,
           manufacturer: item.label,
           vendorId: item.usbVendorId?.toString(16).toUpperCase().padStart(4, '0'),

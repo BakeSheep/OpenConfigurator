@@ -1,5 +1,6 @@
 const MEMORY_FILES = new Map<string, Uint8Array>()
 const ARTIFACT_DIR = 'openconfigurator-artifacts'
+let namespaceRoot: string | null = null
 
 type OpfsDirectory = FileSystemDirectoryHandle & {
   values?: () => AsyncIterableIterator<FileSystemHandle>
@@ -19,6 +20,21 @@ function normalizePath(filePath: string): string {
   return normalized || '/'
 }
 
+function scopedPath(filePath: string): string {
+  const normalized = normalizePath(filePath)
+  if (!namespaceRoot) return normalized
+  return normalized === '/' ? namespaceRoot : `${namespaceRoot}${normalized}`
+}
+
+function logicalPath(filePath: string): string | null {
+  const normalized = normalizePath(filePath)
+  if (!namespaceRoot) return normalized
+  if (normalized === namespaceRoot) return '/'
+  return normalized.startsWith(`${namespaceRoot}/`)
+    ? normalizePath(normalized.slice(namespaceRoot.length))
+    : null
+}
+
 function parentOf(filePath: string): string {
   const normalized = normalizePath(filePath)
   const separator = normalized.lastIndexOf('/')
@@ -31,7 +47,7 @@ function baseName(filePath: string): string {
 
 /** OPFS directory entries are flat, so encode the complete virtual path. */
 function storageName(filePath: string): string {
-  return encodeURIComponent(normalizePath(filePath))
+  return encodeURIComponent(scopedPath(filePath))
 }
 
 function virtualPath(storageEntryName: string): string {
@@ -60,7 +76,7 @@ export class ArtifactFileHandle {
       if (dir) {
         const handle = await dir.getFileHandle(storageName(this.filePath), { create: true })
         this.writable = await handle.createWritable({ keepExistingData: false })
-      } else MEMORY_FILES.set(normalizePath(this.filePath), new Uint8Array())
+      } else MEMORY_FILES.set(scopedPath(this.filePath), new Uint8Array())
     }
     return this
   }
@@ -76,7 +92,7 @@ export class ArtifactFileHandle {
     if (this.writable) {
       await this.writable.write({ type: 'write', position, data: chunk })
     } else {
-      const key = normalizePath(this.filePath)
+      const key = scopedPath(this.filePath)
       const current = MEMORY_FILES.get(key) ?? new Uint8Array()
       const next = current.length >= position + chunk.length
         ? current.slice()
@@ -104,7 +120,7 @@ export class ArtifactFileHandle {
   async truncate(size: number): Promise<void> {
     if (this.writable) await this.writable.truncate(size)
     else {
-      const key = normalizePath(this.filePath)
+      const key = scopedPath(this.filePath)
       MEMORY_FILES.set(key, (MEMORY_FILES.get(key) ?? new Uint8Array()).slice(0, size))
     }
   }
@@ -128,6 +144,18 @@ export const artifactOs = {
 }
 
 export const artifactFs = {
+  /** Restrict all subsequent logical paths and cleanup to one Worker instance. */
+  setNamespace(namespaceId: string | null): void {
+    if (namespaceId === null) {
+      namespaceRoot = null
+      return
+    }
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(namespaceId)) {
+      throw new Error('invalid artifact namespace')
+    }
+    namespaceRoot = `/__runtime__/${namespaceId}`
+  },
+
   async mkdtemp(prefix: string): Promise<string> {
     // The caller owns cleanup of leftover directories (removeStaleInstanceDirs);
     // purging here would destroy artifacts of concurrent live downloads.
@@ -162,12 +190,16 @@ export const artifactFs = {
     }
     const dir = await directory()
     if (!dir) {
-      for (const entry of MEMORY_FILES.keys()) collect(entry)
+      for (const entry of MEMORY_FILES.keys()) {
+        const logical = logicalPath(entry)
+        if (logical) collect(logical)
+      }
       return [...names].filter((name) => name !== '.keep')
     }
     if (!dir.values) return []
     for await (const handle of dir.values()) {
-      collect(virtualPath(handle.name))
+      const logical = logicalPath(virtualPath(handle.name))
+      if (logical) collect(logical)
     }
     return [...names].filter((name) => name !== '.keep')
   },
@@ -179,7 +211,7 @@ export const artifactFs = {
   async unlink(filePath: string): Promise<void> {
     const dir = await directory()
     if (dir) await dir.removeEntry(storageName(filePath)).catch(() => undefined)
-    MEMORY_FILES.delete(normalizePath(filePath))
+    MEMORY_FILES.delete(scopedPath(filePath))
   },
 
   async rename(from: string, to: string): Promise<void> {
@@ -196,7 +228,7 @@ export const artifactFs = {
       const handle = await dir.getFileHandle(storageName(filePath))
       return new Uint8Array(await (await handle.getFile()).arrayBuffer())
     }
-    const value = MEMORY_FILES.get(normalizePath(filePath))
+    const value = MEMORY_FILES.get(scopedPath(filePath))
     if (!value) throw new Error(`artifact not found: ${filePath}`)
     return value.slice()
   },
@@ -226,10 +258,17 @@ export const artifactFs = {
     const dir = await directory()
     if (dir?.values) {
       const names: string[] = []
-      for await (const handle of dir.values()) names.push(handle.name)
+      for await (const handle of dir.values()) {
+        if (logicalPath(virtualPath(handle.name)) !== null) names.push(handle.name)
+      }
       await Promise.all(names.map((name) => dir.removeEntry(name).catch(() => undefined)))
     }
-    MEMORY_FILES.clear()
+    if (!namespaceRoot) MEMORY_FILES.clear()
+    else {
+      for (const key of [...MEMORY_FILES.keys()]) {
+        if (logicalPath(key) !== null) MEMORY_FILES.delete(key)
+      }
+    }
   },
 
   async rm(targetPath: string, _options?: { recursive?: boolean; force?: boolean }): Promise<void> {
@@ -243,12 +282,14 @@ export const artifactFs = {
     if (dir?.values) {
       const doomed: string[] = []
       for await (const handle of dir.values()) {
-        if (under(virtualPath(handle.name))) doomed.push(handle.name)
+        const logical = logicalPath(virtualPath(handle.name))
+        if (logical && under(logical)) doomed.push(handle.name)
       }
       await Promise.all(doomed.map((name) => dir.removeEntry(name).catch(() => undefined)))
     }
     for (const key of [...MEMORY_FILES.keys()]) {
-      if (under(key)) MEMORY_FILES.delete(key)
+      const logical = logicalPath(key)
+      if (logical && under(logical)) MEMORY_FILES.delete(key)
     }
   },
 }

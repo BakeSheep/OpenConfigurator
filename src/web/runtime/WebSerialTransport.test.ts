@@ -76,6 +76,7 @@ test('authorized ports are inert until open and bytes remain tab-local', async (
     assert.equal(port.openOptions.length, 0, 'listing a grant must never occupy the port')
     const picked = await transport.requestPort()
     assert.equal(picked.id, listed[0].id)
+    assert.equal(picked.deviceId, listed[0].deviceId)
 
     const received: number[][] = []
     await transport.open(
@@ -185,6 +186,54 @@ test('Bluetooth SPP reconnects only inside the active tab session', async () => 
     await transport.close(false)
     await tick()
     assert.equal(port.openOptions.length, 2, 'explicit close must disable reconnect')
+  } finally {
+    restore()
+  }
+})
+
+test('Bluetooth reconnect rejects queued writes from the failed link generation', async () => {
+  const port = new FakeSerialPort()
+  const restore = installSerial(port)
+  try {
+    const transport = new WebSerialTransport(() => 0)
+    const [descriptor] = await transport.listAuthorizedPorts()
+    let reopened = 0
+    await transport.open(
+      { portId: descriptor.id, type: 'bluetooth', baudRate: 115200, protocol: 'auto' },
+      {
+        onBytes: () => undefined,
+        onClosed: () => undefined,
+        onReopened: () => { reopened += 1 },
+      },
+    )
+    const inFlight = transport.write(Uint8Array.of(1).buffer, 'normal')
+    const staleQueued = transport.write(Uint8Array.of(2).buffer, 'normal')
+    await tick()
+    port.unplug()
+    await tick()
+    port.releaseFirstWrite()
+    for (let index = 0; index < 8 && reopened === 0; index++) await tick()
+
+    assert.equal(await staleQueued, false)
+    assert.equal(await inFlight, true)
+    assert.equal(reopened, 1)
+    assert.deepEqual(port.writes, [1], 'queued command must not cross the reconnect boundary')
+    assert.equal(await transport.write(Uint8Array.of(3).buffer, 'normal'), true)
+    assert.deepEqual(port.writes, [1, 3])
+    await transport.close(false)
+  } finally {
+    restore()
+  }
+})
+
+test('port descriptor identities do not survive a transport lifecycle', async () => {
+  const port = new FakeSerialPort()
+  const restore = installSerial(port)
+  try {
+    const [first] = await new WebSerialTransport().listAuthorizedPorts()
+    const [second] = await new WebSerialTransport().listAuthorizedPorts()
+    assert.equal(first.id, second.id)
+    assert.notEqual(first.deviceId, second.deviceId)
   } finally {
     restore()
   }
